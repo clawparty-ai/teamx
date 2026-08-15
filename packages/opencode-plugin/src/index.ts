@@ -31,8 +31,69 @@ type TeamBlock = {
   members?: MemberRow[]
   questions?: QuestionRow[]
 }
-type SyncEvent = { seq?: number; type?: string }
+type SyncEvent = { seq?: number; type?: string; payload?: Record<string, unknown> }
 type SyncData = { teams?: TeamBlock[]; new_events?: SyncEvent[] }
+
+/** Truncate a string to a short single-line snippet. */
+function shorten(s: string, max = 40): string {
+  const flat = (s ?? "").replace(/\s+/g, " ").trim()
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat
+}
+
+/** Session idle mirrors are pure noise; filter them out of digests/toasts. */
+function isHeartbeat(e: SyncEvent): boolean {
+  return e.type === "progress.published" && (e.payload ?? {})["kind"] === "session.idle"
+}
+
+/** Return only events worth surfacing to the user (no heartbeats). */
+function notableEvents(events: SyncEvent[]): SyncEvent[] {
+  return events.filter((e) => !isHeartbeat(e))
+}
+
+/** Build a short human-readable summary line for a single ledger event. */
+function summarizeEvent(e: SyncEvent): string {
+  const seq = e.seq ?? "?"
+  const t = e.type ?? "?"
+  const p = e.payload ?? {}
+  const s = (k: string) => (p[k] == null ? "" : String(p[k]))
+  const msg = s("message")
+  switch (t) {
+    case "team.created":
+      return `#${seq} 团队「${s("name")}」已创建`
+    case "goal.set":
+    case "goal.updated":
+      return `#${seq} 目标「${s("title")}」${t === "goal.set" ? "已设置" : "已更新"}`
+    case "goal.shared":
+      return `#${seq} 目标「${s("title")}」已共享`
+    case "goal.achieved":
+      return `#${seq} 达成候选${msg ? `: ${shorten(msg)}` : ""}`
+    case "goal.state_changed":
+      return `#${seq} 目标状态 ${s("from")} → ${s("to")}${s("kind") ? ` (${s("kind")})` : ""}`
+    case "team.state_changed":
+      return `#${seq} 团队状态 ${s("from")} → ${s("to")}`
+    case "team.completed":
+      return `#${seq} 团队已完成`
+    case "membership.pending":
+      return `#${seq} ${s("display_name")} 申请加入${p["rejoined"] ? "（重新加入）" : ""}`
+    case "membership.approved":
+      return `#${seq} 已批准 ${s("display_name")} 入队`
+    case "membership.denied":
+      return `#${seq} 已拒绝 ${s("display_name")}`
+    case "clarification.asked":
+      return `#${seq} 提问 ${s("target")}: ${shorten(s("question"))}`
+    case "clarification.responded":
+      return `#${seq} 回答: ${shorten(s("answer"))}`
+    case "progress.published":
+      if (p["kind"] === "session.idle") return `#${seq} 心跳(idle)`
+      return msg ? `#${seq} 进展: ${shorten(msg)}` : `#${seq} 进展汇报`
+    case "decision.broadcast":
+      return msg ? `#${seq} 广播: ${shorten(msg)}` : `#${seq} 广播`
+    case "loopx.progress":
+      return `#${seq} loopx 进度更新`
+    default:
+      return msg ? `#${seq} ${t}: ${shorten(msg)}` : `#${seq} ${t}`
+  }
+}
 
 /** Build a compact, human-readable digest of the sync payload. */
 function summarize(data: SyncData): string {
@@ -48,9 +109,9 @@ function summarize(data: SyncData): string {
     const open = (t.questions ?? []).filter((q) => q.state === "open")
     if (open.length > 0) parts.push(`  待答问题: ${open.map((q) => q.question ?? "-").join(" | ")}`)
   }
-  const events = data.new_events ?? []
+  const events = notableEvents(data.new_events ?? [])
   if (events.length > 0) {
-    parts.push(`新事件(${events.length}): ${events.map((e) => `#${e.seq ?? "?"} ${e.type ?? "?"}`).join(", ")}`)
+    parts.push(`新事件(${events.length}): ${events.map(summarizeEvent).join(" | ")}`)
   }
   return parts.join("\n")
 }
@@ -66,6 +127,12 @@ export const Teamx: Plugin = async ({ client }) => {
     client.app.log({ body: { service: LOG_SERVICE, level, message, extra } }).catch(() => {})
   }
 
+  // Per-session watermark of the highest seq we have already toasted, so the
+  // M2 poller (which uses `sync --no-advance`) does not re-toast the same
+  // events on every 15s poll. -1 = never notified yet (first refresh records
+  // the watermark without notifying, so pre-existing backlog is not spammed).
+  const notifiedSeq = new Map<string, number>()
+
   async function refreshDigest(sessionID: string): Promise<void> {
     const key = sessionKey(instance, sessionID)
     const r = await runCli(["sync", "--no-advance", "--session", key])
@@ -74,18 +141,28 @@ export const Teamx: Plugin = async ({ client }) => {
     setDigest(sessionID, summarize(data))
     const events = Array.isArray(data.new_events) ? data.new_events : []
     if (events.length === 0) return
-    const first = events[0]
-    const last = events[events.length - 1]
+    const seqs = events.map((e) => e.seq ?? 0).filter((s) => s > 0)
+    const maxSeq = seqs.length > 0 ? Math.max(...seqs) : 0
+    const lastNotified = notifiedSeq.get(sessionID) ?? -1
+    // Advance the watermark across ALL events (including heartbeats) so
+    // heartbeats never block real events, but only toast notable ones.
+    if (maxSeq > lastNotified) notifiedSeq.set(sessionID, maxSeq)
+    const fresh = notableEvents(events).filter((e) => (e.seq ?? 0) > lastNotified)
+    if (lastNotified < 0 || fresh.length === 0) return
+    const first = fresh[0]
+    const last = fresh[fresh.length - 1]
+    const lines = fresh.map(summarizeEvent).slice(0, 3)
+    const more = fresh.length > lines.length ? `\n… 共 ${fresh.length} 条` : ""
     await client.tui
       .showToast({
         body: {
           title: "teamx",
-          message: `团队有新事件 ×${events.length}（seq ${first?.seq ?? "?"}…${last?.seq ?? "?"}）`,
+          message: `新事件 ×${fresh.length}（seq ${first?.seq ?? "?"}…${last?.seq ?? "?"}）\n${lines.join("\n")}${more}`,
           variant: "info",
         },
       })
       .catch(() => {})
-    const hasQuestion = events.some((e) => e.type === "clarification.asked")
+    const hasQuestion = fresh.some((e) => e.type === "clarification.asked")
     if (hasQuestion) {
       await client.tui
         .appendPrompt({ body: { text: "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。" } })

@@ -24,4 +24,6 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 
 先调用 teamx_sync，然后根据 $ARGUMENTS 中的子命令路由到对应工具并执行。
 
+如果 $ARGUMENTS 为空（没有子命令），默认执行 teamx_status 查看团队完整状态。
+
 用户输入: $ARGUMENTS

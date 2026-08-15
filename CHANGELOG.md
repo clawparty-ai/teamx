@@ -4,6 +4,7 @@
 
 ### 命令简化 + owner 唯一约束
 
+- **通知风暴修复**：M2 轮询器（`sync --no-advance`）新增 per-session 已通知 seq 水位，同一批事件只 toast 一次，不再每 15s 重复轰炸；首次接入记录水位不提示存量。
 - **owner 唯一约束**：一个 session 至多作为一个非 `archived` 团队的 owner；`team create` 创建第二团队（不同名）时报错，归档后才可再创建（幂等同名复用不受影响）。
 - **命令简化**：
   - `/Team` 升级为 `/team <子命令>` 子命令路由（`create/join/status/sync/goal/approve/deny/role/state/ask/respond/publish/archive/help`），`agent/teamx.md` 增加路由表。
