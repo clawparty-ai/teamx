@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 自定义角色（Custom Roles）
+
+- **成员可提议自定义角色**：`role propose <key> <label> [desc]`，写入团队角色目录（state=proposed），key 不得与内置角色（owner/observer/supervisor/contributor/subtask-implementer/reviewer）冲突。
+- **owner 审批/拒绝**：`role approve <key>` 将角色置为 approved 并**自动授予提议者**；`role deny <key>` 移除提议。非 owner 调用均被拒绝。
+- **owner 修改角色**：`role update <key> [--label] [--description]` 可改任意角色（含内置）的名称/描述，未传字段保持原样。
+- **使用约束**：`role set` 只允许 approved 角色（内置 + 已批准自定义）；pending 角色使用时报错并提示等待审批。
+- **事件**：新增 `role.proposed` / `role.approved` / `role.denied` / `role.updated`；插件 toast/digest 摘要已覆盖。
+- **数据**：`roles` 表新增 `state`（默认 approved）与 `proposed_by`（v4 迁移，幂等补列）。
+- **插件**：新增工具 `teamx_role_propose` / `teamx_role_approve` / `teamx_role_deny` / `teamx_role_update`；扁平别名 `/team-role-propose` `/team-role-approve` `/team-role-deny` `/team-role-update`。
+- **测试**：cli-test 新增自定义角色全流程（propose→不可用→审批→自动授予→可用→update→deny）。
+
 ### 命令简化 + owner 唯一约束
 
 - **通知风暴修复**：M2 轮询器（`sync --no-advance`）新增 per-session 已通知 seq 水位，同一批事件只 toast 一次，不再每 15s 重复轰炸；首次接入记录水位不提示存量。

@@ -21,7 +21,10 @@ permission:
 | `sync` | teamx_sync | 拉取最新团队事件 |
 | `goal set <title>` / `goal share` / `goal close` | teamx_set_goal / teamx_share_goal / teamx_close_goal | owner 起草/共享/关闭目标 |
 | `approve <member_id>` / `deny <member_id>` | teamx_approve / teamx_deny | owner 审批/拒绝入队 |
-| `role set <role>` | teamx_set_role | 选择角色（observer/supervisor/contributor/subtask-implementer/reviewer） |
+| `role set <role>` | teamx_set_role | 选择角色（固定角色或已批准的自定义角色） |
+| `role propose <key> <label> [desc]` | teamx_role_propose | 成员提议自定义角色，待 owner 审批 |
+| `role approve <key>` / `role deny <key>` | teamx_role_approve / teamx_role_deny | owner 审批/拒绝自定义角色 |
+| `role update <key> [--label] [--description]` | teamx_role_update | owner 修改角色名/描述 |
 | `state idle\|active` | teamx_set_state | 设置工作状态 |
 | `ask <member_id> <问题>` | teamx_ask | owner 提问 |
 | `respond <ask_id> <回答>` | teamx_respond | 回答提问 |
@@ -35,7 +38,7 @@ permission:
 
 - 建队/入队：`teamx_create_team`（成为 owner）、`teamx_join`（凭 invite_token 加入，需 owner 审批）、`teamx_approve` / `teamx_deny`（owner 审批）、`teamx_archive`（owner 归档已完成团队）
 - 目标：`teamx_set_goal`、`teamx_share_goal`（owner 广播）、`teamx_close_goal`（owner 验证关闭）
-- 角色：`teamx_set_role`（成员自主选择）
+- 角色：`teamx_set_role`（成员自主选择）；自定义角色：`teamx_role_propose`（成员提议）→ `teamx_role_approve` / `teamx_role_deny`（owner 审批/拒绝）→ approve 后自动授予提议者；`teamx_role_update`（owner 修改角色名/描述）
 - 工作状态：`teamx_set_state`（idle = 完成当前切片 / active = 继续）
 - 状态：`teamx_list_teams`、`teamx_status`、`teamx_sync`
 - 通信：`teamx_publish`（progress/decision/update/blocked/resumed/achieved/refine）、`teamx_ask`、`teamx_respond`
@@ -52,7 +55,8 @@ permission:
 3. **owner**：
    - 每个回合先 `teamx_sync` 汇总各成员报告与未决问题。
    - 需要澄清/调整/进展时，用 `teamx_publish decision` 或 `teamx_publish update` 广播给团队；对具体成员提问用 `teamx_ask`。
-   - 审批入队请求（`teamx_approve` / `teamx_deny`）、分享目标（`teamx_share_goal`）、启动执行（`teamx_publish start`）、在成员报告 achieved 后验证并 `teamx_close_goal`。
+   - **入队审批由 owner 决策，绝不自动批准**：发现待审批成员（membership.pending / state=pending）时只列出并提示 `approve` / `deny` 选项，用户明确要求后才调用 `teamx_approve` / `teamx_deny`。
+   - 分享目标（`teamx_share_goal`）、启动执行（`teamx_publish start`）、在成员报告 achieved 后验证并 `teamx_close_goal`。
 
 ## 状态机速记
 
@@ -64,7 +68,8 @@ permission:
 
 - **用户要创建团队**：调用 `teamx_create_team`，把返回的 `invite_token` 展示给用户分享给成员；然后 `teamx_set_goal` 起草目标。
 - **用户要加入团队**：询问 invite_token（或读取对话中的 token），调用 `teamx_join` 并让用户指定 display name；提示需要 owner 审批。
-- **成员加入后**：指导成员 `teamx_set_role` 选择角色（observer/supervisor/contributor/subtask-implementer/reviewer），owner `teamx_share_goal` 后开始协作。
+- **成员加入后**：指导成员 `teamx_set_role` 选择角色（固定角色如 contributor/subtask-implementer/reviewer）；如果固定角色都不合适，成员可用 `teamx_role_propose` 提议自己的 job role，owner 用 `teamx_role_approve` 审批后该成员自动获得该角色。owner `teamx_share_goal` 后开始协作。
+- **自定义角色流程**：member 提议（`role propose <key> <label> <desc>`）→ owner 收到 `role.proposed` 事件后决策（`role approve` 或 `role deny`）→ 批准后角色进入团队目录且自动授予提议者。owner 也可用 `role update <key> --description ...` 修改任何角色的描述（含固定角色）。
 - **协作中**：严格执行"先 sync 再行动、有进展就汇报、owner 汇总后广播"。
 
 ## 注意事项

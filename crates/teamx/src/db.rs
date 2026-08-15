@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS roles (
   label            TEXT NOT NULL,
   description      TEXT,
   permissions_json TEXT,
+  state            TEXT NOT NULL DEFAULT 'approved',
+  proposed_by      TEXT,
   UNIQUE(team_id, key)
 );
 
@@ -152,7 +154,28 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_team ON goals(team_id);",
         )?;
     }
-    conn.pragma_update(None, "user_version", 3)?;
+    if version < 4 {
+        // v4: custom roles — roles gain a state (proposed/approved) and a
+        // proposer, so members can propose their own job role and the owner
+        // approves it. Existing roles stay approved. Idempotent: fresh DBs
+        // already create the columns via SCHEMA, so only add when missing.
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(roles)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        if !cols.iter().any(|c| c == "state") {
+            conn.execute_batch("ALTER TABLE roles ADD COLUMN state TEXT NOT NULL DEFAULT 'approved';")?;
+        }
+        if !cols.iter().any(|c| c == "proposed_by") {
+            conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
+        }
+    }
+    conn.pragma_update(None, "user_version", 4)?;
     Ok(())
 }
 

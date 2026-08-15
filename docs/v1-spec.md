@@ -29,7 +29,7 @@ members(id, team_id, session_key, display_name, role, state, loopx_project, last
     └─ UNIQUE(team_id, session_key)：一个 session 每团队仅一行成员（leave/deny 后重入复用该行）
 goals(id, team_id, title, body, state, created_at, updated_at)
     └─ UNIQUE(team_id)：一团队仅一个目标
-roles(id, team_id, key, label, description, permissions_json)   -- 默认角色目录 seed 到每个 team
+roles(id, team_id, key, label, description, permissions_json, state, proposed_by)   -- state: proposed/approved（默认 approved）；自定义角色由成员 propose、owner 审批
 events(id, team_id, member_id, seq, type, payload_json, created_at)  -- 账本
 questions(id, team_id, asker_member_id, target_member_id, question, answer, state, created_at, answered_at)
 sync_cursors(session_key, team_id, last_seq)                    -- 每会话增量游标（单调推进）
@@ -39,7 +39,7 @@ sync_cursors(session_key, team_id, last_seq)                    -- 每会话增�
 
 ## 事件类型
 
-`team.created` `team.state_changed` `team.completed` `membership.pending` `membership.approved` `membership.denied` `member.role_set` `member.state_changed` `member.left` `goal.set` `goal.updated` `goal.shared` `goal.state_changed` `goal.achieved` `progress.published` `clarification.asked` `clarification.responded` `loopx.progress` `decision.broadcast`
+`team.created` `team.state_changed` `team.completed` `membership.pending` `membership.approved` `membership.denied` `member.role_set` `member.state_changed` `member.left` `goal.set` `goal.updated` `goal.shared` `goal.state_changed` `goal.achieved` `progress.published` `clarification.asked` `clarification.responded` `loopx.progress` `decision.broadcast` `role.proposed` `role.approved` `role.denied` `role.updated`
 
 ## CLI 命令
 
@@ -58,7 +58,11 @@ teamx goal share --session <key>                        # owner
 teamx goal close --session <key>                        # owner
 teamx member set-state <idle|active> --session <key> [--member <id>]  # 自服务；owner 可代设
 teamx role list [--team <id>]
-teamx role set <role> --session <key> [--member <id>]   # owner 可代指定
+teamx role set <role> --session <key> [--member <id>]   # owner 可代指定；仅 approved 角色可用
+teamx role propose <key> <label> [desc] --session <key>  # 成员提议自定义角色
+teamx role approve <key> --session <key>                 # owner 审批（自动授予提议者）
+teamx role deny <key> --session <key>                    # owner 拒绝（移除提议）
+teamx role update <key> [--label L] [--description D] --session <key>  # owner 修改角色名/描述
 teamx publish <type> [--data <json>] --session <key>
 teamx ask <member_id> --question <q> --session <key>
 teamx respond <ask_id> --answer <a> --session <key>
@@ -87,15 +91,17 @@ publish 类型与状态影响：
 
 `owner / observer / supervisor / contributor / subtask-implementer / reviewer`，每个 team 创建时 seed。V1 权限仅建议性（`permissions_json` 保留 `{}`），不做强制。
 
+自定义角色：任意成员可用 `role propose` 提议自己的 job role（key 不与内置角色冲突，state=proposed）；owner `role approve` 后角色进入目录并自动授予提议者，`role deny` 则移除提议；owner 可用 `role update` 修改任意角色名/描述。`role set` 仅允许 approved 角色。
+
 ## opencode 插件
 
 三件套（由 `install.sh` 安装到 `~/.config/opencode/`）：
 
 - `agent/teamx.md`：`mode: all`，权限 `"teamx_*": allow`，内嵌"先 sync 再行动、有进展就汇报、owner 汇总后广播"协议。
 - `command/Team.md`：`agent: teamx`，提供 `/Team` 路由。
-- `plugins/teamx.js`：注册 17 个 `teamx_*` 工具 + `event` hook（`session.idle` → 自动发布 activity 事件，成员身份缓存）。
+- `plugins/teamx.js`：注册 21 个 `teamx_*` 工具 + `event` hook（`session.idle` → 自动发布 activity 事件，成员身份缓存）。
 
-工具集：`teamx_create_team teamx_set_goal teamx_share_goal teamx_close_goal teamx_archive teamx_join teamx_approve teamx_deny teamx_set_role teamx_set_state teamx_list_teams teamx_status teamx_sync teamx_publish teamx_ask teamx_respond teamx_loopx_report`
+工具集：`teamx_create_team teamx_set_goal teamx_share_goal teamx_close_goal teamx_archive teamx_join teamx_approve teamx_deny teamx_set_role teamx_set_state teamx_list_teams teamx_status teamx_sync teamx_publish teamx_ask teamx_respond teamx_role_propose teamx_role_approve teamx_role_deny teamx_role_update teamx_loopx_report`
 
 客户端层 `packages/opencode-plugin/src/client.ts` 是 V2 换 HTTP 的唯一接缝。
 

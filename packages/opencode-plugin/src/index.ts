@@ -88,6 +88,14 @@ function summarizeEvent(e: SyncEvent): string {
       return msg ? `#${seq} 进展: ${shorten(msg)}` : `#${seq} 进展汇报`
     case "decision.broadcast":
       return msg ? `#${seq} 广播: ${shorten(msg)}` : `#${seq} 广播`
+    case "role.proposed":
+      return `#${seq} ${s("proposer")} 提议自定义角色「${s("label")}」(${s("key")})`
+    case "role.approved":
+      return `#${seq} 角色「${s("label")}」已被 ${s("approver")} 批准`
+    case "role.denied":
+      return `#${seq} 角色「${s("label")}」已被 ${s("denier")} 拒绝`
+    case "role.updated":
+      return `#${seq} 角色「${s("label")}」被 ${s("updated_by")} 更新描述`
     case "loopx.progress":
       return `#${seq} loopx 进度更新`
     default:

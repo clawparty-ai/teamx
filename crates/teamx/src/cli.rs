@@ -257,6 +257,50 @@ pub enum RoleCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Propose a custom role (member self-service); the owner must approve it before it can be used
+    Propose {
+        #[arg(value_name = "KEY")]
+        role: String,
+        #[arg(value_name = "LABEL")]
+        label: String,
+        #[arg(value_name = "DESCRIPTION")]
+        description: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Approve a proposed custom role and grant it to the proposer (owner only)
+    Approve {
+        #[arg(value_name = "KEY")]
+        role: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Deny a proposed custom role and remove the proposal (owner only)
+    Deny {
+        #[arg(value_name = "KEY")]
+        role: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Update a role's label/description (owner only)
+    Update {
+        #[arg(value_name = "KEY")]
+        role: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -76,6 +76,34 @@ expect_fail "$TEAMX" sync --session s:carol
 step "unknown role"
 expect_fail "$TEAMX" role set wizard --session s:bob
 
+step "custom role: propose → not usable → approve → granted + usable → update → deny"
+# member proposes a custom role
+expect_ok "$TEAMX" role propose devops "DevOps" "负责 CI/CD 与基础设施" --session s:bob
+# role not usable until approved
+expect_fail "$TEAMX" role set devops --session s:bob
+# key conflicts with built-in role
+expect_fail "$TEAMX" role propose owner "Owner2" "dup" --session s:bob
+# duplicate propose
+expect_fail "$TEAMX" role propose devops "DevOps2" "dup" --session s:bob
+# non-owner cannot approve/deny/update
+expect_fail "$TEAMX" role approve devops --session s:bob
+expect_fail "$TEAMX" role deny devops --session s:bob
+expect_fail "$TEAMX" role update devops --description "hack" --session s:bob
+# owner approves; proposer (bob) is auto-granted devops
+expect_ok "$TEAMX" role approve devops --session s:owner
+"$TEAMX" team status --team "$TEAM_ID" --json | jget "['teams'][0]['members'][1]['role']" | grep -qx "devops" || fail "bob should be auto-granted devops after approval"
+# after approval the custom role is usable by any member (eve)
+"$TEAMX" role set devops --session s:eve --json | jget "['role']" | grep -qx "devops" || fail "approved custom role should be usable"
+"$TEAMX" role set reviewer --session s:eve || true
+# owner updates the role description (label preserved)
+"$TEAMX" role update devops --description "负责 CI/CD、基础设施与监控" --session s:owner --json | jget "['description']" | grep -qx "负责 CI/CD、基础设施与监控" || fail "description should update"
+# owner edits a member's role back to contributor
+expect_ok "$TEAMX" role set contributor --member "$BOB" --session s:owner
+# another proposed role can be denied
+expect_ok "$TEAMX" role propose tmp-role "Tmp" "temp" --session s:eve
+expect_ok "$TEAMX" role deny tmp-role --session s:owner
+expect_fail "$TEAMX" role approve tmp-role --session s:owner
+
 step "set role + share goal"
 expect_ok "$TEAMX" role set contributor --session s:bob
 expect_ok "$TEAMX" goal share --session s:owner

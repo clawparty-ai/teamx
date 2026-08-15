@@ -39,6 +39,10 @@ uninstall() {
         "$CONFIG_DIR/commands/team-approve.md" \
         "$CONFIG_DIR/commands/team-deny.md" \
         "$CONFIG_DIR/commands/team-role.md" \
+        "$CONFIG_DIR/commands/team-role-propose.md" \
+        "$CONFIG_DIR/commands/team-role-approve.md" \
+        "$CONFIG_DIR/commands/team-role-deny.md" \
+        "$CONFIG_DIR/commands/team-role-update.md" \
         "$CONFIG_DIR/commands/team-state.md" \
         "$CONFIG_DIR/commands/team-ask.md" \
         "$CONFIG_DIR/commands/team-respond.md" \
@@ -82,8 +86,9 @@ cp "$PLUGIN_DIR/assets/agent/teamx.md" "$CONFIG_DIR/agent/teamx.md"
 # Install every /team command file (main router + all flat aliases).
 for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \
-           team-approve team-deny team-role team-state \
-           team-ask team-respond team-publish team-archive team-help; do
+           team-approve team-deny team-role team-role-propose \
+           team-role-approve team-role-deny team-role-update \
+           team-state team-ask team-respond team-publish team-archive team-help; do
   cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"
 done
 # Back-compat: also drop the legacy singular `command/` copy so upgrades do not

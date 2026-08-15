@@ -142,13 +142,65 @@ export const tools = {
   teamx_set_role: tool({
     description:
       "Choose a role for the current session (member self-service) or assign one to another member (owner only, via member). " +
-      "Roles: owner, observer, supervisor, contributor, subtask-implementer, reviewer.",
+      "Only approved roles are usable: built-in roles (owner, observer, supervisor, contributor, subtask-implementer, reviewer) plus any custom roles the owner approved.",
     args: {
       role: tool.schema.string().describe("role key from the team catalog"),
       member: tool.schema.string().optional().describe("target member id when assigning on someone's behalf (owner only)"),
     },
     async execute(args, context: ToolCtx) {
       return tx(context.sessionID, ["role", "set", args.role, ...opt("--member", args.member)])
+    },
+  }),
+
+  teamx_role_propose: tool({
+    description:
+      "Propose a custom role (key + label + job description). The team owner must approve it before it can be used. " +
+      "Any team member (including the owner) may propose. Role key must not conflict with a built-in role.",
+    args: {
+      role: tool.schema.string().describe("unique role key, e.g. devops"),
+      label: tool.schema.string().describe("human-readable role label, e.g. DevOps 工程师"),
+      description: tool.schema.string().optional().describe("job-role description / responsibilities"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["role", "propose", args.role, args.label, ...(args.description ? [args.description] : [])])
+    },
+  }),
+
+  teamx_role_approve: tool({
+    description:
+      "Approve a proposed custom role (owner only). The role becomes usable and is automatically granted to the member who proposed it.",
+    args: {
+      role: tool.schema.string().describe("role key to approve"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["role", "approve", args.role])
+    },
+  }),
+
+  teamx_role_deny: tool({
+    description:
+      "Deny a proposed custom role and remove the proposal (owner only). The proposer does not get the role.",
+    args: {
+      role: tool.schema.string().describe("role key to deny"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["role", "deny", args.role])
+    },
+  }),
+
+  teamx_role_update: tool({
+    description:
+      "Update a role's label and/or description (owner only). Pass only the fields to change; the other is preserved.",
+    args: {
+      role: tool.schema.string().describe("role key to update"),
+      label: tool.schema.string().optional().describe("new label (optional)"),
+      description: tool.schema.string().optional().describe("new description (optional)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const parts = ["role", "update", args.role]
+      if (args.label) parts.push("--label", args.label)
+      if (args.description) parts.push("--description", args.description)
+      return tx(context.sessionID, parts)
     },
   }),
 

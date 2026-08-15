@@ -263,6 +263,7 @@ fn seed_roles(tx: &Transaction, team_id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// True if a role row exists in this team (any state).
 fn role_exists(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT COUNT(*) FROM roles WHERE team_id = ?1 AND key = ?2",
@@ -270,6 +271,26 @@ fn role_exists(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<
         |r| r.get::<_, i64>(0),
     )
     .map(|n| n > 0)
+}
+
+/// True if the role exists AND is approved (usable via `role set`).
+fn role_approved(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM roles WHERE team_id = ?1 AND key = ?2 AND state = 'approved'",
+        params![team_id, key],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+}
+
+/// Role state (proposed/approved) for a role, if any.
+fn role_state(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT state FROM roles WHERE team_id = ?1 AND key = ?2",
+        params![team_id, key],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 fn role_label(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<Option<String>> {
@@ -332,6 +353,18 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             RoleCmd::List { team } => cmd_role_list(conn, team.as_deref())?,
             RoleCmd::Set { role, session, member, team } => {
                 cmd_role_set(conn, role, session, member.as_deref(), team.as_deref())?
+            }
+            RoleCmd::Propose { role, label, description, session, team } => {
+                cmd_role_propose(conn, role, label, description.as_deref(), session, team.as_deref())?
+            }
+            RoleCmd::Approve { role, session, team } => {
+                cmd_role_approve(conn, role, session, team.as_deref())?
+            }
+            RoleCmd::Deny { role, session, team } => {
+                cmd_role_deny(conn, role, session, team.as_deref())?
+            }
+            RoleCmd::Update { role, label, description, session, team } => {
+                cmd_role_update(conn, role, label.as_deref(), description.as_deref(), session, team.as_deref())?
             }
         },
         Command::Publish { r#type, data, session, team } => {
@@ -866,10 +899,16 @@ fn cmd_role_list(conn: &Connection, team_opt: Option<&str>) -> Result<Value> {
 
 fn roles_json(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<Value>> {
     let mut stmt = conn.prepare(
-        "SELECT key, label, description FROM roles WHERE team_id = ?1 ORDER BY id ASC",
+        "SELECT key, label, description, state, proposed_by FROM roles WHERE team_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([team_id], |r| {
-        Ok(json!({ "key": r.get::<_, String>(0)?, "label": r.get::<_, String>(1)?, "description": r.get::<_, Option<String>>(2)? }))
+        Ok(json!({
+            "key": r.get::<_, String>(0)?,
+            "label": r.get::<_, String>(1)?,
+            "description": r.get::<_, Option<String>>(2)?,
+            "state": r.get::<_, String>(3)?,
+            "proposed_by": r.get::<_, Option<String>>(4)?,
+        }))
     })?;
     rows.collect()
 }
@@ -892,8 +931,14 @@ fn cmd_role_set(
     if target.team_id != team.id {
         return err(format!("member {} is not in team {}", target.id, team.id));
     }
-    let exists = role_exists(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?;
+    let exists = role_approved(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?;
     if !exists {
+        // Distinguish a missing role from one still awaiting owner approval.
+        if role_exists(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))? {
+            return err(format!(
+                "role `{role}` is pending owner approval and cannot be used yet; ask the owner to `role approve {role}`"
+            ));
+        }
         return err(format!(
             "role `{role}` is not in the team catalog; see `teamx role list --team {}`",
             team.id
@@ -928,6 +973,215 @@ fn cmd_role_set(
     .map_err(|e| AppError(format!("role set failed: {e}")))?;
     touch(conn, &actor.id).ok();
     Ok(json!({ "ok": true, "member_id": target.id, "role": role, "label": label, "state": to_s, "from": from_s }))
+}
+
+/// Member proposes a custom role (key + label + job description). It lands in
+/// state=proposed and only becomes usable after the owner approves it.
+fn cmd_role_propose(
+    conn: &mut Connection,
+    role: &str,
+    label: &str,
+    description: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    let key = role.trim();
+    if key.is_empty() {
+        return err("role key cannot be empty");
+    }
+    let label = label.trim();
+    if label.is_empty() {
+        return err("role label cannot be empty");
+    }
+    if DEFAULT_ROLES.iter().any(|(k, _, _)| *k == key) {
+        return err(format!(
+            "role `{key}` conflicts with a built-in role; pick a different key"
+        ));
+    }
+    if role_exists(conn, &team.id, key).map_err(|e| AppError(format!("db error: {e}")))? {
+        let st = role_state(conn, &team.id, key).map_err(|e| AppError(format!("db error: {e}")))?;
+        let state_note = match st.as_deref() {
+            Some("proposed") => " (already pending approval)",
+            Some("approved") => " (already approved)",
+            _ => "",
+        };
+        return err(format!("role `{key}` already exists{state_note}"));
+    }
+
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "INSERT INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
+             VALUES (?1, ?2, ?3, ?4, '{}', 'proposed', ?5)",
+            params![team.id, key, label, description, actor.id],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "role.proposed",
+            json!({ "key": key, "label": label, "description": description, "proposed_by": actor.id, "proposer": actor.display_name }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("role propose failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "key": key, "label": label, "state": "proposed", "proposed_by": actor.id, "note": "pending owner approval" }))
+}
+
+/// Owner approves a proposed custom role; the proposer is granted the role
+/// immediately (state proposed -> approved on the role and member.role set).
+fn cmd_role_approve(
+    conn: &mut Connection,
+    role: &str,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    if !role_exists(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))? {
+        return err(format!("role `{role}` does not exist"));
+    }
+    let st = role_state(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?.unwrap_or_default();
+    if st != "proposed" {
+        return err(format!("role `{role}` is already {st}; only proposed roles can be approved"));
+    }
+    let label = role_label(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?.unwrap_or_else(|| role.to_string());
+    let proposer: Option<String> = conn
+        .query_row(
+            "SELECT proposed_by FROM roles WHERE team_id = ?1 AND key = ?2",
+            params![team.id, role],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| AppError(format!("db error: {e}")))?;
+    // Resolve the proposer's member row before entering the write transaction.
+    let proposer_member: Option<MemberRow> = match &proposer {
+        Some(pid) => member_by_id(conn, pid).ok().filter(|m| m.team_id == team.id && m.state != "left" && m.state != "denied"),
+        None => None,
+    };
+
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE roles SET state = 'approved', proposed_by = NULL WHERE team_id = ?1 AND key = ?2",
+            params![team.id, role],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "role.approved",
+            json!({ "key": role, "label": label, "approved_by": actor.id, "approver": actor.display_name }),
+        )?;
+        // Auto-grant the role to the proposer if they are still active in the team.
+        if let Some(member) = &proposer_member {
+            tx.execute(
+                "UPDATE members SET role = ?1 WHERE id = ?2",
+                params![role, member.id],
+            )?;
+            emit_json(
+                tx,
+                &team.id,
+                Some(&member.id),
+                "member.role_set",
+                json!({ "member_id": member.id, "display_name": member.display_name, "role": role, "label": label }),
+            )?;
+        }
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("role approve failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "key": role, "label": label, "state": "approved", "granted_to": proposer_member.map(|m| m.id) }))
+}
+
+/// Owner denies a proposed custom role (removes the proposal).
+fn cmd_role_deny(
+    conn: &mut Connection,
+    role: &str,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    if !role_exists(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))? {
+        return err(format!("role `{role}` does not exist"));
+    }
+    let st = role_state(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?.unwrap_or_default();
+    if st != "proposed" {
+        return err(format!("role `{role}` is already {st}; only proposed roles can be denied"));
+    }
+    let label = role_label(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?.unwrap_or_else(|| role.to_string());
+
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "DELETE FROM roles WHERE team_id = ?1 AND key = ?2",
+            params![team.id, role],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "role.denied",
+            json!({ "key": role, "label": label, "denied_by": actor.id, "denier": actor.display_name }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("role deny failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "key": role, "label": label, "state": "denied" }))
+}
+
+/// Owner updates a role's label/description (built-in or custom).
+fn cmd_role_update(
+    conn: &mut Connection,
+    role: &str,
+    label_opt: Option<&str>,
+    description_opt: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    if !role_exists(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))? {
+        return err(format!("role `{role}` does not exist"));
+    }
+    let old_label = role_label(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?.unwrap_or_else(|| role.to_string());
+    let new_label = label_opt.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&old_label).to_string();
+    // Preserve the existing description when --description is not provided.
+    let old_desc: Option<String> = conn
+        .query_row(
+            "SELECT description FROM roles WHERE team_id = ?1 AND key = ?2",
+            params![team.id, role],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| AppError(format!("db error: {e}")))?
+        .flatten();
+    let desc: Option<String> = match description_opt {
+        Some(s) => {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        }
+        None => old_desc,
+    };
+
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE roles SET label = ?1, description = ?2 WHERE team_id = ?3 AND key = ?4",
+            params![new_label, desc, team.id, role],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "role.updated",
+            json!({ "key": role, "label": new_label, "description": desc, "updated_by": actor.id }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("role update failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "key": role, "label": new_label, "description": desc }))
 }
 
 // Publish type -> (Action, event type) + goal/team transition policy
