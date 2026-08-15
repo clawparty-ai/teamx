@@ -1,0 +1,273 @@
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser, Debug)]
+#[command(name = "teamx", version, about = "teamx - team collaboration state kernel (V1, local single-machine)")]
+pub struct Cli {
+    /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
+    #[arg(long, global = true)]
+    pub db: Option<PathBuf>,
+
+    /// Emit machine-readable JSON output
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Initialize the global database
+    Init,
+
+    /// Team management
+    #[command(subcommand)]
+    Team(TeamCmd),
+
+    /// Goal management
+    #[command(subcommand)]
+    Goal(GoalCmd),
+
+    /// Member management
+    #[command(subcommand)]
+    Member(MemberCmd),
+
+    /// Role catalog
+    #[command(subcommand)]
+    Role(RoleCmd),
+
+    /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
+    Publish {
+        /// event type
+        #[arg(value_name = "TYPE")]
+        r#type: String,
+        /// JSON payload for the event
+        #[arg(long)]
+        data: Option<String>,
+        /// actor session key
+        #[arg(long)]
+        session: String,
+        /// target team id (required only when the session belongs to several teams)
+        #[arg(long)]
+        team: Option<String>,
+    },
+
+    /// Ask a question to a member (marks the member waiting)
+    Ask {
+        /// target member id
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        question: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+
+    /// Answer an open question
+    Respond {
+        /// question id
+        #[arg(value_name = "ASK_ID")]
+        ask_id: String,
+        #[arg(long)]
+        answer: String,
+        #[arg(long)]
+        session: String,
+    },
+
+    /// List raw ledger events for a team
+    Events {
+        /// only events with seq greater than this
+        #[arg(long)]
+        after: Option<i64>,
+        #[arg(long)]
+        team: Option<String>,
+    },
+
+    /// Human-readable audit replay of a team's event timeline
+    Log {
+        #[arg(long)]
+        team: Option<String>,
+        /// resolve the team from this session (single-team sessions only)
+        #[arg(long)]
+        session: Option<String>,
+        /// show only the last N events
+        #[arg(long)]
+        limit: Option<i64>,
+        /// only events with seq greater than this
+        #[arg(long)]
+        after: Option<i64>,
+    },
+
+    /// Pull the latest team state + incremental events and advance the session cursor
+    Sync {
+        /// actor session key
+        #[arg(long)]
+        session: String,
+        /// do not advance the sync cursor
+        #[arg(long)]
+        no_advance: bool,
+    },
+
+    /// loopx bridge
+    #[command(subcommand)]
+    Loopx(LoopxCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamCmd {
+    /// Create a team (the creating session becomes owner)
+    Create {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        session: String,
+        /// optional goal title drafted at creation
+        #[arg(long)]
+        goal_title: Option<String>,
+        #[arg(long)]
+        goal_body: Option<String>,
+    },
+    /// Join a team via invite token (creates a pending membership)
+    Join {
+        #[arg(value_name = "TOKEN")]
+        token: String,
+        /// display name chosen by the user at join time
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        session: String,
+        /// optional loopx project directory for the stage-progress bridge
+        #[arg(long)]
+        loopx_project: Option<PathBuf>,
+    },
+    /// Approve a pending membership (owner only)
+    Approve {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        session: String,
+        /// target team id (required only when the owner session belongs to several teams)
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Deny a pending membership (owner only)
+    Deny {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        session: String,
+        /// target team id (required only when the owner session belongs to several teams)
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List teams the current session belongs to
+    List {
+        #[arg(long)]
+        session: String,
+    },
+    /// Show team status (owner view of the whole team)
+    Status {
+        #[arg(long)]
+        team: Option<String>,
+        /// session key used to resolve the team when --team is absent
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Leave a team
+    Leave {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Archive a completed team (owner only)
+    Archive {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GoalCmd {
+    /// Set (or update) the team goal (owner only)
+    Set {
+        #[arg(value_name = "TITLE")]
+        title: String,
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Share the goal with members (owner only)
+    Share {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Verify and close the goal; team becomes completed (owner only)
+    Close {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemberCmd {
+    /// Set a member's working state: idle (finished current slice) or active (resumed)
+    SetState {
+        /// target state
+        #[arg(value_name = "STATE", value_parser = ["idle", "active"])]
+        state: String,
+        /// target member id (owner only); defaults to the acting session
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RoleCmd {
+    /// List the role catalog
+    List {
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Set the current session's role (member self-service; owner may specify on their behalf)
+    Set {
+        #[arg(value_name = "ROLE")]
+        role: String,
+        #[arg(long)]
+        session: String,
+        /// when set, applies the role to a different member (owner only)
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LoopxCmd {
+    /// Snapshot loopx stage progress for a bound project and publish it as a loopx.progress event
+    Report {
+        #[arg(value_name = "PROJECT")]
+        project: PathBuf,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}

@@ -1,0 +1,256 @@
+// teamx_* custom tools registered by the opencode plugin.
+// Each tool maps 1:1 to a `teamx` CLI subcommand and returns the JSON result.
+
+import { tool } from "@opencode-ai/plugin"
+import { instanceId, markMember, runCli, renderResult, sessionKey } from "./client"
+
+type ToolCtx = { sessionID: string; directory: string }
+
+/** Run a teamx CLI command as the current session and render its output. */
+async function tx(sessionID: string | undefined, args: string[]): Promise<string> {
+  const r = await txResult(sessionID, args)
+  return renderResult(r)
+}
+
+/** Run a teamx CLI command and return the raw result (for membership marking). */
+async function txResult(sessionID: string | undefined, args: string[]): Promise<import("./client").CliResult> {
+  const key = sessionKey(instanceId(), sessionID)
+  return runCli([...args, "--session", key])
+}
+
+function opt(name: string, value: string | undefined): string[] {
+  return value ? [name, value] : []
+}
+
+export const tools = {
+  teamx_create_team: tool({
+    description:
+      "Create a new teamx team. The current opencode session becomes the team OWNER. " +
+      "Returns the team id and the invite_token to share with members.",
+    args: {
+      name: tool.schema.string().describe("team name"),
+      goal_title: tool.schema.string().optional().describe("optional initial goal title"),
+      goal_body: tool.schema.string().optional().describe("optional initial goal body"),
+    },
+    async execute(args, context: ToolCtx) {
+      const r = await txResult(context.sessionID, [
+        "team",
+        "create",
+        args.name,
+        ...opt("--goal-title", args.goal_title),
+        ...opt("--goal-body", args.goal_body),
+      ])
+      if (r.ok) markMember(context.sessionID, true)
+      return renderResult(r)
+    },
+  }),
+
+  teamx_set_goal: tool({
+    description: "Set or update the team goal (owner only).",
+    args: {
+      title: tool.schema.string().describe("goal title"),
+      body: tool.schema.string().optional().describe("goal body / detailed description"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["goal", "set", args.title, ...opt("--body", args.body)])
+    },
+  }),
+
+  teamx_share_goal: tool({
+    description: "Share the goal with team members and move the team into the active state (owner only).",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["goal", "share"])
+    },
+  }),
+
+  teamx_close_goal: tool({
+    description:
+      "Verify the achieved goal and close it; the team becomes completed (owner only). " +
+      "Only call this after a member reported the goal achieved.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["goal", "close"])
+    },
+  }),
+
+  teamx_archive: tool({
+    description: "Archive a completed team (owner only). Archived teams accept no new members.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "archive"])
+    },
+  }),
+
+  teamx_set_state: tool({
+    description:
+      "Set a member's working state: idle (finished the current slice, no pending work) or active (resumed). " +
+      "Self-service by default; owner may set another member via the member arg.",
+    args: {
+      state: tool.schema.enum(["idle", "active"]).describe("target member state"),
+      member: tool.schema.string().optional().describe("target member id (owner only)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["member", "set-state", args.state, ...opt("--member", args.member)])
+    },
+  }),
+
+  teamx_join: tool({
+    description:
+      "Join a team via its invite_token. Creates a PENDING membership that the team owner must approve.",
+    args: {
+      token: tool.schema.string().describe("team invite token"),
+      name: tool.schema.string().describe("display name chosen at join time"),
+      loopx_project: tool.schema.string().optional().describe("loopx project directory for stage-progress reports"),
+    },
+    async execute(args, context: ToolCtx) {
+      const r = await txResult(context.sessionID, [
+        "team",
+        "join",
+        args.token,
+        "--name",
+        args.name,
+        ...opt("--loopx-project", args.loopx_project),
+      ])
+      if (r.ok) markMember(context.sessionID, true)
+      return renderResult(r)
+    },
+  }),
+
+  teamx_approve: tool({
+    description: "Approve a pending membership request (owner only). Pass team when the owner session belongs to several teams.",
+    args: {
+      member_id: tool.schema.string().describe("the pending member id"),
+      team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "approve", args.member_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_deny: tool({
+    description: "Deny a pending membership request (owner only). Pass team when the owner session belongs to several teams.",
+    args: {
+      member_id: tool.schema.string().describe("the pending member id"),
+      team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "deny", args.member_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_set_role: tool({
+    description:
+      "Choose a role for the current session (member self-service) or assign one to another member (owner only, via member). " +
+      "Roles: owner, observer, supervisor, contributor, subtask-implementer, reviewer.",
+    args: {
+      role: tool.schema.string().describe("role key from the team catalog"),
+      member: tool.schema.string().optional().describe("target member id when assigning on someone's behalf (owner only)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["role", "set", args.role, ...opt("--member", args.member)])
+    },
+  }),
+
+  teamx_list_teams: tool({
+    description: "List the teams the current session belongs to, with goal and role overview.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "list"])
+    },
+  }),
+
+  teamx_status: tool({
+    description:
+      "Show full team status: team/goal state, members, roles, open questions, recent events. " +
+      "Pass team if the session belongs to several teams.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const key = sessionKey(instanceId(), context.sessionID)
+      const r = await runCli(["team", "status", ...opt("--team", args.team), "--session", key])
+      return renderResult(r)
+    },
+  }),
+
+  teamx_sync: tool({
+    description:
+      "Pull the latest team state + NEW events since the last sync for every team the current session belongs to, " +
+      "then advance the sync cursor. Call this at the start of every turn before acting.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["sync"])
+    },
+  }),
+
+  teamx_publish: tool({
+    description:
+      "Publish an event to the team ledger. Types:\n" +
+      "- start: owner starts execution (goal -> in_progress)\n" +
+      "- progress: member reports progress (goal -> in_progress)\n" +
+      "- decision: owner broadcasts a decision to the team\n" +
+      "- update: owner broadcasts a status update\n" +
+      "- blocked: work is blocked (team/goal -> blocked)\n" +
+      "- resumed: unblocked (-> in_progress/active)\n" +
+      "- achieved: member reports the goal as achieved (candidate)\n" +
+      "- refine: owner asks members to refine scope/roles (goal -> refining)\n" +
+      "Pass data as a JSON string with extra fields (e.g. {\"message\": \"...\"}).",
+    args: {
+      type: tool.schema
+        .enum(["start", "progress", "decision", "update", "blocked", "resumed", "achieved", "refine"])
+        .describe("event type"),
+      data: tool.schema.string().optional().describe('JSON string payload, e.g. {"message":"..."}'),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["publish", args.type, ...opt("--data", args.data)])
+    },
+  }),
+
+  teamx_ask: tool({
+    description: "Ask a team member a clarifying question; the member enters the waiting state until they respond.",
+    args: {
+      member_id: tool.schema.string().describe("target member id"),
+      question: tool.schema.string().describe("the clarifying question"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["ask", args.member_id, "--question", args.question])
+    },
+  }),
+
+  teamx_respond: tool({
+    description: "Answer an open question directed at the current session; returns the session to the active state.",
+    args: {
+      ask_id: tool.schema.string().describe("the question id"),
+      answer: tool.schema.string().describe("your answer"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["respond", args.ask_id, "--answer", args.answer])
+    },
+  }),
+
+  teamx_loopx_report: tool({
+    description:
+      "Snapshot the loopx stage progress for a bound project and publish it to the team ledger as a loopx.progress event. " +
+      "If project is omitted, the session's bound loopx_project (set at join) is used.",
+    args: {
+      project: tool.schema.string().optional().describe("loopx project directory"),
+    },
+    async execute(args, context: ToolCtx) {
+      const key = sessionKey(instanceId(), context.sessionID)
+      if (args.project) {
+        const r = await runCli(["loopx", "report", args.project, "--session", key])
+        return renderResult(r)
+      }
+      // fall back to the session's bound project: read from status
+      const status = await runCli(["team", "status", "--session", key])
+      const data = status.data as { teams?: { members?: { display_name?: string; loopx_project?: string }[] }[] } | null
+      const project = data?.teams?.[0]?.members?.find((m) => m.display_name)?.loopx_project
+      if (!project) {
+        return "teamx: no loopx project bound. Set loopx_project when joining (teamx_join) or pass project explicitly."
+      }
+      const r = await runCli(["loopx", "report", project, "--session", key])
+      return renderResult(r)
+    },
+  }),
+}

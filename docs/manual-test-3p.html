@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>teamx 三人协作手动测试</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="manual-test.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">teamx 三人协作手动测试</h1>
+</header>
+<h1 id="teamx-三人协作手动测试owner-contributor-reviewer">teamx
+三人协作手动测试（owner + contributor + reviewer）</h1>
+<blockquote>
+<p>本文是<strong>可一步步照着执行</strong>的测试 runbook（对应测试用例
+<strong>TM-04</strong>）。你用三个 opencode 窗口扮演三个成员，走完「建队
+→ 加入 → 审批 → 设计 → 评审 → 澄清 → 定稿 → 归档」全流程，并在最后用 CLI
+验证账本。</p>
+</blockquote>
+<h2 id="前置条件">0. 前置条件</h2>
+<ol type="1">
+<li><p>已执行 <code>./install.sh</code>（Rust CLI +
+插件三件套已装），并<strong>重启过 opencode</strong>（<code>/Team</code>
+命令生效）。</p></li>
+<li><p>验证命令可用：</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">which</span> teamx          <span class="co"># 应输出 ~/.local/bin/teamx</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> <span class="at">--version</span>      <span class="co"># 能打印版本号</span></span></code></pre></div></li>
+<li><p>三窗口启动（都在同一个 <code>demo/workspace</code> 目录）：</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> ~/github/teamx <span class="kw">&amp;&amp;</span> <span class="ex">./demo/start.sh</span> 3</span></code></pre></div>
+<p>打开三个 Terminal：<strong>窗口
+A=owner，B=contributor（设计者），C=reviewer（评审员）</strong>。
+三者共享 <code>~/.teamx/teamx.db</code>（全局库）与
+<code>demo/workspace/</code> 下的文件。</p></li>
+</ol>
+<h2 id="测试步骤严格按顺序三窗口交错">1.
+测试步骤（严格按顺序，三窗口交错）</h2>
+<h3 id="步骤-1窗口-a创建团队-目标">步骤 1｜窗口 A：创建团队 + 目标</h3>
+<p>输入：</p>
+<pre><code>/Team 创建一个团队，名字叫「产品评审组」。目标：根据当前目录 requirement.md 完成「轻量任务看板」产品方案设计，并由 reviewer 评审定稿。</code></pre>
+<p>✅ 预期： - agent 调用 <code>teamx_create_team</code>，回复里出现
+<strong>invite_token</strong>（一串 32
+位字符）——<strong>复制备用</strong>。 - 目标是
+<code>proposed</code>（草拟中），你是 owner。</p>
+<blockquote>
+<p>记录：team id = ________，invite_token = ________</p>
+</blockquote>
+<h3 id="步骤-2窗口-b加入-申请-contributor">步骤 2｜窗口 B：加入 + 申请
+contributor</h3>
+<p>输入（把 <code>&lt;token&gt;</code> 换成步骤 1 的 token）：</p>
+<pre><code>/Team 加入团队，invite_token 是 &lt;token&gt;，我叫设计者，申请 contributor 角色。</code></pre>
+<p>✅ 预期：<code>teamx_join</code> → 提示 <strong>pending，等待 owner
+审批</strong>；<code>teamx_set_role contributor</code>（仍
+pending）。</p>
+<h3 id="步骤-3窗口-c加入-申请-reviewer">步骤 3｜窗口 C：加入 + 申请
+reviewer</h3>
+<p>输入：</p>
+<pre><code>/Team 加入团队，invite_token 是 &lt;token&gt;，我叫评审员，申请 reviewer 角色。</code></pre>
+<p>✅ 预期：<code>teamx_join</code> →
+pending；<code>teamx_set_role reviewer</code>（仍 pending）。</p>
+<h3 id="步骤-4窗口-a审批两人-分享目标">步骤 4｜窗口 A：审批两人 +
+分享目标</h3>
+<p>输入：</p>
+<pre><code>/Team 审批所有待审批的成员，然后把目标分享给成员。</code></pre>
+<p>✅ 预期：<code>teamx_approve</code> × 2（成员变 active、角色保留）+
+<code>teamx_share_goal</code>（team=active，goal=shared）。</p>
+<h3 id="步骤-5窗口-b设计方案-汇报">步骤 5｜窗口 B：设计方案 + 汇报</h3>
+<p>输入：</p>
+<pre><code>/Team 同步团队状态，阅读 requirement.md 完成设计方案写入 design-plan.md，然后向团队汇报「设计方案完成，请评审」。</code></pre>
+<p>✅ 预期：<code>teamx_sync</code> → 读需求 → 生成
+<code>design-plan.md</code> → <code>teamx_publish progress</code>。
+文件确认：<code>ls demo/workspace/</code> 应出现
+<code>design-plan.md</code>。</p>
+<h3 id="步骤-6窗口-c评审-汇报">步骤 6｜窗口 C：评审 + 汇报</h3>
+<p>输入：</p>
+<pre><code>/Team 同步团队状态，读取 design-plan.md 进行评审，把改进意见写入 review-plan.md，然后向团队汇报「评审完成」。</code></pre>
+<p>✅ 预期：<code>teamx_sync</code> 能看到 B 的 progress → 读方案 → 生成
+<code>review-plan.md</code> → <code>teamx_publish progress</code>。</p>
+<h3 id="步骤-7窗口-a澄清-采纳">步骤 7｜窗口 A：澄清 + 采纳</h3>
+<p>输入：</p>
+<pre><code>/Team 同步进展，向设计者提一个澄清问题，得到答复后采纳评审意见并广播处理结果。</code></pre>
+<p>✅ 预期：<code>teamx_sync</code> → <code>teamx_ask</code>（设计者变
+waiting，得到 question id）→ <strong>等 B
+先回答</strong>（此时可能提示”等待成员答复”）。</p>
+<h3 id="步骤-8窗口-b答复-报告完成">步骤 8｜窗口 B：答复 + 报告完成</h3>
+<p>输入：</p>
+<pre><code>/Team 同步状态，回答 owner 的澄清问题，然后报告目标已达成。</code></pre>
+<p>✅ 预期：<code>teamx_respond</code>（回到 active）→
+<code>teamx_publish achieved</code>（goal=achieved）。</p>
+<h3 id="步骤-9窗口-a关闭-归档">步骤 9｜窗口 A：关闭 + 归档</h3>
+<p>输入：</p>
+<pre><code>/Team 验证并关闭目标，然后归档团队。</code></pre>
+<p>✅ 预期：<code>teamx_close_goal</code>（team=completed）→
+<code>teamx_archive</code>（team=archived）。</p>
+<h2 id="验证任意第三个终端">2. 验证（任意第三个终端）</h2>
+<p>把 <code>&lt;team_id&gt;</code> 换成步骤 1 记录的 team id：</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1) 状态：应为 archived / closed</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> team status <span class="at">--team</span> <span class="op">&lt;</span>team_id<span class="op">&gt;</span> --json</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2) 审计回放（成员名已解析）</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> log <span class="at">--team</span> <span class="op">&lt;</span>team_id<span class="op">&gt;</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 3) 产物</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="fu">ls</span> ~/github/teamx/demo/workspace/   <span class="co"># 应有 requirement.md / design-plan.md / review-plan.md</span></span></code></pre></div>
+<p>✅ 预期事件链（<code>teamx log</code> 按 seq
+递增，顺序应大致为）：</p>
+<pre><code>team.created → goal.set → membership.pending ×2 → member.role_set ×2
+→ membership.approved ×2 → goal.shared → team.state_changed
+→ progress.published(设计) → progress.published(评审)
+→ clarification.asked → clarification.responded
+→ decision.broadcast(采纳) → goal.achieved
+→ goal.state_changed(close) → team.completed → team.state_changed(archive)</code></pre>
+<h2 id="常见问题排查">3. 常见问题排查</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>原因</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/Team</code> 不是命令</td>
+<td>装完没重启 opencode</td>
+<td>重启 opencode</td>
+</tr>
+<tr>
+<td>agent 说找不到 teamx / spawn 失败</td>
+<td><code>~/.local/bin</code> 不在 PATH</td>
+<td><code>export PATH="$HOME/.local/bin:$PATH"</code> 后重启</td>
+</tr>
+<tr>
+<td>步骤 4 审批失败 “not pending”</td>
+<td>用了旧 binary</td>
+<td>重跑 <code>./install.sh</code></td>
+</tr>
+<tr>
+<td>B/C 看不到对方的进展</td>
+<td>没 <code>teamx_sync</code>（V1 无推送，靠协议）</td>
+<td>让对应窗口 agent 先 <code>teamx_sync</code></td>
+</tr>
+<tr>
+<td>agent 停在权限确认</td>
+<td>模型要读写文件/执行命令</td>
+<td>在窗口里点允许（Always）</td>
+</tr>
+<tr>
+<td>publish 报 data 非 JSON</td>
+<td>模型传了裸字符串</td>
+<td>忽略即可（已自动兜底为 message）</td>
+</tr>
+<tr>
+<td>owner 无法 <code>leave</code></td>
+<td>有意限制（防团队孤儿）</td>
+<td>用 <code>teamx_close_goal</code> + <code>teamx_archive</code>
+收尾</td>
+</tr>
+</tbody>
+</table>
+<h2 id="测试记录">4. 测试记录</h2>
+<ul>
+<li>日期：________</li>
+<li>执行人：________</li>
+<li>结果：□ 全部通过　□ 部分通过（失败步骤：________）</li>
+<li>终态：team=________ / goal=________（预期 archived / closed）</li>
+<li>事件链完整：□ 是　□ 否（差异：________）</li>
+<li>产物：design-plan.md □　review-plan.md □</li>
+</ul>
+<hr />
+<blockquote>
+<p>等价自动化验证：不依赖真实模型、跑通同一事件链的脚本是
+<code>tests/three-member.sh</code>（<code>./tests/three-member.sh</code>
+直接运行）。想先确认底层逻辑没问题，可先跑它再走本 runbook。</p>
+</blockquote>
+</body>
+</html>

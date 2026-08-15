@@ -1,0 +1,31 @@
+{
+  "name": "@teamx/opencode-plugin",
+  "version": "0.1.0",
+  "description": "teamx opencode plugin: /Team collaboration agent with teamx_* tools (team/member/goal state kernel + SQLite ledger)",
+  "license": "MIT",
+  "type": "module",
+  "files": ["dist", "assets", "README.md"],
+  "main": "./dist/teamx.js",
+  "exports": {
+    ".": "./dist/teamx.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caishu/teamx"
+  },
+  "keywords": ["opencode", "opencode-plugin", "team", "collaboration", "multi-agent"],
+  "scripts": {
+    "build": "bun build src/index.ts --outfile dist/teamx.js --external @opencode-ai/plugin --format esm --target bun",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.17.11"
+  },
+  "devDependencies": {
+    "bun-types": "^1.1.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.17.0"
+  }
+}

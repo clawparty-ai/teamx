@@ -1,0 +1,10 @@
+target/
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+# runtime session state (opencode goal plugin) — not source
+demo/workspace/.opencode/goals/
+demo/workspace/.opencode/node_modules/
