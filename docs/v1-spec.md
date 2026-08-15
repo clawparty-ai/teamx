@@ -103,7 +103,7 @@ publish 类型与状态影响：
 
 工具集：`teamx_create_team teamx_set_goal teamx_share_goal teamx_close_goal teamx_archive teamx_join teamx_approve teamx_deny teamx_set_role teamx_set_state teamx_list_teams teamx_status teamx_sync teamx_publish teamx_ask teamx_respond teamx_role_propose teamx_role_approve teamx_role_deny teamx_role_update teamx_loopx_report`
 
-客户端层 `packages/opencode-plugin/src/client.ts` 是 V2 换 HTTP 的唯一接缝。
+客户端层 `opencode-plugin/src/client.ts` 是 V2 换 HTTP 的唯一接缝。
 
 ## 安全边界（V1）
 
@@ -124,7 +124,7 @@ publish 类型与状态影响：
 
 ```
 crates/teamx/src/{main,cli,db,state,events,commands,loopx}.rs
-packages/opencode-plugin/{src/{index,tools,client}.ts, assets/{agent/teamx.md, command/Team.md}}
+opencode-plugin/{src/{index,tools,client}.ts, assets/{agent/teamx.md, command/Team.md}}
 install.sh
 tests/smoke.sh
 ```

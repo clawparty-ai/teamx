@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="${OPENCODE_CONFIG:-$HOME/.config/opencode}"
 BIN_DIR="${TEAMX_BIN_DIR:-$HOME/.local/bin}"
-PLUGIN_DIR="$ROOT/packages/opencode-plugin"
+PLUGIN_DIR="$ROOT/opencode-plugin"
 TEAMX_HOME_DIR="${TEAMX_HOME:-$HOME/.teamx}"
 
 step() { printf '\n== %s ==\n' "$*"; }

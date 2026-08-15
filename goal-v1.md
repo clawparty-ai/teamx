@@ -67,7 +67,7 @@ teamx/
 │   ├── src/state.rs              # 状态机定义 + 合法转换校验
 │   ├── src/events.rs             # append-only 事件账本 + 投影
 │   └── src/loopx.rs              # loopx 桥接
-├── packages/opencode-plugin/
+├── opencode-plugin/
 │   ├── package.json              # 依赖 @opencode-ai/plugin
 │   ├── src/index.ts              # Plugin fn（tool: + event hook）
 │   ├── src/tools.ts              # teamx_* 工具实现
@@ -181,7 +181,7 @@ teamx/
 
 ## M1 里程碑（本计划范围）✅ 已完成 + 生产化
 
-1. `~/github/teamx` 仓库骨架（cargo workspace + `packages/opencode-plugin` + `install.sh` + `tests/`）
+1. `~/github/teamx` 仓库骨架（cargo workspace + `opencode-plugin` + `install.sh` + `tests/`）
 2. Rust CLI：schema / 状态机 / 事件账本 + 全部子命令（含 archive / member set-state）
 3. `teamx loopx report` 桥接
 4. 插件三件套 + 17 个 `teamx_*` 工具 + `event` hook 自动汇报成员活动（成员身份缓存）

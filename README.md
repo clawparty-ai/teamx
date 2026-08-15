@@ -18,7 +18,7 @@ V1：单机本地（CLI-only，无 server），全局 SQLite `~/.teamx/teamx.db`
 
 ```
 crates/teamx/           Rust CLI（SQLite 事件账本 + 状态机 + loopx 桥接）
-packages/opencode-plugin/  opencode 插件（17 个 teamx_* 工具 + /Team agent + command）
+opencode-plugin/        opencode 插件（21 个 teamx_* 工具 + /Team agent + command）
 install.sh              一键安装 / --uninstall 卸载
 tests/                  run-all.sh、smoke.sh、cli-test.sh、concurrency.sh
 docs/                   v1-spec、loopx-bridge、test-plan、test-cases、v2-design、demo、demo-3p、manual-test

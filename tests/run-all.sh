@@ -33,7 +33,7 @@ echo "== 5/6 concurrency test (seq ordering) =="
 echo
 echo "== 6/6 plugin typecheck + bundle =="
 if command -v bun >/dev/null 2>&1; then
-  (cd packages/opencode-plugin && bun install >/dev/null 2>&1 && bunx tsc --noEmit && bun run build)
+  (cd opencode-plugin && bun install >/dev/null 2>&1 && bunx tsc --noEmit && bun run build)
 else
   echo "bun not found; skipping plugin checks"
 fi

@@ -20,7 +20,7 @@
 | CLI 集成测试 | 真实二进制 + 独立临时 SQLite 库的脚本化断言 | `tests/smoke.sh`、`tests/cli-test.sh` | `./tests/run-all.sh` |
 | 三人协作测试 | owner+contributor+reviewer 闭环（等价 demo-3p） | `tests/three-member.sh` | 同上 |
 | 并发测试 | 5 会话 × 3 并行 publish，验证 seq 严格递增（TC-301） | `tests/concurrency.sh` | 同上 |
-| 插件校验 | `bunx tsc --noEmit` + `bun run build` + opencode serve 注册探测 | `packages/opencode-plugin` | `./tests/run-all.sh` |
+| 插件校验 | `bunx tsc --noEmit` + `bun run build` + opencode serve 注册探测 | `opencode-plugin` | `./tests/run-all.sh` |
 | 模型级验收 | 真实模型经插件调用 `teamx_*`（headless `opencode run --agent teamx`） | `tests/acceptance.sh`（消耗 token，不并入默认套件） | 手动/可选 |
 | 手工 E2E（验收） | 三个真实 opencode 窗口走 `/Team` 全流程 | 人工 | 见 `docs/demo-3p.md`、`docs/test-cases.md` TM-04 |
 
@@ -54,6 +54,6 @@ cargo build && cargo test
 ./tests/cli-test.sh
 ./tests/three-member.sh
 ./tests/concurrency.sh
-(cd packages/opencode-plugin && bunx tsc --noEmit && bun run build)
+(cd opencode-plugin && bunx tsc --noEmit && bun run build)
 # 手工：三个 opencode 窗口验证 TM-04（docs/demo-3p.md）
 ```
