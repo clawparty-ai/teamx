@@ -45,6 +45,9 @@ pub enum Command {
         /// JSON payload for the event
         #[arg(long)]
         data: Option<String>,
+        /// assign the task/event to a specific member (auto-execute on that member only)
+        #[arg(long)]
+        assignee: Option<String>,
         /// actor session key
         #[arg(long)]
         session: String,

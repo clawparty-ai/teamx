@@ -30,7 +30,7 @@ const AUTO_EXECUTE = process.env.TEAMX_AUTO_EXECUTE !== "0"
 type MemberRow = { display_name?: string; role?: string | null; state?: string }
 type QuestionRow = { state?: string; question?: string }
 type TeamBlock = {
-  team?: { name?: string; state?: string }
+  team?: { name?: string; state?: string; my_role?: string; my_member_id?: string }
   goal?: { title?: string; state?: string } | null
   members?: MemberRow[]
   questions?: QuestionRow[]
@@ -90,8 +90,11 @@ function summarizeEvent(e: SyncEvent): string {
     case "progress.published":
       if (p["kind"] === "session.idle") return `#${seq} 心跳(idle)`
       return msg ? `#${seq} 进展: ${shorten(msg)}` : `#${seq} 进展汇报`
-    case "decision.broadcast":
-      return msg ? `#${seq} 广播: ${shorten(msg)}` : `#${seq} 广播`
+    case "decision.broadcast": {
+      const assignee = s("assignee_name")
+      const body = msg ? shorten(msg) : "广播"
+      return assignee ? `#${seq} 任务分派给 ${assignee}: ${body}` : `#${seq} 广播: ${body}`
+    }
     case "role.proposed":
       return `#${seq} ${s("proposer")} 提议自定义角色「${s("label")}」(${s("key")})`
     case "role.approved":
@@ -128,6 +131,45 @@ function summarize(data: SyncData): string {
   return parts.join("\n")
 }
 
+/** True if the sync data shows this session is a team owner (auto-execute excluded). */
+export function isOwnerSession(data: SyncData): boolean {
+  return (data.teams ?? []).some((t) => t.team?.my_role === "owner")
+}
+
+/** The member id of the current session, from the sync response. */
+export function myMemberId(data: SyncData): string | undefined {
+  return data.teams?.[0]?.team?.my_member_id
+}
+
+/**
+ * Whether a broadcast event is a DIRECTED task assignment to the current
+ * session. A publish with `assignee_member_id` that matches our member id is a
+ * task for us; everything else (unassigned broadcasts, other people's tasks)
+ * is informational only.
+ */
+export function assignedToMe(events: SyncEvent[], myId: string | undefined): boolean {
+  if (!myId) return false
+  return events.some(
+    (e) =>
+      (e.type === "decision.broadcast" || e.type === "goal.shared") &&
+      e.payload?.assignee_member_id === myId,
+  )
+}
+
+/** Whether an auto-execute should fire for the current refresh. */
+export function shouldAutoExecute(opts: {
+  data: SyncData
+  events: SyncEvent[]
+  alreadyExecuted: boolean
+}): boolean {
+  return (
+    AUTO_EXECUTE &&
+    !isOwnerSession(opts.data) &&
+    assignedToMe(opts.events, myMemberId(opts.data)) &&
+    !opts.alreadyExecuted
+  )
+}
+
 export const Teamx: Plugin = async ({ client }) => {
   const instance = instanceId()
 
@@ -158,9 +200,11 @@ export const Teamx: Plugin = async ({ client }) => {
    */
   async function triggerAutoExecute(sessionID: string, directiveSummary: string): Promise<void> {
     const message =
-      `[teamx 自动任务] 团队向你分派了任务：${directiveSummary || "请查看最新团队广播"}。\n` +
-      `请先 /team sync 拉取最新团队状态，然后用 set_goal 设置本次任务目标，` +
-      `并持续执行直到目标达成（不完成不停止）。完成后用 /team publish achieved 汇报。`
+      `[teamx 自动任务] 团队分派了任务：${directiveSummary || "请查看最新团队广播"}。\n` +
+      `先执行 teamx_sync 并确认你的角色。重要：如果你是团队 owner 或该任务不是分派给你的，` +
+      `请勿执行，只需回复"我是 owner，任务已收到但不执行"即可。\n` +
+      `如果你是成员（非 owner）：用 set_goal 设置本次任务目标，持续执行直到目标达成（不完成不停止），` +
+      `完成后用 /team publish achieved 汇报。`
     try {
       await client.session.promptAsync({
         path: { id: sessionID },
@@ -212,15 +256,24 @@ export const Teamx: Plugin = async ({ client }) => {
     const hasDirective = fresh.some((e) => e.type === "decision.broadcast" || e.type === "goal.shared")
     if (hasDirective && !hasQuestion) {
       await client.tui
-        .appendPrompt({ body: { text: "📩 teamx：你收到团队任务/广播，请输入 /Team 同步查看并执行。" } })
+        .appendPrompt({ body: { text: "📩 teamx：你收到团队广播，请输入 /Team 同步查看。" } })
         .catch(() => {})
     }
-    // Auto-execute (loopx-style: start working and don't stop until the goal
-    // is done). Enabled by default; set TEAMX_AUTO_EXECUTE=0 to disable.
-    // Owner sessions are excluded so the owner's own broadcasts don't wake it.
-    if (AUTO_EXECUTE && !ownerSessions.get(sessionID) && hasDirective && !autoExecutedSeq.has(sessionID)) {
+    // Auto-execute ONLY for directed tasks assigned to this member. A publish
+    // carrying `assignee_member_id == my_member_id` is a task for us; every
+    // other broadcast (unassigned, or another member's task) is informational.
+    const shouldRun = shouldAutoExecute({
+      data,
+      events: fresh,
+      alreadyExecuted: autoExecutedSeq.has(sessionID),
+    })
+    if (shouldRun) {
       autoExecutedSeq.set(sessionID, maxSeq)
-      const directive = fresh.find((e) => e.type === "decision.broadcast" || e.type === "goal.shared")
+      const directive = fresh.find(
+        (e) =>
+          (e.type === "decision.broadcast" || e.type === "goal.shared") &&
+          e.payload?.assignee_member_id === myMemberId(data),
+      )
       const summary = directive ? summarizeEvent(directive) : ""
       await triggerAutoExecute(sessionID, summary).catch(() => {})
     }
@@ -248,7 +301,11 @@ export const Teamx: Plugin = async ({ client }) => {
       if (!sessionID) return
 
       let isMember = memberStatus(sessionID)
-      if (isMember === undefined) {
+      // Resolve owner status independently of the membership cache. The
+      // membership cache may already be populated (e.g. after using a teamx
+      // tool), which used to skip this block and leave ownerSessions empty,
+      // letting the owner's own broadcasts auto-execute on itself.
+      if (isMember === undefined || !ownerSessions.has(sessionID)) {
         const key = sessionKey(instance, sessionID)
         const r = await runCli(["team", "list", "--session", key])
         const teams = r.data?.teams as { my_role?: string }[] | undefined

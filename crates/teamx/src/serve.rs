@@ -237,6 +237,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Resu
         "publish" => Command::Publish {
             r#type: s("type").ok_or_else(|| "publish requires `type`".to_string())?,
             data: o("data"),
+            assignee: o("assignee"),
             session: session(args),
             team: o("team"),
         },

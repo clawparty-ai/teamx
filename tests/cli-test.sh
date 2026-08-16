@@ -127,6 +127,21 @@ BLOCKED_STATE=$($TEAMX team status --team "$TEAM_ID" --json | jget "['teams'][0]
 [ "$BLOCKED_STATE" = "blocked" ] || fail "team should be blocked, got $BLOCKED_STATE"
 expect_ok "$TEAMX" publish resumed --data '{"why":"ci green"}' --session s:bob
 
+step "publish --assignee directed task (regression: only assignee auto-executes)"
+# assignee must be a valid team member
+expect_fail "$TEAMX" publish decision --assignee "nonexistent-id" --session s:owner
+# directed publish carries assignee_member_id in the event payload
+expect_ok "$TEAMX" publish decision --data '{"message":"do X"}' --assignee "$BOB" --session s:owner
+LAST_EVENT=$($TEAMX events --team "$TEAM_ID" --json | jget "['events'][-1]")
+echo "$LAST_EVENT" | grep -q "assignee_member_id" || fail "directed publish must carry assignee_member_id"
+echo "$LAST_EVENT" | grep -q "$BOB" || fail "assignee_member_id should equal target member"
+# unassigned publish carries no assignee
+expect_ok "$TEAMX" publish decision --data '{"message":"general notice"}' --session s:owner
+LAST_EVENT2=$($TEAMX events --team "$TEAM_ID" --json | jget "['events'][-1]")
+if echo "$LAST_EVENT2" | grep -q "assignee_member_id"; then
+  fail "unassigned publish must NOT carry assignee_member_id"
+fi
+
 step "ask/respond validation"
 expect_fail "$TEAMX" ask "$OWNER" --question "?" --session s:owner   # ask self
 expect_ok "$TEAMX" ask "$BOB" --question "clarify scope?" --session s:owner

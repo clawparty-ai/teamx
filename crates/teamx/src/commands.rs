@@ -368,8 +368,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 cmd_role_update(conn, role, label.as_deref(), description.as_deref(), session, team.as_deref())?
             }
         },
-        Command::Publish { r#type, data, session, team } => {
-            cmd_publish(conn, r#type, data.as_deref(), session, team.as_deref())?
+        Command::Publish { r#type, data, assignee, session, team } => {
+            cmd_publish(conn, r#type, data.as_deref(), assignee.as_deref(), session, team.as_deref())?
         }
         Command::Ask { member_id, question, session, team } => {
             cmd_ask(conn, member_id, question, session, team.as_deref())?
@@ -1220,11 +1220,27 @@ fn cmd_publish(
     conn: &mut Connection,
     publish_type: &str,
     data: Option<&str>,
+    assignee_opt: Option<&str>,
     session: &str,
     team_opt: Option<&str>,
 ) -> Result<Value> {
     let (action, event_type, affects_goal, affects_team) = publish_plan(publish_type)?;
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
+
+    // Resolve the assignee (if any): must be an active member of this team.
+    let assignee = match assignee_opt {
+        Some(aid) => {
+            let m = member_by_id(conn, aid)?;
+            if m.team_id != team.id {
+                return err(format!("assignee member {aid} is not in team {}", team.id));
+            }
+            if m.state == "left" || m.state == "denied" {
+                return err(format!("assignee member {} is not active (state: {})", m.display_name, m.state));
+            }
+            Some((aid.to_string(), m.display_name))
+        }
+        None => None,
+    };
 
     let payload: Value = match data {
         // Accept a bare (non-JSON) string as `{"message": s}` for robustness
@@ -1232,6 +1248,13 @@ fn cmd_publish(
         Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({ "message": s })),
         None => json!({}),
     };
+    // Tag the event with the assignee so the plugin can auto-execute on that
+    // member only (and everyone else treats it as informational).
+    let mut payload = payload;
+    if let Some((aid, name)) = &assignee {
+        payload["assignee_member_id"] = json!(aid);
+        payload["assignee_name"] = json!(name);
+    }
     let goal = team_goal(conn, &team.id)?;
     if affects_goal && goal.is_none() {
         return err("no goal set yet; use `teamx goal set <title>` first");
@@ -1279,6 +1302,7 @@ fn cmd_publish(
         "seq": seq,
         "event": event_type,
         "type": publish_type,
+        "assignee": assignee.map(|(id, _)| id),
         "goal_state": goal_transition.map(|(_, t)| t),
         "team_state": team_transition.map(|(_, t)| t),
     }))
@@ -1491,6 +1515,7 @@ fn cmd_sync(conn: &mut Connection, session: &str, no_advance: bool) -> Result<Va
         let mut status = team_status_json(conn, &team)?;
         status["team"]["my_role"] = Value::from(m.role.clone());
         status["team"]["my_state"] = Value::from(m.state.clone());
+        status["team"]["my_member_id"] = Value::from(m.id.clone());
         teams_out.push(status);
         new_events.extend(events.iter().map(event_json));
     }

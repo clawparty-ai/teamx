@@ -248,15 +248,18 @@ export const tools = {
       "- resumed: unblocked (-> in_progress/active)\n" +
       "- achieved: member reports the goal as achieved (candidate)\n" +
       "- refine: owner asks members to refine scope/roles (goal -> refining)\n" +
-      "Pass data as a JSON string with extra fields (e.g. {\"message\": \"...\"}).",
+      "Pass data as a JSON string with extra fields (e.g. {\"message\": \"...\"}).\n" +
+      "When assignee is set, the event becomes a DIRECTED task for that member " +
+      "(auto-execute fires on that member only); others receive it as a broadcast.",
     args: {
       type: tool.schema
         .enum(["start", "progress", "decision", "update", "blocked", "resumed", "achieved", "refine"])
         .describe("event type"),
       data: tool.schema.string().optional().describe('JSON string payload, e.g. {"message":"..."}'),
+      assignee: tool.schema.string().optional().describe("member id the task/event is directed to (auto-execute target)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["publish", args.type, ...opt("--data", args.data)])
+      return tx(context.sessionID, ["publish", args.type, ...opt("--data", args.data), ...opt("--assignee", args.assignee)])
     },
   }),
 

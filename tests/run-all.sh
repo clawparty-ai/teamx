@@ -31,9 +31,11 @@ echo "== 5/6 concurrency test (seq ordering) =="
 ./tests/concurrency.sh
 
 echo
-echo "== 6/6 plugin typecheck + bundle =="
+echo "== 6/6 plugin typecheck + bundle + unit tests =="
 if command -v bun >/dev/null 2>&1; then
   (cd opencode-plugin && bun install >/dev/null 2>&1 && bunx tsc --noEmit && bun run build)
+  echo "-- plugin unit tests --"
+  TEAMX_AUTO_EXECUTE=1 bun "$ROOT/tests/plugin-unit/auto-execute.test.ts"
 else
   echo "bun not found; skipping plugin checks"
 fi
