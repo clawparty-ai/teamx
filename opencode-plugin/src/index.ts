@@ -112,6 +112,7 @@ function summarizeEvent(e: SyncEvent): string {
 
 /** Build a compact, human-readable digest of the sync payload. */
 function summarize(data: SyncData): string {
+  if (!data || typeof data !== "object") return ""
   const parts: string[] = []
   for (const t of data.teams ?? []) {
     const team = t.team
@@ -124,7 +125,7 @@ function summarize(data: SyncData): string {
     const open = (t.questions ?? []).filter((q) => q.state === "open")
     if (open.length > 0) parts.push(`  待答问题: ${open.map((q) => q.question ?? "-").join(" | ")}`)
   }
-  const events = notableEvents(data.new_events ?? [])
+  const events = notableEvents(data?.new_events ?? [])
   if (events.length > 0) {
     parts.push(`新事件(${events.length}): ${events.map(summarizeEvent).join(" | ")}`)
   }
@@ -133,12 +134,12 @@ function summarize(data: SyncData): string {
 
 /** True if the sync data shows this session is a team owner (auto-execute excluded). */
 export function isOwnerSession(data: SyncData): boolean {
-  return (data.teams ?? []).some((t) => t.team?.my_role === "owner")
+  return (data?.teams ?? []).some((t) => t.team?.my_role === "owner")
 }
 
 /** The member id of the current session, from the sync response. */
 export function myMemberId(data: SyncData): string | undefined {
-  return data.teams?.[0]?.team?.my_member_id
+  return data?.teams?.[0]?.team?.my_member_id
 }
 
 /**
@@ -344,4 +345,7 @@ export const Teamx: Plugin = async ({ client }) => {
   }
 }
 
-export default Teamx
+export default {
+  id: "teamx",
+  server: Teamx,
+}
