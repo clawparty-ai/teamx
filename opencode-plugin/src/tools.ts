@@ -3,6 +3,7 @@
 
 import { tool } from "@opencode-ai/plugin"
 import { instanceId, markMember, runCli, renderResult, sessionKey } from "./client"
+import { serveStart, serveStatus, serveStop } from "./serve"
 
 type ToolCtx = { sessionID: string; directory: string }
 
@@ -303,6 +304,50 @@ export const tools = {
       }
       const r = await runCli(["loopx", "report", project, "--session", key])
       return renderResult(r)
+    },
+  }),
+
+  teamx_serve_start: tool({
+    description:
+      "Start the embedded teamx network-mode server (spawns a local `teamx serve` subprocess). " +
+      "Idempotent: if already running, returns the current status. Returns the server URL to share with members.",
+    args: {
+      addr: tool.schema.string().optional().describe("bind address (default 0.0.0.0)"),
+      port: tool.schema.number().optional().describe("bind port (default 5781)"),
+      db: tool.schema.string().optional().describe("database path (default TEAMX_DB or ~/.teamx/teamx.db)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const st = await serveStart({ addr: args.addr, port: args.port, db: args.db })
+      return JSON.stringify(st, null, 2)
+    },
+  }),
+
+  teamx_serve_status: tool({
+    description: "Show whether the embedded teamx server is running, plus its URL and PID.",
+    args: {},
+    async execute() {
+      return JSON.stringify(serveStatus(), null, 2)
+    },
+  }),
+
+  teamx_serve_stop: tool({
+    description: "Stop the embedded teamx server subprocess, if running.",
+    args: {},
+    async execute() {
+      return JSON.stringify(await serveStop(), null, 2)
+    },
+  }),
+
+  teamx_serve_token: tool({
+    description:
+      "Generate or rotate a connection token for a member so they can connect to the network-mode server. " +
+      "Note: N0 uses self-reported session keys; full token auth lands in N2.",
+    args: {
+      member: tool.schema.string().describe("member id"),
+    },
+    async execute(_args, context: ToolCtx) {
+      // N2 placeholder — returns a descriptive note for now.
+      return "teamx: token auth arrives in N2. For now members connect using their session key and TEAMX_SERVER_URL."
     },
   }),
 }

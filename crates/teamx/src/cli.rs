@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -114,6 +114,22 @@ pub enum Command {
     /// loopx bridge
     #[command(subcommand)]
     Loopx(LoopxCmd),
+
+    /// Run as a network-mode server (HTTP RPC + WebSocket push)
+    Serve(ServeCmd),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ServeCmd {
+    /// bind address
+    #[arg(long, default_value = "127.0.0.1")]
+    pub addr: String,
+    /// bind port
+    #[arg(long, default_value_t = 5781)]
+    pub port: u16,
+    /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
+    #[arg(long)]
+    pub db: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -22,6 +22,10 @@ import { tools } from "./tools"
 
 const LOG_SERVICE = "teamx"
 const POLL_INTERVAL = Number(process.env.TEAMX_POLL_INTERVAL ?? 15000)
+// loopx-style auto-execute: when a task broadcast arrives, wake the member
+// session and start working until the goal is done. Enabled by default; set
+// TEAMX_AUTO_EXECUTE=0 to disable.
+const AUTO_EXECUTE = process.env.TEAMX_AUTO_EXECUTE !== "0"
 
 type MemberRow = { display_name?: string; role?: string | null; state?: string }
 type QuestionRow = { state?: string; question?: string }
@@ -31,7 +35,7 @@ type TeamBlock = {
   members?: MemberRow[]
   questions?: QuestionRow[]
 }
-type SyncEvent = { seq?: number; type?: string; payload?: Record<string, unknown> }
+type SyncEvent = { seq?: number; type?: string; member_id?: string; payload?: Record<string, unknown> }
 type SyncData = { teams?: TeamBlock[]; new_events?: SyncEvent[] }
 
 /** Truncate a string to a short single-line snippet. */
@@ -140,6 +144,35 @@ export const Teamx: Plugin = async ({ client }) => {
   // events on every 15s poll. -1 = never notified yet (first refresh records
   // the watermark without notifying, so pre-existing backlog is not spammed).
   const notifiedSeq = new Map<string, number>()
+  // Highest seq for which an auto-execute prompt has already been triggered
+  // (per session), so we never double-wake a member for the same broadcast.
+  const autoExecutedSeq = new Map<string, number>()
+  // Whether a session is a team owner (owner sessions don't auto-execute on
+  // broadcasts they themselves emit, and generally drive, not execute).
+  const ownerSessions = new Map<string, boolean>()
+
+  /**
+   * Wake a member session (loopx-style): prompt it to pick up the assigned
+   * task, set an opencode goal, and keep working until it is complete.
+   * Uses the opencode SDK `session.promptAsync` to enqueue a user message.
+   */
+  async function triggerAutoExecute(sessionID: string, directiveSummary: string): Promise<void> {
+    const message =
+      `[teamx 自动任务] 团队向你分派了任务：${directiveSummary || "请查看最新团队广播"}。\n` +
+      `请先 /team sync 拉取最新团队状态，然后用 set_goal 设置本次任务目标，` +
+      `并持续执行直到目标达成（不完成不停止）。完成后用 /team publish achieved 汇报。`
+    try {
+      await client.session.promptAsync({
+        path: { id: sessionID },
+        body: {
+          parts: [{ type: "text", text: message }],
+        },
+      })
+      log("info", "auto-execute prompt sent", { sessionID, seq: autoExecutedSeq.get(sessionID) })
+    } catch (e) {
+      log("warn", "auto-execute prompt failed", { sessionID, error: String(e) })
+    }
+  }
 
   async function refreshDigest(sessionID: string): Promise<void> {
     const key = sessionKey(instance, sessionID)
@@ -176,6 +209,21 @@ export const Teamx: Plugin = async ({ client }) => {
         .appendPrompt({ body: { text: "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。" } })
         .catch(() => {})
     }
+    const hasDirective = fresh.some((e) => e.type === "decision.broadcast" || e.type === "goal.shared")
+    if (hasDirective && !hasQuestion) {
+      await client.tui
+        .appendPrompt({ body: { text: "📩 teamx：你收到团队任务/广播，请输入 /Team 同步查看并执行。" } })
+        .catch(() => {})
+    }
+    // Auto-execute (loopx-style: start working and don't stop until the goal
+    // is done). Enabled by default; set TEAMX_AUTO_EXECUTE=0 to disable.
+    // Owner sessions are excluded so the owner's own broadcasts don't wake it.
+    if (AUTO_EXECUTE && !ownerSessions.get(sessionID) && hasDirective && !autoExecutedSeq.has(sessionID)) {
+      autoExecutedSeq.set(sessionID, maxSeq)
+      const directive = fresh.find((e) => e.type === "decision.broadcast" || e.type === "goal.shared")
+      const summary = directive ? summarizeEvent(directive) : ""
+      await triggerAutoExecute(sessionID, summary).catch(() => {})
+    }
   }
 
   let pollTimer: ReturnType<typeof setInterval> | undefined
@@ -203,9 +251,12 @@ export const Teamx: Plugin = async ({ client }) => {
       if (isMember === undefined) {
         const key = sessionKey(instance, sessionID)
         const r = await runCli(["team", "list", "--session", key])
-        const teams = r.data?.teams
+        const teams = r.data?.teams as { my_role?: string }[] | undefined
         isMember = r.ok && Array.isArray(teams) && teams.length > 0
         markMember(sessionID, isMember)
+        // An owner's own broadcasts shouldn't auto-execute on itself.
+        const isOwner = r.ok && Array.isArray(teams) && teams.some((t) => t.my_role === "owner")
+        ownerSessions.set(sessionID, isOwner)
         if (isMember) refreshDigest(sessionID).catch(() => {})
       }
       if (!isMember) return

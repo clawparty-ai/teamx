@@ -23,6 +23,8 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 - `respond <ask_id> <回答>` → teamx_respond（回答提问）
 - `publish <type> [data]` → teamx_publish（progress/decision/update/blocked/resumed/achieved/refine）
 - `archive` → teamx_archive（owner 归档已完成团队）
+- `serve start [--port]` / `serve status` / `serve stop` → teamx_serve_start / teamx_serve_status / teamx_serve_stop（在 opencode 内启动/查询/停止本地 serve，网络模式）
+- `serve token <member>` → teamx_serve_token（生成/轮换成员连接 token，owner）
 - `help` → 列出以上子命令
 
 先调用 teamx_sync，然后根据 $ARGUMENTS 中的子命令路由到对应工具并执行。

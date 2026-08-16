@@ -30,6 +30,8 @@ permission:
 | `respond <ask_id> <回答>` | teamx_respond | 回答提问 |
 | `publish <type> [data]` | teamx_publish | 汇报/广播（progress/decision/update/blocked/resumed/achieved/refine） |
 | `archive` | teamx_archive | owner 归档已完成团队 |
+| `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | 在 opencode 内启动/查询/停止本地 serve（网络模式，owner） |
+| `serve token <member>` | teamx_serve_token | 生成/轮换成员连接 token（owner） |
 | `help` | - | 列出子命令 |
 
 ## 核心工具
@@ -71,6 +73,7 @@ permission:
 - **成员加入后**：指导成员 `teamx_set_role` 选择角色（固定角色如 contributor/subtask-implementer/reviewer）；如果固定角色都不合适，成员可用 `teamx_role_propose` 提议自己的 job role，owner 用 `teamx_role_approve` 审批后该成员自动获得该角色。owner `teamx_share_goal` 后开始协作。
 - **自定义角色流程**：member 提议（`role propose <key> <label> <desc>`）→ owner 收到 `role.proposed` 事件后决策（`role approve` 或 `role deny`）→ 批准后角色进入团队目录且自动授予提议者。owner 也可用 `role update <key> --description ...` 修改任何角色的描述（含固定角色）。
 - **协作中**：严格执行"先 sync 再行动、有进展就汇报、owner 汇总后广播"。
+- **自动执行（默认开启）**：成员插件收到 owner 的 `decision.broadcast`（任务分派）或 `goal.shared` 时，插件用 `session.promptAsync` 自动唤醒成员会话，引导其 `set_goal` 并**持续执行直到目标达成**（loopx 风格，不完成不停止），完成后 `publish achieved` 汇报。owner 会话不自动执行（避免自我广播触发）。可用 `TEAMX_AUTO_EXECUTE=0` 关闭。
 
 ## 注意事项
 

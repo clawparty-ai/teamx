@@ -48,6 +48,11 @@ uninstall() {
         "$CONFIG_DIR/commands/team-respond.md" \
         "$CONFIG_DIR/commands/team-publish.md" \
         "$CONFIG_DIR/commands/team-archive.md" \
+        "$CONFIG_DIR/commands/team-serve.md" \
+        "$CONFIG_DIR/commands/team-serve-start.md" \
+        "$CONFIG_DIR/commands/team-serve-status.md" \
+        "$CONFIG_DIR/commands/team-serve-stop.md" \
+        "$CONFIG_DIR/commands/team-serve-token.md" \
         "$CONFIG_DIR/commands/team-help.md"
   # NOTE: keep ~/.teamx (the SQLite data) — it is user data; removing the
   # binary/plugin does not destroy teams.
@@ -88,7 +93,9 @@ for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \
            team-approve team-deny team-role team-role-propose \
            team-role-approve team-role-deny team-role-update \
-           team-state team-ask team-respond team-publish team-archive team-help; do
+           team-state team-ask team-respond team-publish team-archive \
+           team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
+           team-help; do
   cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"
 done
 # Back-compat: also drop the legacy singular `command/` copy so upgrades do not

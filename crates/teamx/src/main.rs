@@ -3,13 +3,26 @@ mod commands;
 mod db;
 mod events;
 mod loopx;
+mod serve;
 mod state;
 
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
+    // `teamx serve` runs forever and manages its own DB lifecycle; it bypasses
+    // the normal open-once-per-invocation flow.
+    if let Command::Serve(sc) = &cli.command {
+        match serve::serve(sc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);
 
     let result = run(&cli, &db_path);

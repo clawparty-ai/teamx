@@ -386,6 +386,11 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 cmd_loopx_report(conn, project, session, team.as_deref())?
             }
         },
+        // `teamx serve` never reaches here (handled in main); this arm exists
+        // only so the match stays exhaustive.
+        Command::Serve(_) => {
+            return err("`teamx serve` must be run as its own process")
+        }
     };
     Ok(out)
 }
