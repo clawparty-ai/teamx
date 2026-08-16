@@ -92,6 +92,11 @@ export interface CliResult {
   data: Record<string, unknown> | null
 }
 
+/** kebab-case → snake_case: `goal-title` → `goal_title`, `no-advance` → `no_advance`. */
+function toSnake(s: string): string {
+  return s.replace(/-/g, "_")
+}
+
 /**
  * Convert a V1-style CLI arg vector into an RPC { method, args } payload for
  * network mode. Handles `team.status --team x --session key` style vectors.
@@ -105,7 +110,9 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   while (i < argv.length) {
     const a = argv[i]
     if (a.startsWith("--")) {
-      const key = a.slice(2)
+      // Normalize the flag name so `--goal-title` and `--no-advance` arrive as
+      // `goal_title` / `no_advance`, matching the RPC field names.
+      const key = toSnake(a.slice(2))
       const next = argv[i + 1]
       if (next !== undefined && !next.startsWith("--")) {
         flags[key] = next
@@ -123,14 +130,15 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   // Determine the dotted method from the first two positional tokens.
   // Only grouped commands (team.*, goal.*, member.*, role.*, loopx.*) use a
   // two-token method; top-level commands (publish/ask/respond/events/log/sync)
-  // treat every positional as a parameter.
+  // treat every positional as a parameter. Subcommand names are normalized so
+  // `member set-state` maps to the RPC method `member.set_state`.
   const GROUPED = new Set(["team", "goal", "member", "role", "loopx"])
   const p0 = positional[0] ?? ""
   const p1 = positional[1] ?? ""
   let method: string
   let rest: string[]
   if (GROUPED.has(p0) && p1) {
-    method = `${p0}.${p1}`
+    method = `${p0}.${toSnake(p1)}`
     rest = positional.slice(2)
   } else {
     method = p0
