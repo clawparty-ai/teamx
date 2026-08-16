@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 
 pub const DB_ENV: &str = "TEAMX_DB";
 
+/// Resolve the teamx home directory (default `~/.teamx`, or `TEAMX_HOME`).
+pub fn teamx_home() -> PathBuf {
+    if let Ok(p) = std::env::var("TEAMX_HOME") {
+        return PathBuf::from(p);
+    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".teamx")
+}
+
 /// Resolve the global database path:
 /// 1. `--db <path>` (handled by CLI, stored in `Cli.db`)
 /// 2. `TEAMX_DB` env var
@@ -12,8 +20,7 @@ pub fn default_db_path() -> PathBuf {
     if let Ok(p) = std::env::var(DB_ENV) {
         return PathBuf::from(p);
     }
-    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".teamx");
-    base.join("teamx.db")
+    teamx_home().join("teamx.db")
 }
 
 /// Open (creating if needed) the SQLite DB with WAL, busy timeout and FKs.

@@ -1,7 +1,8 @@
-use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, TeamCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, TeamCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
+use crate::pki;
 use crate::state::{Action, GoalState, MemberState, TeamState};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -391,6 +392,11 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Serve(_) => {
             return err("`teamx serve` must be run as its own process")
         }
+        Command::Cert(c) => match c {
+            CertCmd::Init => cmd_cert_init()?,
+            CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
+            CertCmd::Ca => cmd_cert_ca()?,
+        },
     };
     Ok(out)
 }
@@ -1520,4 +1526,55 @@ fn cmd_loopx_report(
     .map_err(|e| AppError(format!("loopx report failed: {e}")))?;
     touch(conn, &actor.id).ok();
     Ok(json!({ "ok": true, "seq": seq, "loopx": digest }))
+}
+
+// ---------------------------------------------------------------------------
+// PKI (mTLS certificates)
+// ---------------------------------------------------------------------------
+
+fn teamx_home_dir() -> std::path::PathBuf {
+    db::teamx_home()
+}
+
+/// `teamx cert init` — ensure the instance CA + server cert exist.
+fn cmd_cert_init() -> Result<Value> {
+    let home = teamx_home_dir();
+    let pk = pki::ensure_pki(&home).map_err(AppError)?;
+    Ok(json!({
+        "ok": true,
+        "ca_cert": pk.ca_cert.display().to_string(),
+        "server_cert": pk.server_cert.display().to_string(),
+        "note": "instance CA + server certificate ready",
+    }))
+}
+
+/// `teamx cert issue <member_id> <role> [--out dir]` — issue a member cert.
+fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) -> Result<Value> {
+    let home = teamx_home_dir();
+    let (cert_pem, key_pem) = pki::issue_member_cert(&home, member_id, role).map_err(AppError)?;
+    let cn = format!("member:{member_id}:{role}");
+    match out {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
+            let cert_path = dir.join("member.crt");
+            let key_path = dir.join("member.key");
+            std::fs::write(&cert_path, &cert_pem).map_err(|e| AppError(format!("write cert: {e}")))?;
+            std::fs::write(&key_path, &key_pem).map_err(|e| AppError(format!("write key: {e}")))?;
+            Ok(json!({
+                "ok": true,
+                "cn": cn,
+                "cert": cert_path.display().to_string(),
+                "key": key_path.display().to_string(),
+            }))
+        }
+        None => Ok(json!({ "ok": true, "cn": cn, "cert_pem": cert_pem, "key_pem": key_pem })),
+    }
+}
+
+/// `teamx cert ca` — print the CA certificate PEM.
+fn cmd_cert_ca() -> Result<Value> {
+    let home = teamx_home_dir();
+    let pk = pki::ensure_pki(&home).map_err(AppError)?;
+    let ca_pem = std::fs::read_to_string(&pk.ca_cert).map_err(|e| AppError(format!("read ca: {e}")))?;
+    Ok(json!({ "ok": true, "ca_pem": ca_pem, "path": pk.ca_cert.display().to_string() }))
 }

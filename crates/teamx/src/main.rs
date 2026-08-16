@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod events;
 mod loopx;
+mod pki;
 mod serve;
 mod state;
 

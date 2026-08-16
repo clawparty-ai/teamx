@@ -115,6 +115,10 @@ pub enum Command {
     #[command(subcommand)]
     Loopx(LoopxCmd),
 
+    /// PKI management (mTLS certificates)
+    #[command(subcommand)]
+    Cert(CertCmd),
+
     /// Run as a network-mode server (HTTP RPC + WebSocket push)
     Serve(ServeCmd),
 }
@@ -130,6 +134,26 @@ pub struct ServeCmd {
     /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
     #[arg(long)]
     pub db: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CertCmd {
+    /// Ensure the instance CA + server cert exist (create if absent)
+    Init,
+    /// Issue a member client certificate (signed by the instance CA)
+    Issue {
+        /// member id (goes into the certificate CN)
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        /// role key (goes into the certificate CN)
+        #[arg(value_name = "ROLE")]
+        role: String,
+        /// write the certificate + key to these files
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Print the CA certificate (for client-side trust)
+    Ca,
 }
 
 #[derive(Subcommand, Debug)]

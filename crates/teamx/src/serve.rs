@@ -1,16 +1,16 @@
-//! teamx serve — network-mode server (N0).
+//! teamx serve — network-mode server (mTLS, HTTP JSON RPC).
 //!
 //! Serves the same command surface as the V1 CLI over HTTP RPC so a plugin on
 //! another machine can talk to one shared ledger. All command logic lives in
 //! `commands::execute`; this module only translates an RPC request into a
 //! `Command` value and serializes the result back.
 //!
-//! N0 scope: HTTP JSON RPC only (POST /rpc) + health. WebSocket push arrives
-//! in N1; token auth arrives in N2 (a `session` field is still self-reported,
-//! exactly like the V1 CLI).
+//! Security: the server REQUIRES mutual TLS. Clients must present a certificate
+//! signed by the instance CA (`~/.teamx/ca/ca.crt`); the client certificate CN
+//! carries the member identity (`member:<id>:<role>`).
 
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     extract::State,
@@ -19,10 +19,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
 
 use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd};
 use crate::commands;
+use crate::pki;
 
 type Db = Mutex<rusqlite::Connection>;
 
@@ -57,20 +59,67 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("invalid bind address {}:{}: {e}", cmd.addr, cmd.port))?;
 
+    // mTLS: build a rustls ServerConfig that requires a client certificate
+    // signed by the instance CA, and present the server certificate chain.
+    let home = crate::db::teamx_home();
+    let pk = pki::ensure_pki(&home)?;
+    let tls_config = build_mtls_config(&pk)?;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
-    eprintln!("teamx serve listening on http://{addr} (db: {})", db_path.display());
+    eprintln!(
+        "teamx serve listening on https://{addr} (mtls, db: {})",
+        db_path.display()
+    );
     rt.block_on(async {
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| format!("cannot bind {addr}: {e}"))?;
-        axum::serve(listener, app)
+        let config = RustlsConfig::from_config(tls_config);
+        axum_server::bind_rustls(addr, config)
+            .serve(app.into_make_service())
             .await
             .map_err(|e| format!("server error: {e}"))
     })
+}
+
+/// Build a rustls ServerConfig enforcing mutual TLS:
+///  - server presents `server.crt`/`server.key`
+///  - clients must present a cert verified against the instance CA roots
+fn build_mtls_config(pk: &pki::PkiPaths) -> Result<Arc<rustls::ServerConfig>, String> {
+    use rustls::server::WebPkiClientVerifier;
+    use rustls::{RootCertStore, ServerConfig};
+
+    // Client trust anchor: the instance CA (PEM → DER).
+    let ca_pem = std::fs::read(&pk.ca_cert).map_err(|e| format!("read ca cert: {e}"))?;
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_pemfile::certs(&mut ca_pem.as_slice())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse ca cert: {e}"))?
+    {
+        roots.add(cert).map_err(|e| format!("add ca to roots: {e}"))?;
+    }
+
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| format!("client verifier: {e}"))?;
+
+    // Server identity.
+    let server_cert_pem = std::fs::read(&pk.server_cert).map_err(|e| format!("read server cert: {e}"))?;
+    let server_key_pem = std::fs::read(&pk.server_key).map_err(|e| format!("read server key: {e}"))?;
+    let cert_chain = rustls_pemfile::certs(&mut server_cert_pem.as_slice())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse server cert chain: {e}"))?;
+    let key_der = rustls_pemfile::private_key(&mut server_key_pem.as_slice())
+        .map_err(|e| format!("parse server key: {e}"))?
+        .ok_or_else(|| "no private key found in server.key".to_string())?;
+
+    let config = ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(cert_chain, key_der)
+        .map_err(|e| format!("server config: {e}"))?;
+
+    Ok(Arc::new(config))
 }
 
 async fn health() -> impl IntoResponse {
