@@ -254,12 +254,6 @@ export const Teamx: Plugin = async ({ client }) => {
         .appendPrompt({ body: { text: "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。" } })
         .catch(() => {})
     }
-    const hasDirective = fresh.some((e) => e.type === "decision.broadcast" || e.type === "goal.shared")
-    if (hasDirective && !hasQuestion) {
-      await client.tui
-        .appendPrompt({ body: { text: "📩 teamx：你收到团队广播，请输入 /Team 同步查看。" } })
-        .catch(() => {})
-    }
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
     // carrying `assignee_member_id == my_member_id` is a task for us; every
     // other broadcast (unassigned, or another member's task) is informational.
