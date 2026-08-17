@@ -237,6 +237,10 @@ async function main() {
     const st = await fetchRpc(ownerTls, "tunnel.status", { team: teamId, name: "httpbin", session: "s:owner" })
     if (st?.data?.port === pubPort && st?.data?.lan_ip === "127.0.0.1") pass("tunnel.status reports port + lan_ip")
     else fail(`tunnel.status: ${JSON.stringify(st)}`)
+    if (st?.data?.same_subnet === true) pass("tunnel.status same_subnet=true (consumer + provider both loopback)")
+    else fail(`tunnel.status same_subnet: ${JSON.stringify(st?.data)}`)
+    if (st?.data?.direct_addr === `127.0.0.1:${svc.port}`) pass("tunnel.status direct_addr present")
+    else fail(`tunnel.status direct_addr: ${JSON.stringify(st?.data)}`)
 
     // --- close the tunnel ---
     const close = await fetchRpc(ownerTls, "tunnel.close", { team: teamId, name: "httpbin", session: "s:owner" })

@@ -111,6 +111,7 @@ export const tools = {
         return "teamx error: tunnel expose requires network mode; set TEAMX_SERVER_URL"
       }
       const { exposeTunnel } = await import("./tunnel")
+      const { saveTunnel } = await import("./tunnels-store")
       const handle = exposeTunnel({
         serverUrl,
         name: args.name,
@@ -122,6 +123,14 @@ export const tools = {
         handle.close()
         return `teamx error: failed to register tunnel "${args.name}"`
       }
+      // persist so the tunnel is re-opened after an opencode restart
+      saveTunnel({
+        name: args.name,
+        port: args.port,
+        lan_ip: args.lan_ip,
+        server_url: serverUrl,
+        created_at: new Date().toISOString(),
+      })
       return JSON.stringify({ ok: true, name: args.name, public_port: pubPort, direct: args.lan_ip ?? null }, null, 2)
     },
   }),
@@ -159,7 +168,55 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["tunnel", "close", args.name, ...opt("--team", args.team)])
+      const r = await txResult(context.sessionID, ["tunnel", "close", args.name, ...opt("--team", args.team)])
+      // forget the persisted tunnel so it is not re-opened after a restart
+      if (r.ok) {
+        const { removeTunnel } = await import("./tunnels-store")
+        removeTunnel(args.name)
+      }
+      return renderResult(r)
+    },
+  }),
+
+  teamx_tunnel_direct: tool({
+    description:
+      "Resolve the best access address for a reverse tunnel (network mode): if the current member is on the " +
+      "same subnet as the provider (tunnel.status same_subnet=true), returns the provider's direct LAN address; " +
+      "otherwise returns the server relay address. Consumers can then reach the service directly or via the relay.",
+    args: {
+      name: tool.schema.string().describe("tunnel name"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const r = await txResult(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+      if (!r.ok) return renderResult(r)
+      const data = (r.data ?? {}) as Record<string, unknown>
+      if (data.same_subnet === true && data.direct_addr) {
+        return JSON.stringify(
+          {
+            ok: true,
+            name: args.name,
+            same_subnet: true,
+            direct_addr: data.direct_addr,
+            relay_addr: data.relay_addr ?? null,
+            note: "same subnet: use direct_addr for low-latency access",
+          },
+          null,
+          2,
+        )
+      }
+      return JSON.stringify(
+        {
+          ok: true,
+          name: args.name,
+          same_subnet: false,
+          direct_addr: data.direct_addr ?? null,
+          relay_addr: data.relay_addr ?? null,
+          note: "different subnet or unknown: use the server relay address",
+        },
+        null,
+        2,
+      )
     },
   }),
 

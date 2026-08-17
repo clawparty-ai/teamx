@@ -20,6 +20,7 @@ use std::time::Duration;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
+        ConnectInfo,
         State,
     },
     http::StatusCode,
@@ -168,7 +169,7 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         let server = axum_server::bind_rustls(addr, config)
             .map(|acceptor| CertAcceptor { inner: acceptor });
         server
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .map_err(|e| format!("server error: {e}"))
     })
@@ -486,6 +487,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
 async fn rpc(
     State(state): State<AppState>,
     Extension(identity): Extension<PeerIdentity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<RpcRequest>,
 ) -> impl IntoResponse {
     let cn = identity.0;
@@ -495,7 +497,7 @@ async fn rpc(
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
         let before = commands::max_event_id(&conn).unwrap_or(0);
-        let res = dispatch(&req.method, &req.args, &mut conn, &cn, &tunnels);
+        let res = dispatch(&req.method, &req.args, &mut conn, &cn, &tunnels, Some(peer));
         let new_events = commands::events_after(&conn, before).unwrap_or_default();
         (res, new_events)
     })
@@ -528,7 +530,7 @@ async fn rpc(
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
 /// then run it through `commands::execute`. The actor identity comes from the
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
-fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry) -> Result<Value, String> {
+fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry, peer: Option<SocketAddr>) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
     let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
@@ -571,12 +573,21 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
                     let t = tunnels
                         .get(&tid, &name)
                         .ok_or_else(|| format!("tunnel `{name}` not found in team"))?;
+                    let same_subnet = match (&peer, &t.lan_ip) {
+                        (Some(peer_ip), Some(lan_ip)) => {
+                            crate::tunnel::TunnelRegistry::same_subnet(peer_ip, lan_ip)
+                        }
+                        _ => false,
+                    };
                     return Ok(serde_json::json!({
                         "name": t.name,
                         "port": t.port,
                         "target_port": t.target_port,
                         "lan_ip": t.lan_ip,
                         "provider_member_id": t.provider_member_id,
+                        "same_subnet": same_subnet,
+                        "direct_addr": t.lan_ip.as_ref().map(|ip| format!("{ip}:{}", t.target_port)),
+                        "relay_addr": format!("tcp://<server>:{}", t.port),
                     }));
                 }
                 "tunnel.close" => {

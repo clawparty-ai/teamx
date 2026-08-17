@@ -186,8 +186,6 @@ impl TunnelRegistry {
 
     /// Whether two socket addresses are on the same /24 subnet (used for
     /// direct-connect hints). Compares the first three octets of IPv4.
-    /// `#[allow(dead_code)]`: wired by the direct-connect hint feature.
-    #[allow(dead_code)]
     pub fn same_subnet(a: &SocketAddr, b: &str) -> bool {
         let a_ip = match a.ip() {
             std::net::IpAddr::V4(v4) => v4.octets(),

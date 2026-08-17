@@ -333,6 +333,32 @@ export const Teamx: Plugin = async ({ client }) => {
     })
   }
 
+  // Reverse-tunnel auto-restore: re-open tunnels that were exposed before an
+  // opencode restart (persisted in ~/.teamx/tunnels.json). Only the provider
+  // machine that recorded them re-opens them; each is idempotent (a tunnel
+  // that already exists on the server is reported and skipped by the server).
+  const restoredTunnelHandles: { close(): void }[] = []
+  if (TEAMX_SERVER_URL) {
+    const { listTunnels } = await import("./tunnels-store")
+    const { exposeTunnel } = await import("./tunnel")
+    for (const t of listTunnels()) {
+      if (t.server_url !== TEAMX_SERVER_URL) continue
+      const handle = exposeTunnel({
+        serverUrl: t.server_url,
+        name: t.name,
+        port: t.port,
+        lanIp: t.lan_ip,
+        log: (level, message) => log(level === "info" ? "debug" : "warn", message),
+      })
+      restoredTunnelHandles.push(handle)
+      handle.ready().then((pubPort) => {
+        if (pubPort !== null) {
+          log("info", `restored reverse tunnel "${t.name}" on public port ${pubPort}`)
+        }
+      })
+    }
+  }
+
   return {
     tool: tools,
 
@@ -387,6 +413,7 @@ export const Teamx: Plugin = async ({ client }) => {
       if (pollTimer) clearInterval(pollTimer)
       if (refreshTimer) clearTimeout(refreshTimer)
       wsHandle?.close()
+      for (const h of restoredTunnelHandles) h.close()
     },
   }
 }
