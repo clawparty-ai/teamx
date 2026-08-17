@@ -1,3 +1,4 @@
+mod broadcast;
 mod cli;
 mod commands;
 mod db;

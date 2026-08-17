@@ -1,6 +1,6 @@
 # teamx 网络模式（Network Mode）设计方案
 
-> 状态：**N0 已实现**（`teamx serve` mTLS HTTP RPC + auto-execute + 邀请函 I1）；N1（WS 推送）待做
+> 状态：**N0/N1 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 邀请函 I1）；N2（token 鉴权，已被 mTLS 取代）→ N3（插件事件驱动 + 轮询降级）待做
 > 关联文档：`docs/v1-spec.md`（V1 现状）、`docs/v2-design.md`（架构蓝图）
 > 目标读者：实现者、owner、协作成员
 
@@ -329,13 +329,13 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **N0** | Rust `teamx serve`（HTTP + RPC，本地 SQLite）+ 插件 `runRpc` + **`/team serve start/status/stop/token` 内嵌启动** | owner `/team serve start` 起服务；配置 `TEAMX_SERVER_URL` 后 `/team status`、`publish` 走 server，行为与 V1 一致 |
-| **N1** | WS 推送：register + 事件广播 + 心跳/重连/补发 | 两个 opencode 窗口（owner + member）指向同一 serve 实时互见事件；通知去重 |
-| **N2** | token 签发/轮换/吊销 + RPC 鉴权；`serve stop` 优雅清理 + `dispose` | 无 token 拒绝；吊销后断连；owner 会话退出服务自动停止 |
-| **N3** | 插件事件驱动改造 + 轮询降级 | WS 时零轮询；断线自动回退轮询 |
-| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | 局域网成员加入并协作闭环 |
-| **N5**（后续） | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | 公网成员加入；owner 离线不影响团队 |
-| **N6**（可选） | `teamx_member_peek` 同机只读直连 | 显式 `--port` 场景 |
+| **N0** | Rust `teamx serve`（HTTP + RPC，本地 SQLite）+ 插件 `runRpc` + **`/team serve start/status/stop/token` 内嵌启动** | ✅ 已完成 |
+| **N1** | WS 推送：register + 事件广播 + 心跳/重连/补发 | ✅ 已完成（`GET /ws` + `broadcast::Hub` + 插件 `connectWs`，见 `tests/ws-test.ts`） |
+| **N2** | token 签发/轮换/吊销 + RPC 鉴权；`serve stop` 优雅清理 + `dispose` | ⚠️ 身份已改用 mTLS 证书（I1），token 方案被取代 |
+| **N3** | 插件事件驱动改造 + 轮询降级 | 🔄 部分完成（WS 实时刷新 + 轮询降级已接；逐会话水位待优化） |
+| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ⬜ 待做 |
+| **N5**（后续） | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | ⬜ 待做 |
+| **N6**（可选） | `teamx_member_peek` 同机只读直连 | ⬜ 待做 |
 
 ---
 

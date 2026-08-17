@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 网络模式 N1：WebSocket 推送
+
+- **`GET /ws` 端点**（mTLS）：成员连接后按客户端证书 CN 识别身份，订阅其所属团队的实时事件流；收到 `registered`（含 member_id + teams）后即开始推送。心跳每 30s 发 `ping`（`TEAMX_WS_HEARTBEAT_SECS` 可调），断连自动清理订阅。
+- **实时事件广播**：RPC 写账本后，按 `team_id` 把新增事件（`events_after`，全局自增 id 检测）fan-out 到该团队所有在线连接（`broadcast::Hub`：team→member→sender 注册表）；推送尽力而为，账本仍是唯一事实源，离线靠 `sync` 补齐。`/health` 增加 `connections` 在线数。
+- **插件 `runWs`**：`connectWs`（mTLS + register + `event` 回调 + 心跳 `pong` + 指数退避重连 1s→60s）；`TEAMX_SERVER_URL` 设置时 index.ts 建立推送连接、实时刷新 digest，M2 轮询作为断线降级（seq 水位防重复 toast）。
+- **测试**：新增 `tests/ws-test.ts`（双 mTLS WS 客户端 register、owner 广播实时推给 member、心跳 ping、/health 连接数），接入 `run-all.sh`。
+
 ### 网络模式 I1：邀请函（Invitation Letter）+ mTLS 身份
 
 - **`team invite "<角色>: <描述>"`**（owner）：为预分配的 member_id 签发 mTLS 客户端证书（CN=`member:<id>:<role>`，显式随机 serial），生成自包含 invitation letter（CA + 客户端证书/私钥 + server 地址 + 角色），单行 `teamx-inv:v1:<base64>` 输出；角色同时落进团队角色目录（approved）。新增 `invitations` 表（v5 迁移，含 member_id/role/cert_serial/cert_cn/used_by/revoked_at）。

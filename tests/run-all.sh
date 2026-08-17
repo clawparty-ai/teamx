@@ -7,6 +7,7 @@
 #   5. tests/concurrency.sh - parallel writers, seq ordering (TC-301)
 #   6. plugin typecheck + bundle build
 #   7. network-mode mTLS identity test
+#   8. network-mode WebSocket push test
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -42,8 +43,16 @@ else
 fi
 
 echo
-echo "== 7/7 network-mode mTLS identity test =="
+echo "== 7/8 network-mode mTLS identity test =="
 ./tests/mtls-test.sh
+
+echo
+echo "== 8/8 network-mode WebSocket push test =="
+if command -v bun >/dev/null 2>&1; then
+  bun tests/ws-test.ts
+else
+  echo "bun not found; skipping WS push test"
+fi
 
 echo
 echo "ALL TEST SUITES PASSED"

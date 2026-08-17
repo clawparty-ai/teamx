@@ -1977,6 +1977,43 @@ fn event_json(e: &events::Event) -> Value {
     })
 }
 
+/// Highest global event row id (used by the server to detect newly-written
+/// events after a command and broadcast them to live WS connections).
+pub fn max_event_id(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))
+}
+
+/// Events written after `after_id` (global autoincrement id), each serialized
+/// as a JSON object that includes `team_id`, for WS fan-out.
+pub fn events_after(conn: &Connection, after_id: i64) -> rusqlite::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, team_id, member_id, seq, type, payload_json, created_at
+         FROM events WHERE id > ?1 ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([after_id], |r| {
+        let payload_json: Option<String> = r.get(5)?;
+        let payload: Option<Value> = payload_json.and_then(|s| serde_json::from_str(&s).ok());
+        Ok(json!({
+            "team_id": r.get::<_, String>(1)?,
+            "member_id": r.get::<_, Option<String>>(2)?,
+            "seq": r.get::<_, i64>(3)?,
+            "type": r.get::<_, String>(4)?,
+            "payload": payload,
+            "created_at": r.get::<_, String>(6)?,
+        }))
+    })?;
+    rows.collect()
+}
+
+/// Team ids a member (by id) currently belongs to, for WS subscription.
+pub fn teams_for_member(conn: &Connection, member_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT team_id FROM members WHERE id = ?1 AND state NOT IN ('left','denied')",
+    )?;
+    let rows = stmt.query_map([member_id], |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
 fn member_json(m: &MemberRow) -> Value {
     json!({
         "id": m.id,

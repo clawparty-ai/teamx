@@ -15,9 +15,13 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
-    extract::State,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -31,6 +35,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
+use crate::broadcast::Hub;
 use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd};
 use crate::commands;
 use crate::pki;
@@ -40,6 +45,7 @@ type Db = Mutex<rusqlite::Connection>;
 #[derive(Clone)]
 struct AppState {
     db: std::sync::Arc<Db>,
+    hub: Hub,
 }
 
 #[derive(serde::Deserialize)]
@@ -119,11 +125,13 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
 
     let state = AppState {
         db: std::sync::Arc::new(Mutex::new(conn)),
+        hub: Hub::new(),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/rpc", post(rpc))
+        .route("/ws", get(ws_handler))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cmd.addr, cmd.port)
@@ -196,8 +204,127 @@ fn build_mtls_config(pk: &pki::PkiPaths) -> Result<Arc<rustls::ServerConfig>, St
     Ok(Arc::new(config))
 }
 
-async fn health() -> impl IntoResponse {
-    Json(json!({ "ok": true, "service": "teamx", "version": env!("CARGO_PKG_VERSION") }))
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "ok": true,
+        "service": "teamx",
+        "version": env!("CARGO_PKG_VERSION"),
+        "connections": state.hub.connection_count(),
+    }))
+}
+
+/// WebSocket upgrade endpoint (network mode N1). The connection is
+/// authenticated by the mTLS client certificate; the peer CN yields the member
+/// identity, which is then subscribed to that member's teams.
+async fn ws_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<PeerIdentity>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws(socket, state, identity))
+}
+
+/// Build a text WebSocket frame (axum 0.8 uses `Utf8Bytes` for text frames).
+fn ws_text(s: &str) -> Message {
+    Message::Text(s.into())
+}
+
+/// WS heartbeat interval in seconds (default 30; override for tests).
+fn ws_heartbeat_secs() -> u64 {
+    std::env::var("TEAMX_WS_HEARTBEAT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30)
+}
+
+/// Serve one live WebSocket connection: register for the member's teams, push
+/// ledger events as they are written, and keep the connection alive with a
+/// 30s heartbeat. Best-effort — the ledger stays the source of truth.
+async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+    use futures_util::{SinkExt, StreamExt};
+
+    let member_id = match pki::parse_member_cn(&identity.0) {
+        Some((id, _role)) => id,
+        None => {
+            let _ = socket.send(ws_text(r#"{"type":"error","code":"no_identity"}"#)).await;
+            return;
+        }
+    };
+
+    let teams = {
+        let db = state.db.clone();
+        let mid = member_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            commands::teams_for_member(&conn, &mid)
+        })
+        .await
+        {
+            Ok(Ok(t)) => t,
+            _ => {
+                let _ = socket.send(ws_text(r#"{"type":"error","code":"internal"}"#)).await;
+                return;
+            }
+        }
+    };
+
+    if teams.is_empty() {
+        let _ = socket.send(ws_text(r#"{"type":"error","code":"not_a_member"}"#)).await;
+        return;
+    }
+
+    let mut rx = state.hub.subscribe(&member_id, &teams);
+    let registered = json!({
+        "type": "registered",
+        "member_id": &member_id,
+        "teams": &teams,
+    })
+    .to_string();
+    let (mut sender, mut receiver) = socket.split();
+    if sender.send(ws_text(&registered)).await.is_err() {
+        state.hub.unsubscribe(&member_id, &teams);
+        return;
+    }
+
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(ws_heartbeat_secs()));
+    heartbeat.tick().await; // consume the immediate first tick
+
+    loop {
+        tokio::select! {
+            ev = rx.recv() => {
+                match ev {
+                    Some(frame) => {
+                        if sender.send(ws_text(&frame.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(v) = serde_json::from_str::<Value>(text.as_str()) {
+                            if v.get("type").and_then(Value::as_str) == Some("ping") {
+                                let _ = sender.send(ws_text(r#"{"type":"pong"}"#)).await;
+                            }
+                            // `register`/`ack` are accepted but carry no authority:
+                            // identity is fixed by the certificate.
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    _ => {}
+                }
+            }
+            _ = heartbeat.tick() => {
+                if sender.send(ws_text(r#"{"type":"ping"}"#)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    state.hub.unsubscribe(&member_id, &teams);
 }
 
 async fn rpc(
@@ -206,15 +333,27 @@ async fn rpc(
     Json(req): Json<RpcRequest>,
 ) -> impl IntoResponse {
     let cn = identity.0;
+    let hub = state.hub.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
-        dispatch(&req.method, &req.args, &mut conn, &cn)
+        let before = commands::max_event_id(&conn).unwrap_or(0);
+        let res = dispatch(&req.method, &req.args, &mut conn, &cn);
+        let new_events = commands::events_after(&conn, before).unwrap_or_default();
+        (res, new_events)
     })
     .await;
 
     match result {
-        Ok(Ok(data)) => (StatusCode::OK, Json(json!({ "ok": true, "data": data }))),
-        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": e }))),
+        Ok((Ok(data), new_events)) => {
+            // Fan newly-written events out to live WS connections per team.
+            for ev in &new_events {
+                if let Some(team_id) = ev.get("team_id").and_then(Value::as_str) {
+                    hub.publish(team_id, &json!({ "type": "event", "event": ev }));
+                }
+            }
+            (StatusCode::OK, Json(json!({ "ok": true, "data": data })))
+        }
+        Ok((Err(e), _)) => (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": e }))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "ok": false, "error": format!("internal: {e}") })),

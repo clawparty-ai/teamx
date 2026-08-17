@@ -17,8 +17,10 @@ import {
   runCli,
   sessionKey,
   setDigest,
+  TEAMX_SERVER_URL,
 } from "./client"
 import { tools } from "./tools"
+import { connectWs } from "./ws"
 
 const LOG_SERVICE = "teamx"
 const POLL_INTERVAL = Number(process.env.TEAMX_POLL_INTERVAL ?? 15000)
@@ -289,6 +291,22 @@ export const Teamx: Plugin = async ({ client }) => {
     }, POLL_INTERVAL)
   }
 
+  // N1: live push. When a network-mode server is configured, open a WS
+  // connection and refresh the digest in real time on each incoming event.
+  // The M2 poller stays as the fallback path (its per-session seq watermark
+  // prevents duplicate toasts).
+  let wsHandle: ReturnType<typeof connectWs> | undefined
+  if (TEAMX_SERVER_URL) {
+    wsHandle = connectWs({
+      onEvent: (_ev) => {
+        for (const sid of knownMemberSessions()) {
+          refreshDigest(sid).catch(() => {})
+        }
+      },
+      log: (level, message) => log(level === "debug" ? "debug" : "warn", message),
+    })
+  }
+
   return {
     tool: tools,
 
@@ -341,6 +359,7 @@ export const Teamx: Plugin = async ({ client }) => {
 
     dispose: async () => {
       if (pollTimer) clearInterval(pollTimer)
+      wsHandle?.close()
     },
   }
 }
