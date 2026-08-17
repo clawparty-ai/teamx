@@ -92,7 +92,7 @@ teamx/
 
 - Team：`forming → active → blocked → completed → archived`
 - Member：`pending → active → waiting → idle → left`（owner 提问或成员提问置 `waiting`，应答后清除）
-- Goal：`proposed → shared → refining → in_progress → blocked → achieved → closed`
+- Goal：`proposed → shared → refining → in_progress → blocked → achieved → closed`（`achieved` 是「达成候选」，owner 可用 `publish start`/`resumed` 重开回 `in_progress`，或用 `refine` 退回 `refining`；只有 `close` 才是终态 `closed`）
 
 每次转换记录进事件账本，当前状态 = 投影。
 

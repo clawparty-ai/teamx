@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 修复：目标 `achieved` 卡死（状态机缺口）
+
+- `goal_transition` 此前把 `achieved` 当作近终态（只有 `close` 合法），导致目标被误报 `achieved` 后**无法重开**，成员 `publish progress/achieved` 全部报 `illegal goal transition: achieved --publish_*-> ?`。
+- 新增从 `achieved` 的重开转换：`publish start` / `publish resumed` → `in_progress`，`publish refine` → `refining`（`achieved` 只是「达成候选」，owner 可驳回重开；`closed` 仍是唯一终态）。
+- 新增单测 `goal_reopen_from_achieved`。
+
 ### 命令文件补齐（/team invite 等 slash 命令）
 
 - 新增 `/team invite`、`/team import`、`/team invite-list`、`/team invite-revoke` 的扁平别名命令文件（`assets/command/team-{invite,import,invite-list,invite-revoke}.md`），并把子命令路由加进 `Team.md` 主路由与 agent 系统提示词 `teamx.md`，`install.sh` 同步安装/卸载这些命令文件。补齐后 opencode 里这些网络模式命令可用 `/` tab 补全。

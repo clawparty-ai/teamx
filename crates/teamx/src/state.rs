@@ -255,6 +255,12 @@ pub fn goal_transition(from: GoalState, action: &Action) -> Result<GoalState, St
         (GoalState::Blocked, PublishAchieved) => GoalState::Achieved,
         (GoalState::Blocked, PublishProgress) => GoalState::Blocked,
         (GoalState::Blocked, PublishDecision) => GoalState::Blocked,
+        // An `achieved` candidate is not final (it awaits owner verification):
+        // the owner may reject it and reopen the goal back into execution
+        // (start/resume) or ask for refinement (refine).
+        (GoalState::Achieved, PublishStart) => GoalState::InProgress,
+        (GoalState::Achieved, PublishResumed) => GoalState::InProgress,
+        (GoalState::Achieved, PublishRefine) => GoalState::Refining,
         (GoalState::Shared, PublishRefine) => GoalState::Refining,
         (GoalState::InProgress, PublishRefine) => GoalState::Refining,
         (GoalState::Refining, PublishRefine) => GoalState::Refining,
@@ -359,6 +365,16 @@ mod tests {
         assert_eq!(goal_transition(GoalState::Shared, &Action::PublishRefine).unwrap(), GoalState::Refining);
         assert_eq!(goal_transition(GoalState::InProgress, &Action::PublishRefine).unwrap(), GoalState::Refining);
         assert_eq!(goal_transition(GoalState::Refining, &Action::PublishStart).unwrap(), GoalState::InProgress);
+    }
+
+    #[test]
+    fn goal_reopen_from_achieved() {
+        // an "achieved" candidate can be rejected by the owner and reopened
+        assert_eq!(goal_transition(GoalState::Achieved, &Action::PublishStart).unwrap(), GoalState::InProgress);
+        assert_eq!(goal_transition(GoalState::Achieved, &Action::PublishResumed).unwrap(), GoalState::InProgress);
+        assert_eq!(goal_transition(GoalState::Achieved, &Action::PublishRefine).unwrap(), GoalState::Refining);
+        // closing is still the only way to reach the terminal closed state
+        assert_eq!(goal_transition(GoalState::Achieved, &Action::CloseGoal).unwrap(), GoalState::Closed);
     }
 
     #[test]
