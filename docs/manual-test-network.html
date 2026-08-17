@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>teamx 网络模式手动测试</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="manual-test.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">teamx 网络模式手动测试</h1>
+</header>
+<h1 id="teamx-网络模式手动测试owner-测试-评审-三人并行">teamx
+网络模式手动测试：owner + 测试 + 评审 三人并行</h1>
+<blockquote>
+<p>场景：<strong>一个 team owner</strong> 创建团队、内嵌启动
+<code>teamx serve</code>，<strong>发两个 invitation
+letter</strong>（一个给测试、一个给代码评审）；两个成员各自导入邀请函、经
+<strong>mTLS + WebSocket</strong> 连到 owner 的
+serve，<strong>审批后同时开始工作</strong>，owner
+实时看到两人的进展。</p>
+<p>对比 <code>docs/demo-3p.md</code>（V1 单机 token
+入队），本文走的是<strong>网络模式</strong>（形态① owner 内嵌
+serve）：身份来自 mTLS 客户端证书（invitation letter），推送走
+WebSocket，不再是”自报 session + 轮询”。</p>
+</blockquote>
+<h2 id="前置条件">0. 前置条件</h2>
+<ol type="1">
+<li><code>./install.sh</code> 已执行并重启
+opencode（<code>/Team</code>、<code>/team</code> 子命令可用）。</li>
+<li><code>which teamx</code> →
+<code>~/.local/bin/teamx</code>；<code>cd ~/github/teamx &amp;&amp; ./tests/smoke.sh</code>
+全 PASS。</li>
+<li>三个 opencode 窗口（同一台机器即可；两台机器见 §3）。</li>
+<li>owner 机器放行入站端口 <code>5781</code>（跨机才需要）。</li>
+</ol>
+<h2 id="网络模式数据流三人">1. 网络模式数据流（三人）</h2>
+<pre><code>┌─ owner 窗口 ───────────────┐   ┌─ 测试成员窗口 ──────────┐   ┌─ 评审成员窗口 ──────────┐
+│ /Team agent + plugin       │   │ /Team agent + plugin    │   │ /Team agent + plugin    │
+│ 建队 / serve start / invite │   │ import letter → mTLS 连  │   │ import letter → mTLS 连  │
+└────────────┬───────────────┘   └────────────┬────────────┘   └────────────┬────────────┘
+             │ spawn teamx serve (owner 机器)  │  wss://&lt;owner-ip&gt;:5781      │
+             ▼                                 ▼                            ▼
+   ┌───────────────────────────────────────────────────────────────────────────────┐
+   │  teamx serve（mTLS 强制）— SQLite 账本（唯一权威）+ RPC + WS 广播（team→member）│
+   └───────────────────────────────────────────────────────────────────────────────┘</code></pre>
+<ul>
+<li><strong>身份</strong>：每个成员的客户端证书 CN =
+<code>member:&lt;id&gt;:&lt;role&gt;</code>，server
+从证书解析成员身份（不靠自报 session）。</li>
+<li><strong>推送</strong>：任何一方 <code>publish</code> 落账后，server
+按 team 实时广播给所有在线成员的 WS。</li>
+<li><strong>证书 ≠ 授权</strong>：证书只能”连上 + 提交申请”；owner
+<code>approve</code> 后才进入 <code>active</code> 能干活。</li>
+</ul>
+<h2 id="推荐单机三窗口内嵌-serve">2. 推荐：单机三窗口（内嵌 serve）</h2>
+<h3 id="owner-窗口-建队-起服务-发两个邀请函">2.1 owner 窗口 —— 建队 +
+起服务 + 发两个邀请函</h3>
+<pre><code>/Team 创建团队「网络协作组」，目标：完成一次真实的多人协作（测试 + 评审）。</code></pre>
+<p>预期：<code>teamx_create_team</code> → 返回
+<code>owner_member_id</code>（记下）、team id。</p>
+<p>然后起内嵌 serve（会打印 server URL）：</p>
+<pre><code>/team serve start</code></pre>
+<p>预期：返回
+<code>server_url: https://&lt;你的局域网IP&gt;:5781</code>（例如
+<code>https://172.20.10.3:5781</code>）。记下这个地址，后面邀请和成员连接都要用它。</p>
+<blockquote>
+<p>手动等价：<code>teamx serve --addr 0.0.0.0 --port 5781 --san &lt;你的局域网IP&gt; &amp;</code>
+查局域网 IP：macOS <code>ipconfig getifaddr en0</code>；Linux
+<code>hostname -I | awk '{print $1}'</code>。</p>
+<p>可选（owner 也要实时推送）：给 owner 自己也发一张证书，并设
+<code>TEAMX_SERVER_URL</code> 连上 serve ——
+<code>teamx cert issue &lt;owner_member_id&gt; owner --out ~/.teamx/owner-cert</code>，然后
+<code>export TEAMX_SERVER_URL=https://&lt;你的局域网IP&gt;:5781</code>
+与
+<code>export TEAMX_MTLS_CERT=~/.teamx/owner-cert/member.crt TEAMX_MTLS_KEY=~/.teamx/owner-cert/member.key TEAMX_MTLS_CA=~/.teamx/ca/ca.crt</code>，重启
+opencode。 不做这步也不影响协作，owner 用 <code>teamx_sync</code>
+拉取即可。</p>
+</blockquote>
+<p>发两个邀请函（<strong>务必带
+<code>--server-url &lt;上面的地址&gt;</code></strong>）：</p>
+<pre><code>/team invite &quot;测试工程师: 负责功能测试并汇报缺陷&quot; --server-url https://&lt;你的局域网IP&gt;:5781</code></pre>
+<pre><code>/team invite &quot;reviewer: 负责代码评审并给出意见&quot; --server-url https://&lt;你的局域网IP&gt;:5781</code></pre>
+<p>预期：两次都返回单行
+<strong>letter</strong>（<code>teamx-inv:v1:...</code>）——第一份给测试，第二份给评审。分别复制，通过聊天/文件发给两个成员。</p>
+<h3 id="测试成员窗口-导入-连接">2.2 测试成员窗口 —— 导入 + 连接</h3>
+<ol type="1">
+<li><p>先用 CLI 导入邀请函（<strong>存证书 + 认领 pending
+席位</strong>；单机共享 DB 时一步到位）：</p>
+<pre><code>/team import &lt;测试的 letter&gt; --name 测试员</code></pre>
+<p>预期：<code>teamx_team_import</code> →
+<code>status=pending</code>，<code>role=role-&lt;hex&gt;</code>（中文
+label「测试工程师」自动派生的 key），并提示证书已存到
+<code>~/.teamx/letters/&lt;invitation_id&gt;/</code>。</p></li>
+<li><p>让本窗口走网络模式（连 owner 的 serve 拿实时推送）：在启动
+opencode 的终端里</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">TEAMX_SERVER_URL</span><span class="op">=</span><span class="st">&quot;https://&lt;你的局域网IP&gt;:5781&quot;</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="co"># 然后重启 opencode（插件启动时自动从 ~/.teamx/letters 发现匹配的客户端证书，建立 mTLS RPC/WS）</span></span></code></pre></div></li>
+</ol>
+<blockquote>
+<p>手动等价：<code>teamx team import &lt;letter&gt; --name 测试员 --session &lt;本会话key&gt;</code>。</p>
+</blockquote>
+<h3 id="评审成员窗口-导入-连接">2.3 评审成员窗口 —— 导入 + 连接</h3>
+<p>同上，用第二份 letter：</p>
+<pre><code>/team import &lt;评审的 letter&gt; --name 评审员</code></pre>
+<p>预期：<code>status=pending</code>，<code>role=reviewer</code>（ASCII
+label 直接作为 key）。</p>
+<p>然后同样
+<code>export TEAMX_SERVER_URL="https://&lt;你的局域网IP&gt;:5781"</code>
+并重启 opencode。</p>
+<h3 id="owner-窗口-审批两人">2.4 owner 窗口 —— 审批两人</h3>
+<pre><code>/Team 审批所有待审批成员。</code></pre>
+<p>预期：<code>teamx_approve</code> × 2（测试员、评审员都变
+<code>active</code>，角色各自保留）。</p>
+<h3 id="三人并行工作验证实时推送">2.5 三人并行工作（验证实时推送）</h3>
+<p><strong>测试成员窗口</strong> 输入：</p>
+<pre><code>/Team 同步团队状态，开始编写测试用例，完成后向团队汇报「测试用例编写完成」。</code></pre>
+<p><strong>评审成员窗口</strong>（几乎同时）输入：</p>
+<pre><code>/Team 同步团队状态，开始代码评审，完成后向团队汇报「代码评审完成」。</code></pre>
+<p><strong>owner 窗口</strong> 输入：</p>
+<pre><code>/Team 同步团队状态，观察两名成员的最新进展。</code></pre>
+<p>预期（网络模式核心）： - 任一成员 <code>teamx_publish progress</code>
+后，<strong>其余在线成员（已连 WS）在 &lt;1s 内收到推送</strong>（TUI
+toast「新事件」），无需手动 <code>teamx_sync</code>。 - owner 若也连了
+WS（见 §2.1 可选步骤）会实时 toast；否则用 <code>teamx_sync</code>
+拉取两条 <code>progress.published</code>（测试 / 评审）按 seq 排序。</p>
+<h2 id="进阶两台机器真实跨网络">3. 进阶：两台机器（真实跨网络）</h2>
+<p>owner 在机器 A，测试/评审在机器 B（或各一台）。步骤与 §2
+相同，差异仅在<strong>成员连接</strong>：</p>
+<ol type="1">
+<li><p>owner（机器 A）建队 + <code>serve start</code> + 邀请时
+<code>--server-url https://&lt;机器A的局域网IP&gt;:5781</code>。</p></li>
+<li><p>成员（机器 B）先本地导入 letter 存证书（此时本地 DB
+无该邀请，返回 <code>status=stored</code>，只落盘）：</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> team import <span class="op">&lt;</span>letter<span class="op">&gt;</span> --name 测试员 <span class="at">--session</span> <span class="op">&lt;</span>本会话key<span class="op">&gt;</span></span></code></pre></div></li>
+<li><p>成员设
+<code>export TEAMX_SERVER_URL="https://&lt;机器A的局域网IP&gt;:5781"</code>
+后重启 opencode。</p></li>
+<li><p>成员在 <code>/Team</code> 里再
+<code>/team import &lt;letter&gt;</code>（此时走
+RPC，把证书身份绑定到服务器上的预分配席位，变 pending）。</p></li>
+<li><p>owner <code>approve</code> 后即可并行工作。</p></li>
+</ol>
+<blockquote>
+<p>成员<strong>不开放任何入站端口</strong>（出站注册）；证书 =
+“能连上”，approve = “能干活”；吊销后连连接都会被拒。</p>
+</blockquote>
+<h2 id="验证清单任意终端">4. 验证清单（任意终端）</h2>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="co"># team_id 在 owner 建队时返回</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> team status <span class="at">--team</span> <span class="op">&lt;</span>team_id<span class="op">&gt;</span> --json</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="co">#  → members 三条：owner(owner/active)、测试员(role-xxx/active)、评审员(reviewer/active)</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="ex">teamx</span> events <span class="at">--team</span> <span class="op">&lt;</span>team_id<span class="op">&gt;</span> --json</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="co"># 事件链应包含（按 seq）：</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="co"># team.created → invitation.created×2 → membership.pending×2 → membership.approved×2</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="co">#   → progress.published(测试) → progress.published(评审)（顺序取决于谁先汇报）</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a><span class="co"># 实时性：owner 的 serve 在线连接数（连了 WS 的成员数；owner 若也连则为 3）</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">--cacert</span> ~/.teamx/ca/ca.crt <span class="at">--cert</span> <span class="op">&lt;</span>owner cert<span class="op">&gt;</span> --key <span class="op">&lt;</span>owner key<span class="op">&gt;</span> https://<span class="op">&lt;</span>ip<span class="op">&gt;</span>:5781/health</span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a><span class="co">#  → &quot;connections&quot;: 2（两个成员在线；owner 也连则为 3）</span></span></code></pre></div>
+<h2 id="故障排查">5. 故障排查</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>原因 / 处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>成员 <code>import</code> 报 <code>cannot read ca.crt</code></td>
+<td>owner 没先 <code>serve start</code>（PKI 未生成）；先起 serve 或
+<code>teamx cert init</code></td>
+</tr>
+<tr>
+<td>成员连不上 / TLS 握手失败</td>
+<td>邀请时 <code>--server-url</code> 用了
+<code>127.0.0.1</code>（应填局域网 IP）；或防火墙未放行 5781</td>
+</tr>
+<tr>
+<td>证书校验失败（unable to verify）</td>
+<td>server 证书 SAN 缺局域网 IP → 重启 serve 带
+<code>--san &lt;IP&gt;</code>（<code>serve start</code> 会自动传）</td>
+</tr>
+<tr>
+<td>成员看不到实时推送</td>
+<td>没设 <code>TEAMX_SERVER_URL</code> 或没重启 opencode；或仍在纯 CLI
+轮询模式</td>
+</tr>
+<tr>
+<td>RPC 报 <code>member has been revoked</code></td>
+<td>该成员邀请函已被 owner <code>invite-revoke</code> 吊销</td>
+</tr>
+<tr>
+<td>成员 <code>status</code> 报 <code>member ... not found</code></td>
+<td>还没在服务器上 <code>import</code>（两机场景第 4 步）；或证书与
+letter 的 member_id 不匹配</td>
+</tr>
+</tbody>
+</table>
+<h2 id="自动化等价验证">6. 自动化等价验证</h2>
+<p>三人/网络流程已有自动化测试，无需真实模型即可跑通同一事件链与 mTLS/WS
+链路：</p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">./tests/run-all.sh</span>            <span class="co"># 全量（含 mtls-test.sh / ws-test.ts / cross-network.sh）</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./tests/cross-network.sh</span>      <span class="co"># 单机局域网模拟（经非 loopback IP 走完整 mTLS）</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="ex">./tests/mtls-test.sh</span>          <span class="co"># 证书身份 + 吊销强制</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="ex">bun</span> tests/ws-test.ts          <span class="co"># WS 推送：register / 实时广播 / 心跳 / 吊销断连</span></span></code></pre></div>
+<h2 id="测试记录">7. 测试记录</h2>
+<ul>
+<li>日期：____</li>
+<li>方式：□ 单机三窗口　□ 两台机器</li>
+<li>结果：□ 全部通过　□ 部分通过（问题：__________）</li>
+<li>两名成员是否都实时收到对方/owner 的推送：□ 是　□ 否</li>
+<li>事件链：<code>invitation.created×2 → membership.pending×2 → membership.approved×2 → progress.published×2</code>
+是否完整：□ 是　□ 否</li>
+</ul>
+</body>
+</html>
