@@ -21,7 +21,7 @@ crates/teamx/           Rust CLI（SQLite 事件账本 + 状态机 + loopx 桥�
 opencode-plugin/        opencode 插件（21 个 teamx_* 工具 + /Team agent + command）
 install.sh              一键安装 / --uninstall 卸载
 tests/                  run-all.sh、smoke.sh、cli-test.sh、concurrency.sh
-docs/                   v1-spec、loopx-bridge、test-plan、test-cases、v2-design、demo、demo-3p、manual-test
+docs/                   v1-spec、loopx-bridge、test-plan、test-cases、v2-design、demo、demo-3p、manual-test、network-mode、team-invite、n4-cross-network、manual-test-network
 .github/workflows/      CI（cargo test+clippy、CLI 测试、插件 typecheck+build）
 ```
 
@@ -33,7 +33,7 @@ docs/                   v1-spec、loopx-bridge、test-plan、test-cases、v2-des
 ./tests/run-all.sh    # cargo test + smoke.sh + cli-test.sh + concurrency.sh + 插件 typecheck/build
 ```
 
-手工验收：二人闭环见 `docs/manual-test.md`、`docs/demo.md`；三人闭环（owner+contributor+reviewer）见 `docs/demo-3p.md`。
+手工验收：二人闭环见 `docs/manual-test.md`、`docs/demo.md`；三人闭环（owner+contributor+reviewer）见 `docs/demo-3p.md`；网络模式（owner + 测试 + 评审，mTLS 邀请函 + WS 推送）见 `docs/manual-test-network.md`。
 
 ## 安全定位（重要）
 
