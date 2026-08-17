@@ -4,6 +4,7 @@ use crate::events;
 use crate::loopx;
 use crate::pki;
 use crate::state::{Action, GoalState, MemberState, TeamState};
+use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -79,6 +80,24 @@ struct QuestionRow {
     created_at: String,
 }
 
+#[derive(Clone)]
+#[allow(dead_code)]
+struct InvitationRow {
+    id: String,
+    team_id: String,
+    member_id: String,
+    role_key: String,
+    role_label: Option<String>,
+    role_desc: Option<String>,
+    cert_serial: Option<String>,
+    cert_cn: Option<String>,
+    created_by: String,
+    created_at: String,
+    used_by: Option<String>,
+    used_at: Option<String>,
+    revoked_at: Option<String>,
+}
+
 fn team_row(r: &rusqlite::Row) -> rusqlite::Result<TeamRow> {
     Ok(TeamRow {
         id: r.get(0)?,
@@ -125,6 +144,24 @@ fn question_row(r: &rusqlite::Row) -> rusqlite::Result<QuestionRow> {
         answer: r.get(5)?,
         state: r.get(6)?,
         created_at: r.get(7)?,
+    })
+}
+
+fn invitation_row(r: &rusqlite::Row) -> rusqlite::Result<InvitationRow> {
+    Ok(InvitationRow {
+        id: r.get(0)?,
+        team_id: r.get(1)?,
+        member_id: r.get(2)?,
+        role_key: r.get(3)?,
+        role_label: r.get(4)?,
+        role_desc: r.get(5)?,
+        cert_serial: r.get(6)?,
+        cert_cn: r.get(7)?,
+        created_by: r.get(8)?,
+        created_at: r.get(9)?,
+        used_by: r.get(10)?,
+        used_at: r.get(11)?,
+        revoked_at: r.get(12)?,
     })
 }
 
@@ -303,6 +340,40 @@ fn role_label(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<O
     .optional()
 }
 
+fn invitation_by_id(conn: &Connection, id: &str) -> Result<InvitationRow> {
+    conn.query_row(
+        "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
+                created_by, created_at, used_by, used_at, revoked_at
+         FROM invitations WHERE id = ?1",
+        [id],
+        invitation_row,
+    )
+    .map_err(|_| AppError(format!("invitation {id} not found")))
+}
+
+fn invitation_by_id_opt(conn: &Connection, id: &str) -> rusqlite::Result<Option<InvitationRow>> {
+    conn.query_row(
+        "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
+                created_by, created_at, used_by, used_at, revoked_at
+         FROM invitations WHERE id = ?1",
+        [id],
+        invitation_row,
+    )
+    .optional()
+}
+
+/// Network mode: resolve a member's session key by id. The actor identity comes
+/// from the client certificate CN (`member:<id>:<role>`), not a self-reported
+/// session, so this is the bridge back into the existing session-based commands.
+pub fn session_key_for_member(conn: &Connection, member_id: &str) -> Result<String> {
+    conn.query_row(
+        "SELECT session_key FROM members WHERE id = ?1",
+        [member_id],
+        |r| r.get(0),
+    )
+    .map_err(|_| AppError(format!("member {member_id} not found (has it joined/imported yet?)")))
+}
+
 // ---------------------------------------------------------------------------
 // Event helpers (inside write transaction)
 // ---------------------------------------------------------------------------
@@ -337,6 +408,12 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Status { team, session } => cmd_team_status(conn, team.as_deref(), session.as_deref())?,
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
+            TeamCmd::Invite { role_desc, name_hint, server_url, session, team } => {
+                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref())?
+            }
+            TeamCmd::InviteList { session, team } => cmd_team_invite_list(conn, session, team.as_deref())?,
+            TeamCmd::InviteRevoke { id, session, team } => cmd_team_invite_revoke(conn, id, session, team.as_deref())?,
+            TeamCmd::Import { letter, name, session } => cmd_team_import(conn, letter, name.as_deref(), session, None)?,
         },
         Command::Goal(g) => match g {
             GoalCmd::Set { title, body, session, team } => {
@@ -739,6 +816,432 @@ fn cmd_team_archive(conn: &mut Connection, session: &str, team_opt: Option<&str>
     .map_err(|e| AppError(format!("archive failed: {e}")))?;
     touch(conn, &actor.id).ok();
     Ok(json!({ "ok": true, "team": team.id, "state": to_s, "from": from_s }))
+}
+
+// ---------------------------------------------------------------------------
+// Invitation letters (network mode I1)
+// ---------------------------------------------------------------------------
+
+/// Derive a usable role key from a human label ("tester" → "tester"; a
+/// non-ASCII label falls back to a short `role-<hex>` slug).
+fn role_key_from_label(label: &str) -> String {
+    let slug: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else if c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() || slug.len() > 32 {
+        format!("role-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
+    } else {
+        slug
+    }
+}
+
+fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<InvitationRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
+                created_by, created_at, used_by, used_at, revoked_at
+         FROM invitations WHERE team_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([team_id], invitation_row)?;
+    rows.collect()
+}
+
+/// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
+fn cmd_team_invite(
+    conn: &mut Connection,
+    role_desc: &str,
+    name_hint: Option<&str>,
+    server_url: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+
+    let (label, desc) = match role_desc.split_once(':') {
+        Some((l, d)) => {
+            let d = d.trim();
+            (l.trim(), if d.is_empty() { None } else { Some(d.to_string()) })
+        }
+        None => (role_desc.trim(), None),
+    };
+    if label.is_empty() {
+        return err("invite requires a non-empty role (e.g. `测试工程师: 负责测试并汇报缺陷`)");
+    }
+    let role_key = role_key_from_label(label);
+
+    let member_id = uuid::Uuid::new_v4().to_string();
+    let invitation_id = uuid::Uuid::new_v4().to_string();
+    let home = teamx_home_dir();
+    let issued = pki::issue_member_cert(&home, &member_id, &role_key).map_err(AppError)?;
+    let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
+        .map_err(|e| AppError(format!("read ca cert: {e}")))?;
+    let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
+    let server = server_url.unwrap_or("https://127.0.0.1:5781").to_string();
+    let now = db::now();
+
+    let letter = json!({
+        "teamx_invitation": {
+            "version": 1,
+            "invitation_id": invitation_id,
+            "team": { "id": team.id, "name": team.name },
+            "server": { "url": server, "ca_fingerprint": format!("sha256:{fingerprint}") },
+            "member": { "name_hint": name_hint.unwrap_or("") },
+            "role": { "key": role_key, "label": label, "description": desc },
+            "issued_at": now,
+            "expires_at": null,
+        },
+        "certificates": {
+            "ca_cert": ca_pem,
+            "client_cert": issued.cert_pem,
+            "client_key": issued.key_pem,
+        },
+    });
+
+    let label_owned = label.to_string();
+    let desc_ref = desc.as_deref();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "INSERT OR IGNORE INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
+             VALUES (?1, ?2, ?3, ?4, '{}', 'approved', ?5)",
+            params![team.id, role_key, label_owned, desc_ref, actor.id],
+        )?;
+        tx.execute(
+            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                invitation_id,
+                team.id,
+                member_id,
+                role_key,
+                label_owned,
+                desc_ref,
+                issued.serial_hex,
+                issued.cn,
+                actor.id,
+                now
+            ],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "invitation.created",
+            json!({ "invitation_id": invitation_id, "member_id": member_id, "role": role_key, "role_label": label_owned }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("invite failed: {e}")))?;
+
+    let letter_json = serde_json::to_string(&letter).map_err(|e| AppError(format!("serialize letter: {e}")))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(letter_json.as_bytes());
+
+    Ok(json!({
+        "ok": true,
+        "invitation_id": invitation_id,
+        "member_id": member_id,
+        "role": { "key": role_key, "label": label, "description": desc },
+        "letter": format!("teamx-inv:v1:{encoded}"),
+        "note": "share this letter with the member; they import it with `teamx team import <letter>`",
+    }))
+}
+
+fn cmd_team_invite_list(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let rows = invitations_for_team(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
+    let list: Vec<Value> = rows
+        .iter()
+        .map(|i| {
+            let state = if i.revoked_at.is_some() {
+                "revoked"
+            } else if i.used_by.is_some() {
+                "used"
+            } else {
+                "unused"
+            };
+            json!({
+                "invitation_id": i.id,
+                "member_id": i.member_id,
+                "role_key": i.role_key,
+                "role_label": i.role_label,
+                "state": state,
+                "created_at": i.created_at,
+                "used_by": i.used_by,
+                "revoked_at": i.revoked_at,
+            })
+        })
+        .collect();
+    Ok(json!({ "ok": true, "invitations": list }))
+}
+
+fn cmd_team_invite_revoke(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let inv = invitation_by_id(conn, id)?;
+    if inv.team_id != team.id {
+        return err(format!("invitation {id} is not in team {}", team.id));
+    }
+    if inv.revoked_at.is_some() {
+        return err(format!("invitation {id} is already revoked"));
+    }
+    let now = db::now();
+    db::with_write(conn, |tx| {
+        tx.execute("UPDATE invitations SET revoked_at = ?1 WHERE id = ?2", params![now, id])?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "invitation.revoked",
+            json!({ "invitation_id": id, "member_id": inv.member_id }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("revoke failed: {e}")))?;
+    Ok(json!({ "ok": true, "invitation_id": id, "revoked": true }))
+}
+
+/// `team import <letter>` — unpack the letter and store the mTLS material
+/// locally. When the invitation exists in the local DB (single-machine mode)
+/// the pre-allocated member seat is also claimed (pending).
+fn cmd_team_import(
+    conn: &mut Connection,
+    letter: &str,
+    name: Option<&str>,
+    session: &str,
+    expected_member_id: Option<&str>,
+) -> Result<Value> {
+    let letter_val = decode_letter(letter)?;
+    let inv = &letter_val["teamx_invitation"];
+    let invitation_id = inv["invitation_id"]
+        .as_str()
+        .ok_or_else(|| AppError("invalid letter: missing invitation_id".into()))?;
+    let version = inv["version"].as_i64().unwrap_or(0);
+    if version != 1 {
+        return err(format!("unsupported invitation letter version {version}"));
+    }
+
+    let certs = &letter_val["certificates"];
+    let ca_pem = certs["ca_cert"].as_str().ok_or_else(|| AppError("letter missing ca_cert".into()))?;
+    let client_cert = certs["client_cert"].as_str().ok_or_else(|| AppError("letter missing client_cert".into()))?;
+    let client_key = certs["client_key"].as_str().ok_or_else(|| AppError("letter missing client_key".into()))?;
+
+    store_letter(invitation_id, &letter_val, ca_pem, client_cert, client_key)?;
+
+    // The invitation lives on the owner's DB. On a member's own machine it is
+    // absent, so a local import only stores the material; registration happens
+    // server-side over mTLS (`team.import` RPC).
+    let inv_row = match invitation_by_id_opt(conn, invitation_id).map_err(|e| AppError(format!("db error: {e}")))? {
+        Some(r) => r,
+        None => {
+            return Ok(json!({
+                "ok": true,
+                "status": "stored",
+                "invitation_id": invitation_id,
+                "letters_dir": teamx_home_dir().join("letters").join(invitation_id).display().to_string(),
+                "note": "letter stored locally; connect to the server to complete registration",
+            }));
+        }
+    };
+
+    claim_invitation(conn, &inv_row, session, name, &letter_val, expected_member_id)
+}
+
+/// Network mode: register a member from their invitation letter, binding the
+/// pre-allocated seat to the certificate-derived member id (no local store —
+/// the member already stored the letter on their own machine).
+pub fn import_with_cert(
+    conn: &mut Connection,
+    letter: &str,
+    name: Option<&str>,
+    member_id: &str,
+) -> Result<Value> {
+    let letter_val = decode_letter(letter)?;
+    let inv = &letter_val["teamx_invitation"];
+    let invitation_id = inv["invitation_id"]
+        .as_str()
+        .ok_or_else(|| AppError("invalid letter: missing invitation_id".into()))?;
+    let inv_row = invitation_by_id(conn, invitation_id)?;
+    let session = format!("net:{member_id}");
+    claim_invitation(conn, &inv_row, &session, name, &letter_val, Some(member_id))
+}
+
+/// Claim a pre-allocated member seat from a valid invitation row.
+fn claim_invitation(
+    conn: &mut Connection,
+    inv_row: &InvitationRow,
+    session: &str,
+    name: Option<&str>,
+    letter_val: &Value,
+    expected_member_id: Option<&str>,
+) -> Result<Value> {
+    let invitation_id = inv_row.id.clone();
+    if let Some(expected) = expected_member_id {
+        if inv_row.member_id != expected {
+            return err(format!(
+                "letter {invitation_id} does not match your certificate identity (cert member {expected}, letter member {})",
+                inv_row.member_id
+            ));
+        }
+    }
+    if inv_row.revoked_at.is_some() {
+        return err(format!("invitation {invitation_id} has been revoked"));
+    }
+    if inv_row.used_by.as_deref().is_some() && inv_row.used_by.as_deref() != Some(session) {
+        return err(format!("invitation {invitation_id} has already been used"));
+    }
+
+    let inv = &letter_val["teamx_invitation"];
+    let role_key = inv["role"]["key"].as_str().unwrap_or(&inv_row.role_key).to_string();
+    let role_label = inv["role"]["label"].as_str();
+    let name_hint = inv["member"]["name_hint"].as_str().unwrap_or("");
+    let display_name = name
+        .filter(|n| !n.is_empty())
+        .or_else(|| (!name_hint.is_empty()).then_some(name_hint))
+        .unwrap_or_else(|| role_label.unwrap_or("member"))
+        .to_string();
+
+    let team_id = inv_row.team_id.clone();
+    let member_id = inv_row.member_id.clone();
+    let now = db::now();
+
+    let existing: Option<(String, String)> = conn
+        .query_row("SELECT id, state FROM members WHERE id = ?1", [&member_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()
+        .map_err(|e| AppError(format!("db error: {e}")))?;
+
+    match existing {
+        Some((_, st)) if st == "left" || st == "denied" => {
+            db::with_write(conn, |tx| {
+                tx.execute(
+                    "UPDATE members SET session_key = ?1, display_name = ?2, role = ?3, state = 'pending',
+                     joined_at = ?4, left_at = NULL WHERE id = ?5",
+                    params![session, display_name, role_key, now, member_id],
+                )?;
+                emit_json(
+                    tx,
+                    &team_id,
+                    Some(&member_id),
+                    "membership.pending",
+                    json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "rejoined": true }),
+                )?;
+                Ok(())
+            })
+            .map_err(|e| AppError(format!("import failed: {e}")))?;
+        }
+        Some((_, st)) => {
+            return err(format!("member {member_id} already exists (state {st}); import once"));
+        }
+        None => {
+            db::with_write(conn, |tx| {
+                tx.execute(
+                    "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+                    params![member_id, team_id, session, display_name, role_key, now],
+                )?;
+                emit_json(
+                    tx,
+                    &team_id,
+                    Some(&member_id),
+                    "membership.pending",
+                    json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "role": role_key }),
+                )?;
+                Ok(())
+            })
+            .map_err(|e| AppError(format!("import failed: {e}")))?;
+        }
+    }
+
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE invitations SET used_by = ?1, used_at = ?2 WHERE id = ?3",
+            params![session, now, invitation_id],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("import failed: {e}")))?;
+
+    let team = team_by_id(conn, &team_id)?;
+    Ok(json!({
+        "ok": true,
+        "status": "pending",
+        "member_id": member_id,
+        "role": role_key,
+        "team": { "id": team.id, "name": team.name, "state": team.state },
+        "note": "invitation imported; waiting for owner approval",
+    }))
+}
+
+/// Decode a letter from `teamx-inv:v1:<base64>`, a file path, or raw JSON.
+fn decode_letter(letter: &str) -> Result<Value> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+
+    let text = if let Some(b64part) = letter.strip_prefix("teamx-inv:v1:") {
+        let bytes = b64
+            .decode(b64part)
+            .map_err(|e| AppError(format!("invalid letter base64: {e}")))?;
+        String::from_utf8(bytes).map_err(|e| AppError(format!("letter is not UTF-8: {e}")))?
+    } else if std::path::Path::new(letter).is_file() {
+        let bytes = std::fs::read(letter)
+            .map_err(|e| AppError(format!("cannot read letter file {letter}: {e}")))?;
+        let s = String::from_utf8(bytes).map_err(|e| AppError(format!("letter file is not UTF-8: {e}")))?;
+        // a file may itself contain the `teamx-inv:v1:` prefix
+        match s.trim().strip_prefix("teamx-inv:v1:") {
+            Some(b64part) => {
+                let bytes = b64
+                    .decode(b64part)
+                    .map_err(|e| AppError(format!("invalid letter base64: {e}")))?;
+                String::from_utf8(bytes).map_err(|e| AppError(format!("letter is not UTF-8: {e}")))?
+            }
+            None => s,
+        }
+    } else {
+        letter.to_string()
+    };
+
+    serde_json::from_str(&text).map_err(|e| AppError(format!("invalid letter JSON: {e}")))
+}
+
+/// Store the unpacked letter + mTLS material under `~/.teamx/letters/<id>/`.
+fn store_letter(invitation_id: &str, letter: &Value, ca_pem: &str, client_cert: &str, client_key: &str) -> Result<()> {
+    let dir = teamx_home_dir().join("letters").join(invitation_id);
+    std::fs::create_dir_all(&dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
+    let write = |name: &str, content: &str| -> Result<()> {
+        let p = dir.join(name);
+        std::fs::write(&p, content).map_err(|e| AppError(format!("write {}: {e}", p.display())))?;
+        chmod_0600(&p);
+        Ok(())
+    };
+    write("letter.json", &serde_json::to_string_pretty(letter).unwrap_or_default())?;
+    write("ca.crt", ca_pem)?;
+    write("client.crt", client_cert)?;
+    write("client.key", client_key)?;
+    // convenience pointer so the plugin can discover the most recent import
+    let cur = teamx_home_dir().join("letters").join("current.json");
+    std::fs::write(&cur, json!({ "invitation_id": invitation_id }).to_string())
+        .map_err(|e| AppError(format!("write current.json: {e}")))?;
+    chmod_0600(&cur);
+    Ok(())
+}
+
+fn chmod_0600(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
 }
 
 fn cmd_member_set_state(
@@ -1576,23 +2079,24 @@ fn cmd_cert_init() -> Result<Value> {
 /// `teamx cert issue <member_id> <role> [--out dir]` — issue a member cert.
 fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) -> Result<Value> {
     let home = teamx_home_dir();
-    let (cert_pem, key_pem) = pki::issue_member_cert(&home, member_id, role).map_err(AppError)?;
-    let cn = format!("member:{member_id}:{role}");
+    let issued = pki::issue_member_cert(&home, member_id, role).map_err(AppError)?;
+    let cn = &issued.cn;
     match out {
         Some(dir) => {
             std::fs::create_dir_all(dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
             let cert_path = dir.join("member.crt");
             let key_path = dir.join("member.key");
-            std::fs::write(&cert_path, &cert_pem).map_err(|e| AppError(format!("write cert: {e}")))?;
-            std::fs::write(&key_path, &key_pem).map_err(|e| AppError(format!("write key: {e}")))?;
+            std::fs::write(&cert_path, &issued.cert_pem).map_err(|e| AppError(format!("write cert: {e}")))?;
+            std::fs::write(&key_path, &issued.key_pem).map_err(|e| AppError(format!("write key: {e}")))?;
             Ok(json!({
                 "ok": true,
                 "cn": cn,
+                "serial": issued.serial_hex,
                 "cert": cert_path.display().to_string(),
                 "key": key_path.display().to_string(),
             }))
         }
-        None => Ok(json!({ "ok": true, "cn": cn, "cert_pem": cert_pem, "key_pem": key_pem })),
+        None => Ok(json!({ "ok": true, "cn": cn, "serial": issued.serial_hex, "cert_pem": issued.cert_pem, "key_pem": issued.key_pem })),
     }
 }
 

@@ -1164,10 +1164,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-server",
+ "base64",
  "chrono",
  "clap",
  "dirs",
  "rcgen",
+ "ring",
  "rusqlite",
  "rustls",
  "rustls-pemfile",
@@ -1175,8 +1177,11 @@ dependencies = [
  "serde_json",
  "time",
  "tokio",
+ "tokio-rustls",
+ "tower",
  "tower-http",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

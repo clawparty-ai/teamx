@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { teamxBin, TEAMX_HOME } from "./client"
+import { teamxBin, TEAMX_HOME, mtlsFor } from "./client"
 
 const SERVE_FILE = join(TEAMX_HOME, "serve.json")
 
@@ -95,7 +95,7 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
   const db = opts.db ?? process.env.TEAMX_DB ?? join(TEAMX_HOME, "teamx.db")
   const ip = localIP()
 
-  const args = ["serve", "--addr", addr, "--port", String(port)]
+  const args = ["serve", "--addr", addr, "--port", String(port), "--san", ip]
   if (opts.db || process.env.TEAMX_DB) args.push("--db", db)
 
   const proc = Bun.spawn([teamxBin(), ...args], {
@@ -108,17 +108,24 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
     pid: proc.pid,
     addr,
     port,
-    url: `http://${ip}:${port}`,
+    url: `https://${ip}:${port}`,
     db,
     started_at: new Date().toISOString(),
   }
   writeRecord(rec)
 
-  // Poll /health until ready (up to ~5s).
-  const base = `http://127.0.0.1:${port}`
+  // Poll /health until ready (up to ~5s). mTLS is required, so present the
+  // mTLS material when available; otherwise fall back to a process-liveness
+  // wait (the server may still be coming up).
+  const base = `https://127.0.0.1:${port}`
+  const mtls = mtlsFor(base)
   for (let i = 0; i < 25; i++) {
     try {
-      const res = await fetch(`${base}/health`)
+      const init: RequestInit & { tls?: Record<string, unknown> } = {}
+      if (mtls) {
+        init.tls = { cert: mtls.cert, key: mtls.key, ca: mtls.ca, serverName: mtls.serverName }
+      }
+      const res = await fetch(`${base}/health`, init)
       if (res.ok) return serveStatus()
     } catch {
       // not up yet

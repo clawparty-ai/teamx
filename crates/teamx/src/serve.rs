@@ -7,9 +7,13 @@
 //!
 //! Security: the server REQUIRES mutual TLS. Clients must present a certificate
 //! signed by the instance CA (`~/.teamx/ca/ca.crt`); the client certificate CN
-//! carries the member identity (`member:<id>:<role>`).
+//! carries the member identity (`member:<id>:<role>`). The RPC handler derives
+//! the actor from that certificate — the self-reported `session` in the request
+//! is ignored for authorization.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -17,10 +21,15 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
+use axum_server::accept::Accept;
 use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio_rustls::server::TlsStream;
+use tower::Layer;
 
 use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd};
 use crate::commands;
@@ -38,6 +47,68 @@ struct RpcRequest {
     method: String,
     #[serde(default)]
     args: Value,
+}
+
+/// The authenticated client identity, extracted from the mTLS peer certificate
+/// CN (`member:<id>:<role>` or empty if none was presented).
+#[derive(Clone)]
+struct PeerIdentity(String);
+
+/// Extract the common name from a DER-encoded X.509 certificate.
+fn extract_cn(der: &[u8]) -> Option<String> {
+    use x509_parser::prelude::*;
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
+    let cn = cert
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|a| a.as_str().ok())
+        .map(str::to_string);
+    cn
+}
+
+/// A helper so `CertAcceptor` can read the peer CN off any TLS stream.
+trait PeerCerts {
+    fn peer_identity_cn(&self) -> String;
+}
+
+impl<IO> PeerCerts for TlsStream<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    fn peer_identity_cn(&self) -> String {
+        let (_io, conn) = self.get_ref();
+        conn.peer_certificates()
+            .and_then(|certs| certs.first())
+            .and_then(|der| extract_cn(der.as_ref()))
+            .unwrap_or_default()
+    }
+}
+
+/// Wraps the rustls acceptor so the verified client cert CN is injected as a
+/// request extension that `Extension<PeerIdentity>` can extract.
+#[derive(Clone)]
+struct CertAcceptor {
+    inner: axum_server::tls_rustls::RustlsAcceptor,
+}
+
+impl<S> Accept<TcpStream, S> for CertAcceptor
+where
+    S: Clone + Send + 'static,
+{
+    type Stream = TlsStream<TcpStream>;
+    type Service = tower_http::add_extension::AddExtension<S, PeerIdentity>;
+    type Future = Pin<Box<dyn Future<Output = std::io::Result<(Self::Stream, Self::Service)>> + Send>>;
+
+    fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
+        let fut = self.inner.accept(stream, service);
+        Box::pin(async move {
+            let (stream, service) = fut.await?;
+            let identity = PeerIdentity(stream.peer_identity_cn());
+            let service = tower_http::add_extension::AddExtensionLayer::new(identity).layer(service);
+            Ok((stream, service))
+        })
+    }
 }
 
 /// Entry point for `teamx serve`.
@@ -61,8 +132,9 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
 
     // mTLS: build a rustls ServerConfig that requires a client certificate
     // signed by the instance CA, and present the server certificate chain.
+    // The server cert is (re)generated to cover any extra SANs (e.g. LAN IP).
     let home = crate::db::teamx_home();
-    let pk = pki::ensure_pki(&home)?;
+    let pk = pki::ensure_server_sans(&home, &cmd.san)?;
     let tls_config = build_mtls_config(&pk)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -76,7 +148,9 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
     );
     rt.block_on(async {
         let config = RustlsConfig::from_config(tls_config);
-        axum_server::bind_rustls(addr, config)
+        let server = axum_server::bind_rustls(addr, config)
+            .map(|acceptor| CertAcceptor { inner: acceptor });
+        server
             .serve(app.into_make_service())
             .await
             .map_err(|e| format!("server error: {e}"))
@@ -126,27 +200,56 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "ok": true, "service": "teamx", "version": env!("CARGO_PKG_VERSION") }))
 }
 
-async fn rpc(State(state): State<AppState>, Json(req): Json<RpcRequest>) -> impl IntoResponse {
+async fn rpc(
+    State(state): State<AppState>,
+    Extension(identity): Extension<PeerIdentity>,
+    Json(req): Json<RpcRequest>,
+) -> impl IntoResponse {
+    let cn = identity.0;
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
-        dispatch(&req.method, &req.args, &mut conn)
+        dispatch(&req.method, &req.args, &mut conn, &cn)
     })
     .await;
 
     match result {
         Ok(Ok(data)) => (StatusCode::OK, Json(json!({ "ok": true, "data": data }))),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": e }))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "ok": false, "error": format!("internal: {e}") }))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": format!("internal: {e}") })),
+        ),
     }
 }
 
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
-/// then run it through `commands::execute`.
-fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Result<Value, String> {
+/// then run it through `commands::execute`. The actor identity comes from the
+/// verified client certificate CN (`actor_cn`), not the self-reported `session`.
+fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
     let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
-    let session = |args: &Value| args.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+
+    // Identity from the certificate: `member:<id>:<role>`.
+    let member_id = pki::parse_member_cn(actor_cn)
+        .map(|(id, _role)| id)
+        .ok_or_else(|| format!("no member identity in client certificate CN `{actor_cn}`"))?;
+
+    // `team.import` registers a member whose seat is pre-allocated in the
+    // invitation (the member row may not exist yet). It binds that seat to the
+    // certificate-derived member id, so handle it before the generic dispatch.
+    if method == "team.import" {
+        let letter = s("letter").ok_or_else(|| "team.import requires `letter`".to_string())?;
+        let name = o("name");
+        return commands::import_with_cert(conn, &letter, name.as_deref(), &member_id)
+            .map_err(|e| e.to_string());
+    }
+
+    // Every other command requires an existing member: resolve their session_key
+    // by the certificate-derived member id (the self-reported `session` arg is
+    // ignored for authorization).
+    let session = commands::session_key_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+    let sess = |_args: &Value| session.clone();
 
     // Build the Cli with only the command populated; db/json are irrelevant
     // because `commands::execute` only reads `cli.command`.
@@ -161,51 +264,64 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Resu
 
         "team.create" => Command::Team(TeamCmd::Create {
             name: s("name").ok_or_else(|| "team.create requires `name`".to_string())?,
-            session: session(args),
+            session: sess(args),
             goal_title: o("goal_title"),
             goal_body: o("goal_body"),
         }),
         "team.join" => Command::Team(TeamCmd::Join {
             token: s("token").ok_or_else(|| "team.join requires `token`".to_string())?,
             name: s("name").ok_or_else(|| "team.join requires `name`".to_string())?,
-            session: session(args),
+            session: sess(args),
             loopx_project: None,
         }),
         "team.approve" => Command::Team(TeamCmd::Approve {
             member_id: s("member_id").ok_or_else(|| "team.approve requires `member_id`".to_string())?,
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
         "team.deny" => Command::Team(TeamCmd::Deny {
             member_id: s("member_id").ok_or_else(|| "team.deny requires `member_id`".to_string())?,
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
-        "team.list" => Command::Team(TeamCmd::List { session: session(args) }),
-        "team.status" => Command::Team(TeamCmd::Status { team: o("team"), session: o("session") }),
-        "team.leave" => Command::Team(TeamCmd::Leave { session: session(args), team: o("team") }),
-        "team.archive" => Command::Team(TeamCmd::Archive { session: session(args), team: o("team") }),
+        "team.list" => Command::Team(TeamCmd::List { session: sess(args) }),
+        "team.status" => Command::Team(TeamCmd::Status { team: o("team"), session: Some(sess(args)) }),
+        "team.leave" => Command::Team(TeamCmd::Leave { session: sess(args), team: o("team") }),
+        "team.archive" => Command::Team(TeamCmd::Archive { session: sess(args), team: o("team") }),
+        "team.invite" => Command::Team(TeamCmd::Invite {
+            role_desc: s("role_desc").ok_or_else(|| "team.invite requires `role_desc`".to_string())?,
+            name_hint: o("name_hint"),
+            server_url: o("server_url"),
+            session: sess(args),
+            team: o("team"),
+        }),
+        "team.invite_list" => Command::Team(TeamCmd::InviteList { session: sess(args), team: o("team") }),
+        "team.invite_revoke" => Command::Team(TeamCmd::InviteRevoke {
+            id: s("id").ok_or_else(|| "team.invite_revoke requires `id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
 
         "goal.set" => Command::Goal(GoalCmd::Set {
             title: s("title").ok_or_else(|| "goal.set requires `title`".to_string())?,
             body: o("body"),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
-        "goal.share" => Command::Goal(GoalCmd::Share { session: session(args), team: o("team") }),
-        "goal.close" => Command::Goal(GoalCmd::Close { session: session(args), team: o("team") }),
+        "goal.share" => Command::Goal(GoalCmd::Share { session: sess(args), team: o("team") }),
+        "goal.close" => Command::Goal(GoalCmd::Close { session: sess(args), team: o("team") }),
 
         "member.set_state" => Command::Member(MemberCmd::SetState {
             state: s("state").ok_or_else(|| "member.set_state requires `state`".to_string())?,
             member: o("member"),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
 
         "role.list" => Command::Role(RoleCmd::List { team: o("team") }),
         "role.set" => Command::Role(RoleCmd::Set {
             role: s("role").ok_or_else(|| "role.set requires `role`".to_string())?,
-            session: session(args),
+            session: sess(args),
             member: o("member"),
             team: o("team"),
         }),
@@ -213,24 +329,24 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Resu
             role: s("role").ok_or_else(|| "role.propose requires `role`".to_string())?,
             label: s("label").ok_or_else(|| "role.propose requires `label`".to_string())?,
             description: o("description"),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
         "role.approve" => Command::Role(RoleCmd::Approve {
             role: s("role").ok_or_else(|| "role.approve requires `role`".to_string())?,
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
         "role.deny" => Command::Role(RoleCmd::Deny {
             role: s("role").ok_or_else(|| "role.deny requires `role`".to_string())?,
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
         "role.update" => Command::Role(RoleCmd::Update {
             role: s("role").ok_or_else(|| "role.update requires `role`".to_string())?,
             label: o("label"),
             description: o("description"),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
 
@@ -238,19 +354,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Resu
             r#type: s("type").ok_or_else(|| "publish requires `type`".to_string())?,
             data: o("data"),
             assignee: o("assignee"),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         },
         "ask" => Command::Ask {
             member_id: s("member_id").ok_or_else(|| "ask requires `member_id`".to_string())?,
             question: s("question").ok_or_else(|| "ask requires `question`".to_string())?,
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         },
         "respond" => Command::Respond {
             ask_id: s("ask_id").ok_or_else(|| "respond requires `ask_id`".to_string())?,
             answer: s("answer").ok_or_else(|| "respond requires `answer`".to_string())?,
-            session: session(args),
+            session: sess(args),
         },
         "events" => Command::Events {
             after: args.get("after").and_then(Value::as_i64),
@@ -258,14 +374,14 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection) -> Resu
         },
         "log" => Command::Log {
             team: o("team"),
-            session: o("session"),
+            session: Some(sess(args)),
             limit: args.get("limit").and_then(Value::as_i64),
             after: args.get("after").and_then(Value::as_i64),
         },
-        "sync" => Command::Sync { session: session(args), no_advance: b("no_advance") },
+        "sync" => Command::Sync { session: sess(args), no_advance: b("no_advance") },
         "loopx.report" => Command::Loopx(LoopxCmd::Report {
             project: s("project").ok_or_else(|| "loopx.report requires `project`".to_string())?.into(),
-            session: session(args),
+            session: sess(args),
             team: o("team"),
         }),
 

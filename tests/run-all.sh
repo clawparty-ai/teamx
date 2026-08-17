@@ -6,6 +6,7 @@
 #   4. tests/three-member.sh - 3-participant demo (owner+contributor+reviewer)
 #   5. tests/concurrency.sh - parallel writers, seq ordering (TC-301)
 #   6. plugin typecheck + bundle build
+#   7. network-mode mTLS identity test
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -39,6 +40,10 @@ if command -v bun >/dev/null 2>&1; then
 else
   echo "bun not found; skipping plugin checks"
 fi
+
+echo
+echo "== 7/7 network-mode mTLS identity test =="
+./tests/mtls-test.sh
 
 echo
 echo "ALL TEST SUITES PASSED"

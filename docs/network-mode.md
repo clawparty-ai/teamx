@@ -1,6 +1,6 @@
 # teamx 网络模式（Network Mode）设计方案
 
-> 状态：**设计评审中（待 owner 评估）**
+> 状态：**N0 已实现**（`teamx serve` mTLS HTTP RPC + auto-execute + 邀请函 I1）；N1（WS 推送）待做
 > 关联文档：`docs/v1-spec.md`（V1 现状）、`docs/v2-design.md`（架构蓝图）
 > 目标读者：实现者、owner、协作成员
 

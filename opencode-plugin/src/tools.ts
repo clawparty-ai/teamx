@@ -140,6 +140,60 @@ export const tools = {
     },
   }),
 
+  teamx_team_invite: tool({
+    description:
+      "Invite a member with a job role (owner only). Issues a client certificate + a self-contained " +
+      "invitation letter (base64 `teamx-inv:v1:...`) to share with the member. The member imports it and " +
+      "connects over mTLS; you still approve them before they can work.",
+    args: {
+      role_desc: tool.schema.string().describe('job role + description, e.g. "测试工程师: 负责测试并汇报缺陷"'),
+      name_hint: tool.schema.string().optional().describe("suggested display name (member may override at import)"),
+      server_url: tool.schema.string().optional().describe("server URL to embed in the letter (default https://127.0.0.1:5781)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, [
+        "team",
+        "invite",
+        args.role_desc,
+        ...opt("--name-hint", args.name_hint),
+        ...opt("--server-url", args.server_url),
+      ])
+    },
+  }),
+
+  teamx_team_invite_list: tool({
+    description: "List issued invitation letters for the team (owner only), with their state (unused/used/revoked).",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "invite-list"])
+    },
+  }),
+
+  teamx_team_invite_revoke: tool({
+    description: "Revoke an invitation letter (owner only); its certificate is rejected at connect.",
+    args: {
+      id: tool.schema.string().describe("invitation id to revoke"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "invite-revoke", args.id])
+    },
+  }),
+
+  teamx_team_import: tool({
+    description:
+      "Import an invitation letter (single-line `teamx-inv:v1:<base64>` or a path to a .json letter). " +
+      "Stores the mTLS material locally and, when the team DB is local, claims the pending member seat.",
+    args: {
+      letter: tool.schema.string().describe("the invitation letter (base64 or file path)"),
+      name: tool.schema.string().optional().describe("display name (defaults to the letter's name_hint)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const r = await txResult(context.sessionID, ["team", "import", args.letter, ...opt("--name", args.name)])
+      if (r.ok) markMember(context.sessionID, true)
+      return renderResult(r)
+    },
+  }),
+
   teamx_set_role: tool({
     description:
       "Choose a role for the current session (member self-service) or assign one to another member (owner only, via member). " +
@@ -344,13 +398,14 @@ export const tools = {
   teamx_serve_token: tool({
     description:
       "Generate or rotate a connection token for a member so they can connect to the network-mode server. " +
-      "Note: N0 uses self-reported session keys; full token auth lands in N2.",
+      "Note: with I1, member identity comes from mTLS client certificates issued via `teamx_team_invite`; " +
+      "token auth is superseded.",
     args: {
       member: tool.schema.string().describe("member id"),
     },
     async execute(_args, context: ToolCtx) {
-      // N2 placeholder — returns a descriptive note for now.
-      return "teamx: token auth arrives in N2. For now members connect using their session key and TEAMX_SERVER_URL."
+      // Superseded by mTLS invitation letters (I1) — kept for compatibility.
+      return "teamx: identity is now mTLS client certificates (see teamx_team_invite); token auth is deprecated."
     },
   }),
 }

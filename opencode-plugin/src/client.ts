@@ -4,7 +4,7 @@
 // shells out to `teamx <cmd> ... --json`. For V2 this module is the single
 // seam to replace with an HTTP client against `teamx serve`.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -97,6 +97,109 @@ function toSnake(s: string): string {
   return s.replace(/-/g, "_")
 }
 
+// ---------------------------------------------------------------------------
+// mTLS transport material (network mode, I1).
+//
+// The server requires mutual TLS: every RPC must present a client certificate
+// signed by the team's CA. This material comes from an imported invitation
+// letter (stored under ~/.teamx/letters/<invitation_id>/) or, for the owner,
+// a self-issued cert. Explicit env vars win over letter auto-discovery.
+// ---------------------------------------------------------------------------
+
+interface MtlsMaterial {
+  cert: string
+  key: string
+  ca: string
+  serverName: string
+}
+
+function readPem(path: string): string {
+  return readFileSync(path, "utf8")
+}
+
+/** Env override: TEAMX_MTLS_CERT/KEY/CA point at PEM files. */
+function envMtls(serverName: string): MtlsMaterial | null {
+  const cert = process.env.TEAMX_MTLS_CERT
+  const key = process.env.TEAMX_MTLS_KEY
+  const ca = process.env.TEAMX_MTLS_CA
+  if (!cert || !key || !ca) return null
+  if (!existsSync(cert) || !existsSync(key) || !existsSync(ca)) return null
+  return { cert: readPem(cert), key: readPem(key), ca: readPem(ca), serverName }
+}
+
+/** Host portion of a URL (for SNI / letter matching). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Auto-discover the mTLS material from imported invitation letters under
+ * `~/.teamx/letters/<id>/`. Prefers the letter whose embedded server URL
+ * matches the configured server; otherwise falls back to the most recent one.
+ */
+function letterMtls(serverUrl: string): MtlsMaterial | null {
+  const dir = join(TEAMX_HOME, "letters")
+  if (!existsSync(dir)) return null
+  let entries: string[] = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  const wantedHost = hostOf(serverUrl)
+  let best: { cert: string; key: string; ca: string; host: string; mtime: number } | null = null
+  for (const id of entries) {
+    const sub = join(dir, id)
+    const letterPath = join(sub, "letter.json")
+    if (!existsSync(letterPath)) continue
+    const certPath = join(sub, "client.crt")
+    const keyPath = join(sub, "client.key")
+    const caPath = join(sub, "ca.crt")
+    if (!existsSync(certPath) || !existsSync(keyPath) || !existsSync(caPath)) continue
+    let host = ""
+    let mtime = 0
+    try {
+      const letter = JSON.parse(readFileSync(letterPath, "utf8")) as {
+        teamx_invitation?: { server?: { url?: string } }
+      }
+      host = hostOf(letter.teamx_invitation?.server?.url ?? "")
+      for (const f of ["letter.json", "client.crt", "client.key", "ca.crt"]) {
+        mtime = Math.max(mtime, statSync(join(sub, f)).mtimeMs)
+      }
+    } catch {
+      continue
+    }
+    const cand = { cert: certPath, key: keyPath, ca: caPath, host, mtime }
+    if (host && host === wantedHost) {
+      // exact host match wins immediately
+      return {
+        cert: readPem(cand.cert),
+        key: readPem(cand.key),
+        ca: readPem(cand.ca),
+        serverName: host,
+      }
+    }
+    if (!best || cand.mtime > best.mtime) best = cand
+  }
+  if (!best) return null
+  return {
+    cert: readPem(best.cert),
+    key: readPem(best.key),
+    ca: readPem(best.ca),
+    serverName: best.host || wantedHost || hostOf(serverUrl),
+  }
+}
+
+/** Resolve the mTLS material for a given server URL (or null if unavailable). */
+export function mtlsFor(serverUrl: string): MtlsMaterial | null {
+  const host = hostOf(serverUrl)
+  return envMtls(host) ?? letterMtls(serverUrl)
+}
+
 /**
  * Convert a V1-style CLI arg vector into an RPC { method, args } payload for
  * network mode. Handles `team.status --team x --session key` style vectors.
@@ -155,6 +258,9 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     "team.join": ["token", "name"],
     "team.approve": ["member_id"],
     "team.deny": ["member_id"],
+    "team.invite": ["role_desc"],
+    "team.invite_revoke": ["id"],
+    "team.import": ["letter"],
     "goal.set": ["title", "body"],
     "member.set_state": ["state"],
     "role.set": ["role"],
@@ -182,13 +288,23 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
 export async function runRpc(argv: string[]): Promise<CliResult> {
   const { method, args } = cliArgsToRpc(argv)
   const base = TEAMX_SERVER_URL.replace(/\/$/, "")
+  const mtls = mtlsFor(TEAMX_SERVER_URL)
   try {
-    const res = await fetch(`${base}/rpc`, {
+    const init: RequestInit & { tls?: Record<string, unknown> } = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ method, args }),
       signal: AbortSignal.timeout(30_000),
-    })
+    }
+    if (mtls) {
+      init.tls = {
+        cert: mtls.cert,
+        key: mtls.key,
+        ca: mtls.ca,
+        serverName: mtls.serverName,
+      }
+    }
+    const res = await fetch(`${base}/rpc`, init)
     const text = await res.text()
     let data: Record<string, unknown> | null = null
     try {

@@ -115,6 +115,25 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
   last_seq    INTEGER NOT NULL,
   PRIMARY KEY(session_key, team_id)
 );
+
+-- invitation letters (network mode): owner issues a member cert + letter; the
+-- pre-allocated member_id is carried by the cert CN so the server can map a
+-- verified certificate back to this row and the future member.
+CREATE TABLE IF NOT EXISTS invitations (
+  id            TEXT PRIMARY KEY,
+  team_id       TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  member_id     TEXT NOT NULL,
+  role_key      TEXT NOT NULL,
+  role_label    TEXT,
+  role_desc     TEXT,
+  cert_serial   TEXT,
+  cert_cn       TEXT,
+  created_by    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  used_by       TEXT,
+  used_at       TEXT,
+  revoked_at    TEXT
+);
 ";
 
 /// Apply the schema (idempotent) + migrations.
@@ -182,7 +201,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 4)?;
+    conn.pragma_update(None, "user_version", 5)?;
     Ok(())
 }
 

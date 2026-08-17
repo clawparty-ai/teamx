@@ -137,6 +137,9 @@ pub struct ServeCmd {
     /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
     #[arg(long)]
     pub db: Option<PathBuf>,
+    /// extra SAN (e.g. LAN IP) to include in the server certificate
+    #[arg(long)]
+    pub san: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -232,6 +235,49 @@ pub enum TeamCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+    /// Invite a member with a job role: issue a client cert + invitation letter (owner only)
+    Invite {
+        /// job role + description, e.g. "测试工程师: 负责测试并汇报缺陷"
+        #[arg(value_name = "ROLE_DESC")]
+        role_desc: String,
+        /// suggested display name (hint only; the member may override at import)
+        #[arg(long)]
+        name_hint: Option<String>,
+        /// server URL to embed in the letter (default https://127.0.0.1:5781)
+        #[arg(long)]
+        server_url: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List issued (unused/revoked) invitation letters (owner only)
+    InviteList {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Revoke an invitation letter (its cert is rejected at connect) (owner only)
+    InviteRevoke {
+        #[arg(value_name = "INVITATION_ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Import an invitation letter: store the client cert/key and claim the pending seat
+    Import {
+        /// invitation letter (single-line `teamx-inv:v1:<base64>` or a path to a .json letter)
+        #[arg(value_name = "LETTER")]
+        letter: String,
+        /// display name (defaults to the letter's name_hint)
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        session: String,
     },
 }
 

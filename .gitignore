@@ -6,5 +6,6 @@ dist/
 *.db-shm
 .DS_Store
 # runtime session state (opencode goal plugin) — not source
+.opencode/
 demo/workspace/.opencode/goals/
 demo/workspace/.opencode/node_modules/

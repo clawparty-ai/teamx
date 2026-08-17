@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 网络模式 I1：邀请函（Invitation Letter）+ mTLS 身份
+
+- **`team invite "<角色>: <描述>"`**（owner）：为预分配的 member_id 签发 mTLS 客户端证书（CN=`member:<id>:<role>`，显式随机 serial），生成自包含 invitation letter（CA + 客户端证书/私钥 + server 地址 + 角色），单行 `teamx-inv:v1:<base64>` 输出；角色同时落进团队角色目录（approved）。新增 `invitations` 表（v5 迁移，含 member_id/role/cert_serial/cert_cn/used_by/revoked_at）。
+- **`team import <letter>`**（成员）：解包 letter、存 `~/.teamx/letters/<invitation_id>/`（0600）并认领预分配席位（pending，自动带角色）；本地无该邀请（跨机）时仅落盘并提示连服务器完成注册。letter 一次性使用；重导入被拒。
+- **`team invite-list` / `team invite-revoke <id>`**（owner）：列出/吊销邀请函；吊销后其证书在 connect 时即失效。
+- **mTLS 身份（核心）**：`teamx serve` 强制双向 TLS（CA 签发 server + 客户端证书）；RPC handler 从客户端证书 CN 解析 `member_id` 作为 actor 身份，**替代自报 `session`**（`team.import` 走专用 `import_with_cert` 路径绑定证书身份到预分配席位）。证书 = "能连上"，approve = "能干活"（证书可连接但 owner 审批后才 active）。
+- **server 证书 SAN**：`teamx serve --san <ip>` 把局域网 IP 加进 server 证书 SAN（插件 `serve start` 自动探测并传入）。
+- **修复 CA 密钥用途**：CA 证书补 `keyCertSign`/`cRLSign`（此前缺导致 openssl 校验失败）。
+- **插件**：`runRpc` 增加 mTLS 传输（`fetch` 带 `tls:{cert,key,ca,serverName}`，材料来自 env `TEAMX_MTLS_CERT/KEY/CA` 或 `~/.teamx/letters/*/` 自动发现）；`serve start` 传 `--san` + https URL + mTLS 健康探测；新增 `teamx_team_invite`/`teamx_team_import`/`teamx_team_invite_list`/`teamx_team_invite_revoke` 工具。
+- **测试**：`cli-test.sh` 新增邀请函全流程（invite→import→approve→revoke→吊销后拒导入）；新增 `tests/mtls-test.sh`（serve 强制 mTLS、无证书被拒、证书身份解析、`team.import` 绑定证书 member_id、pending 成员不能 approve），并接入 `run-all.sh`。
+
 ### 自定义角色（Custom Roles）
 
 - **成员可提议自定义角色**：`role propose <key> <label> [desc]`，写入团队角色目录（state=proposed），key 不得与内置角色（owner/observer/supervisor/contributor/subtask-implementer/reviewer）冲突。

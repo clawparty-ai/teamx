@@ -7,8 +7,10 @@ set -euo pipefail
 
 TEAMX="${TEAMX:-$(dirname "$0")/../target/debug/teamx}"
 DB="${1:-$(mktemp /tmp/teamx-cli-XXXXXX).db}"
+HOME_DIR="$(mktemp -d /tmp/teamx-home-XXXXXX)"
 export TEAMX_DB="$DB"
-trap 'rm -f "$DB" "$DB-wal" "$DB-shm"' EXIT
+export TEAMX_HOME="$HOME_DIR"
+trap 'rm -f "$DB" "$DB-wal" "$DB-shm"; rm -rf "$HOME_DIR"' EXIT
 
 step() { printf '\n=== %s ===\n' "$*"; }
 pass() { printf '  ok: %s\n' "$*"; }
@@ -273,5 +275,62 @@ LOOPX_ERR=$($TEAMX loopx report /nonexistent-dir --session s:owner --json | jget
 [ "$LOOPX_ERR" = "False" ] || fail "loopx report should be unavailable"
 # non-member session cannot report
 expect_fail "$TEAMX" loopx report /nonexistent-dir --session s:stranger
+
+step "invitation letters: invite → import → approve → revoke"
+INV=$($TEAMX team invite "测试工程师: 负责测试并汇报缺陷" --name-hint "Tester" --server-url "https://192.168.1.5:5781" --session s:owner --json)
+INV_ID=$(echo "$INV" | jget "['invitation_id']")
+LETTER=$(echo "$INV" | jget "['letter']")
+[ -n "$INV_ID" ] || fail "invite should return an invitation_id"
+echo "$LETTER" | grep -q "^teamx-inv:v1:" || fail "letter should be a teamx-inv:v1: base64 line"
+# derived role key is recorded and a cert serial is issued
+echo "$INV" | jget "['role']['key']" | grep -q "role-" || fail "non-ASCII label should derive a role-<hex> key"
+# the invitation's server url is embedded (decode the letter)
+echo "$LETTER" | python3 -c "
+import json,sys,base64
+s=sys.stdin.read().strip()[len('teamx-inv:v1:'):]
+d=json.loads(base64.b64decode(s))
+assert d['teamx_invitation']['server']['url']=='https://192.168.1.5:5781', d['teamx_invitation']['server']
+assert d['teamx_invitation']['version']==1
+assert 'client_cert' in d['certificates'] and 'client_key' in d['certificates'] and 'ca_cert' in d['certificates']
+" || fail "letter should carry server url + cert/key/ca"
+
+step "invitation import claims a pending seat with the role"
+IMPORT=$($TEAMX team import "$LETTER" --name Tester --session s:tester --json)
+[ "$(echo "$IMPORT" | jget "['status']")" = "pending" ] || fail "import should yield a pending membership"
+IMPORTED_MID=$(echo "$IMPORT" | jget "['member_id']")
+[ "$(echo "$IMPORT" | jget "['role']")" = "$(echo "$INV" | jget "['role']['key']")" ] || fail "imported member should get the invited role"
+# the imported seat carries the pre-allocated member id
+[ "$IMPORTED_MID" = "$(echo "$INV" | jget "['member_id']")" ] || fail "imported member id must match the invitation member id"
+
+step "invitation is single-use (reimport rejected)"
+expect_fail "$TEAMX" team import "$LETTER" --name Other --session s:other
+
+step "invite-list reflects used/revoked states"
+LIST=$($TEAMX team invite-list --session s:owner --json)
+[ "$(echo "$LIST" | jget "['invitations'][0]['state']")" = "used" ] || fail "invite-list should mark the imported letter as used"
+# non-owner cannot list invitations
+expect_fail "$TEAMX" team invite-list --session s:tester
+
+step "owner approve of an imported member; non-owner cannot invite"
+expect_ok "$TEAMX" team approve "$IMPORTED_MID" --session s:owner
+"$TEAMX" team status --team "$TEAM_ID" --json | python3 -c "
+import json,sys
+ms=json.load(sys.stdin)['teams'][0]['members']
+m=[x for x in ms if x['id']=='$IMPORTED_MID'][0]
+assert m['state']=='active' and m['role']=='$(echo "$INV" | jget "['role']['key']")', m
+" || fail "imported member should be active with the invited role"
+expect_fail "$TEAMX" team invite "dev: x" --session s:tester
+
+step "invitation revoke blocks import"
+INV2=$($TEAMX team invite "reviewer: code review" --session s:owner --json)
+INV2_ID=$(echo "$INV2" | jget "['invitation_id']")
+LETTER2=$(echo "$INV2" | jget "['letter']")
+expect_ok "$TEAMX" team invite-revoke "$INV2_ID" --session s:owner
+# revoking twice fails
+expect_fail "$TEAMX" team invite-revoke "$INV2_ID" --session s:owner
+# revoked letter cannot be imported
+expect_fail "$TEAMX" team import "$LETTER2" --name X --session s:x
+# non-owner cannot revoke
+expect_fail "$TEAMX" team invite-revoke "$INV_ID" --session s:tester
 
 step "ALL EDGE TESTS PASS"
