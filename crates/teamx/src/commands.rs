@@ -225,14 +225,18 @@ fn member_by_id(conn: &Connection, member_id: &str) -> Result<MemberRow> {
     .map_err(|e| AppError(format!("member {member_id} not found: {e}")))
 }
 
-/// Active memberships (state != left/denied) for a session.
+/// Active memberships (state != left/denied) for a session, excluding
+/// memberships in soft-destroyed teams (they are hidden from lists/status).
 fn memberships_for_session(
     conn: &Connection,
     session_key: &str,
 ) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at
-         FROM members WHERE session_key = ?1 AND state NOT IN ('left','denied') ORDER BY joined_at ASC",
+        "SELECT m.id, m.team_id, m.session_key, m.display_name, m.role, m.state, m.loopx_project, m.joined_at, m.left_at
+         FROM members m
+         JOIN teams t ON t.id = m.team_id
+         WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state != 'destroyed'
+         ORDER BY m.joined_at ASC",
     )?;
     let rows = stmt.query_map([session_key], member_row)?;
     rows.collect()
@@ -408,6 +412,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Status { team, session } => cmd_team_status(conn, team.as_deref(), session.as_deref())?,
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
+            TeamCmd::Destroy { session, team } => cmd_team_destroy(conn, session, team.as_deref())?,
             TeamCmd::Invite { role_desc, name_hint, server_url, session, team } => {
                 cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref())?
             }
@@ -810,6 +815,41 @@ fn cmd_team_archive(conn: &mut Connection, session: &str, team_opt: Option<&str>
     .map_err(|e| AppError(format!("archive failed: {e}")))?;
     touch(conn, &actor.id).ok();
     Ok(json!({ "ok": true, "team": team.id, "state": to_s, "from": from_s }))
+}
+
+/// Soft-destroy a team (owner only): mark it `destroyed`, revoke all pending
+/// invitations, and hide it from lists. Data is preserved for audit.
+fn cmd_team_destroy(conn: &mut Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let from = TeamState::from_str(&team.state).unwrap_or(TeamState::Forming);
+    let to = crate::state::team_transition(from, &Action::DestroyTeam).map_err(AppError)?;
+    let from_s = from.as_str();
+    let to_s = to.as_str();
+    let now = db::now();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE teams SET state = ?1, updated_at = ?2 WHERE id = ?3",
+            params![to_s, now, team.id],
+        )?;
+        // soft-destroy: revoke every outstanding invitation so no one can
+        // import a letter and join a destroyed team.
+        tx.execute(
+            "UPDATE invitations SET revoked_at = ?1 WHERE team_id = ?2 AND revoked_at IS NULL",
+            params![now, team.id],
+        )?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "team.destroyed",
+            json!({ "from": from_s, "team": team.name }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("destroy failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "team": team.id, "state": to_s, "from": from_s, "destroyed": true }))
 }
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,8 @@ uninstall() {
         "$CONFIG_DIR/commands/team-publish.en.md" \
         "$CONFIG_DIR/commands/team-archive.md" \
         "$CONFIG_DIR/commands/team-archive.en.md" \
+        "$CONFIG_DIR/commands/team-destroy.md" \
+        "$CONFIG_DIR/commands/team-destroy.en.md" \
         "$CONFIG_DIR/commands/team-serve.md" \
         "$CONFIG_DIR/commands/team-serve.en.md" \
         "$CONFIG_DIR/commands/team-serve-start.md" \
@@ -131,6 +133,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-role-approve team-role-deny team-role-update \
            team-invite team-import team-invite-list team-invite-revoke \
            team-state team-ask team-respond team-publish team-archive \
+           team-destroy \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do
   cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"

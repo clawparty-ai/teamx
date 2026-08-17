@@ -470,6 +470,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "team.status" => Command::Team(TeamCmd::Status { team: o("team"), session: Some(sess(args)) }),
         "team.leave" => Command::Team(TeamCmd::Leave { session: sess(args), team: o("team") }),
         "team.archive" => Command::Team(TeamCmd::Archive { session: sess(args), team: o("team") }),
+        "team.destroy" => Command::Team(TeamCmd::Destroy { session: sess(args), team: o("team") }),
         "team.invite" => Command::Team(TeamCmd::Invite {
             role_desc: s("role_desc").ok_or_else(|| "team.invite requires `role_desc`".to_string())?,
             name_hint: o("name_hint"),

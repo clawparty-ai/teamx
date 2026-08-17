@@ -12,6 +12,7 @@ pub enum TeamState {
     Blocked,
     Completed,
     Archived,
+    Destroyed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +44,7 @@ impl TeamState {
             TeamState::Blocked => "blocked",
             TeamState::Completed => "completed",
             TeamState::Archived => "archived",
+            TeamState::Destroyed => "destroyed",
         }
     }
     pub fn from_str(s: &str) -> Option<Self> {
@@ -52,6 +54,7 @@ impl TeamState {
             "blocked" => TeamState::Blocked,
             "completed" => TeamState::Completed,
             "archived" => TeamState::Archived,
+            "destroyed" => TeamState::Destroyed,
             _ => return None,
         })
     }
@@ -149,6 +152,7 @@ pub enum Action {
     PublishRefine,
     CloseGoal,
     ArchiveTeam,
+    DestroyTeam,
 }
 
 impl fmt::Display for Action {
@@ -176,6 +180,7 @@ impl fmt::Display for Action {
             Action::PublishRefine => "publish_refine",
             Action::CloseGoal => "close_goal",
             Action::ArchiveTeam => "archive_team",
+            Action::DestroyTeam => "destroy_team",
         };
         f.write_str(s)
     }
@@ -202,6 +207,13 @@ pub fn team_transition(from: TeamState, action: &Action) -> Result<TeamState, St
         (TeamState::Active, CloseGoal) => TeamState::Completed,
         (TeamState::Blocked, CloseGoal) => TeamState::Completed,
         (TeamState::Completed, ArchiveTeam) => TeamState::Archived,
+        // destroy is a soft-delete: any non-destroyed team can be destroyed by
+        // the owner; the state is terminal (hidden from lists, data preserved).
+        (TeamState::Forming, DestroyTeam) => TeamState::Destroyed,
+        (TeamState::Active, DestroyTeam) => TeamState::Destroyed,
+        (TeamState::Blocked, DestroyTeam) => TeamState::Destroyed,
+        (TeamState::Completed, DestroyTeam) => TeamState::Destroyed,
+        (TeamState::Archived, DestroyTeam) => TeamState::Destroyed,
         (s, a) => {
             return Err(format!(
                 "illegal team transition: {s} --{a}-> ?"
@@ -288,6 +300,17 @@ mod tests {
         assert_eq!(team_transition(TeamState::Blocked, &Action::PublishResumed).unwrap(), TeamState::Active);
         assert_eq!(team_transition(TeamState::Active, &Action::CloseGoal).unwrap(), TeamState::Completed);
         assert_eq!(team_transition(TeamState::Completed, &Action::ArchiveTeam).unwrap(), TeamState::Archived);
+    }
+
+    #[test]
+    fn team_destroy_from_any_state() {
+        for from in [TeamState::Forming, TeamState::Active, TeamState::Blocked, TeamState::Completed, TeamState::Archived] {
+            assert_eq!(team_transition(from, &Action::DestroyTeam).unwrap(), TeamState::Destroyed, "{from}");
+        }
+        // destroyed is terminal: nothing can act on it
+        for a in [Action::ShareGoal, Action::CloseGoal, Action::ArchiveTeam, Action::DestroyTeam] {
+            assert!(team_transition(TeamState::Destroyed, &a).is_err(), "{a}");
+        }
     }
 
     #[test]
@@ -391,7 +414,7 @@ mod tests {
 
     #[test]
     fn state_string_roundtrip() {
-        for s in ["forming", "active", "blocked", "completed", "archived"] {
+        for s in ["forming", "active", "blocked", "completed", "archived", "destroyed"] {
             assert_eq!(TeamState::from_str(s).unwrap().as_str(), s);
         }
         for s in ["pending", "active", "waiting", "idle", "left", "denied"] {

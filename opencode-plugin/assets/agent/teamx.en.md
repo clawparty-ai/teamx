@@ -34,6 +34,7 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 | `respond <ask_id> <answer>` | teamx_respond | Answer a question |
 | `publish <type> [data]` | teamx_publish | Report/broadcast (progress/decision/update/blocked/resumed/achieved/refine) |
 | `archive` | teamx_archive | Owner archives a completed team |
+| `destroy` | teamx_team_destroy | Owner soft-destroys a team (hides it, keeps data, irreversible) |
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | Start/query/stop local server in opencode (network mode, owner) |
 | `serve token <member>` | teamx_serve_token | Generate/rotate member connection token (owner) |
 | `help` | - | List subcommands |

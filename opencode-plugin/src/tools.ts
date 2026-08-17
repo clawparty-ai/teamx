@@ -83,6 +83,18 @@ export const tools = {
     },
   }),
 
+  teamx_team_destroy: tool({
+    description:
+      "Soft-destroy a team (owner only): mark it destroyed, hide it from all member lists, revoke its " +
+      "outstanding invitations, and keep its data for audit. Members keep their rows but the team is gone.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "destroy", ...opt("--team", args.team)])
+    },
+  }),
+
   teamx_leave: tool({
     description:
       "Leave a team. The current session stops being a member and its membership cache is invalidated.",

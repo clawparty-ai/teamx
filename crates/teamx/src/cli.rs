@@ -236,6 +236,13 @@ pub enum TeamCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Soft-destroy a team (owner only): hide it from lists, revoke invitations, keep data
+    Destroy {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// Invite a member with a job role: issue a client cert + invitation letter (owner only)
     Invite {
         /// job role + description, e.g. "测试工程师: 负责测试并汇报缺陷"

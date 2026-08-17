@@ -27,6 +27,7 @@ teamx team collaboration command. Route and execute based on the following subco
 - `respond <ask_id> <answer>` → teamx_respond (answer a question)
 - `publish <type> [data]` → teamx_publish (progress/decision/update/blocked/resumed/achieved/refine)
 - `archive` → teamx_archive (owner archives completed team)
+- `destroy` → teamx_team_destroy (owner soft-destroys a team: hides it, keeps data, irreversible)
 - `serve start [--port]` / `serve status` / `serve stop` → teamx_serve_start / teamx_serve_status / teamx_serve_stop (start/query/stop local serve within opencode, network mode)
 - `serve token <member>` → teamx_serve_token (generate/rotate member connection token, owner)
 - `help` → list the above subcommands
