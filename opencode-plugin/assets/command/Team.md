@@ -1,5 +1,5 @@
 ---
-description: teamx 团队协作（子命令：create/join/status/sync/goal/approve/deny/role/ask/publish 等；输入 /team help 查看全部）
+description: teamx 团队协作（子命令：create/join/status/sync/goal/approve/deny/role/ask/publish/invite/import 等；输入 /team help 查看全部）
 agent: teamx
 ---
 
@@ -14,6 +14,10 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 - `goal close` → teamx_close_goal（owner 验证并关闭目标）
 - `approve <member_id>` → teamx_approve（owner 审批入队）
 - `deny <member_id>` → teamx_deny（owner 拒绝入队）
+- `invite "<角色>: <描述>" [--server-url <url>]` → teamx_team_invite（owner 签发邀请函 + mTLS 客户端证书，网络模式）
+- `import <letter> [--name <名>]` → teamx_team_import（成员导入邀请函，认领 pending 席位）
+- `invite-list` → teamx_team_invite_list（owner 列出已签发邀请函）
+- `invite-revoke <invitation_id>` → teamx_team_invite_revoke（owner 吊销邀请函）
 - `role set <role>` → teamx_set_role（选择角色：固定角色或已批准的自定义角色）
 - `role propose <key> <label> [desc]` → teamx_role_propose（成员提议自定义角色，owner 审批）
 - `role approve <key>` / `role deny <key>` → teamx_role_approve / teamx_role_deny（owner 审批/拒绝自定义角色）

@@ -21,6 +21,10 @@ permission:
 | `sync` | teamx_sync | 拉取最新团队事件 |
 | `goal set <title>` / `goal share` / `goal close` | teamx_set_goal / teamx_share_goal / teamx_close_goal | owner 起草/共享/关闭目标 |
 | `approve <member_id>` / `deny <member_id>` | teamx_approve / teamx_deny | owner 审批/拒绝入队 |
+| `invite "<角色>: <描述>" [--server-url <url>]` | teamx_team_invite | owner 签发邀请函 + mTLS 客户端证书（网络模式） |
+| `import <letter> [--name <名>]` | teamx_team_import | 成员导入邀请函，认领 pending 席位 |
+| `invite-list` | teamx_team_invite_list | owner 列出已签发邀请函 |
+| `invite-revoke <invitation_id>` | teamx_team_invite_revoke | owner 吊销邀请函 |
 | `role set <role>` | teamx_set_role | 选择角色（固定角色或已批准的自定义角色） |
 | `role propose <key> <label> [desc]` | teamx_role_propose | 成员提议自定义角色，待 owner 审批 |
 | `role approve <key>` / `role deny <key>` | teamx_role_approve / teamx_role_deny | owner 审批/拒绝自定义角色 |
@@ -70,6 +74,7 @@ permission:
 
 - **用户要创建团队**：调用 `teamx_create_team`，把返回的 `invite_token` 展示给用户分享给成员；然后 `teamx_set_goal` 起草目标。
 - **用户要加入团队**：询问 invite_token（或读取对话中的 token），调用 `teamx_join` 并让用户指定 display name；提示需要 owner 审批。
+- **网络模式邀请/入职**：owner 用 `teamx_team_invite` 签发邀请函（`--server-url` 必须用 owner 的局域网 IP，非 127.0.0.1），把单行 letter 发给成员；成员用 `teamx_team_import` 导入（存 mTLS 证书 + 认领 pending 席位），设 `TEAMX_SERVER_URL` 后连到 owner 的 serve，owner `approve` 后开始协作。
 - **成员加入后**：指导成员 `teamx_set_role` 选择角色（固定角色如 contributor/subtask-implementer/reviewer）；如果固定角色都不合适，成员可用 `teamx_role_propose` 提议自己的 job role，owner 用 `teamx_role_approve` 审批后该成员自动获得该角色。owner `teamx_share_goal` 后开始协作。
 - **自定义角色流程**：member 提议（`role propose <key> <label> <desc>`）→ owner 收到 `role.proposed` 事件后决策（`role approve` 或 `role deny`）→ 批准后角色进入团队目录且自动授予提议者。owner 也可用 `role update <key> --description ...` 修改任何角色的描述（含固定角色）。
 - **协作中**：严格执行"先 sync 再行动、有进展就汇报、owner 汇总后广播"。

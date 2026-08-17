@@ -43,6 +43,10 @@ uninstall() {
         "$CONFIG_DIR/commands/team-role-approve.md" \
         "$CONFIG_DIR/commands/team-role-deny.md" \
         "$CONFIG_DIR/commands/team-role-update.md" \
+        "$CONFIG_DIR/commands/team-invite.md" \
+        "$CONFIG_DIR/commands/team-import.md" \
+        "$CONFIG_DIR/commands/team-invite-list.md" \
+        "$CONFIG_DIR/commands/team-invite-revoke.md" \
         "$CONFIG_DIR/commands/team-state.md" \
         "$CONFIG_DIR/commands/team-ask.md" \
         "$CONFIG_DIR/commands/team-respond.md" \
@@ -93,6 +97,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \
            team-approve team-deny team-role team-role-propose \
            team-role-approve team-role-deny team-role-update \
+           team-invite team-import team-invite-list team-invite-revoke \
            team-state team-ask team-respond team-publish team-archive \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do

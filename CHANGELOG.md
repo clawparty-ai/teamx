@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 命令文件补齐（/team invite 等 slash 命令）
+
+- 新增 `/team invite`、`/team import`、`/team invite-list`、`/team invite-revoke` 的扁平别名命令文件（`assets/command/team-{invite,import,invite-list,invite-revoke}.md`），并把子命令路由加进 `Team.md` 主路由与 agent 系统提示词 `teamx.md`，`install.sh` 同步安装/卸载这些命令文件。补齐后 opencode 里这些网络模式命令可用 `/` tab 补全。
+
 ### 代码 Review 修复（2026-08-17）
 
 修复 `code-review-codex-0817.md` 列出的全部高/中优先级问题，并补回归测试：
