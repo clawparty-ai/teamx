@@ -12,3 +12,6 @@ demo/workspace/.opencode/node_modules/
 
 # CI workflow pending workflow-scope push (see README)
 .github/
+
+# internal code review notes (not source)
+code-review-codex-0817.md
