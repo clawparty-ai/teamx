@@ -8,6 +8,7 @@
 #   6. plugin typecheck + bundle build
 #   7. network-mode mTLS identity test
 #   8. network-mode WebSocket push test
+#   9. network-mode cross-network (LAN IP) test
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -54,6 +55,10 @@ if command -v bun >/dev/null 2>&1; then
 else
   echo "bun not found; skipping WS push test"
 fi
+
+echo
+echo "== 9/9 network-mode cross-network (LAN IP) test =="
+./tests/cross-network.sh
 
 echo
 echo "ALL TEST SUITES PASSED"

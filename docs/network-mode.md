@@ -1,6 +1,6 @@
 # teamx 网络模式（Network Mode）设计方案
 
-> 状态：**N0/N1/N3 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 插件事件驱动/轮询降级 + 邀请函 I1/I2）；N4（跨网络验证）待做
+> 状态：**N0/N1/N3/N4 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 插件事件驱动/轮询降级 + 跨网络局域网验证 + 邀请函 I1/I2）
 > 关联文档：`docs/v1-spec.md`（V1 现状）、`docs/v2-design.md`（架构蓝图）
 > 目标读者：实现者、owner、协作成员
 
@@ -333,7 +333,7 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 | **N1** | WS 推送：register + 事件广播 + 心跳/重连/补发 | ✅ 已完成（`GET /ws` + `broadcast::Hub` + 插件 `connectWs`，见 `tests/ws-test.ts`） |
 | **N2** | token 签发/轮换/吊销 + RPC 鉴权；`serve stop` 优雅清理 + `dispose` | ⚠️ 身份已改用 mTLS 证书（I1），token 方案被取代 |
 | **N3** | 插件事件驱动改造 + 轮询降级 | ✅ 已完成（WS 时零轮询 + 去抖刷新 + 断线回退轮询，见 `tests/plugin-unit/ws.test.ts`） |
-| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ⬜ 待做 |
+| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）+ 两机 runbook（`docs/n4-cross-network.md`），真机待验 |
 | **N5**（后续） | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | ⬜ 待做 |
 | **N6**（可选） | `teamx_member_peek` 同机只读直连 | ⬜ 待做 |
 

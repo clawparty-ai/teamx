@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 网络模式 N4：跨网络验证（单机模拟 + 联调 runbook）
+
+- **局域网路径验证**：新增 `tests/cross-network.sh` —— serve 绑 `0.0.0.0` + `--san <局域网IP>`，经**非 loopback IP** 走完整 mTLS 链路（openssl 校验 server 证书 SAN 含局域网 IP、`team.status`/`team.import` 经局域网 IP 成功），等价覆盖远程成员视角的证书 SAN + CA 信任；无局域网 IP 时优雅跳过。
+- **两机联调 runbook**：`docs/n4-cross-network.md`（owner/member 分步命令、6 项验收清单、故障排查表）。
+- 接入 `run-all.sh`（第 9 项）。
+
 ### 网络模式 N3：插件事件驱动 + 轮询降级
 
 - **WS 时零轮询**：`TEAMX_SERVER_URL` 设置且 WS 连接在线时，M2 轮询器进入空闲（`wsConnected` 门控）；WS 断开后自动恢复轮询。
