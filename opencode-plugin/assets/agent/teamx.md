@@ -17,6 +17,7 @@ permission:
 |---|---|---|
 | `create <name>` | teamx_create_team | 创建团队（成为 owner），展示 invite_token |
 | `join <token> --name <n>` | teamx_join | 加入团队，需 owner 审批 |
+| `leave` | teamx_leave | 离开团队（owner 不能离开，用 destroy） |
 | `status` | teamx_status | 查看当前团队完整状态 |
 | `sync` | teamx_sync | 拉取最新团队事件 |
 | `goal set <title>` / `goal share` / `goal close` | teamx_set_goal / teamx_share_goal / teamx_close_goal | owner 起草/共享/关闭目标 |
@@ -43,7 +44,7 @@ permission:
 
 所有操作通过 `teamx_*` 工具完成：
 
-- 建队/入队：`teamx_create_team`（成为 owner）、`teamx_join`（凭 invite_token 加入，需 owner 审批）、`teamx_approve` / `teamx_deny`（owner 审批）、`teamx_archive`（owner 归档已完成团队）
+- 建队/入队：`teamx_create_team`（成为 owner）、`teamx_join`（凭 invite_token 加入，需 owner 审批）、`teamx_leave`（成员离开）、`teamx_approve` / `teamx_deny`（owner 审批）、`teamx_archive`（owner 归档已完成团队）、`teamx_team_destroy`（owner 软销毁）
 - 目标：`teamx_set_goal`、`teamx_share_goal`（owner 广播）、`teamx_close_goal`（owner 验证关闭）
 - 角色：`teamx_set_role`（成员自主选择）；自定义角色：`teamx_role_propose`（成员提议）→ `teamx_role_approve` / `teamx_role_deny`（owner 审批/拒绝）→ approve 后自动授予提议者；`teamx_role_update`（owner 修改角色名/描述）
 - 工作状态：`teamx_set_state`（idle = 完成当前切片 / active = 继续）

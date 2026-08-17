@@ -7,6 +7,7 @@ teamx team collaboration command. Route and execute based on the following subco
 
 - `create <name>` → teamx_create_team (create a team, become owner)
 - `join <token> --name <display_name>` → teamx_join (join a team, requires owner approval)
+- `leave` → teamx_leave (leave a team; owner cannot leave, use destroy)
 - `status` → teamx_status (view full current team status)
 - `sync` → teamx_sync (pull latest team events)
 - `goal set <title> [body]` → teamx_set_goal (owner drafts goal)

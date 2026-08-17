@@ -17,6 +17,7 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 |---|---|---|
 | `create <name>` | teamx_create_team | Create a team (become owner), show invite_token |
 | `join <token> --name <n>` | teamx_join | Join a team, requires owner approval |
+| `leave` | teamx_leave | Leave a team (owner cannot leave; use destroy) |
 | `status` | teamx_status | Show full team status |
 | `sync` | teamx_sync | Pull latest team events |
 | `goal set <title>` / `goal share` / `goal close` | teamx_set_goal / teamx_share_goal / teamx_close_goal | Owner drafts/shares/closes goal |
@@ -43,7 +44,7 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 
 All operations go through `teamx_*` tools:
 
-- **Team creation/joining**: `teamx_create_team` (become owner), `teamx_join` (join via invite_token, pending owner approval), `teamx_approve` / `teamx_deny` (owner approval), `teamx_archive` (owner archives completed team)
+- **Team creation/joining**: `teamx_create_team` (become owner), `teamx_join` (join via invite_token, pending owner approval), `teamx_leave` (member leaves), `teamx_approve` / `teamx_deny` (owner approval), `teamx_archive` (owner archives completed team), `teamx_team_destroy` (owner soft-destroys team)
 - **Goals**: `teamx_set_goal`, `teamx_share_goal` (owner broadcasts), `teamx_close_goal` (owner verifies and closes)
 - **Roles**: `teamx_set_role` (member self-service); custom roles: `teamx_role_propose` (member proposes) → `teamx_role_approve` / `teamx_role_deny` (owner approves/denies) → approved role auto-granted to proposer; `teamx_role_update` (owner updates role name/description)
 - **Working state**: `teamx_set_state` (idle = finished current slice / active = resumed)

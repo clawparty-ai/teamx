@@ -7,6 +7,7 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 
 - `create <name>` → teamx_create_team（创建团队，成为 owner）
 - `join <token> --name <显示名>` → teamx_join（加入团队，需 owner 审批）
+- `leave` → teamx_leave（离开团队；owner 不能离开，请用 destroy）
 - `status` → teamx_status（查看当前团队完整状态）
 - `sync` → teamx_sync（拉取最新团队事件）
 - `goal set <title> [body]` → teamx_set_goal（owner 起草目标）
