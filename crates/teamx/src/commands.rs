@@ -1007,7 +1007,7 @@ fn cmd_team_invite_revoke(conn: &mut Connection, id: &str, session: &str, team_o
         Ok(())
     })
     .map_err(|e| AppError(format!("revoke failed: {e}")))?;
-    Ok(json!({ "ok": true, "invitation_id": id, "revoked": true }))
+    Ok(json!({ "ok": true, "invitation_id": id, "member_id": inv.member_id, "revoked": true }))
 }
 
 /// `team import <letter>` — unpack the letter and store the mTLS material
@@ -2012,6 +2012,20 @@ pub fn teams_for_member(conn: &Connection, member_id: &str) -> rusqlite::Result<
     )?;
     let rows = stmt.query_map([member_id], |r| r.get::<_, String>(0))?;
     rows.collect()
+}
+
+/// True if this member's invitation letter has been revoked (network mode I2).
+/// Only invitation-issued members have an `invitations` row; token-joined
+/// members are not affected by invitation revocation.
+pub fn is_revoked(conn: &Connection, member_id: &str) -> rusqlite::Result<bool> {
+    let revoked: Option<i64> = conn
+        .query_row(
+            "SELECT COUNT(*) FROM invitations WHERE member_id = ?1 AND revoked_at IS NOT NULL",
+            [member_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(revoked.unwrap_or(0) > 0)
 }
 
 fn member_json(m: &MemberRow) -> Value {

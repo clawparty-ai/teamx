@@ -251,16 +251,18 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
         }
     };
 
-    let teams = {
+    let (teams, revoked) = {
         let db = state.db.clone();
         let mid = member_id.clone();
         match tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap();
-            commands::teams_for_member(&conn, &mid)
+            let teams = commands::teams_for_member(&conn, &mid)?;
+            let revoked = commands::is_revoked(&conn, &mid)?;
+            Ok::<_, rusqlite::Error>((teams, revoked))
         })
         .await
         {
-            Ok(Ok(t)) => t,
+            Ok(Ok(v)) => v,
             _ => {
                 let _ = socket.send(ws_text(r#"{"type":"error","code":"internal"}"#)).await;
                 return;
@@ -268,6 +270,10 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
         }
     };
 
+    if revoked {
+        let _ = socket.send(ws_text(r#"{"type":"error","code":"revoked"}"#)).await;
+        return;
+    }
     if teams.is_empty() {
         let _ = socket.send(ws_text(r#"{"type":"error","code":"not_a_member"}"#)).await;
         return;
@@ -294,7 +300,10 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
             ev = rx.recv() => {
                 match ev {
                     Some(frame) => {
-                        if sender.send(ws_text(&frame.to_string())).await.is_err() {
+                        // A `close` sentinel (e.g. invitation revoked) is
+                        // forwarded to the client and the connection is dropped.
+                        let is_close = frame.get("type").and_then(Value::as_str) == Some("close");
+                        if sender.send(ws_text(&frame.to_string())).await.is_err() || is_close {
                             break;
                         }
                     }
@@ -334,6 +343,7 @@ async fn rpc(
 ) -> impl IntoResponse {
     let cn = identity.0;
     let hub = state.hub.clone();
+    let method = req.method.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
         let before = commands::max_event_id(&conn).unwrap_or(0);
@@ -349,6 +359,12 @@ async fn rpc(
             for ev in &new_events {
                 if let Some(team_id) = ev.get("team_id").and_then(Value::as_str) {
                     hub.publish(team_id, &json!({ "type": "event", "event": ev }));
+                }
+            }
+            // On invitation revoke, actively drop the member's live WS (I2).
+            if method == "team.invite_revoke" {
+                if let Some(mid) = data.get("member_id").and_then(Value::as_str) {
+                    hub.disconnect_member(mid);
                 }
             }
             (StatusCode::OK, Json(json!({ "ok": true, "data": data })))
@@ -382,6 +398,12 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         let name = o("name");
         return commands::import_with_cert(conn, &letter, name.as_deref(), &member_id)
             .map_err(|e| e.to_string());
+    }
+
+    // Reject revoked members (I2): a revoked invitation's cert still passes the
+    // mTLS handshake, but it must not be able to act on the ledger.
+    if commands::is_revoked(conn, &member_id).map_err(|e| e.to_string())? {
+        return Err("member has been revoked".to_string());
     }
 
     // Every other command requires an existing member: resolve their session_key

@@ -62,6 +62,18 @@ impl Hub {
         }
     }
 
+    /// Actively close every live connection of a member (e.g. on invitation
+    /// revocation). Sends a sentinel `close` frame that the WS handler turns
+    /// into a connection close.
+    pub fn disconnect_member(&self, member_id: &str) {
+        let live = self.live.lock().unwrap();
+        for members in live.values() {
+            if let Some(tx) = members.get(member_id) {
+                let _ = tx.send(serde_json::json!({ "type": "close", "code": "revoked" }));
+            }
+        }
+    }
+
     /// Number of live connections (for `serve status` diagnostics).
     pub fn connection_count(&self) -> usize {
         self.live

@@ -115,6 +115,7 @@ async function main() {
   const invite = teamx(["team", "invite", "reviewer: code review", "--session", "s:owner", "--json"])
   const letter = jget(invite, ["letter"]) as string
   const memberId = jget(invite, ["member_id"]) as string
+  const invitationId = jget(invite, ["invitation_id"]) as string
 
   // extract the member cert/key/ca from the letter
   const memberDir = join(ROOT, "member")
@@ -189,6 +190,35 @@ async function main() {
   const hbody = await hres.json()
   if (typeof hbody.connections === "number" && hbody.connections >= 2) pass(`health reports ${hbody.connections} live connections`)
   else fail(`health connections: ${JSON.stringify(hbody)}`)
+
+  // --- I2: revocation enforcement ---
+  const rev = await fetchRpc(ownerTls, "team.invite_revoke", { id: invitationId })
+  if (rev?.ok !== true) fail(`revoke: ${JSON.stringify(rev)}`)
+  else {
+    // 1. the live member WS is actively disconnected (close frame, skipping ping/event noise)
+    let closed = false
+    const deadline = Date.now() + 5000
+    while (!closed && Date.now() < deadline) {
+      try {
+        const m = await memberWs.next(deadline - Date.now())
+        if (m.type === "close") { closed = true; pass("revoke actively disconnected the member WS") }
+      } catch { break }
+    }
+    if (!closed) fail("member WS was not closed after revoke")
+
+    // 2. the revoked member's RPC is rejected
+    const st = await fetchRpc(memberTls, "team.status", {})
+    if (st?.ok === false && /revoked/i.test(String(st.error))) pass("revoked member RPC rejected")
+    else fail(`revoked member RPC should be rejected: ${JSON.stringify(st)}`)
+
+    // 3. the revoked member's WS reconnect is rejected
+    const ws2 = new WsClient(`wss://127.0.0.1:${PORT}/ws`, memberTls)
+    await ws2.open()
+    const err = await ws2.next(4000)
+    if (err.type === "error" && err.code === "revoked") pass("revoked member WS reconnect rejected")
+    else fail(`revoked member WS reconnect should be rejected: ${JSON.stringify(err)}`)
+    ws2.close()
+  }
 
   ownerWs.close()
   memberWs.close()

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 网络模式 I2：吊销强制 + approve 流程补全
+
+- **吊销检查（连接层）**：RPC 与 WS 连接时，若成员的邀请函已被吊销（`invitations.revoked_at`），证书虽仍能完成 mTLS 握手，但会被立即拒绝（RPC 返回 `member has been revoked`；WS 返回 `error: revoked`）。
+- **吊销后主动断连**：`team invite-revoke` 成功后，服务器通过 `broadcast::Hub::disconnect_member` 向该成员的在线 WS 连接推送 `close` 帧并断开；`invite-revoke` 返回 `member_id` 供路由。
+- **证书 = "能连"，approve = "能干活"**：证书允许建立连接但 pending 成员受状态机限制（不能 approve 等）；吊销后连连接都进不来，补全 I2 的"证书泄露不能直接工作 / revoke 后立即断连"闭环。
+- **测试**：`tests/ws-test.ts` 增加吊销强制三段（revoke 后 live WS 被主动断开、RPC 被拒、WS 重连被拒）。
+
 ### 网络模式 N1：WebSocket 推送
 
 - **`GET /ws` 端点**（mTLS）：成员连接后按客户端证书 CN 识别身份，订阅其所属团队的实时事件流；收到 `registered`（含 member_id + teams）后即开始推送。心跳每 30s 发 `ping`（`TEAMX_WS_HEARTBEAT_SECS` 可调），断连自动清理订阅。
