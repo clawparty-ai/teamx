@@ -1,126 +1,75 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — 2026-08-17
 
-### 修复：目标 `achieved` 卡死（状态机缺口）
+First release: Rust CLI (SQLite event ledger + state machine + mTLS server) + opencode plugin (30+ tools + `/team` commands + agent routing) + network mode + multi-member collaboration.
 
-- `goal_transition` 此前把 `achieved` 当作近终态（只有 `close` 合法），导致目标被误报 `achieved` 后**无法重开**，成员 `publish progress/achieved` 全部报 `illegal goal transition: achieved --publish_*-> ?`。
-- 新增从 `achieved` 的重开转换：`publish start` / `publish resumed` → `in_progress`，`publish refine` → `refining`（`achieved` 只是「达成候选」，owner 可驳回重开；`closed` 仍是唯一终态）。
-- 新增单测 `goal_reopen_from_achieved`。
+### Network Mode (N0—N4)
 
-### 命令文件补齐（/team invite 等 slash 命令）
+Team collaboration is no longer limited to a single machine. Members connect to a shared server over LAN with mTLS identity and real-time WebSocket push.
 
-- 新增 `/team invite`、`/team import`、`/team invite-list`、`/team invite-revoke` 的扁平别名命令文件（`assets/command/team-{invite,import,invite-list,invite-revoke}.md`），并把子命令路由加进 `Team.md` 主路由与 agent 系统提示词 `teamx.md`，`install.sh` 同步安装/卸载这些命令文件。补齐后 opencode 里这些网络模式命令可用 `/` tab 补全。
+- **mTLS server** (N0): `teamx serve` runs an axum + tokio-rustls server with mandatory mutual TLS. RPC handlers derive member identity from client certificate CN (replacing self-reported session keys). `team.import` binds certificate identity to a pre-allocated seat via a dedicated path. Supports `--san <ip>` for LAN IP in server certificate SAN; plugin `serve start` auto-detects and passes the local IP.
+- **WebSocket push** (N1): `GET /ws` endpoint registers subscribers by client certificate CN. Events are fanned out per team via `broadcast::Hub` (team→member→sender registry). 30s heartbeat, automatic cleanup on disconnect.
+- **Revocation enforcement** (I2): `team invite-revoke` triggers active WebSocket disconnect for the revoked member. Certificates are rejected at connect/RPC time. Certificate = "can connect", approve = "can work"; revocation cuts off both.
+- **Plugin event-driven** (N3): When WebSocket is connected, the poller sleeps (zero polling). On disconnect, exponential backoff reconnect (1s→60s) with polling fallback. Event frames are debounced (200ms) to batch bursts.
+- **Cross-network verification** (N4): `tests/cross-network.sh` validates the full mTLS chain over a non-loopback IP. `docs/n4-cross-network.md` provides a two-machine runbook.
 
-### 代码 Review 修复（2026-08-17）
+### Invitation Letters (I0—I1)
 
-修复 `code-review-codex-0817.md` 列出的全部高/中优先级问题，并补回归测试：
+Members join via one-time invitation letters containing mTLS client certificates, replacing shared session keys.
 
-- **跨团队读取绕过（安全）**：网络模式下，`team.status`/`role.list`/`events`/`log` 带 `--team` 时现在会校验证书成员是否属于该团队（`commands::member_in_team` + serve.rs dispatch），非成员无法再读任意团队的 `invite_token`/成员/角色/事件。
-- **pending 成员不能 publish（授权）**：`cmd_publish` 拒绝 `pending` 成员的 publish（含广播与状态变更）；`waiting`/`idle` 成员不受影响。
-- **非对象 payload panic（健壮性）**：`publish --data '[]' --assignee <id>` 不再 panic——非对象 payload 归一化为 `{"message": ...}` 后再打 assignee 标签。
-- **邀请函路径穿越（安全）**：`store_letter` 校验 `invitation_id` 必须是 UUID（`is_uuid`），拒绝 `../../` 之类的越界写入。
-- **PKI 部分缺失误重建 CA（正确性）**：`ensure_pki` 拆成「CA 缺失才重建 CA」「server 证书缺失只重建 server」，`server.key` 丢失不再使已签发的 member cert 全部失效。
-- **插件 auto-execute 只触发一次（正确性）**：`shouldAutoExecute` 改为按 seq 水位判断（`e.seq > lastExecutedSeq`），新的定向任务可再次唤醒成员。
-- **定向任务类型匹配过窄（正确性）**：`assignedToMe` 放宽为匹配任意带 `assignee_member_id` 的事件（不再只认 `decision.broadcast`/`goal.shared`）。
-- **非 owner 不能 role set owner（授权）**：`cmd_role_set` 拒绝把 `owner` 角色授予非 owner 成员，堵住插件 `isOwnerSession` 的角色伪装。
-- **次要**：`teamx serve` 支持裸 IPv6 绑定地址（`[::]:port`）；`loopx status` 子进程加 15s 超时；`team_status_json` 的 `recent_events` 改为 SQL 层 `ORDER BY seq DESC LIMIT 20`（不再全量读账本）；新增 `teamx_leave` 工具并在退出时失效 membership 缓存。
-- **测试**：`cli-test.sh` 新增 review 修复回归段（pending publish / 非对象 payload / role-set-owner / 路径穿越）；`mtls-test.sh` 新增跨团队读取拒绝；`auto-execute.test.ts` 更新水位与类型匹配断言。
+- **`team invite "<role>: <desc>"`** (owner): Issues an mTLS client certificate (CN=`member:<id>:<role>`) and generates a self-contained invitation letter (`teamx-inv:v1:<base64>`). Role is automatically added to the team catalog.
+- **`team import <letter>`** (member): Unpacks the letter, stores certs, and claims the pre-allocated seat (pending, auto-roled). Cross-machine: stores locally and prompts to connect for registration.
+- **`team invite-list` / `team invite-revoke <id>`** (owner): List/revoke invitation letters; revoked certificates are rejected at connect.
+- Plugin tools: `teamx_team_invite`, `teamx_team_import`, `teamx_team_invite_list`, `teamx_team_invite_revoke`.
+- Slash commands: `/team invite`, `/team import`, `/team invite-list`, `/team invite-revoke`.
 
-### 网络模式 N4：跨网络验证（单机模拟 + 联调 runbook）
+### Custom Roles
 
-- **局域网路径验证**：新增 `tests/cross-network.sh` —— serve 绑 `0.0.0.0` + `--san <局域网IP>`，经**非 loopback IP** 走完整 mTLS 链路（openssl 校验 server 证书 SAN 含局域网 IP、`team.status`/`team.import` 经局域网 IP 成功），等价覆盖远程成员视角的证书 SAN + CA 信任；无局域网 IP 时优雅跳过。
-- **两机联调 runbook**：`docs/n4-cross-network.md`（owner/member 分步命令、6 项验收清单、故障排查表）。
-- 接入 `run-all.sh`（第 9 项）。
+- Members can propose custom roles (`role propose`); owner approval automatically grants the role to the proposer.
+- Owner can update any role's label/description (`role update`).
+- `role set` only accepts approved roles (built-in + approved custom); pending roles trigger an error with a reminder to wait for approval.
 
-### 网络模式 N3：插件事件驱动 + 轮询降级
+### Command System
 
-- **WS 时零轮询**：`TEAMX_SERVER_URL` 设置且 WS 连接在线时，M2 轮询器进入空闲（`wsConnected` 门控）；WS 断开后自动恢复轮询。
-- **事件驱动**：WS `event` 帧 → 去抖（200ms 合并突发）后刷新 digest；`onStatus` 在连接/断开切换时立即补一次刷新，跨切换不丢事件。
-- **断线回退**：`connectWs` 指数退避重连（1s→60s）+ 抖动；重连成功即切回推送通道，轮询作为兜底（per-session seq 水位防重复 toast）。
-- **测试**：新增 `tests/plugin-unit/ws.test.ts`（`wsUrl` 映射、连接、事件回调、断开报告、重启后重连），接入 `run-all.sh`。
+- **`/team <subcommand>`** routing: `create`, `join`, `status`, `sync`, `goal`, `approve`, `deny`, `role`, `state`, `ask`, `respond`, `publish`, `archive`, `help`. All subcommands have flat aliases (`/team-create`, `/team-invite`, ...) for tab completion.
+- `teamx log` audit replay (resolves member names, supports `--team`, `--session`, `--limit`, `--after`).
+- Owner uniqueness constraint: one session can own at most one non-archived team; archive before creating another.
 
-### 网络模式 I2：吊销强制 + approve 流程补全
+### Three-Person Collaboration Demo
 
-- **吊销检查（连接层）**：RPC 与 WS 连接时，若成员的邀请函已被吊销（`invitations.revoked_at`），证书虽仍能完成 mTLS 握手，但会被立即拒绝（RPC 返回 `member has been revoked`；WS 返回 `error: revoked`）。
-- **吊销后主动断连**：`team invite-revoke` 成功后，服务器通过 `broadcast::Hub::disconnect_member` 向该成员的在线 WS 连接推送 `close` 帧并断开；`invite-revoke` 返回 `member_id` 供路由。
-- **证书 = "能连"，approve = "能干活"**：证书允许建立连接但 pending 成员受状态机限制（不能 approve 等）；吊销后连连接都进不来，补全 I2 的"证书泄露不能直接工作 / revoke 后立即断连"闭环。
-- **测试**：`tests/ws-test.ts` 增加吊销强制三段（revoke 后 live WS 被主动断开、RPC 被拒、WS 重连被拒）。
+- `docs/demo-3p.md`: owner + contributor + reviewer workflow.
+- `tests/three-member.sh`: automated end-to-end test (multi-member approval, parallel roles, Q&A, broadcast, close+archive).
 
-### 网络模式 N1：WebSocket 推送
+### Production Hardening
 
-- **`GET /ws` 端点**（mTLS）：成员连接后按客户端证书 CN 识别身份，订阅其所属团队的实时事件流；收到 `registered`（含 member_id + teams）后即开始推送。心跳每 30s 发 `ping`（`TEAMX_WS_HEARTBEAT_SECS` 可调），断连自动清理订阅。
-- **实时事件广播**：RPC 写账本后，按 `team_id` 把新增事件（`events_after`，全局自增 id 检测）fan-out 到该团队所有在线连接（`broadcast::Hub`：team→member→sender 注册表）；推送尽力而为，账本仍是唯一事实源，离线靠 `sync` 补齐。`/health` 增加 `connections` 在线数。
-- **插件 `runWs`**：`connectWs`（mTLS + register + `event` 回调 + 心跳 `pong` + 指数退避重连 1s→60s）；`TEAMX_SERVER_URL` 设置时 index.ts 建立推送连接、实时刷新 digest，M2 轮询作为断线降级（seq 水位防重复 toast）。
-- **测试**：新增 `tests/ws-test.ts`（双 mTLS WS 客户端 register、owner 广播实时推给 member、心跳 ping、/health 连接数），接入 `run-all.sh`。
+- **State machine completeness**: removed unreachable `paused` state; added `team archive` (completed→archived) and `member set-state idle|active`; `achieved` can be reopened by the owner (start/resume→in_progress, refine→refining).
+- **Data model**: removed redundant `sessions` table; added `UNIQUE(team_id, session_key)` on `members` and `UNIQUE(team_id)` on `goals`; member re-entry reuses the same row; sync cursor advances monotonically.
+- **Authorization/robustness**: owner cannot `team leave`; `team approve/deny` supports `--team` disambiguation; `team create` is idempotent (same name reuses); `publish --data` falls back to `{"message": s}` for non-JSON.
+- **Notification storm fix**: per-session notified-seq watermark; same batch of events only toasts once.
+- **M2 polling + agent injection**: works without a server; polling refreshes digest + `experimental.chat.system.transform` injects team state into agent context.
 
-### 网络模式 I1：邀请函（Invitation Letter）+ mTLS 身份
+### Code Review Fixes
 
-- **`team invite "<角色>: <描述>"`**（owner）：为预分配的 member_id 签发 mTLS 客户端证书（CN=`member:<id>:<role>`，显式随机 serial），生成自包含 invitation letter（CA + 客户端证书/私钥 + server 地址 + 角色），单行 `teamx-inv:v1:<base64>` 输出；角色同时落进团队角色目录（approved）。新增 `invitations` 表（v5 迁移，含 member_id/role/cert_serial/cert_cn/used_by/revoked_at）。
-- **`team import <letter>`**（成员）：解包 letter、存 `~/.teamx/letters/<invitation_id>/`（0600）并认领预分配席位（pending，自动带角色）；本地无该邀请（跨机）时仅落盘并提示连服务器完成注册。letter 一次性使用；重导入被拒。
-- **`team invite-list` / `team invite-revoke <id>`**（owner）：列出/吊销邀请函；吊销后其证书在 connect 时即失效。
-- **mTLS 身份（核心）**：`teamx serve` 强制双向 TLS（CA 签发 server + 客户端证书）；RPC handler 从客户端证书 CN 解析 `member_id` 作为 actor 身份，**替代自报 `session`**（`team.import` 走专用 `import_with_cert` 路径绑定证书身份到预分配席位）。证书 = "能连上"，approve = "能干活"（证书可连接但 owner 审批后才 active）。
-- **server 证书 SAN**：`teamx serve --san <ip>` 把局域网 IP 加进 server 证书 SAN（插件 `serve start` 自动探测并传入）。
-- **修复 CA 密钥用途**：CA 证书补 `keyCertSign`/`cRLSign`（此前缺导致 openssl 校验失败）。
-- **插件**：`runRpc` 增加 mTLS 传输（`fetch` 带 `tls:{cert,key,ca,serverName}`，材料来自 env `TEAMX_MTLS_CERT/KEY/CA` 或 `~/.teamx/letters/*/` 自动发现）；`serve start` 传 `--san` + https URL + mTLS 健康探测；新增 `teamx_team_invite`/`teamx_team_import`/`teamx_team_invite_list`/`teamx_team_invite_revoke` 工具。
-- **测试**：`cli-test.sh` 新增邀请函全流程（invite→import→approve→revoke→吊销后拒导入）；新增 `tests/mtls-test.sh`（serve 强制 mTLS、无证书被拒、证书身份解析、`team.import` 绑定证书 member_id、pending 成员不能 approve），并接入 `run-all.sh`。
+Fixed all high/medium priority findings (see `code-review-codex-0817.md`):
 
-### 自定义角色（Custom Roles）
+- **Cross-team read bypass** (security): non-members can no longer read invite tokens, members, roles, or events of arbitrary teams.
+- **Pending members cannot publish** (authorization).
+- **Non-object payload panic** (robustness): `publish --data '[]'` no longer panics.
+- **Invitation letter path traversal** (security): `invitation_id` must be a UUID.
+- **PKI partial-rebuild correctness**: `server.key` loss no longer invalidates issued member certificates.
+- **Auto-execute seq watermark** (correctness): `shouldAutoExecute` uses `e.seq > lastExecutedSeq` for repeat triggers.
+- **Directed task type matching** (correctness): `assignedToMe` matches any event with `assignee_member_id`.
+- **Non-owner cannot `role set owner`** (authorization).
 
-- **成员可提议自定义角色**：`role propose <key> <label> [desc]`，写入团队角色目录（state=proposed），key 不得与内置角色（owner/observer/supervisor/contributor/subtask-implementer/reviewer）冲突。
-- **owner 审批/拒绝**：`role approve <key>` 将角色置为 approved 并**自动授予提议者**；`role deny <key>` 移除提议。非 owner 调用均被拒绝。
-- **owner 修改角色**：`role update <key> [--label] [--description]` 可改任意角色（含内置）的名称/描述，未传字段保持原样。
-- **使用约束**：`role set` 只允许 approved 角色（内置 + 已批准自定义）；pending 角色使用时报错并提示等待审批。
-- **事件**：新增 `role.proposed` / `role.approved` / `role.denied` / `role.updated`；插件 toast/digest 摘要已覆盖。
-- **数据**：`roles` 表新增 `state`（默认 approved）与 `proposed_by`（v4 迁移，幂等补列）。
-- **插件**：新增工具 `teamx_role_propose` / `teamx_role_approve` / `teamx_role_deny` / `teamx_role_update`；扁平别名 `/team-role-propose` `/team-role-approve` `/team-role-deny` `/team-role-update`。
-- **测试**：cli-test 新增自定义角色全流程（propose→不可用→审批→自动授予→可用→update→deny）。
+### Security Model
 
-### 命令简化 + owner 唯一约束
+V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `goal-v1.md` and `v1-spec.md`.
 
-- **通知风暴修复**：M2 轮询器（`sync --no-advance`）新增 per-session 已通知 seq 水位，同一批事件只 toast 一次，不再每 15s 重复轰炸；首次接入记录水位不提示存量。
-- **owner 唯一约束**：一个 session 至多作为一个非 `archived` 团队的 owner；`team create` 创建第二团队（不同名）时报错，归档后才可再创建（幂等同名复用不受影响）。
-- **命令简化**：
-  - `/Team` 升级为 `/team <子命令>` 子命令路由（`create/join/status/sync/goal/approve/deny/role/state/ask/respond/publish/archive/help`），`agent/teamx.md` 增加路由表。
-  - 全部子命令均有**扁平别名**命令（`/team-create`、`/team-join`、`/team-status`、`/team-sync`、`/team-goal-set`、`/team-goal-share`、`/team-goal-close`、`/team-approve`、`/team-deny`、`/team-role`、`/team-state`、`/team-ask`、`/team-respond`、`/team-publish`、`/team-archive`、`/team-help`），利用 opencode 命令列表前缀过滤实现 tab 补齐。
-  - 命令文件安装位置统一到标准 `commands/`（复数）目录，保留 `command/` 单数向后兼容。
+### Testing
 
-### M2（无 server 轮询版）+ 模型级验收
+`tests/run-all.sh` runs a 9-step automated suite: CLI edge cases, mTLS identity + revocation, WebSocket push + disconnect + reconnect, cross-network LAN verification, and plugin unit tests (auto-execute, WebSocket, state machine). `tests/acceptance.sh` runs real-model acceptance tests (headless `opencode run --agent teamx`).
 
-- 新增 `teamx log` 命令（审计回放，解析成员名，`--team`/`--session`/`--limit`/`--after`）。
-- 插件 M2（不依赖 server，轮询实现）：
-  - 每会话团队 digest 缓存 + `experimental.chat.system.transform` 注入（成员 agent 每轮请求可见最新团队状态）。
-  - 轮询器（`TEAMX_POLL_INTERVAL` 毫秒，默认 15000，0 关闭）刷新 digest；有新事件时 `client.tui.showToast` 通知，有 `clarification.asked` 时 `appendPrompt` 唤醒提示。
-  - `dispose` hook 清理定时器。
-- 新增 `tests/acceptance.sh`（真实模型级验收，headless `opencode run --agent teamx`，消耗 token，不并入默认套件）；已实测通过（模型经插件调用 `teamx_create_team`/`teamx_set_goal`，账本落 team.created/goal.set，event hook 自动发布 activity）。
+### Tech Stack
 
-### 三人协作 Demo
-
-- 新增 `docs/demo-3p.md`（owner + contributor + reviewer 三人协作方案文档）。
-- `demo/start.sh` 支持多窗口（`./demo/start.sh 3`）。
-- 新增 `tests/three-member.sh`（三人闭环自动化测试：多成员审批、并行角色、澄清问答、广播、关闭+归档），并接入 `tests/run-all.sh`。
-- 更新 `test-plan.md` / `test-cases.md`（TC-401、TM-04）。
-
-### 生产化（production hardening）
-
-- **状态机完整性**：移除不可达的 `paused` 态；新增 `teamx team archive`（owner，completed→archived）与 `teamx member set-state idle|active`（自服务/owner 代设），补齐 `MemberIdle`/`MemberActive`/`ArchiveTeam` 动作的可达命令。
-- **数据模型完整性**：
-  - 移除冗余 `sessions` 表（`members(session_key, team_id)` 已覆盖其全部信息，此前只写不读）。
-  - `members` 加 `UNIQUE(team_id, session_key)`、`goals` 加 `UNIQUE(team_id)`（v3 迁移，含旧数据去重）。
-  - 成员 leave/deny 后重入复用同一成员行（不再产生同名 left 残留行）。
-  - 同步游标单调推进（`MAX`），并发写不回退。
-- **授权/健壮性**（承上轮 review）：
-  - 禁止 owner `team leave`（无所有权转移前防团队孤儿）。
-  - `team approve/deny` 增加 `--team` 消歧（多团队 owner）。
-  - `team create` 同名复用（模型重试幂等）。
-  - `publish --data` 非 JSON 字符串 fallback 为 `{"message": s}`。
-  - 插件 `event` hook 缓存成员身份，非成员会话不再每次 idle 都 spawn 子进程。
-  - 插件 `runCli` 加 30s 超时。
-- **安全定位**：明确 V1 无真实鉴权（`session_key` 自报、`invite_token` 全员可见，仅信任本机），写入 `goal-v1.md` 与 `v1-spec.md`。
-- **打包/安装**：插件 `package.json` 可发布（非 private、`exports`/`files`/`license`/`repository`）；`install.sh` 幂等、设置 `~/.teamx` 0700 / db 0600 权限、支持 `--uninstall`。
-- **CI**：新增 `.github/workflows/ci.yml`（cargo build+clippy+test、CLI 集成测试、插件 typecheck+build）。
-- **测试**：新增回归（archive、member set-state、重入复用、owner 离开拒绝、多团队 owner 审批、bare data fallback、游标单调）。
-
-## 0.1.0
-
-初始版本：Rust CLI（SQLite 事件账本 + 状态机）+ opencode 插件（15 工具 + `/Team` agent）+ loopx 桥接 + 双会话 demo 与测试。
+Rust CLI (axum + tokio-rustls + rusqlite + rcgen) · TypeScript plugin (opencode plugin API) · SQLite WAL · mTLS (ring + x509-parser + base64) · WebSocket (axum ws)

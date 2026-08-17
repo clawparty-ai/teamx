@@ -1,64 +1,133 @@
 # teamx
 
-团队协作状态内核 + opencode 插件。记录 team / member / goal 的持久化状态与行为历史（状态机，参考 loopx），并通过 opencode 内的 `/Team` agent 让用户创建/加入团队、选择角色、汇报进展、实时同步，直到达成团队目标。
+> Multi-agent collaboration for [opencode](https://github.com/opencode-ai/opencode).
 
-V1：单机本地（CLI-only，无 server），全局 SQLite `~/.teamx/teamx.db`。
+teamx turns opencode into a team workspace. Multiple opencode sessions join a shared team, each with a role and a goal, and collaborate through a persistent event ledger until the goal is achieved.
 
-## 快速开始
+```
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│  opencode    │      │  teamx CLI   │      │  SQLite DB   │
+│  (plugin)    │─────▶│  (Rust)      │─────▶│  (ledger)    │
+└──────────────┘      └──────────────┘      └──────────────┘
+       │                     │
+       │ mTLS                │ axum
+       ▼                     ▼
+┌──────────────┐      ┌──────────────┐
+│  member 2..N │─────▶│ teamx serve  │
+└──────────────┘      └──────────────┘
+```
+
+## Features
+
+- **Goal lifecycle** — `proposed → shared → in_progress → achieved → closed` with owner-driven transitions
+- **Role system** — built-in roles (owner, contributor, reviewer, ...) plus user-proposed custom roles
+- **Invitation letters** — owner issues mTLS client certificates bundled into one-time invitation letters; members import and join with cryptographic identity
+- **Network mode** — `teamx serve` runs an mTLS HTTP server with WebSocket push; members on the same LAN collaborate in real time
+- **Auto-execute** — directed tasks (`publish --assignee`) automatically wake the assigned member's session
+- **30+ tools** — full lifecycle exposed as opencode tools and `/team` slash commands with tab completion
+- **loopx bridge** — optional integration with [loopx](https://github.com/clawparty-ai/loopx) for stage-progress snapshots
+
+## Quick Start
 
 ```bash
-./install.sh        # 构建 Rust CLI 并安装插件三件套到 opencode 配置
-# 重启 opencode 后：
-#   /Team → 进入团队协作 agent
-#   /Team 创建团队 "名字"      → 你是 owner，得到 invite_token
-#   /Team 加入 <token> --name 我 → 成为 member（pending），等待 owner 审批
+# Install (builds Rust CLI + opencode plugin)
+./install.sh
+
+# Restart opencode, then:
+/team create "My Team"          # You become the owner
+/team goal set "Ship feature X" # Draft a goal
+/team goal share                # Share goal → team becomes active
+/team invite "contributor: builds features"  # Issue invitation letter
+
+# On member's machine (or second opencode session):
+/team import <letter>           # Import invitation, get mTLS cert
+# Owner approves:
+/team approve <member_id>
+
+# Member works:
+/team publish progress --data '{"message":"implemented auth"}'
+/team publish achieved --data '{}'
+
+# Owner verifies:
+/team goal close
 ```
 
-## 结构
+## Network Mode
 
-```
-crates/teamx/           Rust CLI（SQLite 事件账本 + 状态机 + loopx 桥接）
-opencode-plugin/        opencode 插件（21 个 teamx_* 工具 + /Team agent + command）
-install.sh              一键安装 / --uninstall 卸载
-tests/                  run-all.sh、smoke.sh、cli-test.sh、concurrency.sh
-docs/                   v1-spec、loopx-bridge、test-plan、test-cases、v2-design、demo、demo-3p、manual-test、network-mode、team-invite、n4-cross-network、manual-test-network
-.github/workflows/      CI（cargo test+clippy、CLI 测试、插件 typecheck+build）
-```
-
-## 测试
-
-测试方案与案例见 `docs/test-plan.md`、`docs/test-cases.md`。一键运行全部测试：
+For LAN collaboration (multiple machines):
 
 ```bash
-./tests/run-all.sh    # cargo test + smoke.sh + cli-test.sh + concurrency.sh + 插件 typecheck/build
+# Owner machine:
+/team serve start               # Start mTLS server on :5781
+/team invite "reviewer: reviews code" --server-url https://172.20.10.3:5781
+
+# Member machine:
+/team import <letter>           # Import invitation
+# Set env for real-time push:
+export TEAMX_SERVER_URL=https://172.20.10.3:5781
+export TEAMX_MTLS_CERT=~/.teamx/letters/<id>/client.crt
+export TEAMX_MTLS_KEY=~/.teamx/letters/<id>/client.key
+export TEAMX_MTLS_CA=~/.teamx/letters/<id>/ca.crt
 ```
 
-手工验收：二人闭环见 `docs/manual-test.md`、`docs/demo.md`；三人闭环（owner+contributor+reviewer）见 `docs/demo-3p.md`；网络模式（owner + 测试 + 评审，mTLS 邀请函 + WS 推送）见 `docs/manual-test-network.md`。
+See [docs/network-mode.md](docs/network-mode.md) for the full design and [docs/manual-test-network.md](docs/manual-test-network.md) for the manual test runbook.
 
-## 安全定位（重要）
+## Project Structure
 
-V1 **无真实鉴权**：`session_key` 调用方自报、`invite_token` 对全队成员可见，是"信任本机"的协作约定——"owner 审批/角色"是协作语义，不是安全边界。真实鉴权在 V2（见 `docs/v2-design.md`）。详见 `goal-v1.md`「信任模型」。
+```
+crates/teamx/           Rust CLI (SQLite event ledger + state machine + mTLS server)
+opencode-plugin/        opencode plugin (30+ tools + /team agent + slash commands)
+  src/index.ts          Plugin entry, event handling, auto-execute
+  src/tools.ts          Tool definitions
+  src/client.ts         CLI/RPC client with mTLS transport
+  src/ws.ts             WebSocket client (push, reconnect)
+  src/serve.ts          Server lifecycle management
+  assets/agent/         Agent routing instructions (teamx.md)
+  assets/command/       Slash command files (/team create, /team invite, ...)
+install.sh              One-click install / --uninstall
+tests/                  run-all.sh (9-step automated suite)
+docs/                   Design docs, manual test runbooks, specs
+```
 
-## 手动验证（双会话闭环）
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `TEAMX_DB` | `~/.teamx/teamx.db` | SQLite database path |
+| `TEAMX_SERVER_URL` | — | Network mode server URL (enables WebSocket push) |
+| `TEAMX_MTLS_CERT` | auto-discovered | mTLS client certificate (PEM) |
+| `TEAMX_MTLS_KEY` | auto-discovered | mTLS client key (PEM) |
+| `TEAMX_MTLS_CA` | auto-discovered | mTLS CA certificate (PEM) |
+| `TEAMX_POLL_INTERVAL` | `15000` | Polling interval in ms (0 = disabled when WS connected) |
+| `TEAMX_WS_HEARTBEAT_SECS` | `30` | WebSocket heartbeat interval |
+| `TEAMX_BIN` | `teamx` | CLI executable name |
+
+## Testing
 
 ```bash
-cargo build
-export TEAMX_DB=/tmp/t.db   # 用独立库，不污染全局
-teamx init
-teamx team create "Demo" --session inst:alice --json
-teamx team join <token> --name Bob --session inst:bob --json
-teamx team approve <member_id> --session inst:alice --json
-teamx role set contributor --session inst:bob --json
-teamx goal set "Ship MVP" --session inst:alice --json
-teamx goal share --session inst:alice --json
-teamx publish progress --data '{"message":"done auth"}' --session inst:bob --json
-teamx publish achieved --data '{}' --session inst:bob --json
-teamx goal close --session inst:alice --json
-teamx sync --session inst:bob --json
+./tests/run-all.sh    # Full automated suite (9 steps)
 ```
 
-## 环境变量
+The suite runs: unit tests, CLI edge cases, mTLS identity + revocation, WebSocket push + reconnect, cross-network LAN verification, and plugin unit tests.
 
-- `TEAMX_DB`：数据库路径（默认 `~/.teamx/teamx.db`）
-- `TEAMX_BIN`：插件调用的 teamx 可执行名（默认 `teamx`）
-- `TEAMX_HOME`：实例 UUID 存放目录（默认 `~/.teamx`）
+Manual test runbooks:
+- [Two-person workflow](docs/demo.md)
+- [Three-person workflow](docs/demo-3p.md)
+- [Network mode](docs/manual-test-network.md)
+
+## Security Model (V1)
+
+V1 has **no real authentication**. Session keys are self-reported, invitation tokens are visible to all team members. This is a "trust this machine" collaboration convention — owner approval and roles are collaboration semantics, not security boundaries.
+
+See [goal-v1.md](goal-v1.md) for the trust model and [docs/v2-design.md](docs/v2-design.md) for the planned V2 with real auth.
+
+## Tech Stack
+
+- **CLI**: Rust (axum + tokio-rustls + rusqlite + rcgen)
+- **Plugin**: TypeScript (opencode plugin API)
+- **Storage**: SQLite WAL
+- **Transport**: mTLS (ring + x509-parser), WebSocket (axum ws)
+
+## License
+
+MIT
