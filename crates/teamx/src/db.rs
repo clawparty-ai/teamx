@@ -207,12 +207,12 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Default role catalog, seeded per team at creation.
 pub const DEFAULT_ROLES: &[(&str, &str, &str)] = &[
-    ("owner", "Owner", "创建团队、起草目标、审批成员、验证并关闭目标。"),
-    ("observer", "Observer", "只读观察团队动态与目标进展，不承担执行任务。"),
-    ("supervisor", "Supervisor", "监督进度与质量，向成员提出澄清与调整建议。"),
-    ("contributor", "Contributor", "承担实现与交付工作，定期汇报进展。"),
-    ("subtask-implementer", "Subtask Implementer", "负责某个子任务的实现与交付。"),
-    ("reviewer", "Reviewer", "审查交付物与进度，提供评审意见。"),
+    ("owner", "Owner", "Creates team, drafts goals, approves members, verifies and closes goals."),
+    ("observer", "Observer", "Read-only observer of team dynamics and goal progress; does not execute tasks."),
+    ("supervisor", "Supervisor", "Monitors progress and quality; provides clarification and adjustment suggestions."),
+    ("contributor", "Contributor", "Takes on implementation and delivery work; reports progress regularly."),
+    ("subtask-implementer", "Subtask Implementer", "Responsible for implementing and delivering a specific subtask."),
+    ("reviewer", "Reviewer", "Reviews deliverables and progress; provides review feedback."),
 ];
 
 pub fn now() -> String {

@@ -27,37 +27,68 @@ uninstall() {
   rm -f "$BIN_DIR/teamx"
   rm -f "$CONFIG_DIR/plugins/teamx.js" \
         "$CONFIG_DIR/agent/teamx.md" \
+        "$CONFIG_DIR/agent/teamx.en.md" \
         "$CONFIG_DIR/command/Team.md" \
+        "$CONFIG_DIR/command/Team.en.md" \
         "$CONFIG_DIR/commands/team.md" \
         "$CONFIG_DIR/commands/team-create.md" \
+        "$CONFIG_DIR/commands/team-create.en.md" \
         "$CONFIG_DIR/commands/team-join.md" \
+        "$CONFIG_DIR/commands/team-join.en.md" \
         "$CONFIG_DIR/commands/team-status.md" \
+        "$CONFIG_DIR/commands/team-status.en.md" \
         "$CONFIG_DIR/commands/team-sync.md" \
+        "$CONFIG_DIR/commands/team-sync.en.md" \
         "$CONFIG_DIR/commands/team-goal-set.md" \
+        "$CONFIG_DIR/commands/team-goal-set.en.md" \
         "$CONFIG_DIR/commands/team-goal-share.md" \
+        "$CONFIG_DIR/commands/team-goal-share.en.md" \
         "$CONFIG_DIR/commands/team-goal-close.md" \
+        "$CONFIG_DIR/commands/team-goal-close.en.md" \
         "$CONFIG_DIR/commands/team-approve.md" \
+        "$CONFIG_DIR/commands/team-approve.en.md" \
         "$CONFIG_DIR/commands/team-deny.md" \
+        "$CONFIG_DIR/commands/team-deny.en.md" \
         "$CONFIG_DIR/commands/team-role.md" \
+        "$CONFIG_DIR/commands/team-role.en.md" \
         "$CONFIG_DIR/commands/team-role-propose.md" \
+        "$CONFIG_DIR/commands/team-role-propose.en.md" \
         "$CONFIG_DIR/commands/team-role-approve.md" \
+        "$CONFIG_DIR/commands/team-role-approve.en.md" \
         "$CONFIG_DIR/commands/team-role-deny.md" \
+        "$CONFIG_DIR/commands/team-role-deny.en.md" \
         "$CONFIG_DIR/commands/team-role-update.md" \
+        "$CONFIG_DIR/commands/team-role-update.en.md" \
         "$CONFIG_DIR/commands/team-invite.md" \
+        "$CONFIG_DIR/commands/team-invite.en.md" \
         "$CONFIG_DIR/commands/team-import.md" \
+        "$CONFIG_DIR/commands/team-import.en.md" \
         "$CONFIG_DIR/commands/team-invite-list.md" \
+        "$CONFIG_DIR/commands/team-invite-list.en.md" \
         "$CONFIG_DIR/commands/team-invite-revoke.md" \
+        "$CONFIG_DIR/commands/team-invite-revoke.en.md" \
         "$CONFIG_DIR/commands/team-state.md" \
+        "$CONFIG_DIR/commands/team-state.en.md" \
         "$CONFIG_DIR/commands/team-ask.md" \
+        "$CONFIG_DIR/commands/team-ask.en.md" \
         "$CONFIG_DIR/commands/team-respond.md" \
+        "$CONFIG_DIR/commands/team-respond.en.md" \
         "$CONFIG_DIR/commands/team-publish.md" \
+        "$CONFIG_DIR/commands/team-publish.en.md" \
         "$CONFIG_DIR/commands/team-archive.md" \
+        "$CONFIG_DIR/commands/team-archive.en.md" \
         "$CONFIG_DIR/commands/team-serve.md" \
+        "$CONFIG_DIR/commands/team-serve.en.md" \
         "$CONFIG_DIR/commands/team-serve-start.md" \
+        "$CONFIG_DIR/commands/team-serve-start.en.md" \
         "$CONFIG_DIR/commands/team-serve-status.md" \
+        "$CONFIG_DIR/commands/team-serve-status.en.md" \
         "$CONFIG_DIR/commands/team-serve-stop.md" \
+        "$CONFIG_DIR/commands/team-serve-stop.en.md" \
         "$CONFIG_DIR/commands/team-serve-token.md" \
-        "$CONFIG_DIR/commands/team-help.md"
+        "$CONFIG_DIR/commands/team-serve-token.en.md" \
+        "$CONFIG_DIR/commands/team-help.md" \
+        "$CONFIG_DIR/commands/team-help.en.md"
   # NOTE: keep ~/.teamx (the SQLite data) — it is user data; removing the
   # binary/plugin does not destroy teams.
   echo "removed binary and opencode pieces."
@@ -92,7 +123,8 @@ mkdir -p "$CONFIG_DIR/plugins" "$CONFIG_DIR/agent" "$CONFIG_DIR/commands"
 # Primary location: the standard plural `commands/` directory (same as loopx).
 cp "$PLUGIN_DIR/dist/teamx.js" "$CONFIG_DIR/plugins/teamx.js"
 cp "$PLUGIN_DIR/assets/agent/teamx.md" "$CONFIG_DIR/agent/teamx.md"
-# Install every /team command file (main router + all flat aliases).
+cp "$PLUGIN_DIR/assets/agent/teamx.en.md" "$CONFIG_DIR/agent/teamx.en.md"
+# Install every /team command file (main router + all flat aliases + English variants).
 for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \
            team-approve team-deny team-role team-role-propose \
@@ -102,6 +134,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do
   cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"
+  cp "$PLUGIN_DIR/assets/command/$cmd.en.md" "$CONFIG_DIR/commands/$cmd.en.md"
 done
 # Back-compat: also drop the legacy singular `command/` copy so upgrades do not
 # leave a stale `/Team` behind on case-sensitive filesystems. On macOS APFS

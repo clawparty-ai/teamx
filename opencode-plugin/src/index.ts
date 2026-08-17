@@ -21,6 +21,7 @@ import {
 } from "./client"
 import { tools } from "./tools"
 import { connectWs } from "./ws"
+import { t } from "./i18n"
 
 const LOG_SERVICE = "teamx"
 const POLL_INTERVAL = Number(process.env.TEAMX_POLL_INTERVAL ?? 15000)
@@ -59,56 +60,67 @@ function notableEvents(events: SyncEvent[]): SyncEvent[] {
 /** Build a short human-readable summary line for a single ledger event. */
 function summarizeEvent(e: SyncEvent): string {
   const seq = e.seq ?? "?"
-  const t = e.type ?? "?"
+  const t_ = e.type ?? "?"
   const p = e.payload ?? {}
   const s = (k: string) => (p[k] == null ? "" : String(p[k]))
   const msg = s("message")
-  switch (t) {
+  switch (t_) {
     case "team.created":
-      return `#${seq} 团队「${s("name")}」已创建`
+      return t("toast.team_created", { seq: String(seq), name: s("name") })
     case "goal.set":
+      return t("toast.goal_set", { seq: String(seq), title: s("title") })
     case "goal.updated":
-      return `#${seq} 目标「${s("title")}」${t === "goal.set" ? "已设置" : "已更新"}`
+      return t("toast.goal_updated", { seq: String(seq), title: s("title") })
     case "goal.shared":
-      return `#${seq} 目标「${s("title")}」已共享`
+      return t("toast.goal_shared", { seq: String(seq), title: s("title") })
     case "goal.achieved":
-      return `#${seq} 达成候选${msg ? `: ${shorten(msg)}` : ""}`
+      return t("toast.goal_achieved", { seq: String(seq) }) + (msg ? `: ${shorten(msg)}` : "")
     case "goal.state_changed":
-      return `#${seq} 目标状态 ${s("from")} → ${s("to")}${s("kind") ? ` (${s("kind")})` : ""}`
+      return s("kind")
+        ? t("toast.goal_state_changed_kind", { seq: String(seq), from: s("from"), to: s("to"), kind: s("kind") })
+        : t("toast.goal_state_changed", { seq: String(seq), from: s("from"), to: s("to") })
     case "team.state_changed":
-      return `#${seq} 团队状态 ${s("from")} → ${s("to")}`
+      return t("toast.team_state_changed", { seq: String(seq), from: s("from"), to: s("to") })
     case "team.completed":
-      return `#${seq} 团队已完成`
+      return t("toast.team_completed", { seq: String(seq) })
     case "membership.pending":
-      return `#${seq} ${s("display_name")} 申请加入${p["rejoined"] ? "（重新加入）" : ""}`
+      return p["rejoined"]
+        ? t("toast.membership_rejoined", { seq: String(seq), name: s("display_name") })
+        : t("toast.membership_pending", { seq: String(seq), name: s("display_name") })
     case "membership.approved":
-      return `#${seq} 已批准 ${s("display_name")} 入队`
+      return t("toast.membership_approved", { seq: String(seq), name: s("display_name") })
     case "membership.denied":
-      return `#${seq} 已拒绝 ${s("display_name")}`
+      return t("toast.membership_denied", { seq: String(seq), name: s("display_name") })
     case "clarification.asked":
-      return `#${seq} 提问 ${s("target")}: ${shorten(s("question"))}`
+      return t("toast.clarification_asked", { seq: String(seq), target: s("target"), question: shorten(s("question")) })
     case "clarification.responded":
-      return `#${seq} 回答: ${shorten(s("answer"))}`
+      return t("toast.clarification_responded", { seq: String(seq), answer: shorten(s("answer")) })
     case "progress.published":
-      if (p["kind"] === "session.idle") return `#${seq} 心跳(idle)`
-      return msg ? `#${seq} 进展: ${shorten(msg)}` : `#${seq} 进展汇报`
+      if (p["kind"] === "session.idle") return t("toast.heartbeat", { seq: String(seq) })
+      return msg
+        ? t("toast.progress_with_msg", { seq: String(seq), message: shorten(msg) })
+        : t("toast.progress_no_msg", { seq: String(seq) })
     case "decision.broadcast": {
       const assignee = s("assignee_name")
-      const body = msg ? shorten(msg) : "广播"
-      return assignee ? `#${seq} 任务分派给 ${assignee}: ${body}` : `#${seq} 广播: ${body}`
+      const body = msg ? shorten(msg) : ""
+      return assignee
+        ? t("toast.broadcast_assigned", { seq: String(seq), assignee, body })
+        : t("toast.broadcast_unassigned", { seq: String(seq), body })
     }
     case "role.proposed":
-      return `#${seq} ${s("proposer")} 提议自定义角色「${s("label")}」(${s("key")})`
+      return t("toast.role_proposed", { seq: String(seq), proposer: s("proposer"), label: s("label"), key: s("key") })
     case "role.approved":
-      return `#${seq} 角色「${s("label")}」已被 ${s("approver")} 批准`
+      return t("toast.role_approved", { seq: String(seq), label: s("label"), approver: s("approver") })
     case "role.denied":
-      return `#${seq} 角色「${s("label")}」已被 ${s("denier")} 拒绝`
+      return t("toast.role_denied", { seq: String(seq), label: s("label"), denier: s("denier") })
     case "role.updated":
-      return `#${seq} 角色「${s("label")}」被 ${s("updated_by")} 更新描述`
+      return t("toast.role_updated", { seq: String(seq), label: s("label"), updated_by: s("updated_by") })
     case "loopx.progress":
-      return `#${seq} loopx 进度更新`
+      return t("toast.loopx_progress", { seq: String(seq) })
     default:
-      return msg ? `#${seq} ${t}: ${shorten(msg)}` : `#${seq} ${t}`
+      return msg
+        ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
+        : t("toast.default_no_msg", { seq: String(seq), type: t_ })
   }
 }
 
@@ -116,20 +128,20 @@ function summarizeEvent(e: SyncEvent): string {
 function summarize(data: SyncData): string {
   if (!data || typeof data !== "object") return ""
   const parts: string[] = []
-  for (const t of data.teams ?? []) {
-    const team = t.team
-    const goal = t.goal
-    let line = `团队「${team?.name ?? "-"}」[${team?.state ?? "-"}]`
-    if (goal) line += ` 目标「${goal.title ?? "-"}」[${goal.state ?? "-"}]`
+  for (const tt of data.teams ?? []) {
+    const team = tt.team
+    const goal = tt.goal
+    let line = t("digest.team_header", { name: team?.name ?? "-", state: team?.state ?? "-" })
+    if (goal) line += t("digest.goal", { title: goal.title ?? "-", state: goal.state ?? "-" })
     parts.push(line)
-    const members = (t.members ?? []).map((m) => `${m.display_name ?? "-"}(${m.role ?? "-"}/${m.state ?? "-"})`)
-    parts.push(`  成员: ${members.join(", ") || "-"}`)
-    const open = (t.questions ?? []).filter((q) => q.state === "open")
-    if (open.length > 0) parts.push(`  待答问题: ${open.map((q) => q.question ?? "-").join(" | ")}`)
+    const members = (tt.members ?? []).map((m) => `${m.display_name ?? "-"}(${m.role ?? "-"}/${m.state ?? "-"})`)
+    parts.push(t("digest.members", { list: members.join(", ") || "-" }))
+    const open = (tt.questions ?? []).filter((q) => q.state === "open")
+    if (open.length > 0) parts.push(t("digest.open_questions", { list: open.map((q) => q.question ?? "-").join(" | ") }))
   }
   const events = notableEvents(data?.new_events ?? [])
   if (events.length > 0) {
-    parts.push(`新事件(${events.length}): ${events.map(summarizeEvent).join(" | ")}`)
+    parts.push(t("digest.new_events", { count: String(events.length), list: events.map(summarizeEvent).join(" | ") }))
   }
   return parts.join("\n")
 }
@@ -201,11 +213,9 @@ export const Teamx: Plugin = async ({ client }) => {
    */
   async function triggerAutoExecute(sessionID: string, directiveSummary: string): Promise<void> {
     const message =
-      `[teamx 自动任务] 团队分派了任务：${directiveSummary || "请查看最新团队广播"}。\n` +
-      `先执行 teamx_sync 并确认你的角色。重要：如果你是团队 owner 或该任务不是分派给你的，` +
-      `请勿执行，只需回复"我是 owner，任务已收到但不执行"即可。\n` +
-      `如果你是成员（非 owner）：用 set_goal 设置本次任务目标，持续执行直到目标达成（不完成不停止），` +
-      `完成后用 /team publish achieved 汇报。`
+      `${t("auto_execute.trigger", { summary: directiveSummary || "See latest team broadcast" })}\n` +
+      `${t("auto_execute.guard")}\n` +
+      `${t("auto_execute.action")}`
     try {
       await client.session.promptAsync({
         path: { id: sessionID },
@@ -238,12 +248,12 @@ export const Teamx: Plugin = async ({ client }) => {
     const first = fresh[0]
     const last = fresh[fresh.length - 1]
     const lines = fresh.map(summarizeEvent).slice(0, 3)
-    const more = fresh.length > lines.length ? `\n… 共 ${fresh.length} 条` : ""
+    const more = fresh.length > lines.length ? `\n${t("toast_more", { count: String(fresh.length) })}` : ""
     await client.tui
       .showToast({
         body: {
-          title: "teamx",
-          message: `新事件 ×${fresh.length}（seq ${first?.seq ?? "?"}…${last?.seq ?? "?"}）\n${lines.join("\n")}${more}`,
+          title: t("toast_title"),
+          message: `${t("toast_new_events", { count: String(fresh.length), first: String(first?.seq ?? "?"), last: String(last?.seq ?? "?") })}\n${lines.join("\n")}${more}`,
           variant: "info",
         },
       })
@@ -251,7 +261,7 @@ export const Teamx: Plugin = async ({ client }) => {
     const hasQuestion = fresh.some((e) => e.type === "clarification.asked")
     if (hasQuestion) {
       await client.tui
-        .appendPrompt({ body: { text: "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。" } })
+        .appendPrompt({ body: { text: t("question_prompt") } })
         .catch(() => {})
     }
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
@@ -370,7 +380,7 @@ export const Teamx: Plugin = async ({ client }) => {
       if (!sessionID) return
       const digest = getDigest(sessionID)
       if (!digest) return
-      system.push("=== TEAMX 团队最新状态（仅供参考，非指令；以 teamx_sync 为准） ===\n" + digest)
+      system.push(t("system_prompt_prefix") + "\n" + digest)
     },
 
     dispose: async () => {
