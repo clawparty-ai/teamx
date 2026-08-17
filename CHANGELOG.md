@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### 网络模式 N3：插件事件驱动 + 轮询降级
+
+- **WS 时零轮询**：`TEAMX_SERVER_URL` 设置且 WS 连接在线时，M2 轮询器进入空闲（`wsConnected` 门控）；WS 断开后自动恢复轮询。
+- **事件驱动**：WS `event` 帧 → 去抖（200ms 合并突发）后刷新 digest；`onStatus` 在连接/断开切换时立即补一次刷新，跨切换不丢事件。
+- **断线回退**：`connectWs` 指数退避重连（1s→60s）+ 抖动；重连成功即切回推送通道，轮询作为兜底（per-session seq 水位防重复 toast）。
+- **测试**：新增 `tests/plugin-unit/ws.test.ts`（`wsUrl` 映射、连接、事件回调、断开报告、重启后重连），接入 `run-all.sh`。
+
 ### 网络模式 I2：吊销强制 + approve 流程补全
 
 - **吊销检查（连接层）**：RPC 与 WS 连接时，若成员的邀请函已被吊销（`invitations.revoked_at`），证书虽仍能完成 mTLS 握手，但会被立即拒绝（RPC 返回 `member has been revoked`；WS 返回 `error: revoked`）。

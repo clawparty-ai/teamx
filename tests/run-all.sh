@@ -38,6 +38,7 @@ if command -v bun >/dev/null 2>&1; then
   (cd opencode-plugin && bun install >/dev/null 2>&1 && bunx tsc --noEmit && bun run build)
   echo "-- plugin unit tests --"
   TEAMX_AUTO_EXECUTE=1 bun "$ROOT/tests/plugin-unit/auto-execute.test.ts"
+  bun "$ROOT/tests/plugin-unit/ws.test.ts"
 else
   echo "bun not found; skipping plugin checks"
 fi

@@ -282,26 +282,51 @@ export const Teamx: Plugin = async ({ client }) => {
     }
   }
 
+  // Refresh the digest for every known member session (shared by the poller
+  // and the WS push path).
+  function refreshAll() {
+    for (const sid of knownMemberSessions()) {
+      refreshDigest(sid).catch(() => {})
+    }
+  }
+
+  // Debounce rapid WS event bursts into a single refresh.
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  function scheduleRefresh() {
+    if (refreshTimer) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined
+      refreshAll()
+    }, 200)
+  }
+
+  // Whether the live WS push is currently connected (when true, polling is idle).
+  let wsConnected = false
+
+  // M2 poller — fallback path only. When a live push connection is active the
+  // poller stays idle (N3: zero polling while WS is up), and resumes when the
+  // WS drops.
   let pollTimer: ReturnType<typeof setInterval> | undefined
   if (POLL_INTERVAL > 0) {
     pollTimer = setInterval(() => {
-      for (const sid of knownMemberSessions()) {
-        refreshDigest(sid).catch(() => {})
-      }
+      if (wsConnected) return
+      refreshAll()
     }, POLL_INTERVAL)
   }
 
-  // N1: live push. When a network-mode server is configured, open a WS
-  // connection and refresh the digest in real time on each incoming event.
-  // The M2 poller stays as the fallback path (its per-session seq watermark
-  // prevents duplicate toasts).
+  // N1/N3: live push. Open a WS connection when a network-mode server is
+  // configured and refresh the digest in real time on each incoming event.
+  // The per-session seq watermark (in refreshDigest) keeps toasts from
+  // duplicating between the push and poll paths.
   let wsHandle: ReturnType<typeof connectWs> | undefined
   if (TEAMX_SERVER_URL) {
     wsHandle = connectWs({
-      onEvent: (_ev) => {
-        for (const sid of knownMemberSessions()) {
-          refreshDigest(sid).catch(() => {})
-        }
+      onEvent: () => scheduleRefresh(),
+      onStatus: (connected) => {
+        wsConnected = connected
+        // Catch up immediately on (re)connect and on disconnect (before the
+        // poller resumes), so nothing is missed across the switch.
+        scheduleRefresh()
       },
       log: (level, message) => log(level === "debug" ? "debug" : "warn", message),
     })
@@ -359,6 +384,7 @@ export const Teamx: Plugin = async ({ client }) => {
 
     dispose: async () => {
       if (pollTimer) clearInterval(pollTimer)
+      if (refreshTimer) clearTimeout(refreshTimer)
       wsHandle?.close()
     },
   }
