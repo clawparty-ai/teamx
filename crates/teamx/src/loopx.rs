@@ -90,6 +90,31 @@ fn compact(v: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
+/// Run `loopx status --format json` in the given project directory, with a
+/// timeout so a stuck `loopx` subprocess cannot hang teamx indefinitely.
+fn loopx_status_output(project: &Path) -> std::io::Result<std::process::Output> {
+    let project = project.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = Command::new("loopx")
+            .arg("status")
+            .args(["--format", "json"])
+            .current_dir(&project)
+            .output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        Ok(out) => out,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "loopx status timed out after 15s",
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::other(
+            "loopx status thread panicked",
+        )),
+    }
+}
+
 /// Run `loopx status --format json` in the given project directory.
 pub fn loopx_status(project: &Path) -> LoopxDigest {
     let mut digest = LoopxDigest {
@@ -103,16 +128,10 @@ pub fn loopx_status(project: &Path) -> LoopxDigest {
         ));
         return digest;
     }
-    let output = Command::new("loopx")
-        .arg("status")
-        .args(["--format", "json"])
-        .current_dir(project)
-        .output();
+    let output = loopx_status_output(project);
     match output {
         Err(e) => {
-            digest.error = Some(format!(
-                "loopx CLI unavailable (is it installed on PATH?): {e}"
-            ));
+            digest.error = Some(format!("loopx status failed: {e}"));
         }
         Ok(out) if !out.status.success() => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();

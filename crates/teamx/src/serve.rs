@@ -134,7 +134,13 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", cmd.addr, cmd.port)
+    // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
+    let bind_str = if cmd.addr.contains(':') {
+        format!("[{}]:{}", cmd.addr, cmd.port)
+    } else {
+        format!("{}:{}", cmd.addr, cmd.port)
+    };
+    let addr: SocketAddr = bind_str
         .parse()
         .map_err(|e| format!("invalid bind address {}:{}: {e}", cmd.addr, cmd.port))?;
 
@@ -404,6 +410,21 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
     // mTLS handshake, but it must not be able to act on the ledger.
     if commands::is_revoked(conn, &member_id).map_err(|e| e.to_string())? {
         return Err("member has been revoked".to_string());
+    }
+
+    // Enforce team ownership on cross-team reads (network mode): a member may
+    // only read the status/roles/events/log of a team they belong to. Without
+    // this, any member with a valid cert could read another team's state,
+    // members, roles and invite_token.
+    match method {
+        "team.status" | "role.list" | "events" | "log" => {
+            if let Some(tid) = s("team") {
+                if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+                    return Err(format!("member `{member_id}` is not a member of team {tid}"));
+                }
+            }
+        }
+        _ => {}
     }
 
     // Every other command requires an existing member: resolve their session_key

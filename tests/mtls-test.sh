@@ -113,4 +113,20 @@ if curl -sS --max-time 5 --cacert "$ALICE_DIR/ca.crt" --cert "$ALICE_DIR/client.
 fi
 pass "pending member cannot approve (non-owner rejected)"
 
+step "cross-team read is rejected (network mode authorization)"
+# a second team owned by a different session; Alice (member of Mtls) must NOT be
+# able to read it over RPC.
+OTHER_ID=$("$TEAMX" team create "Other" --session s:owner2 --json | python3 -c "import json,sys; print(json.load(sys.stdin)['team']['id'])")
+if curl -sS --max-time 5 --cacert "$ALICE_DIR/ca.crt" --cert "$ALICE_DIR/client.crt" --key "$ALICE_DIR/client.key" \
+  -H 'Content-Type: application/json' -d "{\"method\":\"team.status\",\"args\":{\"team\":\"$OTHER_ID\"}}" \
+  "https://127.0.0.1:$PORT/rpc" 2>/dev/null | grep -q '"ok":true'; then
+  fail "member should not be able to read another team's status"
+fi
+if curl -sS --max-time 5 --cacert "$ALICE_DIR/ca.crt" --cert "$ALICE_DIR/client.crt" --key "$ALICE_DIR/client.key" \
+  -H 'Content-Type: application/json' -d "{\"method\":\"events\",\"args\":{\"team\":\"$OTHER_ID\"}}" \
+  "https://127.0.0.1:$PORT/rpc" 2>/dev/null | grep -q '"ok":true'; then
+  fail "member should not be able to read another team's events"
+fi
+pass "cross-team read rejected (team.status / events)"
+
 step "ALL mTLS TESTS PASS"

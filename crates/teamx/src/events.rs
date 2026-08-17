@@ -74,6 +74,23 @@ pub fn list(
     rows.collect()
 }
 
+/// Read the most recent `limit` events for a team (newest first), without
+/// loading the whole ledger into memory.
+pub fn recent(
+    conn: &Connection,
+    team_id: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, team_id, member_id, seq, type, payload_json, created_at
+         FROM events WHERE team_id = ?1 ORDER BY seq DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![team_id, limit as i64], row_to_event)?;
+    let mut v: Vec<Event> = rows.collect::<rusqlite::Result<_>>()?;
+    v.reverse();
+    Ok(v)
+}
+
 fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     let payload_json: Option<String> = r.get(5)?;
     Ok(Event {

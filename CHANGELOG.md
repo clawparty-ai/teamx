@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 代码 Review 修复（2026-08-17）
+
+修复 `code-review-codex-0817.md` 列出的全部高/中优先级问题，并补回归测试：
+
+- **跨团队读取绕过（安全）**：网络模式下，`team.status`/`role.list`/`events`/`log` 带 `--team` 时现在会校验证书成员是否属于该团队（`commands::member_in_team` + serve.rs dispatch），非成员无法再读任意团队的 `invite_token`/成员/角色/事件。
+- **pending 成员不能 publish（授权）**：`cmd_publish` 拒绝 `pending` 成员的 publish（含广播与状态变更）；`waiting`/`idle` 成员不受影响。
+- **非对象 payload panic（健壮性）**：`publish --data '[]' --assignee <id>` 不再 panic——非对象 payload 归一化为 `{"message": ...}` 后再打 assignee 标签。
+- **邀请函路径穿越（安全）**：`store_letter` 校验 `invitation_id` 必须是 UUID（`is_uuid`），拒绝 `../../` 之类的越界写入。
+- **PKI 部分缺失误重建 CA（正确性）**：`ensure_pki` 拆成「CA 缺失才重建 CA」「server 证书缺失只重建 server」，`server.key` 丢失不再使已签发的 member cert 全部失效。
+- **插件 auto-execute 只触发一次（正确性）**：`shouldAutoExecute` 改为按 seq 水位判断（`e.seq > lastExecutedSeq`），新的定向任务可再次唤醒成员。
+- **定向任务类型匹配过窄（正确性）**：`assignedToMe` 放宽为匹配任意带 `assignee_member_id` 的事件（不再只认 `decision.broadcast`/`goal.shared`）。
+- **非 owner 不能 role set owner（授权）**：`cmd_role_set` 拒绝把 `owner` 角色授予非 owner 成员，堵住插件 `isOwnerSession` 的角色伪装。
+- **次要**：`teamx serve` 支持裸 IPv6 绑定地址（`[::]:port`）；`loopx status` 子进程加 15s 超时；`team_status_json` 的 `recent_events` 改为 SQL 层 `ORDER BY seq DESC LIMIT 20`（不再全量读账本）；新增 `teamx_leave` 工具并在退出时失效 membership 缓存。
+- **测试**：`cli-test.sh` 新增 review 修复回归段（pending publish / 非对象 payload / role-set-owner / 路径穿越）；`mtls-test.sh` 新增跨团队读取拒绝；`auto-execute.test.ts` 更新水位与类型匹配断言。
+
 ### 网络模式 N4：跨网络验证（单机模拟 + 联调 runbook）
 
 - **局域网路径验证**：新增 `tests/cross-network.sh` —— serve 绑 `0.0.0.0` + `--san <局域网IP>`，经**非 loopback IP** 走完整 mTLS 链路（openssl 校验 server 证书 SAN 含局域网 IP、`team.status`/`team.import` 经局域网 IP 成功），等价覆盖远程成员视角的证书 SAN + CA 信任；无局域网 IP 时优雅跳过。

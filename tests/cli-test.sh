@@ -165,6 +165,10 @@ TEAM2_ID=$(echo "$CREATE2" | jget "['team']['id']")
 # join BOTH teams so the session has two memberships
 expect_ok "$TEAMX" team join "$TOKEN" --name Multi --session s:multi
 expect_ok "$TEAMX" team join "$TOKEN2" --name Multi --session s:multi
+# approve s:multi in TEAM2 so the disambiguated publish below can succeed
+# (pending members can no longer publish — see review fixes)
+MULTI_ID=$($TEAMX team status --team "$TEAM2_ID" --json | python3 -c "import json,sys; print([m['id'] for m in json.load(sys.stdin)['teams'][0]['members'] if m['display_name']=='Multi'][0])")
+expect_ok "$TEAMX" team approve "$MULTI_ID" --session s:o2
 expect_fail "$TEAMX" team status --session s:multi
 expect_fail "$TEAMX" publish decision --session s:multi
 expect_fail "$TEAMX" publish decision --session s:multi --team "not-a-team"
@@ -332,5 +336,31 @@ expect_fail "$TEAMX" team invite-revoke "$INV2_ID" --session s:owner
 expect_fail "$TEAMX" team import "$LETTER2" --name X --session s:x
 # non-owner cannot revoke
 expect_fail "$TEAMX" team invite-revoke "$INV_ID" --session s:tester
+
+step "review fixes: pending publish / payload panic / role-set-owner / path traversal"
+# fresh team owned by a fresh session (avoids multi-team ambiguity with s:owner)
+R2=$($TEAMX team create "ReviewFix" --session s:rfix --json)
+R2_TOKEN=$(echo "$R2" | jget "['team']['invite_token']")
+R2_ID=$(echo "$R2" | jget "['team']['id']")
+# pending member
+expect_ok "$TEAMX" team join "$R2_TOKEN" --name Pending --session s:pending
+PENDING_ID=$($TEAMX team status --team "$R2_ID" --json | python3 -c "import json,sys; print([m['id'] for m in json.load(sys.stdin)['teams'][0]['members'] if m['display_name']=='Pending'][0])")
+# pending member cannot publish
+expect_fail "$TEAMX" publish decision --data '{"message":"x"}' --session s:pending
+# non-object payload must NOT panic (regression: exit 101), even with an assignee
+"$TEAMX" publish decision --data '[]' --assignee "$PENDING_ID" --session s:rfix --json >/dev/null 2>&1 \
+  && pass "non-object payload + assignee does not panic" \
+  || fail "non-object payload + assignee should not panic"
+# non-owner cannot self-grant the owner role
+expect_fail "$TEAMX" role set owner --session s:pending
+# path traversal: a letter with a malicious invitation_id must be rejected
+MALICIOUS=$($TEAMX team invite "dev: x" --session s:rfix --json | jget "['letter']" | python3 -c "
+import json,sys,base64
+s=sys.stdin.read().strip()[len('teamx-inv:v1:'):]
+d=json.loads(base64.b64decode(s))
+d['teamx_invitation']['invitation_id']='../../teamx-escaped'
+print('teamx-inv:v1:'+base64.b64encode(json.dumps(d).encode()).decode())
+")
+expect_fail "$TEAMX" team import "$MALICIOUS" --name X --session s:evil
 
 step "ALL EDGE TESTS PASS"

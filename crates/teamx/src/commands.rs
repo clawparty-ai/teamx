@@ -707,15 +707,9 @@ fn team_status_json(conn: &Connection, team: &TeamRow) -> Result<Value> {
     let members = members_for_team(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
     let questions = open_questions(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
     let roles = roles_json(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
-    let recent = events::list(conn, &team.id, None)
+    let recent = events::recent(conn, &team.id, 20)
         .map_err(|e| AppError(format!("db error: {e}")))?;
-    let recent: Vec<Value> = recent
-        .iter()
-        .rev()
-        .take(20)
-        .rev()
-        .map(event_json)
-        .collect();
+    let recent: Vec<Value> = recent.iter().map(event_json).collect();
     Ok(json!({
         "team": {
             "id": team.id,
@@ -1216,6 +1210,12 @@ fn decode_letter(letter: &str) -> Result<Value> {
 
 /// Store the unpacked letter + mTLS material under `~/.teamx/letters/<id>/`.
 fn store_letter(invitation_id: &str, letter: &Value, ca_pem: &str, client_cert: &str, client_key: &str) -> Result<()> {
+    // The invitation_id comes from the (untrusted) letter, so validate it is a
+    // UUID before using it as a path component — otherwise a letter could write
+    // outside `~/.teamx/letters/` (path traversal).
+    if !is_uuid(invitation_id) {
+        return err(format!("invalid invitation_id `{invitation_id}` (must be a UUID)"));
+    }
     let dir = teamx_home_dir().join("letters").join(invitation_id);
     std::fs::create_dir_all(&dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
     let write = |name: &str, content: &str| -> Result<()> {
@@ -1242,6 +1242,16 @@ fn chmod_0600(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+/// True for a canonical v4-UUID shape (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+/// Used to guard against path traversal when an id is used as a path component.
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
 }
 
 fn cmd_member_set_state(
@@ -1444,6 +1454,15 @@ fn cmd_role_set(
     };
     if target.team_id != team.id {
         return err(format!("member {} is not in team {}", target.id, team.id));
+    }
+    // The `owner` role is reserved for the actual owner member: only the owner
+    // can carry it, and it cannot be self-granted (prevents role spoofing that
+    // the plugin's owner detection would otherwise trust).
+    if role == "owner" && team.owner_member_id.as_deref() != Some(target.id.as_str()) {
+        return err(format!(
+            "role `owner` is reserved for the team owner (member {})",
+            team.owner_member_id.as_deref().unwrap_or("<none>")
+        ));
     }
     let exists = role_approved(conn, &team.id, role).map_err(|e| AppError(format!("db error: {e}")))?;
     if !exists {
@@ -1730,6 +1749,16 @@ fn cmd_publish(
     let (action, event_type, affects_goal, affects_team) = publish_plan(publish_type)?;
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
 
+    // A pending member is not yet an approved collaborator and must not publish
+    // events (neither state changes nor broadcasts). Waiting/idle members are
+    // still active and may publish.
+    if actor.state == "pending" {
+        return err(format!(
+            "member {} is pending; wait for owner approval before publishing",
+            actor.display_name
+        ));
+    }
+
     // Resolve the assignee (if any): must be an active member of this team.
     let assignee = match assignee_opt {
         Some(aid) => {
@@ -1745,15 +1774,19 @@ fn cmd_publish(
         None => None,
     };
 
-    let payload: Value = match data {
+    let mut payload: Value = match data {
         // Accept a bare (non-JSON) string as `{"message": s}` for robustness
         // against model tool calls that pass a plain sentence.
         Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({ "message": s })),
         None => json!({}),
     };
+    // Normalize non-object payloads (arrays/strings/numbers) before tagging, so
+    // `payload["assignee_member_id"] = ...` can never panic on a non-object.
+    if !payload.is_object() {
+        payload = json!({ "message": payload });
+    }
     // Tag the event with the assignee so the plugin can auto-execute on that
     // member only (and everyone else treats it as informational).
-    let mut payload = payload;
     if let Some((aid, name)) = &assignee {
         payload["assignee_member_id"] = json!(aid);
         payload["assignee_name"] = json!(name);
@@ -2026,6 +2059,17 @@ pub fn is_revoked(conn: &Connection, member_id: &str) -> rusqlite::Result<bool> 
         )
         .optional()?;
     Ok(revoked.unwrap_or(0) > 0)
+}
+
+/// True if a member (by id) is a non-left/denied member of the given team.
+/// Used to enforce team ownership on cross-team reads in network mode.
+pub fn member_in_team(conn: &Connection, member_id: &str, team_id: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM members WHERE id = ?1 AND team_id = ?2 AND state NOT IN ('left','denied')",
+        params![member_id, team_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 fn member_json(m: &MemberRow) -> Value {

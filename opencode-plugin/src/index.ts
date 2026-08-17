@@ -146,30 +146,28 @@ export function myMemberId(data: SyncData): string | undefined {
 
 /**
  * Whether a broadcast event is a DIRECTED task assignment to the current
- * session. A publish with `assignee_member_id` that matches our member id is a
- * task for us; everything else (unassigned broadcasts, other people's tasks)
- * is informational only.
+ * session. Any publish carrying `assignee_member_id` that matches our member id
+ * is a task for us (regardless of publish type); everything else (unassigned
+ * broadcasts, other people's tasks) is informational only.
  */
 export function assignedToMe(events: SyncEvent[], myId: string | undefined): boolean {
   if (!myId) return false
-  return events.some(
-    (e) =>
-      (e.type === "decision.broadcast" || e.type === "goal.shared") &&
-      e.payload?.assignee_member_id === myId,
-  )
+  return events.some((e) => e.payload?.assignee_member_id === myId)
 }
 
 /** Whether an auto-execute should fire for the current refresh. */
 export function shouldAutoExecute(opts: {
   data: SyncData
   events: SyncEvent[]
-  alreadyExecuted: boolean
+  lastExecutedSeq: number
 }): boolean {
-  return (
-    AUTO_EXECUTE &&
-    !isOwnerSession(opts.data) &&
-    assignedToMe(opts.events, myMemberId(opts.data)) &&
-    !opts.alreadyExecuted
+  if (!AUTO_EXECUTE || isOwnerSession(opts.data)) return false
+  const myId = myMemberId(opts.data)
+  if (!myId) return false
+  // A directed task NEWER than the last seq we already executed on triggers a
+  // fresh auto-execute (so a member can be re-woken for later tasks).
+  return opts.events.some(
+    (e) => e.payload?.assignee_member_id === myId && (e.seq ?? 0) > opts.lastExecutedSeq,
   )
 }
 
@@ -265,17 +263,16 @@ export const Teamx: Plugin = async ({ client }) => {
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
     // carrying `assignee_member_id == my_member_id` is a task for us; every
     // other broadcast (unassigned, or another member's task) is informational.
+    const lastExecuted = autoExecutedSeq.get(sessionID) ?? 0
     const shouldRun = shouldAutoExecute({
       data,
       events: fresh,
-      alreadyExecuted: autoExecutedSeq.has(sessionID),
+      lastExecutedSeq: lastExecuted,
     })
     if (shouldRun) {
       autoExecutedSeq.set(sessionID, maxSeq)
       const directive = fresh.find(
-        (e) =>
-          (e.type === "decision.broadcast" || e.type === "goal.shared") &&
-          e.payload?.assignee_member_id === myMemberId(data),
+        (e) => e.payload?.assignee_member_id === myMemberId(data) && (e.seq ?? 0) > lastExecuted,
       )
       const summary = directive ? summarizeEvent(directive) : ""
       await triggerAutoExecute(sessionID, summary).catch(() => {})

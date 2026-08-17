@@ -83,6 +83,19 @@ export const tools = {
     },
   }),
 
+  teamx_leave: tool({
+    description:
+      "Leave a team. The current session stops being a member and its membership cache is invalidated.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const r = await txResult(context.sessionID, ["team", "leave", ...opt("--team", args.team)])
+      if (r.ok) markMember(context.sessionID, false)
+      return renderResult(r)
+    },
+  }),
+
   teamx_set_state: tool({
     description:
       "Set a member's working state: idle (finished the current slice, no pending work) or active (resumed). " +

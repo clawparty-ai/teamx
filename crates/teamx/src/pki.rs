@@ -74,6 +74,11 @@ fn cert_params(cn: &str, sans: &[String], is_ca: bool) -> PkiResult<CertificateP
 }
 
 /// Generate (if absent) the CA + server certificate under `home/ca`.
+///
+/// The CA is the long-lived trust anchor: it is only (re)generated when either
+/// of its two files is missing. A partially-deleted server cert/key regenerates
+/// ONLY the server cert (signed by the existing CA), so losing `server.key`
+/// does NOT rotate the CA and invalidate every already-issued member cert.
 pub fn ensure_pki(home: &Path) -> PkiResult<PkiPaths> {
     let dir = ca_dir(home);
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -83,30 +88,44 @@ pub fn ensure_pki(home: &Path) -> PkiResult<PkiPaths> {
     let server_cert_path = dir.join("server.crt");
     let server_key_path = dir.join("server.key");
 
-    if ca_cert_path.exists() && ca_key_path.exists() && server_cert_path.exists() && server_key_path.exists() {
-        return Ok(PkiPaths { ca_cert: ca_cert_path, server_cert: server_cert_path, server_key: server_key_path, ca_key: ca_key_path });
+    let ca_missing = !ca_cert_path.exists() || !ca_key_path.exists();
+    if ca_missing {
+        // CA key + self-signed cert.
+        let ca_key = KeyPair::generate().map_err(|e| format!("ca keygen: {e}"))?;
+        let ca_params = cert_params("teamx-ca", &[], true)?;
+        let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("ca self-sign: {e}"))?;
+        write_pem(&ca_cert_path, &ca_cert.pem())?;
+        write_pem(&ca_key_path, &ca_key.serialize_pem())?;
     }
 
-    // CA key + self-signed cert.
-    let ca_key = KeyPair::generate().map_err(|e| format!("ca keygen: {e}"))?;
-    let ca_params = cert_params("teamx-ca", &[], true)?;
-    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("ca self-sign: {e}"))?;
+    // Server cert is cheap to regenerate and derives from the CA. Regenerate it
+    // when its files are missing OR the CA was just (re)created.
+    if ca_missing || !server_cert_path.exists() || !server_key_path.exists() {
+        let ca_cert_pem = read_pem(&ca_cert_path)?;
+        let ca_key_pem = read_pem(&ca_key_path)?;
+        let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| format!("load ca key: {e}"))?;
+        let ca_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem)
+            .map_err(|e| format!("parse ca cert: {e}"))?;
+        let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("reconstruct ca: {e}"))?;
 
-    write_pem(&ca_cert_path, &ca_cert.pem())?;
-    write_pem(&ca_key_path, &ca_key.serialize_pem())?;
+        let server_key = KeyPair::generate().map_err(|e| format!("server keygen: {e}"))?;
+        let mut server_params =
+            cert_params("teamx-server", &["localhost".to_string(), "127.0.0.1".to_string()], false)?;
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .map_err(|e| format!("server sign: {e}"))?;
 
-    // Server key + cert signed by CA (localhost + loopback IP).
-    let server_key = KeyPair::generate().map_err(|e| format!("server keygen: {e}"))?;
-    let mut server_params = cert_params("teamx-server", &["localhost".to_string(), "127.0.0.1".to_string()], false)?;
-    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_params
-        .signed_by(&server_key, &ca_cert, &ca_key)
-        .map_err(|e| format!("server sign: {e}"))?;
+        write_pem(&server_cert_path, &server_cert.pem())?;
+        write_pem(&server_key_path, &server_key.serialize_pem())?;
+    }
 
-    write_pem(&server_cert_path, &server_cert.pem())?;
-    write_pem(&server_key_path, &server_key.serialize_pem())?;
-
-    Ok(PkiPaths { ca_cert: ca_cert_path, server_cert: server_cert_path, server_key: server_key_path, ca_key: ca_key_path })
+    Ok(PkiPaths {
+        ca_cert: ca_cert_path,
+        server_cert: server_cert_path,
+        server_key: server_key_path,
+        ca_key: ca_key_path,
+    })
 }
 
 /// Issue a member client certificate signed by the instance CA.
