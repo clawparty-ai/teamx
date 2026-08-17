@@ -1,8 +1,16 @@
 # teamx
 
-> Multi-agent collaboration for [opencode](https://github.com/opencode-ai/opencode).
+> Shared goals. Humans in the loop. — team collaboration for [opencode](https://github.com/opencode-ai/opencode).
 
-teamx turns opencode into a team workspace. Multiple opencode sessions join a shared team, each with a role and a goal, and collaborate through a persistent event ledger until the goal is achieved.
+teamx turns opencode into a **human-led team workspace**. The owner shares one goal with the team, and every member works toward it — often in their own way, on their own implementation.
+
+This is different from the common "multi-agent" model. Instead of decomposing a task into subtasks and handing each to an isolated agent, teamx keeps **humans in the loop** and embraces a **shared-goal** model:
+
+- Every team member is a human with an opencode session (an AI collaborator) at their side.
+- Everyone sees the same goal; members are not pre-assigned disjoint subtasks — they may work the same goal from different angles.
+- The owner stays in the loop: approving membership, clarifying direction, reviewing progress, and verifying the goal before closing it.
+
+State is shared through a persistent event ledger until the goal is achieved.
 
 ```
 ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
@@ -22,7 +30,7 @@ teamx turns opencode into a team workspace. Multiple opencode sessions join a sh
 - **Goal lifecycle** — `proposed → shared → in_progress → achieved → closed` with owner-driven transitions
 - **Role system** — built-in roles (owner, contributor, reviewer, ...) plus user-proposed custom roles
 - **Invitation letters** — owner issues mTLS client certificates bundled into one-time invitation letters; members import and join with cryptographic identity
-- **Network mode** — `teamx serve` runs an mTLS HTTP server with WebSocket push; members on the same LAN collaborate in real time
+- **Network mode** — `teamx serve` runs an mTLS HTTP server with WebSocket push; members collaborate in real time over LAN **or the public internet**
 - **Auto-execute** — directed tasks (`publish --assignee`) automatically wake the assigned member's session
 - **30+ tools** — full lifecycle exposed as opencode tools and `/team` slash commands with tab completion
 - **loopx bridge** — optional integration with [loopx](https://github.com/clawparty-ai/loopx) for stage-progress snapshots
@@ -54,23 +62,23 @@ teamx turns opencode into a team workspace. Multiple opencode sessions join a sh
 
 ## Network Mode
 
-For LAN collaboration (multiple machines):
+`teamx serve` is a self-hosted mTLS server. Because every member authenticates with a client certificate (mTLS) and all traffic is encrypted, it works both on a LAN and on the **public internet** — e.g. a VPS or a home server behind a forwarded port.
 
 ```bash
 # Owner machine:
 /team serve start               # Start mTLS server on :5781
-/team invite "reviewer: reviews code" --server-url https://172.20.10.3:5781
+/team invite "reviewer: reviews code" --server-url https://teamx.example.com:5781
 
-# Member machine:
+# Member machine (anywhere in the world):
 /team import <letter>           # Import invitation
 # Set env for real-time push:
-export TEAMX_SERVER_URL=https://172.20.10.3:5781
+export TEAMX_SERVER_URL=https://teamx.example.com:5781
 export TEAMX_MTLS_CERT=~/.teamx/letters/<id>/client.crt
 export TEAMX_MTLS_KEY=~/.teamx/letters/<id>/client.key
 export TEAMX_MTLS_CA=~/.teamx/letters/<id>/ca.crt
 ```
 
-See [docs/network-mode.md](docs/network-mode.md) for the full design and [docs/manual-test-network.md](docs/manual-test-network.md) for the manual test runbook.
+The server binds with a certificate that covers its hostname/IP (use `--san <hostname|ip>` or the plugin's auto-detected IP), and members verify it against the team CA bundled in their invitation letter. See [docs/network-mode.md](docs/network-mode.md) for the full design and [docs/manual-test-network.md](docs/manual-test-network.md) for the manual test runbook.
 
 ## Project Structure
 
@@ -108,18 +116,25 @@ docs/                   Design docs, manual test runbooks, specs
 ./tests/run-all.sh    # Full automated suite (9 steps)
 ```
 
-The suite runs: unit tests, CLI edge cases, mTLS identity + revocation, WebSocket push + reconnect, cross-network LAN verification, and plugin unit tests.
+The suite runs: unit tests, CLI edge cases, mTLS identity + revocation, WebSocket push + reconnect, cross-network verification, and plugin unit tests.
 
 Manual test runbooks:
 - [Two-person workflow](docs/demo.md)
 - [Three-person workflow](docs/demo-3p.md)
 - [Network mode](docs/manual-test-network.md)
 
-## Security Model (V1)
+## Security Model
 
-V1 has **no real authentication**. Session keys are self-reported, invitation tokens are visible to all team members. This is a "trust this machine" collaboration convention — owner approval and roles are collaboration semantics, not security boundaries.
+teamx uses **mTLS (mutual TLS)** for network-mode authentication and encryption — the same mechanism used by service meshes and enterprise VPNs, strong enough to run over the public internet:
 
-See [goal-v1.md](goal-v1.md) for the trust model and [docs/v2-design.md](docs/v2-design.md) for the planned V2 with real auth.
+- **Identity**: every member holds a client certificate issued by the team's CA, with the member id and role embedded in the certificate CN (`member:<id>:<role>`). RPC handlers derive the actor's identity from the client certificate CN — no self-reported session keys.
+- **Encryption**: all traffic between members and the server is encrypted with TLS 1.2/1.3.
+- **Invitation letters**: the owner issues one-time invitation letters containing the client certificate + key; a member imports the letter to obtain their identity.
+- **Revocation**: `team invite-revoke` invalidates a certificate immediately — revoked members are rejected at connect and disconnected from active WebSocket connections.
+- **Authorization model**: certificate = "can connect", owner approval = "can work". Pending members can connect but cannot publish or act until the owner approves.
+- **Cross-team isolation**: network RPC checks that a certificate holder belongs to the team being accessed; non-members cannot read other teams' invite tokens, members, roles, or events.
+
+Local (single-machine, CLI-only) mode relies on a self-reported `session_key`, which is acceptable only on a trusted machine. See [goal-v1.md](goal-v1.md) for the trust model.
 
 ## Tech Stack
 
