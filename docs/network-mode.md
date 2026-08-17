@@ -1,6 +1,6 @@
 # teamx 网络模式（Network Mode）设计方案
 
-> 状态：**N0/N1/N3/N4 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 插件事件驱动/轮询降级 + 跨网络局域网验证 + 邀请函 I1/I2）
+> 状态：**N0/N1/N3/N4 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 插件事件驱动/轮询降级 + 跨网络局域网验证 + 邀请函 I1/I2）；N5/N6 列入**未来计划**（暂缓）
 > 关联文档：`docs/v1-spec.md`（V1 现状）、`docs/v2-design.md`（架构蓝图）
 > 目标读者：实现者、owner、协作成员
 
@@ -325,7 +325,7 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 
 ## 10. 实施里程碑
 
-> **优先路径**：先做「opencode 内嵌 serve」（形态①，N0→N2），后续再考虑独立 serve（形态②，N5）。
+> **优先路径**：先做「opencode 内嵌 serve」（形态①，N0→N4，已完成）；独立 serve（形态②，N5）列入未来计划（暂缓）。
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
@@ -334,8 +334,17 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 | **N2** | token 签发/轮换/吊销 + RPC 鉴权；`serve stop` 优雅清理 + `dispose` | ⚠️ 身份已改用 mTLS 证书（I1），token 方案被取代 |
 | **N3** | 插件事件驱动改造 + 轮询降级 | ✅ 已完成（WS 时零轮询 + 去抖刷新 + 断线回退轮询，见 `tests/plugin-unit/ws.test.ts`） |
 | **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）+ 两机 runbook（`docs/n4-cross-network.md`），真机待验 |
-| **N5**（后续） | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | ⬜ 待做 |
-| **N6**（可选） | `teamx_member_peek` 同机只读直连 | ⬜ 待做 |
+| **N5** | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | 📅 未来计划（暂缓，见下） |
+| **N6** | `teamx_member_peek` 同机只读直连 | 📅 未来计划（暂缓，见下） |
+
+### 未来计划（暂缓，本轮不做）
+
+形态①（owner 内嵌 serve，N0–N4）已形成完整闭环。以下两项属于形态②或可选能力，**暂不实现**，仅记录：
+
+- **N5 · 独立 serve（形态②）**：`teamx serve` 作为常驻进程 / Docker / systemd 运行，支持多团队实例、owner 离线团队不中断、公网 TLS 反向代理。复用同一套 `teamx serve` 二进制，仅改部署形态与配置。
+- **N6 · `teamx_member_peek`（可选）**：同机成员显式 `--port` 时，允许只读直连窥探某成员状态；延续 V1「成员零暴露」以外的可选能力。
+
+> 说明：N2（token 鉴权）已被 mTLS 证书身份（I0/I1）取代，不再单独实现。
 
 ---
 

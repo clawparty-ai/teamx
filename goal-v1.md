@@ -194,12 +194,15 @@ teamx/
 
 详见 `docs/v2-design.md`（V2 完整设计：成员外连注册 + 推送为主通道）。
 
-- **M2**：SSE → system prompt 注入、TUI toast（`@opencode-ai/plugin/tui`）、审计回放 `teamx log`、闲置成员提示（`client.tui.appendPrompt`）
-- **V2（暂缓）**：
-  - `teamx serve`(HTTP+WS+SSE) 中央 broker + 跨网络（TLS、token 集中鉴权）
-  - **成员注册通道（主）**：opencode plugin 出站 WS/SSE 注册到 serve，server 按 team 广播 / 定向推送；离线靠 `sync` 兜底；可选 `auto_prompt` 能力（默认关）
-  - 同机直连只读 `teamx_member_peek`（可选，成员显式 `--port`）
-  - 角色权限强制、只读 Web 面板
+- **M2**（✅ 已完成）：SSE → system prompt 注入、TUI toast、审计回放 `teamx log`、闲置成员提示
+- **网络模式（N0–N4 ✅ 已完成）**：`teamx serve`（mTLS HTTP RPC + WS 推送）+ 邀请函（I1）+ 吊销强制（I2）+ 插件事件驱动/轮询降级（N3）+ 跨网络局域网验证（N4），见 `docs/network-mode.md`、`docs/team-invite.md`、`docs/n4-cross-network.md`
+
+## 未来计划（暂缓，本轮不做）
+
+- **N5 · 独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队（owner 离线团队不中断）
+- **N6 · `teamx_member_peek`（可选）**：同机成员显式 `--port` 的只读直连
+- **角色权限强制、只读 Web 面板**
+- **闲置会话唤醒**（构想，见下节「构想：闲置会话唤醒」）
 
 ## 构想：闲置会话唤醒（未实现，仅记录）
 

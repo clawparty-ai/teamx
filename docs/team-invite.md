@@ -1,6 +1,6 @@
 # team-invite 设计方案 v2（mTLS + Invitation Letter）
 
-> 状态：**I0/I1/I2 已实现**（PKI + 强制 mTLS serve + `team invite`/`team import` + 证书身份接入 RPC + 吊销强制/主动断连），I3（插件 mTLS transport 集成，已基本完成）进行中
+> 状态：**I0/I1/I2/I3/I4 已实现**（PKI + 强制 mTLS serve + `team invite`/`team import` + 证书身份接入 RPC + 吊销强制/主动断连 + 插件集成 + 跨网络局域网验证）
 > 关联：`docs/network-mode.md`（网络模式）、`docs/v1-spec.md`
 > 核心升级：把"可猜 token / 免审批邀请码"升级为 **mTLS 证书授权**；邀请码升级为 **Invitation Letter**（证书 + 地址 + 角色的一体化数据包）。
 
@@ -199,8 +199,8 @@ type MtlsConfig = {
 | I0 | Rust PKI：CA 生成、server/member 证书签发、**强制 mTLS** serve（rustls）；证书默认 3650d | ✅ 已完成 |
 | I1 | `team invite` 签发 letter；`team import` 导入并 mTLS 连接；RPC 从证书 CN 解析身份 | ✅ 已完成（见 `tests/mtls-test.sh`） |
 | I2 | **approve 流程**：join pending → owner approve → active；吊销（revoke）检查、一次性使用、角色自动授予 | ✅ 已完成（吊销检查 + 主动断连，见 `tests/ws-test.ts`） |
-| I3 | 插件集成：mTLS transport + auto-execute 对接 | 🔄 部分完成（runRpc/runWs mTLS + 工具已实现） |
-| I4 | 跨网络验证（局域网/公网） | ⬜ 待做 |
+| I3 | 插件集成：mTLS transport + auto-execute 对接 | ✅ 已完成（runRpc/runWs mTLS + 工具 + 事件驱动） |
+| I4 | 跨网络验证（局域网/公网） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）；真机两机见 `docs/n4-cross-network.md` |
 
 ---
 
