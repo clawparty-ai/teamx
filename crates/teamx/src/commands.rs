@@ -479,6 +479,17 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
             CertCmd::Ca => cmd_cert_ca()?,
         },
+        // Tunnel commands are network-mode only: they operate on the server's
+        // in-memory tunnel registry, which is not reachable from a plain CLI
+        // invocation. The plugin performs the actual WS/relay work; here we
+        // surface a clear error so a user knows tunnels need a running server.
+        Command::Tunnel(_) => {
+            return err(
+                "tunnel commands require a running `teamx serve` server; \
+                 use the opencode plugin tools (teamx_tunnel_expose / teamx_tunnel_list / ...) \
+                 or set TEAMX_SERVER_URL and re-run through the plugin",
+            )
+        }
     };
     Ok(out)
 }

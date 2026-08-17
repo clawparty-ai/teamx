@@ -9,6 +9,7 @@
 #   7. network-mode mTLS identity test
 #   8. network-mode WebSocket push test
 #   9. network-mode cross-network (LAN IP) test
+#   10. network-mode reverse-tunnel test
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -59,6 +60,14 @@ fi
 echo
 echo "== 9/9 network-mode cross-network (LAN IP) test =="
 ./tests/cross-network.sh
+
+echo
+echo "== 10/10 network-mode reverse-tunnel test =="
+if command -v bun >/dev/null 2>&1; then
+  bun tests/tunnel-test.ts
+else
+  echo "bun not found; skipping tunnel test"
+fi
 
 echo
 echo "ALL TEST SUITES PASSED"

@@ -81,6 +81,16 @@ uninstall() {
         "$CONFIG_DIR/commands/team-archive.en.md" \
         "$CONFIG_DIR/commands/team-destroy.md" \
         "$CONFIG_DIR/commands/team-destroy.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel.md" \
+        "$CONFIG_DIR/commands/team-tunnel.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel-expose.md" \
+        "$CONFIG_DIR/commands/team-tunnel-expose.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel-list.md" \
+        "$CONFIG_DIR/commands/team-tunnel-list.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel-status.md" \
+        "$CONFIG_DIR/commands/team-tunnel-status.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel-close.md" \
+        "$CONFIG_DIR/commands/team-tunnel-close.en.md" \
         "$CONFIG_DIR/commands/team-serve.md" \
         "$CONFIG_DIR/commands/team-serve.en.md" \
         "$CONFIG_DIR/commands/team-serve-start.md" \
@@ -136,6 +146,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-invite team-import team-invite-list team-invite-revoke \
            team-state team-ask team-respond team-publish team-archive \
            team-leave team-destroy \
+           team-tunnel team-tunnel-expose team-tunnel-list team-tunnel-status team-tunnel-close \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do
   cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"

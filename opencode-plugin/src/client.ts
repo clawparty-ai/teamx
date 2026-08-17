@@ -235,7 +235,7 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   // two-token method; top-level commands (publish/ask/respond/events/log/sync)
   // treat every positional as a parameter. Subcommand names are normalized so
   // `member set-state` maps to the RPC method `member.set_state`.
-  const GROUPED = new Set(["team", "goal", "member", "role", "loopx"])
+  const GROUPED = new Set(["team", "goal", "member", "role", "loopx", "tunnel"])
   const p0 = positional[0] ?? ""
   const p1 = positional[1] ?? ""
   let method: string
@@ -272,6 +272,9 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     "ask": ["member_id"],
     "respond": ["ask_id", "answer"],
     "loopx.report": ["project"],
+    "tunnel.list": [],
+    "tunnel.status": ["name"],
+    "tunnel.close": ["name"],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {

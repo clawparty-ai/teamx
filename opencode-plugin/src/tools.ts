@@ -95,6 +95,74 @@ export const tools = {
     },
   }),
 
+  teamx_tunnel_expose: tool({
+    description:
+      "Expose a local service to teammates through the teamx server (reverse tunnel, provider side). " +
+      "The current machine's `port` becomes reachable by other team members at a public port on the server. " +
+      "Requires network mode (TEAMX_SERVER_URL). Returns the public port on the server.",
+    args: {
+      name: tool.schema.string().describe("public tunnel name (unique per team), e.g. httpbin"),
+      port: tool.schema.number().describe("local port to expose"),
+      lan_ip: tool.schema.string().optional().describe("provider LAN IP for direct-connect hints (auto-detected if absent)"),
+    },
+    async execute(args, _context: ToolCtx) {
+      const serverUrl = process.env.TEAMX_SERVER_URL
+      if (!serverUrl) {
+        return "teamx error: tunnel expose requires network mode; set TEAMX_SERVER_URL"
+      }
+      const { exposeTunnel } = await import("./tunnel")
+      const handle = exposeTunnel({
+        serverUrl,
+        name: args.name,
+        port: args.port,
+        lanIp: args.lan_ip,
+      })
+      const pubPort = await handle.ready()
+      if (pubPort === null) {
+        handle.close()
+        return `teamx error: failed to register tunnel "${args.name}"`
+      }
+      return JSON.stringify({ ok: true, name: args.name, public_port: pubPort, direct: args.lan_ip ?? null }, null, 2)
+    },
+  }),
+
+  teamx_tunnel_list: tool({
+    description:
+      "List reverse tunnels exposed by members of the current team (network mode). " +
+      "Each entry shows the public server port and the provider's LAN IP for direct access.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["tunnel", "list", ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_tunnel_status: tool({
+    description:
+      "Show one reverse tunnel's status (network mode): public server port, provider LAN IP, and whether " +
+      "the current member is on the same subnet as the provider (direct access possible).",
+    args: {
+      name: tool.schema.string().describe("tunnel name"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_tunnel_close: tool({
+    description:
+      "Close a reverse tunnel (network mode): frees its public server port. Any team member can close a tunnel.",
+    args: {
+      name: tool.schema.string().describe("tunnel name"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["tunnel", "close", args.name, ...opt("--team", args.team)])
+    },
+  }),
+
   teamx_leave: tool({
     description:
       "Leave a team. The current session stops being a member and its membership cache is invalidated.",

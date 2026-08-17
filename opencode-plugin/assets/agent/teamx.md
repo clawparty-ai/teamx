@@ -36,6 +36,10 @@ permission:
 | `publish <type> [data]` | teamx_publish | 汇报/广播（progress/decision/update/blocked/resumed/achieved/refine） |
 | `archive` | teamx_archive | owner 归档已完成团队 |
 | `destroy` | teamx_team_destroy | owner 软销毁团队（隐藏并保留数据，不可逆） |
+| `tunnel expose --name <n> --port <p> [--lan-ip <ip>]` | teamx_tunnel_expose | 暴露本地服务（provider，网络模式） |
+| `tunnel list` | teamx_tunnel_list | 列出本团队已暴露的服务 |
+| `tunnel status <name>` | teamx_tunnel_status | 查看隧道状态/直连判断 |
+| `tunnel close <name>` | teamx_tunnel_close | 关闭隧道 |
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | 在 opencode 内启动/查询/停止本地 serve（网络模式，owner） |
 | `serve token <member>` | teamx_serve_token | 生成/轮换成员连接 token（owner） |
 | `help` | - | 列出子命令 |

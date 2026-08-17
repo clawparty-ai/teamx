@@ -29,6 +29,10 @@ teamx team collaboration command. Route and execute based on the following subco
 - `publish <type> [data]` → teamx_publish (progress/decision/update/blocked/resumed/achieved/refine)
 - `archive` → teamx_archive (owner archives completed team)
 - `destroy` → teamx_team_destroy (owner soft-destroys a team: hides it, keeps data, irreversible)
+- `tunnel expose --name <n> --port <p> [--lan-ip <ip>]` → teamx_tunnel_expose (expose a local service, network mode)
+- `tunnel list` → teamx_tunnel_list (list services exposed by the current team)
+- `tunnel status <name>` → teamx_tunnel_status (inspect a tunnel / direct-connect hint)
+- `tunnel close <name>` → teamx_tunnel_close (close a tunnel)
 - `serve start [--port]` / `serve status` / `serve stop` → teamx_serve_start / teamx_serve_status / teamx_serve_stop (start/query/stop local serve within opencode, network mode)
 - `serve token <member>` → teamx_serve_token (generate/rotate member connection token, owner)
 - `help` → list the above subcommands

@@ -7,6 +7,7 @@ mod loopx;
 mod pki;
 mod serve;
 mod state;
+mod tunnel;
 
 use clap::Parser;
 use cli::{Cli, Command};

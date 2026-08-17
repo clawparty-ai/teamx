@@ -36,6 +36,10 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 | `publish <type> [data]` | teamx_publish | Report/broadcast (progress/decision/update/blocked/resumed/achieved/refine) |
 | `archive` | teamx_archive | Owner archives a completed team |
 | `destroy` | teamx_team_destroy | Owner soft-destroys a team (hides it, keeps data, irreversible) |
+| `tunnel expose --name <n> --port <p> [--lan-ip <ip>]` | teamx_tunnel_expose | Expose a local service (provider, network mode) |
+| `tunnel list` | teamx_tunnel_list | List services exposed by the current team |
+| `tunnel status <name>` | teamx_tunnel_status | Inspect a tunnel / direct-connect hint |
+| `tunnel close <name>` | teamx_tunnel_close | Close a tunnel |
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | Start/query/stop local server in opencode (network mode, owner) |
 | `serve token <member>` | teamx_serve_token | Generate/rotate member connection token (owner) |
 | `help` | - | List subcommands |

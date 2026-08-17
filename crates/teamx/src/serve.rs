@@ -46,6 +46,7 @@ type Db = Mutex<rusqlite::Connection>;
 struct AppState {
     db: std::sync::Arc<Db>,
     hub: Hub,
+    tunnels: crate::tunnel::TunnelRegistry,
 }
 
 #[derive(serde::Deserialize)]
@@ -126,12 +127,14 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
     let state = AppState {
         db: std::sync::Arc::new(Mutex::new(conn)),
         hub: Hub::new(),
+        tunnels: crate::tunnel::TunnelRegistry::new(),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/rpc", post(rpc))
         .route("/ws", get(ws_handler))
+        .route("/tunnel", get(tunnel_ws_handler))
         .with_state(state);
 
     // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
@@ -228,6 +231,144 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_ws(socket, state, identity))
+}
+
+/// Reverse-tunnel endpoint: a provider (member-b) opens a persistent WS here,
+/// registers a local service, and the server relays consumer traffic over it.
+async fn tunnel_ws_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<PeerIdentity>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_tunnel_ws(socket, state, identity))
+}
+
+/// Serve one tunnel connection from a provider member.
+async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+    use futures_util::{SinkExt, StreamExt};
+
+    let member_id = match pki::parse_member_cn(&identity.0) {
+        Some((id, _role)) => id,
+        None => {
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"no_identity"}"#)).await;
+            return;
+        }
+    };
+
+    // Resolve the member's teams (reuse the same check as /ws).
+    let teams = {
+        let db = state.db.clone();
+        let mid = member_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            commands::teams_for_member(&conn, &mid)
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            _ => {
+                let _ = socket.send(ws_text(r#"{"type":"error","message":"internal"}"#)).await;
+                return;
+            }
+        }
+    };
+    if teams.len() != 1 {
+        let _ = socket
+            .send(ws_text(r#"{"type":"error","message":"tunnel requires membership in exactly one team"}"#))
+            .await;
+        return;
+    }
+    let team_id = teams[0].clone();
+
+    let (mut sender, mut receiver) = socket.split();
+    // Track which tunnel name this WS currently owns, so a disconnect frees it.
+    let mut owned: Option<String> = None;
+    let registry = state.tunnels.clone();
+
+    // Outbound channel: relays (run_tcp_relay) push WS messages here for the
+    // provider's socket. One channel per WS connection; every registered tunnel
+    // shares it. We must keep the receiver alive and forward to the socket.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let v: Value = match serde_json::from_str(text.as_str()) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+                        match ty {
+                            "register" => {
+                                let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                                let target = v.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
+                                let lan_ip = v.get("lan_ip").and_then(Value::as_str).map(str::to_string);
+                                if name.is_empty() || target == 0 {
+                                    let _ = sender.send(ws_text(r#"{"type":"error","message":"register requires name and port"}"#)).await;
+                                    continue;
+                                }
+                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone()) {
+                                    Ok(port) => {
+                                        owned = Some(name.clone());
+                                        // Spawn the TCP relay for this tunnel.
+                                        let reg = registry.clone();
+                                        let tid = team_id.clone();
+                                        let nm = name.clone();
+                                        tokio::spawn(async move {
+                                            let _ = crate::tunnel::run_tcp_relay(reg, tid, nm).await;
+                                        });
+                                        let ack = json!({ "type": "registered", "name": name, "port": port });
+                                        let _ = sender.send(ws_text(&ack.to_string())).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = sender.send(ws_text(&json!({ "type": "error", "message": e }).to_string())).await;
+                                    }
+                                }
+                            }
+                            "unregister" => {
+                                if let Some(name) = v.get("name").and_then(Value::as_str) {
+                                    registry.remove(&team_id, name);
+                                    if owned.as_deref() == Some(name) {
+                                        owned = None;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Ok(Message::Binary(buf))) => {
+                        // Provider → consumer data frame. `owned` is the tunnel
+                        // name this WS registered; route the bytes to the stream.
+                        if let Some(name) = owned.as_deref() {
+                            let name = name.to_string();
+                            crate::tunnel::route_provider_data(&registry, &team_id, &name, buf.as_ref());
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    _ => {}
+                }
+            }
+            // Relay → provider: forward open_stream / data / close frames to
+            // the provider's WebSocket.
+            msg = out_rx.recv() => {
+                match msg {
+                    Some(m) => {
+                        if sender.send(m).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // Provider disconnected: free any tunnel it owned.
+    if let Some(name) = owned.as_deref() {
+        registry.remove(&team_id, name);
+    }
 }
 
 /// Build a text WebSocket frame (axum 0.8 uses `Utf8Bytes` for text frames).
@@ -349,11 +490,12 @@ async fn rpc(
 ) -> impl IntoResponse {
     let cn = identity.0;
     let hub = state.hub.clone();
+    let tunnels = state.tunnels.clone();
     let method = req.method.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
         let before = commands::max_event_id(&conn).unwrap_or(0);
-        let res = dispatch(&req.method, &req.args, &mut conn, &cn);
+        let res = dispatch(&req.method, &req.args, &mut conn, &cn, &tunnels);
         let new_events = commands::events_after(&conn, before).unwrap_or_default();
         (res, new_events)
     })
@@ -386,7 +528,7 @@ async fn rpc(
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
 /// then run it through `commands::execute`. The actor identity comes from the
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
-fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str) -> Result<Value, String> {
+fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
     let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
@@ -395,6 +537,59 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
     let member_id = pki::parse_member_cn(actor_cn)
         .map(|(id, _role)| id)
         .ok_or_else(|| format!("no member identity in client certificate CN `{actor_cn}`"))?;
+
+    // Tunnel registry operations: the server's in-memory registry is the only
+    // source of truth; these bypass the ledger (no events are written).
+    // Authorization: the caller must be a member of the tunnel's team. If the
+    // caller belongs to exactly one team, `team` may be omitted.
+    match method {
+        "tunnel.list" | "tunnel.status" | "tunnel.close" => {
+            let tid = match s("team") {
+                Some(t) => t,
+                None => {
+                    let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                    if teams.len() == 1 {
+                        teams[0].clone()
+                    } else {
+                        return Err(format!(
+                            "tunnel requires `team` (member belongs to {} teams)",
+                            teams.len()
+                        ));
+                    }
+                }
+            };
+            if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+                return Err(format!("member `{member_id}` is not a member of team {tid}"));
+            }
+            match method {
+                "tunnel.list" => {
+                    return Ok(serde_json::json!({ "tunnels": tunnels.list(&tid) }));
+                }
+                "tunnel.status" => {
+                    let name = s("name")
+                        .ok_or_else(|| "tunnel.status requires `name`".to_string())?;
+                    let t = tunnels
+                        .get(&tid, &name)
+                        .ok_or_else(|| format!("tunnel `{name}` not found in team"))?;
+                    return Ok(serde_json::json!({
+                        "name": t.name,
+                        "port": t.port,
+                        "target_port": t.target_port,
+                        "lan_ip": t.lan_ip,
+                        "provider_member_id": t.provider_member_id,
+                    }));
+                }
+                "tunnel.close" => {
+                    let name = s("name")
+                        .ok_or_else(|| "tunnel.close requires `name`".to_string())?;
+                    let freed = tunnels.remove(&tid, &name);
+                    return Ok(serde_json::json!({ "ok": true, "closed": freed.is_some(), "freed_port": freed }));
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => {}
+    }
 
     // `team.import` registers a member whose seat is pre-allocated in the
     // invitation (the member row may not exist yet). It binds that seat to the

@@ -122,8 +122,12 @@ pub enum Command {
     #[command(subcommand)]
     Cert(CertCmd),
 
-    /// Run as a network-mode server (HTTP RPC + WebSocket push)
+    /// Run as a network-mode server (HTTP RPC + WebSocket push + tunnels)
     Serve(ServeCmd),
+
+    /// Reverse tunnels (network mode): expose a local service to teammates
+    #[command(subcommand)]
+    Tunnel(TunnelCmd),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -409,5 +413,68 @@ pub enum LoopxCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+}
+
+/// Reverse-tunnel commands (network mode).
+///
+/// These manage the server's tunnel registry. `expose` is issued by the
+/// provider (member opening a tunnel); `list`/`status`/`close` are read/control
+/// operations that any member can run against the server.
+#[derive(Subcommand, Debug)]
+pub enum TunnelCmd {
+    /// Expose a local service to teammates through the server (provider side).
+    /// Opens a persistent WebSocket to the server and registers a tunnel.
+    Expose {
+        /// public tunnel name (unique per team)
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// local port to expose
+        #[arg(long)]
+        port: u16,
+        /// provider LAN IP for direct-connect hints (auto-detected if absent)
+        #[arg(long)]
+        lan_ip: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List exposed tunnels of the current team (server registry).
+    List {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Show one tunnel's status, including a same-subnet direct-connect hint.
+    Status {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Close an exposed tunnel (frees its public port).
+    Close {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
     },
 }
