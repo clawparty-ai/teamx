@@ -9,3 +9,6 @@ dist/
 .opencode/
 demo/workspace/.opencode/goals/
 demo/workspace/.opencode/node_modules/
+
+# CI workflow pending workflow-scope push (see README)
+.github/
