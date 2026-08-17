@@ -3,7 +3,7 @@ name = "teamx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "teamx - team collaboration state kernel (Rust CLI + SQLite)"
+description = "teamx - shared-goal team collaboration state kernel (Rust CLI + SQLite)"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

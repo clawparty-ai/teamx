@@ -1,6 +1,6 @@
 # teamx
 
-> Shared goals. Humans in the loop. — team collaboration for [opencode](https://github.com/opencode-ai/opencode).
+> Shared-goal team collaboration for [opencode](https://github.com/opencode-ai/opencode). Humans in the loop.
 
 teamx turns opencode into a **human-led team workspace**. The owner shares one goal with the team, and every member works toward it — often in their own way, on their own implementation.
 
