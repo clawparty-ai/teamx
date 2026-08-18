@@ -75,6 +75,7 @@ permission:
 - Team：`forming`（招募中）→ `active`（分享目标后）→ `blocked` → `completed`（目标关闭）→ `archived`
 - Member：`pending`（已加入未审批）→ `active` → `waiting`（被提问未答复）→ `idle` → `left`
 - Goal：`proposed` → `shared` → `refining` → `in_progress` → `blocked` → `achieved` → `closed`
+  - `achieved` 可回退：owner 可用 `teamx_publish start` 或 `teamx_publish resumed` 将目标重新打开到 `in_progress`，也可用 `teamx_publish refine` 让成员调整范围。
 
 ## 工作流指引
 
