@@ -75,6 +75,7 @@ All operations go through `teamx_*` tools:
 - **Team**: `forming` (recruiting) → `active` (goal shared) → `blocked` → `completed` (goal closed) → `archived`
 - **Member**: `pending` (joined, not yet approved) → `active` → `waiting` (questioned, not yet answered) → `idle` → `left`
 - **Goal**: `proposed` → `shared` → `refining` → `in_progress` → `blocked` → `achieved` → `closed`
+  - `achieved` is not final — owner can reopen it: use `teamx_publish start` or `teamx_publish resumed` to bring the goal back to `in_progress`, or `teamx_publish refine` to ask members to adjust scope.
 
 ## Workflow Guidance
 
