@@ -136,9 +136,18 @@ step "installing opencode plugin pieces"
 mkdir -p "$CONFIG_DIR/plugins" "$CONFIG_DIR/agent" "$CONFIG_DIR/commands"
 # Primary location: the standard plural `commands/` directory (same as loopx).
 cp "$PLUGIN_DIR/dist/teamx.js" "$CONFIG_DIR/plugins/teamx.js"
-cp "$PLUGIN_DIR/assets/agent/teamx.md" "$CONFIG_DIR/agent/teamx.md"
-cp "$PLUGIN_DIR/assets/agent/teamx.en.md" "$CONFIG_DIR/agent/teamx.en.md"
-# Install every /team command file (main router + all flat aliases + English variants).
+# Install agent file based on system language (detect from $LANG / $LC_ALL).
+LANG_CODE="${LANG:-${LC_ALL:-en_US}}"
+if [[ "$LANG_CODE" == zh* ]]; then
+  AGENT_SRC="teamx.md"       # Chinese agent
+  CMD_SUFFIX=""               # Chinese command files (*.md)
+else
+  AGENT_SRC="teamx.en.md"    # English agent
+  CMD_SUFFIX=".en"            # English command files (*.en.md)
+fi
+cp "$PLUGIN_DIR/assets/agent/$AGENT_SRC" "$CONFIG_DIR/agent/$AGENT_SRC"
+echo "detected lang=$LANG_CODE → installed agent: $AGENT_SRC"
+# Install /team command files for the detected language only.
 for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \
            team-approve team-deny team-role team-role-propose \
@@ -149,8 +158,11 @@ for cmd in Team team-create team-join team-status team-sync \
            team-tunnel team-tunnel-expose team-tunnel-list team-tunnel-status team-tunnel-close \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do
-  cp "$PLUGIN_DIR/assets/command/$cmd.md" "$CONFIG_DIR/commands/$cmd.md"
-  cp "$PLUGIN_DIR/assets/command/$cmd.en.md" "$CONFIG_DIR/commands/$cmd.en.md"
+  SRC="$PLUGIN_DIR/assets/command/${cmd}${CMD_SUFFIX}.md"
+  DST="$CONFIG_DIR/commands/${cmd}.md"
+  if [ -f "$SRC" ]; then
+    cp "$SRC" "$DST"
+  fi
 done
 # Back-compat: also drop the legacy singular `command/` copy so upgrades do not
 # leave a stale `/Team` behind on case-sensitive filesystems. On macOS APFS
