@@ -5,22 +5,32 @@
 //! public TCP port and relays bytes between consumers (other team members) and
 //! the provider over that WebSocket.
 //!
+//! Two exposure modes (chosen at `expose` time):
+//! - `Local` (default): the server binds NO port. Consumers use `tunnel
+//!   forward` to listen on a local port and bridge bytes over a mTLS WS
+//!   (`connect` message). Secure: server stays zero-exposure.
+//! - `Frp`: the server binds a public port and accepts any TCP connection
+//!   (classic frp behavior).
+//!
 //! Protocol (server ↔ provider, one WS per service):
 //!   provider → server (text control frames):
 //!     {"type":"register","name":"httpbin","port":8080,"lan_ip":"192.168.1.5"}
 //!     {"type":"unregister","name":"httpbin"}
 //!     {"type":"close_stream","stream_id":3}
+//!   consumer → server (text control frames, local-forward mode):
+//!     {"type":"connect","name":"httpbin"}
 //!   server → provider (text control frames):
 //!     {"type":"registered","port":9001,"name":"httpbin"}
 //!     {"type":"open_stream","stream_id":1}
 //!     {"type":"error","message":"..."}
 //!   data (binary frames, both directions): [4-byte BE stream_id][payload]
 //!
-//! A consumer connects to `tcp://<server>:<port>`; each TCP connection becomes
-//! one stream on the provider's WS. The provider dials its local `target_port`
-//! and relays bytes. `lan_ip` records the provider's LAN address so the server
-//! can help consumers decide whether to connect directly (same subnet) or
-//! through the relay.
+//! A consumer connects to `tcp://<server>:<port>` (frp) or via `connect` over
+//! its own mTLS WS (local); each connection becomes one stream on the
+//! provider's WS. The provider dials its local `target_port` and relays bytes.
+//! `lan_ip` records the provider's LAN address so the server can help
+//! consumers decide whether to connect directly (same subnet) or through the
+//! relay.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,17 +45,47 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 pub const TUNNEL_PORT_MIN: u16 = 9100;
 pub const TUNNEL_PORT_MAX: u16 = 9999;
 
+/// How an exposed service is consumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TunnelMode {
+    /// Server binds NO public port; consumers use `tunnel forward` (local
+    /// port + mTLS WS `connect`). Default.
+    Local,
+    /// Server binds a public port; consumers connect tcp://server:port.
+    Frp,
+}
+
+impl TunnelMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TunnelMode::Local => "local",
+            TunnelMode::Frp => "frp",
+        }
+    }
+
+    /// Parse a `--mode` value. `None`/missing defaults to Local.
+    pub fn parse(s: Option<&str>) -> Self {
+        match s.map(str::trim).unwrap_or("") {
+            "frp" => TunnelMode::Frp,
+            _ => TunnelMode::Local,
+        }
+    }
+}
+
 /// A registered exposed service.
 pub struct Tunnel {
     pub name: String,
     pub team_id: String,
     pub provider_member_id: String,
-    /// Public port on the server (allocated at register).
+    /// Public port on the server (allocated at register). Only used in Frp
+    /// mode; `0` in Local mode (no server port is bound).
     pub port: u16,
     /// Local port on the provider's machine that the tunnel forwards to.
     pub target_port: u16,
     /// Provider's LAN address (for direct-connect hints), if known.
     pub lan_ip: Option<String>,
+    /// Exposure mode: Local (default) or Frp.
+    pub mode: TunnelMode,
     /// Sender that delivers WS messages to the provider's connection.
     pub ws_tx: UnboundedSender<Message>,
     /// Per-stream writers: stream_id → channel carrying bytes that the
@@ -77,12 +117,25 @@ impl TunnelFrame {
 }
 
 /// Shared tunnel registry (server-side).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TunnelRegistry {
     /// Key: `{team_id}/{name}` → Tunnel.
     by_key: Arc<Mutex<HashMap<String, Tunnel>>>,
     /// Occupied public ports (fast allocation).
     ports: Arc<Mutex<Vec<u16>>>,
+    /// Monotonic stream id allocator (shared across frp relays and local
+    /// forward consumers so stream ids never collide). Starts at 1.
+    next_stream_id: Arc<Mutex<u64>>,
+}
+
+impl Default for TunnelRegistry {
+    fn default() -> Self {
+        Self {
+            by_key: Arc::new(Mutex::new(HashMap::new())),
+            ports: Arc::new(Mutex::new(Vec::new())),
+            next_stream_id: Arc::new(Mutex::new(1)),
+        }
+    }
 }
 
 impl TunnelRegistry {
@@ -100,8 +153,10 @@ impl TunnelRegistry {
         (TUNNEL_PORT_MIN..=TUNNEL_PORT_MAX).find(|p| !ports.contains(p)).inspect(|p| ports.push(*p))
     }
 
-    /// Register a tunnel. Returns the allocated public port, or an error if
-    /// the name is already taken / no port is free.
+    /// Register a tunnel. Returns the allocated public port (Frp mode only;
+    /// Local mode returns 0), or an error if the name is already taken / no
+    /// port is free.
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &self,
         team_id: &str,
@@ -110,13 +165,17 @@ impl TunnelRegistry {
         target_port: u16,
         lan_ip: Option<String>,
         ws_tx: UnboundedSender<Message>,
+        mode: TunnelMode,
     ) -> Result<u16, String> {
         let key = Self::key(team_id, name);
         let mut by_key = self.by_key.lock().unwrap();
         if by_key.contains_key(&key) {
             return Err(format!("tunnel `{name}` already exists in this team"));
         }
-        let port = self.alloc_port().ok_or("tunnel port pool exhausted (9000-9999)")?;
+        let port = match mode {
+            TunnelMode::Local => 0,
+            TunnelMode::Frp => self.alloc_port().ok_or("tunnel port pool exhausted (9000-9999)")?,
+        };
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         by_key.insert(
             key,
@@ -127,6 +186,7 @@ impl TunnelRegistry {
                 port,
                 target_port,
                 lan_ip,
+                mode,
                 ws_tx,
                 streams: Arc::new(Mutex::new(HashMap::new())),
                 shutdown: shutdown_tx,
@@ -145,6 +205,7 @@ impl TunnelRegistry {
             port: t.port,
             target_port: t.target_port,
             lan_ip: t.lan_ip.clone(),
+            mode: t.mode,
             ws_tx: t.ws_tx.clone(),
             streams: t.streams.clone(),
             shutdown: t.shutdown.clone(),
@@ -161,6 +222,7 @@ impl TunnelRegistry {
                 serde_json::json!({
                     "name": t.name,
                     "port": t.port,
+                    "mode": t.mode.as_str(),
                     "target_port": t.target_port,
                     "lan_ip": t.lan_ip,
                     "provider_member_id": t.provider_member_id,
@@ -182,6 +244,45 @@ impl TunnelRegistry {
         } else {
             None
         }
+    }
+
+    /// Open a stream on an existing tunnel for a consumer (local-forward
+    /// mode). Registers the stream's write channel in the tunnel's `streams`
+    /// table and asks the provider to dial the local target. Returns the
+    /// stream id, or None if the tunnel does not exist.
+    pub fn open_stream(
+        &self,
+        team_id: &str,
+        name: &str,
+        tx: UnboundedSender<Vec<u8>>,
+    ) -> Option<u64> {
+        let tunnel = self.get(team_id, name)?;
+        let sid = {
+            let mut n = self.next_stream_id.lock().unwrap();
+            let id = *n;
+            *n += 1;
+            id
+        };
+        tunnel.streams.lock().unwrap().insert(sid, tx);
+        let _ = tunnel.ws_tx.send(Message::Text(
+            serde_json::json!({ "type": "open_stream", "stream_id": sid })
+                .to_string()
+                .into(),
+        ));
+        Some(sid)
+    }
+
+    /// Remove a stream (consumer disconnected / error).
+    pub fn close_stream(&self, team_id: &str, name: &str, sid: u64) {
+        let Some(tunnel) = self.get(team_id, name) else {
+            return;
+        };
+        tunnel.streams.lock().unwrap().remove(&sid);
+        let _ = tunnel.ws_tx.send(Message::Text(
+            serde_json::json!({ "type": "close_stream", "stream_id": sid })
+                .to_string()
+                .into(),
+        ));
     }
 
     /// Whether two socket addresses are on the same /24 subnet (used for
@@ -234,7 +335,7 @@ pub async fn run_tcp_relay(
         }
     };
 
-    let next_id: Arc<Mutex<u64>> = Arc::new(Mutex::new(1));
+    let next_id: Arc<Mutex<u64>> = registry.next_stream_id.clone();
     eprintln!("teamx tunnel `{name}` listening on tcp://0.0.0.0:{port}");
     let mut shutdown_rx = t.shutdown.subscribe();
     loop {
@@ -344,19 +445,52 @@ mod tests {
     fn registry_register_list_remove() {
         let reg = TunnelRegistry::new();
         let (tx, _rx) = unbounded_channel();
-        let port = reg.register("team1", "member1", "httpbin", 8080, Some("192.168.1.5".into()), tx).unwrap();
+        let port = reg.register("team1", "member1", "httpbin", 8080, Some("192.168.1.5".into()), tx, TunnelMode::Frp).unwrap();
         assert!((TUNNEL_PORT_MIN..=TUNNEL_PORT_MAX).contains(&port));
         // duplicate name rejected
         let (tx2, _rx2) = unbounded_channel();
-        assert!(reg.register("team1", "member1", "httpbin", 8081, None, tx2).is_err());
+        assert!(reg.register("team1", "member1", "httpbin", 8081, None, tx2, TunnelMode::Frp).is_err());
         // list only returns this team's tunnels
         let list = reg.list("team1");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["name"], "httpbin");
+        assert_eq!(list[0]["mode"], "frp");
         assert_eq!(reg.list("team2").len(), 0);
         // remove frees the port
         let freed = reg.remove("team1", "httpbin");
         assert_eq!(freed, Some(port));
         assert!(reg.get("team1", "httpbin").is_none());
+    }
+
+    #[test]
+    fn local_mode_binds_no_port() {
+        let reg = TunnelRegistry::new();
+        let (tx, _rx) = unbounded_channel();
+        let port = reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local).unwrap();
+        assert_eq!(port, 0); // local mode: no server port
+        let list = reg.list("team1");
+        assert_eq!(list[0]["mode"], "local");
+        // remove works (frees nothing)
+        assert_eq!(reg.remove("team1", "svc"), Some(0));
+    }
+
+    #[test]
+    fn open_stream_registers_stream_and_notifies_provider() {
+        let reg = TunnelRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local).unwrap();
+        let (stream_tx, _stream_rx) = unbounded_channel();
+        let sid = reg.open_stream("team1", "svc", stream_tx.clone()).unwrap();
+        assert!(sid >= 1);
+        // provider should have been asked to open the stream
+        let msg = rx.blocking_recv().unwrap();
+        let text = match msg {
+            axum::extract::ws::Message::Text(t) => t.to_string(),
+            _ => panic!("expected text open_stream"),
+        };
+        assert!(text.contains("open_stream"));
+        assert!(text.contains(&format!("\"stream_id\":{sid}")));
+        // unknown tunnel -> None
+        assert!(reg.open_stream("team1", "nope", stream_tx).is_none());
     }
 }

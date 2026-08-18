@@ -347,6 +347,7 @@ export const Teamx: Plugin = async ({ client }) => {
         serverUrl: t.server_url,
         name: t.name,
         port: t.port,
+        mode: t.mode ?? "local",
         lanIp: t.lan_ip,
         log: (level, message) => log(level === "info" ? "debug" : "warn", message),
       })
@@ -354,6 +355,24 @@ export const Teamx: Plugin = async ({ client }) => {
       handle.ready().then((pubPort) => {
         if (pubPort !== null) {
           log("info", `restored reverse tunnel "${t.name}" on public port ${pubPort}`)
+        }
+      })
+    }
+    // Re-open persisted consumer-side forwards (T2).
+    const { listForwards } = await import("./tunnels-store")
+    const { forwardTunnel } = await import("./tunnel")
+    for (const f of listForwards()) {
+      if (f.server_url !== TEAMX_SERVER_URL) continue
+      const handle = forwardTunnel({
+        serverUrl: f.server_url,
+        name: f.name,
+        localPort: f.local_port,
+        log: (level, message) => log(level === "info" ? "debug" : "warn", message),
+      })
+      restoredTunnelHandles.push(handle)
+      handle.ready().then((bound) => {
+        if (bound !== null) {
+          log("info", `restored local forward "${f.name}" on 127.0.0.1:${bound}`)
         }
       })
     }

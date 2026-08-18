@@ -23,6 +23,11 @@ function opt(name: string, value: string | undefined): string[] {
   return value ? [name, value] : []
 }
 
+/** Suggest a nearby free local port starting from `base` (heuristic). */
+function nextFreePort(base: number): number {
+  return base + Math.floor(Math.random() * 500) + 1
+}
+
 export const tools = {
   teamx_create_team: tool({
     description:
@@ -98,11 +103,14 @@ export const tools = {
   teamx_tunnel_expose: tool({
     description:
       "Expose a local service to teammates through the teamx server (reverse tunnel, provider side). " +
-      "The current machine's `port` becomes reachable by other team members at a public port on the server. " +
-      "Requires network mode (TEAMX_SERVER_URL). Returns the public port on the server.",
+      "The current machine's `port` becomes reachable by other team members. " +
+      "Mode 'local' (default): the server binds no public port; teammates use teamx_tunnel_forward " +
+      "to access it via a local port. Mode 'frp': the server binds a public port " +
+      "(tcp://server:port) reachable by any TCP client. Requires network mode (TEAMX_SERVER_URL).",
     args: {
       name: tool.schema.string().describe("public tunnel name (unique per team), e.g. httpbin"),
       port: tool.schema.number().describe("local port to expose"),
+      mode: tool.schema.enum(["local", "frp"]).optional().describe("exposure mode (default local)"),
       lan_ip: tool.schema.string().optional().describe("provider LAN IP for direct-connect hints (auto-detected if absent)"),
     },
     async execute(args, _context: ToolCtx) {
@@ -116,6 +124,7 @@ export const tools = {
         serverUrl,
         name: args.name,
         port: args.port,
+        mode: args.mode ?? "local",
         lanIp: args.lan_ip,
       })
       const pubPort = await handle.ready()
@@ -127,11 +136,17 @@ export const tools = {
       saveTunnel({
         name: args.name,
         port: args.port,
+        mode: args.mode ?? "local",
         lan_ip: args.lan_ip,
         server_url: serverUrl,
         created_at: new Date().toISOString(),
       })
-      return JSON.stringify({ ok: true, name: args.name, public_port: pubPort, direct: args.lan_ip ?? null }, null, 2)
+      const mode = args.mode ?? "local"
+      const access =
+        mode === "frp"
+          ? { public_port: pubPort, url: `tcp://<server>:${pubPort}` }
+          : { note: "local mode: teammates use teamx_tunnel_forward to reach this service" }
+      return JSON.stringify({ ok: true, name: args.name, mode, ...access, direct: args.lan_ip ?? null }, null, 2)
     },
   }),
 
@@ -214,6 +229,57 @@ export const tools = {
           relay_addr: data.relay_addr ?? null,
           note: "different subnet or unknown: use the server relay address",
         },
+        null,
+        2,
+      )
+    },
+  }),
+
+  teamx_tunnel_forward: tool({
+    description:
+      "Forward a teammate's exposed tunnel to a LOCAL port (consumer side, local-forward mode). " +
+      "The local port behaves like a local service: bytes are bridged over a mTLS WS to the provider's " +
+      "tunnel through the server. Default local port = the provider's target port; if that port is taken, " +
+      "a random candidate is returned for the user to confirm. Requires network mode (TEAMX_SERVER_URL).",
+    args: {
+      name: tool.schema.string().describe("tunnel name exposed by the provider"),
+      local_port: tool.schema.number().optional().describe("local port to listen on (default: provider target port)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const serverUrl = TEAMX_SERVER_URL
+      if (!serverUrl) {
+        return "teamx error: tunnel forward requires network mode; set TEAMX_SERVER_URL (or import an invitation letter)"
+      }
+      // Resolve the provider's target port for a natural default local port.
+      let targetPort: number | undefined
+      if (!args.local_port) {
+        const st = await txResult(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+        if (st.ok) {
+          const d = (st.data ?? {}) as Record<string, unknown>
+          if (typeof d.target_port === "number") targetPort = d.target_port
+        }
+      }
+      const { forwardTunnel } = await import("./tunnel")
+      const { saveForward } = await import("./tunnels-store")
+      const handle = forwardTunnel({
+        serverUrl,
+        name: args.name,
+        localPort: args.local_port,
+        targetPort,
+      })
+      const bound = await handle.ready()
+      if (bound === null) {
+        handle.close()
+        const candidate = targetPort ? nextFreePort(targetPort) : 0
+        return (
+          `teamx error: local port ${args.local_port ?? targetPort ?? "?"} is already in use. ` +
+          (candidate ? `Try --local-port ${candidate} (or confirm to bind it).` : "Pick a free port.")
+        )
+      }
+      saveForward({ name: args.name, local_port: bound, server_url: serverUrl, created_at: new Date().toISOString() })
+      return JSON.stringify(
+        { ok: true, name: args.name, local_port: bound, note: "access like a local service, e.g. http://127.0.0.1:" + bound },
         null,
         2,
       )

@@ -1,25 +1,26 @@
-// Reverse tunnel (network mode) — end-to-end test.
+// Consumer-side local forward (T2) — end-to-end test.
 //
 // Verifies over a live `teamx serve` (mTLS):
-//   1. a provider registers a tunnel (WS) exposing a local HTTP service
-//   2. the server allocates a public TCP port (9000-9999)
-//   3. a consumer connects to the public port and reaches the provider's
-//      local service through the relay
-//   4. tunnel.list / tunnel.status RPC report the registry
-//   5. closing the tunnel frees the port
+//   1. a provider registers a LOCAL-mode tunnel (WS, no public server port)
+//   2. the server does NOT bind a public port for it (port pool untouched)
+//   3. a consumer opens `/tunnel/forward`, sends `connect`, and bridges bytes
+//      to the provider's tunnel — reaching the provider's local service via
+//      the consumer's own local port
+//   4. tunnel.list / tunnel.status report mode=local and port=0
+//   5. closing the tunnel stops the forward
 //
-// Run with Bun: `bun tests/tunnel-test.ts` (TEAMX defaults to ../target/debug/teamx).
+// Run with Bun: `bun tests/tunnel-forward-test.ts`.
 
 import { spawn, spawnSync } from "node:child_process"
 import { createServer } from "node:http"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Socket } from "node:net"
+import { Socket, createServer as netCreateServer } from "node:net"
 
 const TEAMX = process.env.TEAMX ?? join(import.meta.dir, "../target/debug/teamx")
-const PORT = Number(process.env.TEAMX_TEST_PORT ?? 5792)
-const ROOT = mkdtempSync(join(tmpdir(), "teamx-tunnel-"))
+const PORT = Number(process.env.TEAMX_TEST_PORT ?? 5793)
+const ROOT = mkdtempSync(join(tmpdir(), "teamx-forward-"))
 const DB = join(ROOT, "t.db")
 const HOME = join(ROOT, "home")
 mkdirSync(HOME, { recursive: true })
@@ -107,12 +108,11 @@ async function waitReady(tls: Tls) {
   throw new Error("serve did not become ready")
 }
 
-/** Start a local HTTP "service" that echoes a fixed body. */
 function startLocalService(): Promise<{ port: number; stop: () => void }> {
   return new Promise((resolve) => {
     const server = createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/plain" })
-      res.end("hello from member-b's local service")
+      res.end("hello via local forward")
     })
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address() as { port: number }
@@ -121,16 +121,75 @@ function startLocalService(): Promise<{ port: number; stop: () => void }> {
   })
 }
 
+/**
+ * Consumer-side forwarder: listen on a local port; for each connection open a
+ * mTLS WS to `/tunnel/forward`, send connect, and bridge bytes.
+ */
+function startForward(tls: Tls, name: string, localPort: number): Promise<{ port: number; stop: () => void }> {
+  return new Promise((resolve, reject) => {
+    const sockets = new Set<Socket>()
+    const streams = new Map<number, Socket>()
+    const server = netCreateServer((clientSocket) => {
+      sockets.add(clientSocket)
+      clientSocket.on("close", () => sockets.delete(clientSocket))
+      clientSocket.on("error", () => sockets.delete(clientSocket))
+      const ws = new WebSocket(`wss://127.0.0.1:${PORT}/tunnel/forward`, { tls } as any)
+      const state = { sid: -1 }
+      const pending: Buffer[] = []
+      ws.onopen = () => ws.send(JSON.stringify({ type: "connect", name }))
+      ws.onmessage = (ev: any) => {
+        const data = ev.data
+        if (typeof data === "string") {
+          const msg = JSON.parse(data)
+          if (msg.type === "stream_open") {
+            state.sid = msg.stream_id
+            for (const b of pending) {
+              const frame = Buffer.alloc(4 + b.length)
+              frame.writeUInt32BE(state.sid)
+              b.copy(frame, 4)
+              ws.send(frame)
+            }
+            pending.length = 0
+          }
+          else if (msg.type === "error") { fail(`consumer forward error: ${msg.message}`); clientSocket.destroy() }
+          return
+        }
+        const buf = Buffer.from(data as Uint8Array)
+        if (buf.length < 4) return
+        const sid = buf.readUInt32BE(0)
+        if (state.sid >= 0 && sid === state.sid) {
+          clientSocket.write(buf.subarray(4))
+        }
+      }
+      ws.onclose = () => { clientSocket.destroy() }
+      ws.onerror = () => { clientSocket.destroy() }
+      clientSocket.on("data", (buf) => {
+        const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf as unknown as Uint8Array)
+        if (state.sid < 0) { pending.push(b); return }
+        if (ws.readyState !== WebSocket.OPEN) return
+        const frame = Buffer.alloc(4 + b.length)
+        frame.writeUInt32BE(state.sid)
+        b.copy(frame, 4)
+        ws.send(frame)
+      })
+      clientSocket.on("close", () => { try { ws.close() } catch {} })
+    })
+    server.once("error", (e: NodeJS.ErrnoException) => reject(e))
+    server.listen(localPort, "127.0.0.1", () => {
+      resolve({ port: localPort, stop: () => { server.close(); for (const s of sockets) { try { s.destroy() } catch {} } } })
+    })
+  })
+}
+
 async function main() {
-  // --- setup team + member certs ---
   teamx(["init"])
-  const create = teamx(["team", "create", "Tunnel", "--session", "s:owner", "--json"])
+  const create = teamx(["team", "create", "ForwardTunnel", "--session", "s:owner", "--json"])
   const ownerId = jget(create, ["owner_member_id"]) as string
   const ownerDir = join(ROOT, "owner")
   mkdirSync(ownerDir)
   teamx(["cert", "issue", ownerId, "owner", "--out", ownerDir, "--json"])
 
-  const invite = teamx(["team", "invite", "contributor: builds the service", "--session", "s:owner", "--json"])
+  const invite = teamx(["team", "invite", "contributor: provider", "--session", "s:owner", "--json"])
   const letter = jget(invite, ["letter"]) as string
   const providerId = jget(invite, ["member_id"]) as string
   const memberDir = join(ROOT, "provider")
@@ -144,48 +203,35 @@ async function main() {
   }
 
   const ca = readFileSync(join(HOME, "ca", "ca.crt"), "utf8")
-  const ownerTls: Tls = {
-    cert: readFileSync(join(ownerDir, "member.crt"), "utf8"),
-    key: readFileSync(join(ownerDir, "member.key"), "utf8"),
-    ca, serverName: "127.0.0.1",
-  }
-  const providerTls: Tls = {
-    cert: readFileSync(join(memberDir, "client.crt"), "utf8"),
-    key: readFileSync(join(memberDir, "client.key"), "utf8"),
-    ca, serverName: "127.0.0.1",
-  }
-
+  const ownerTls: Tls = { cert: readFileSync(join(ownerDir, "member.crt"), "utf8"), key: readFileSync(join(ownerDir, "member.key"), "utf8"), ca, serverName: "127.0.0.1" }
+  const providerTls: Tls = { cert: readFileSync(join(memberDir, "client.crt"), "utf8"), key: readFileSync(join(memberDir, "client.key"), "utf8"), ca, serverName: "127.0.0.1" }
   const teamId = (jget(create, ["team_id"]) ?? jget(create, ["team", "id"])) as string
 
   // --- start serve ---
   const serveEnv = { ...process.env, TEAMX_DB: DB, TEAMX_HOME: HOME } as Record<string, string>
   serveProc = spawn(TEAMX, ["serve", "--addr", "127.0.0.1", "--port", String(PORT)], { env: serveEnv as any })
+  serveProc.stdout?.on("data", (d) => process.stdout.write(`[serve] ${d}`))
+  serveProc.stderr?.on("data", (d) => process.stdout.write(`[serve] ${d}`))
   await waitReady(ownerTls)
 
-  // provider imports the invitation (claims the pending seat) over RPC
   const imp = await fetchRpc(providerTls, "team.import", { letter, name: "Dev" })
   if (imp?.ok !== true) fail(`provider import: ${JSON.stringify(imp)}`)
   else pass("provider imported over RPC")
-
-  // approve the provider
   const appr = await fetchRpc(ownerTls, "team.approve", { member_id: providerId, session: "s:owner", team: teamId })
-  if (appr?.ok !== true) { fail(`approve provider: ${JSON.stringify(appr)}`) }
+  if (appr?.ok !== true) fail(`approve provider: ${JSON.stringify(appr)}`)
   else pass("provider approved")
 
-  // --- start local service + register tunnel ---
+  // --- provider: register a LOCAL-mode tunnel (no server public port) ---
   const svc = await startLocalService()
   const ws = new WsClient(`wss://127.0.0.1:${PORT}/tunnel`, providerTls)
   await ws.open()
-  ws.send({ type: "register", name: "httpbin", port: svc.port, mode: "frp", lan_ip: "127.0.0.1" })
+  ws.send({ type: "register", name: "httpbin", port: svc.port, mode: "local", lan_ip: "127.0.0.1" })
   const reg = await ws.next()
   if (reg.type !== "registered") { fail(`register: ${JSON.stringify(reg)}`) }
   else {
-    pass(`tunnel registered on public port ${reg.port}`)
-    const pubPort = reg.port as number
+    pass(`local tunnel registered (mode=${reg.mode}, port=${reg.port})`)
 
-    // --- provider-side relay: bridge the WS tunnel to the local service ---
-    // Each incoming WS binary frame is [4B stream_id][payload]. We dial the
-    // local service once per stream and relay bytes both ways.
+    // Provider side: bridge WS streams to the local service.
     const streams = new Map<number, { sock: Socket; close: () => void }>()
     function connect(sid: number) {
       const sock = new Socket()
@@ -202,8 +248,6 @@ async function main() {
       sock.on("error", () => { closed = true; streams.delete(sid) })
       return { sock, close: () => { closed = true; try { sock.destroy() } catch {} } }
     }
-
-    // Intercept incoming WS messages: text control frames + binary data.
     const origOnMessage = ws.ws.onmessage
     ws.ws.onmessage = (ev: any) => {
       const data = ev.data
@@ -214,7 +258,6 @@ async function main() {
         }
         return
       }
-      // binary: [stream_id][payload] → local socket
       const buf = Buffer.from(data as Uint8Array)
       if (buf.length < 4) return
       const sid = buf.readUInt32BE(0)
@@ -222,45 +265,39 @@ async function main() {
       if (st) st.sock.write(buf.subarray(4))
     }
 
-    // --- consumer (owner) accesses the service through the relay ---
-    const body = await fetch(`http://127.0.0.1:${pubPort}/`, { headers: { Host: "httpbin.test" } }).then((r) => r.text())
-    if (body === "hello from member-b's local service") pass("consumer reached provider's local service through relay")
-    else fail(`relay body mismatch: ${body}`)
-
-    // --- tunnel.list RPC ---
+    // --- verify NO server public port was bound (local mode) ---
     const list = await fetchRpc(ownerTls, "tunnel.list", { team: teamId, session: "s:owner" })
     const tunnels = list?.data?.tunnels ?? list?.tunnels ?? []
-    if (Array.isArray(tunnels) && tunnels.length === 1 && tunnels[0].name === "httpbin") pass("tunnel.list reports the tunnel")
-    else fail(`tunnel.list: ${JSON.stringify(list)}`)
-
-    // --- tunnel.status RPC ---
+    const t = Array.isArray(tunnels) ? tunnels[0] : undefined
+    if (t && t.mode === "local" && t.port === 0) pass("tunnel.list: mode=local, port=0 (no server port bound)")
+    else fail(`tunnel.list local mode: ${JSON.stringify(list)}`)
     const st = await fetchRpc(ownerTls, "tunnel.status", { team: teamId, name: "httpbin", session: "s:owner" })
-    if (st?.data?.port === pubPort && st?.data?.lan_ip === "127.0.0.1") pass("tunnel.status reports port + lan_ip")
-    else fail(`tunnel.status: ${JSON.stringify(st)}`)
-    if (st?.data?.same_subnet === true) pass("tunnel.status same_subnet=true (consumer + provider both loopback)")
-    else fail(`tunnel.status same_subnet: ${JSON.stringify(st?.data)}`)
-    if (st?.data?.direct_addr === `127.0.0.1:${svc.port}`) pass("tunnel.status direct_addr present")
-    else fail(`tunnel.status direct_addr: ${JSON.stringify(st?.data)}`)
+    if (st?.data?.mode === "local" && st?.data?.port === 0) pass("tunnel.status: mode=local, port=0")
+    else fail(`tunnel.status local mode: ${JSON.stringify(st)}`)
+
+    // --- consumer: forward to a local port and reach the provider service ---
+    const fwd = await startForward(ownerTls, "httpbin", 18743)
+    pass(`consumer forward listening on 127.0.0.1:${fwd.port}`)
+    try {
+      const res = await fetch(`http://127.0.0.1:${fwd.port}/`, { signal: AbortSignal.timeout(8000) })
+      const body = await res.text()
+      if (body === "hello via local forward") pass("consumer reached provider service via local forward")
+      else fail(`forward body mismatch: ${body}`)
+    } catch (e) {
+      fail(`forward fetch failed: ${String(e)}`)
+    }
+    fwd.stop()
 
     // --- close the tunnel ---
     const close = await fetchRpc(ownerTls, "tunnel.close", { team: teamId, name: "httpbin", session: "s:owner" })
-    if (close?.data?.closed === true) pass("tunnel.close frees the tunnel")
+    if (close?.data?.closed === true) pass("tunnel.close frees the local-mode tunnel")
     else fail(`tunnel.close: ${JSON.stringify(close)}`)
-
-    // --- after close, the public port no longer serves ---
-    try {
-      await fetch(`http://127.0.0.1:${pubPort}/`)
-      fail("public port still reachable after close")
-    } catch {
-      pass("public port closed after tunnel.close")
-    }
   }
 
   svc.stop()
   ws.close()
 
-  // --- summary ---
-  console.log(failures === 0 ? "\nALL TUNNEL TESTS PASS" : `\n${failures} FAILURES`)
+  console.log(failures === 0 ? "\nALL FORWARD TESTS PASS" : `\n${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)
 }
 

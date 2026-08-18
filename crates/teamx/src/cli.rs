@@ -435,6 +435,10 @@ pub enum TunnelCmd {
         /// provider LAN IP for direct-connect hints (auto-detected if absent)
         #[arg(long)]
         lan_ip: Option<String>,
+        /// exposure mode: local (default, server binds no port; consumers use
+        /// `tunnel forward`) or frp (server binds a public port)
+        #[arg(long, default_value = "local")]
+        mode: String,
         /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
         #[arg(long)]
         server: Option<String>,

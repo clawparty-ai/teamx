@@ -91,6 +91,8 @@ uninstall() {
         "$CONFIG_DIR/commands/team-tunnel-status.en.md" \
         "$CONFIG_DIR/commands/team-tunnel-close.md" \
         "$CONFIG_DIR/commands/team-tunnel-close.en.md" \
+        "$CONFIG_DIR/commands/team-tunnel-forward.md" \
+        "$CONFIG_DIR/commands/team-tunnel-forward.en.md" \
         "$CONFIG_DIR/commands/team-serve.md" \
         "$CONFIG_DIR/commands/team-serve.en.md" \
         "$CONFIG_DIR/commands/team-serve-start.md" \
@@ -156,6 +158,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-state team-ask team-respond team-publish team-archive \
            team-leave team-destroy \
            team-tunnel team-tunnel-expose team-tunnel-list team-tunnel-status team-tunnel-close \
+           team-tunnel-forward \
            team-serve team-serve-start team-serve-status team-serve-stop team-serve-token \
            team-help; do
   SRC="$PLUGIN_DIR/assets/command/${cmd}${CMD_SUFFIX}.md"

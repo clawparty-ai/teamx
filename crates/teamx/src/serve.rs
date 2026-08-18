@@ -136,6 +136,7 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .route("/rpc", post(rpc))
         .route("/ws", get(ws_handler))
         .route("/tunnel", get(tunnel_ws_handler))
+        .route("/tunnel/forward", get(tunnel_forward_handler))
         .with_state(state);
 
     // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
@@ -295,8 +296,7 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
         tokio::select! {
             msg = receiver.next() => {
                 match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        let v: Value = match serde_json::from_str(text.as_str()) {
+                    Some(Ok(Message::Text(text))) => {                        let v: Value = match serde_json::from_str(text.as_str()) {
                             Ok(v) => v,
                             Err(_) => continue,
                         };
@@ -306,21 +306,25 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                 let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                                 let target = v.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
                                 let lan_ip = v.get("lan_ip").and_then(Value::as_str).map(str::to_string);
+                                // mode: "local" (default) or "frp" — see TunnelMode::parse.
+                                let mode = crate::tunnel::TunnelMode::parse(v.get("mode").and_then(Value::as_str));
                                 if name.is_empty() || target == 0 {
                                     let _ = sender.send(ws_text(r#"{"type":"error","message":"register requires name and port"}"#)).await;
                                     continue;
                                 }
-                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone()) {
+                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone(), mode) {
                                     Ok(port) => {
                                         owned = Some(name.clone());
-                                        // Spawn the TCP relay for this tunnel.
-                                        let reg = registry.clone();
-                                        let tid = team_id.clone();
-                                        let nm = name.clone();
-                                        tokio::spawn(async move {
-                                            let _ = crate::tunnel::run_tcp_relay(reg, tid, nm).await;
-                                        });
-                                        let ack = json!({ "type": "registered", "name": name, "port": port });
+                                        if mode == crate::tunnel::TunnelMode::Frp {
+                                            // Spawn the TCP relay for this tunnel (frp mode only).
+                                            let reg = registry.clone();
+                                            let tid = team_id.clone();
+                                            let nm = name.clone();
+                                            tokio::spawn(async move {
+                                                let _ = crate::tunnel::run_tcp_relay(reg, tid, nm).await;
+                                            });
+                                        }
+                                        let ack = json!({ "type": "registered", "name": name, "port": port, "mode": mode.as_str() });
                                         let _ = sender.send(ws_text(&ack.to_string())).await;
                                     }
                                     Err(e) => {
@@ -370,6 +374,137 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     if let Some(name) = owned.as_deref() {
         registry.remove(&team_id, name);
     }
+}
+
+/// Consumer-side local forward endpoint (T2). A consumer opens a mTLS WS here
+/// and sends `{"type":"connect","name":"<tunnel>"}`. The server validates the
+/// member belongs to the tunnel's team, opens a stream on that tunnel, and
+/// bridges bytes between this WS and the provider's WS.
+async fn tunnel_forward_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<PeerIdentity>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_tunnel_forward(socket, state, identity))
+}
+
+/// Serve one consumer forward connection.
+async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+    use futures_util::{SinkExt, StreamExt};
+
+    let member_id = match pki::parse_member_cn(&identity.0) {
+        Some((id, _role)) => id,
+        None => {
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"no_identity"}"#)).await;
+            return;
+        }
+    };
+
+    // First text frame must be `connect` with a tunnel name.
+    let connect_msg = match socket.recv().await {
+        Some(Ok(Message::Text(t))) => t,
+        _ => {
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"connect requires a tunnel name"}"#)).await;
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(connect_msg.as_str()) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"invalid connect frame"}"#)).await;
+            return;
+        }
+    };
+    let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+    let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    if ty != "connect" || name.is_empty() {
+        let _ = socket.send(ws_text(r#"{"type":"error","message":"expected {\"type\":\"connect\",\"name\":\"<tunnel>\"}"}"#)).await;
+        return;
+    }
+
+    // Resolve the tunnel and check membership.
+    let (team_id, tunnel_name) = {
+        let db = state.db.clone();
+        let mid = member_id.clone();
+        let nm = name.clone();
+        let tunnels = state.tunnels.clone();
+        match tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
+            let conn = db.lock().unwrap();
+            let teams = commands::teams_for_member(&conn, &mid).map_err(|e| e.to_string())?;
+            // Find the team that owns a tunnel with this name.
+            for tid in teams {
+                if tunnels.get(&tid, &nm).is_some() {
+                    return Ok((tid, nm));
+                }
+            }
+            Err(format!("tunnel `{nm}` not found in any of your teams"))
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                let _ = socket.send(ws_text(&json!({ "type": "error", "message": e }).to_string())).await;
+                return;
+            }
+            Err(_) => {
+                let _ = socket.send(ws_text(r#"{"type":"error","message":"internal"}"#)).await;
+                return;
+            }
+        }
+    };
+
+    // Open a stream on the tunnel; the provider dials its local target.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let sid = match state.tunnels.open_stream(&team_id, &tunnel_name, tx) {
+        Some(sid) => sid,
+        None => {
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"tunnel disappeared"}"#)).await;
+            return;
+        }
+    };
+
+    let (mut sender, mut receiver) = socket.split();
+    // Ack: tell the consumer the stream is open.
+    let _ = sender.send(ws_text(&json!({ "type": "stream_open", "stream_id": sid }).to_string())).await;
+
+    // Bridge: consumer WS bytes → provider's tunnel WS; tunnel stream bytes
+    // (relayed back by the provider) → consumer WS.
+    // Note: consumer→provider bytes carry the server-assigned stream_id in the
+    // frame header; forward them as-is to the provider's ws_tx (which expects
+    // [stream_id][payload] binary frames). provider→consumer bytes come back
+    // through the tunnel's streams table → rx → this WS.
+    let registry = state.tunnels.clone();
+    let tid = team_id.clone();
+    let tnm = tunnel_name.clone();
+    let consumer_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            match msg {
+                Message::Binary(buf) => {
+                    if let Some(t) = registry.get(&tid, &tnm) {
+                        let _ = t.ws_tx.send(Message::Binary(buf));
+                    }
+                }
+                Message::Text(_) => { /* control frames from consumer: ignore */ }
+                Message::Close(_) | Message::Ping(_) | Message::Pong(_) => {}
+            }
+        }
+        registry.close_stream(&tid, &tnm, sid);
+    });
+
+    let provider_task = tokio::spawn(async move {
+        while let Some(bytes) = rx.recv().await {
+            // Re-attach the stream id header: consumers expect [4B stream_id][payload].
+            let mut frame = Vec::with_capacity(4 + bytes.len());
+            frame.extend_from_slice(&(sid as u32).to_be_bytes());
+            frame.extend_from_slice(&bytes);
+            if sender.send(Message::Binary(frame.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let _ = consumer_task.await;
+    let _ = provider_task.await;
 }
 
 /// Build a text WebSocket frame (axum 0.8 uses `Utf8Bytes` for text frames).
@@ -582,6 +717,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
                     return Ok(serde_json::json!({
                         "name": t.name,
                         "port": t.port,
+                        "mode": t.mode.as_str(),
                         "target_port": t.target_port,
                         "lan_ip": t.lan_ip,
                         "provider_member_id": t.provider_member_id,

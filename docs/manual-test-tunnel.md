@@ -2,6 +2,10 @@
 
 > 场景：**member-b（开发者）**在本机跑了一个服务（例如 HTTP 服务），通过 `teamx` 反向隧道把它暴露给团队；**member-a（测试员）**在另一台机器（或同一台机器另一个会话）通过网络访问这个服务——即使两边网络无法直达，也能经 `teamx serve` 中继；同网段时优先直连。
 >
+> **两种模式（expose 时选择）**：
+> - **local（默认）**：server 不暴露任何端口；member-a 用 `/team tunnel forward` 在本地映射端口访问（更安全、SSH `-L` 体验）。
+> - **frp**：server 暴露公开端口（tcp://server:9100），member-a 直接连接。
+>
 > 前置：网络模式可用（mTLS + `/team tunnel` 命令已安装），owner 已建队并 `serve start`，两个成员已通过 invitation letter 加入并被 approve。
 
 ## 0. 前置条件
@@ -12,6 +16,8 @@
 
 ## 1. 数据流
 
+**frp 模式（`expose --mode frp`）**
+
 ```
 ┌─ member-b（开发者）───────┐       ┌──────────────┐       ┌─ member-a（测试员）─────┐
 │ 本地服务 :8080             │       │ teamx serve  │       │ curl / 浏览器            │
@@ -19,9 +25,20 @@
 └────────────────────────────┘  WS   └──────────────┘  TCP  └──────────────────────────┘
 ```
 
+**local 模式（默认，`expose` 不带 --mode）**
+
+```
+┌─ member-b（开发者）───────┐       ┌──────────────┐       ┌─ member-a（测试员）─────────┐
+│ 本地服务 :8080             │       │ teamx serve  │       │ /team tunnel forward demo   │
+│ /team tunnel expose        │──────▶│ 桥接（不暴露）│◀──────│ 本地监听 127.0.0.1:8080      │
+└────────────────────────────┘  WS   └──────────────┘  WS   └───── curl http://127.0.0.1:8080/
+```
+
 - **member-b**：`/team tunnel expose` 打开一条持久 mTLS WebSocket 连到 serve 的 `/tunnel`，注册本地 `:8080`。
-- **serve**：分配一个公开端口（`9100-9999`），收到 member-a 的 TCP 连接后，通过该 WS 把字节中继给 member-b，member-b 转发到本地 `:8080`，响应原路返回。
-- **member-a**：连接公开端口即访问到 member-b 的本地服务（无需双方网络直达）。
+- **serve**：
+  - frp 模式：分配一个公开端口（`9100-9999`），收到 member-a 的 TCP 连接后，通过该 WS 把字节中继给 member-b。
+  - local 模式：不暴露任何端口；member-a 的 `forward` WS（`/tunnel/forward`）经 server 桥接到 member-b 的隧道 WS。
+- **member-a**：frp 连公开端口；local 用 `/team tunnel forward` 在本地映射端口，访问 `http://127.0.0.1:<local>/` 即达 member-b 服务。
 - **同网段直连**：`/team tunnel status <name>` 返回 `same_subnet`；若为 true，member-a 可直接访问 `direct_addr`（member-b 的 `lan_ip:target_port`）。
 
 ## 2. 手动测试步骤
@@ -39,13 +56,21 @@ python3 -m http.server 8080 --bind 127.0.0.1
 
 ### 2.2 member-b —— 暴露服务
 
-在 member-b 的 opencode 窗口：
+在 member-b 的 opencode 窗口（**local 模式，默认**）：
 
 ```
 /team tunnel expose --name demo --port 8080
 ```
 
-预期：返回 `public_port`（例如 9100），并提示隧道已持久化（重启 opencode 会自动重建）。
+预期：返回 `mode: local`（server 不暴露端口），提示队友用 `forward` 访问，隧道已持久化。
+
+**frp 模式（可选）**：
+
+```
+/team tunnel expose --name demo --port 8080 --mode frp
+```
+
+预期：返回 `public_port`（例如 9100），server 暴露 `tcp://<server>:9100`。
 
 > 手动等价（CLI）：
 > ```bash
@@ -53,7 +78,8 @@ python3 -m http.server 8080 --bind 127.0.0.1
 > TEAMX_MTLS_CERT=~/.teamx/letters/<id>/client.crt \
 > TEAMX_MTLS_KEY=~/.teamx/letters/<id>/client.key \
 > TEAMX_MTLS_CA=~/.teamx/letters/<id>/ca.crt \
-> teamx tunnel expose demo --port 8080
+> teamx tunnel expose demo --port 8080            # local（默认）
+> teamx tunnel expose demo --port 8080 --mode frp # frp
 > ```
 
 ### 2.3 任意成员（member-a）—— 查看/访问
@@ -64,7 +90,27 @@ python3 -m http.server 8080 --bind 127.0.0.1
 /team tunnel list
 ```
 
-预期：列出 `demo`，包含公开端口（9100）和 provider 的 LAN IP。
+预期：列出 `demo`，包含 mode（local/frp）、公开端口（frp 才有）和 provider 的 LAN IP。
+
+**local 模式 —— 本地转发**：
+
+```
+/team tunnel forward --name demo
+```
+
+预期：本地监听 `127.0.0.1:8080`（默认 = provider target 端口；冲突则返回随机候选端口需确认），提示"访问如本地服务"。
+
+```bash
+curl http://127.0.0.1:8080/index.html
+# → hello from member-b's service
+```
+
+**frp 模式 —— 直接连 server 端口**：
+
+```bash
+curl http://<server>:9100/index.html
+# → hello from member-b's service
+```
 
 ```
 /team tunnel status demo
