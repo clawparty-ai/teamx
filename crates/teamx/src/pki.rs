@@ -76,9 +76,12 @@ fn cert_params(cn: &str, sans: &[String], is_ca: bool) -> PkiResult<CertificateP
 /// Generate (if absent) the CA + server certificate under `home/ca`.
 ///
 /// The CA is the long-lived trust anchor: it is only (re)generated when either
-/// of its two files is missing. A partially-deleted server cert/key regenerates
-/// ONLY the server cert (signed by the existing CA), so losing `server.key`
-/// does NOT rotate the CA and invalidate every already-issued member cert.
+/// of its two files is missing OR the existing CA is unusable (missing the
+/// `keyCertSign` key usage — a bug in CA certs generated before the key usage
+/// fix, which makes every client reject the chain). A partially-deleted server
+/// cert/key regenerates ONLY the server cert (signed by the existing CA), so
+/// losing `server.key` does NOT rotate the CA and invalidate every already-
+/// issued member cert.
 pub fn ensure_pki(home: &Path) -> PkiResult<PkiPaths> {
     let dir = ca_dir(home);
     fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -88,7 +91,23 @@ pub fn ensure_pki(home: &Path) -> PkiResult<PkiPaths> {
     let server_cert_path = dir.join("server.crt");
     let server_key_path = dir.join("server.key");
 
-    let ca_missing = !ca_cert_path.exists() || !ca_key_path.exists();
+    // An existing CA cert from before the keyCertSign fix is unusable: strict
+    // verifiers (rustls/OpenSSL/node) reject its chain. Treat it as missing so
+    // the fixed `cert_params` regenerates a correct CA. Members must be
+    // re-invited because their old certs are signed by the old CA.
+    let ca_broken = if ca_cert_path.exists() {
+        match rcgen::CertificateParams::from_ca_cert_pem(&read_pem(&ca_cert_path)?) {
+            Ok(params) => {
+                let has_sign = params.key_usages.iter().any(|u| matches!(u, KeyUsagePurpose::KeyCertSign));
+                !has_sign
+            }
+            Err(_) => true,
+        }
+    } else {
+        false
+    };
+
+    let ca_missing = !ca_cert_path.exists() || !ca_key_path.exists() || ca_broken;
     if ca_missing {
         // CA key + self-signed cert.
         let ca_key = KeyPair::generate().map_err(|e| format!("ca keygen: {e}"))?;
