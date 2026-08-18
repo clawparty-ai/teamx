@@ -78,13 +78,13 @@
 
    预期：`teamx_team_import` → `status=pending`，`role=role-<hex>`（中文 label「测试工程师」自动派生的 key），并提示证书已存到 `~/.teamx/letters/<invitation_id>/`。
 
-2. 让本窗口走网络模式（连 owner 的 serve 拿实时推送）：在启动 opencode 的终端里
+2. 让本窗口走网络模式（连 owner 的 serve 拿实时推送）：**重启 opencode 即可**——letter 内含 server URL（`teamx_invitation.server.url`），插件启动时自动发现并建立 mTLS RPC/WS，无需手动设置 `TEAMX_SERVER_URL`。
 
-   ```bash
-   export TEAMX_SERVER_URL="https://<你的局域网IP>:5781"
-   # 然后重启 opencode（插件启动时自动从 ~/.teamx/letters 发现匹配的客户端证书，建立 mTLS RPC/WS）
-   ```
-
+> 多 server / 需覆盖时仍可显式指定：
+> ```bash
+> export TEAMX_SERVER_URL="https://<你的局域网IP>:5781"
+> # 再重启 opencode
+> ```
 > 手动等价：`teamx team import <letter> --name 测试员 --session <本会话key>`。
 
 ### 2.3 评审成员窗口 —— 导入 + 连接
@@ -97,7 +97,7 @@
 
 预期：`status=pending`，`role=reviewer`（ASCII label 直接作为 key）。
 
-然后同样 `export TEAMX_SERVER_URL="https://<你的局域网IP>:5781"` 并重启 opencode。
+然后同样**重启 opencode**（插件自动从 letter 发现 server URL 并连接）。
 
 ### 2.4 owner 窗口 —— 审批两人
 
@@ -140,8 +140,8 @@ owner 在机器 A，测试/评审在机器 B（或各一台）。步骤与 §2 �
    ```bash
    teamx team import <letter> --name 测试员 --session <本会话key>
    ```
-3. 成员设 `export TEAMX_SERVER_URL="https://<机器A的局域网IP>:5781"` 后重启 opencode。
-4. 成员在 `/Team` 里再 `/team import <letter>`（此时走 RPC，把证书身份绑定到服务器上的预分配席位，变 pending）。
+3. 成员**重启 opencode**（插件自动从 letter 发现 server URL 并连接；多 server 需覆盖时才显式 `export TEAMX_SERVER_URL`）。
+4. 成员在 `/Team` 里再 `/team import <letter>`（此时走 RPC，把证书身份绑定到服务器上的预分配席位，变 pending；插件也会在首次 RPC 时自动认领）。
 5. owner `approve` 后即可并行工作。
 
 > 成员**不开放任何入站端口**（出站注册）；证书 = "能连上"，approve = "能干活"；吊销后连连接都会被拒。

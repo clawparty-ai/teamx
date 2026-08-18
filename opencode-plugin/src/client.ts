@@ -10,8 +10,110 @@ import { join } from "node:path"
 
 export const TEAMX_HOME = process.env.TEAMX_HOME ?? join(homedir(), ".teamx")
 
-/** Network-mode server URL (e.g. ws://host:5781 or https://host). Unset = V1 CLI mode. */
-export const TEAMX_SERVER_URL = process.env.TEAMX_SERVER_URL ?? ""
+/**
+ * Discover the network-mode server URL from imported invitation letters.
+ *
+ * A letter embeds its server URL (teamx_invitation.server.url). If
+ * TEAMX_SERVER_URL is not set explicitly, the plugin should still enter
+ * network mode after a member imports a letter — the letter is the "join
+ * packet" and carries the connection info. This scans ~/.teamx/letters dir
+ * and returns the most recently imported letter's server URL (stable, and
+ * consistent with the letterMtls fallback below). Returns null when no
+ * letter records a server URL (pure single-machine V1 mode).
+ */
+function discoverServerUrl(): string | null {
+  const dir = join(TEAMX_HOME, "letters")
+  if (!existsSync(dir)) return null
+  let entries: string[] = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  let best: { url: string; mtime: number } | null = null
+  for (const id of entries) {
+    const letterPath = join(dir, id, "letter.json")
+    if (!existsSync(letterPath)) continue
+    try {
+      const letter = JSON.parse(readFileSync(letterPath, "utf8")) as {
+        teamx_invitation?: { server?: { url?: string } }
+      }
+      const url = letter.teamx_invitation?.server?.url
+      if (!url) continue
+      const mtime = statSync(letterPath).mtimeMs
+      if (!best || mtime > best.mtime) best = { url, mtime }
+    } catch {
+      // skip unreadable letters
+    }
+  }
+  return best?.url ?? null
+}
+
+/**
+ * Network-mode server URL (e.g. ws://host:5781 or https://host).
+ *
+ * Resolution order: explicit TEAMX_SERVER_URL env wins; otherwise the most
+ * recently imported invitation letter's embedded server URL; empty string
+ * means pure V1 CLI mode (no network server configured).
+ */
+export const TEAMX_SERVER_URL = process.env.TEAMX_SERVER_URL || discoverServerUrl() || ""
+
+/**
+ * Read the most recently imported letter (matching TEAMX_SERVER_URL when set)
+ * as its raw JSON payload, suitable for the `team.import` RPC (which accepts a
+ * plain JSON object in the `letter` field). Returns null if no letter is stored.
+ */
+function readStoredLetter(): { invitation_id: string; letterJson: string } | null {
+  const dir = join(TEAMX_HOME, "letters")
+  if (!existsSync(dir)) return null
+  let entries: string[] = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  const wantedHost = TEAMX_SERVER_URL ? hostOf(TEAMX_SERVER_URL) : ""
+  let best: { invitation_id: string; letterJson: string; host: string; mtime: number } | null = null
+  for (const id of entries) {
+    const sub = join(dir, id)
+    if (!statSync(sub, { throwIfNoEntry: false })?.isDirectory()) continue
+    const letterPath = join(sub, "letter.json")
+    if (!existsSync(letterPath)) continue
+    try {
+      const raw = readFileSync(letterPath, "utf8")
+      const parsed = JSON.parse(raw) as { teamx_invitation?: { server?: { url?: string } } }
+      const host = hostOf(parsed.teamx_invitation?.server?.url ?? "")
+      const mtime = statSync(letterPath).mtimeMs
+      const cand = { invitation_id: id, letterJson: raw, host, mtime }
+      if (wantedHost && host === wantedHost) return cand
+      if (!best || mtime > best.mtime) best = cand
+    } catch {
+      // skip unreadable letters
+    }
+  }
+  return best
+}
+
+/**
+ * Auto-register a locally-stored invitation letter against the server.
+ *
+ * When a member imports a letter on a machine without the shared DB (cross-
+ * machine setup), the letter only stores the mTLS material locally; the seat
+ * is claimed on the server via the `team.import` RPC. This is idempotent and
+ * is invoked lazily: the first RPC that fails because the member has no seat
+ * yet triggers it, then the original call is retried once.
+ */
+async function autoClaimLetter(): Promise<boolean> {
+  if (!TEAMX_SERVER_URL) return false
+  const stored = readStoredLetter()
+  if (!stored) return false
+  try {
+    const r = await runRpcRaw(["team", "import", stored.letterJson])
+    return r.ok
+  } catch {
+    return false
+  }
+}
 
 /** Resolve the teamx binary name (override via TEAMX_BIN). */
 export function teamxBin(): string {
@@ -285,10 +387,10 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
 }
 
 /**
- * Run an RPC call against the configured network-mode server.
- * The plugin normally passes V1-style CLI args; this translates and posts them.
+ * Run a raw RPC POST against the configured server (no auto-claim).
+ * Returns the parsed CliResult.
  */
-export async function runRpc(argv: string[]): Promise<CliResult> {
+async function runRpcRaw(argv: string[]): Promise<CliResult> {
   const { method, args } = cliArgsToRpc(argv)
   const base = TEAMX_SERVER_URL.replace(/\/$/, "")
   const mtls = mtlsFor(TEAMX_SERVER_URL)
@@ -329,6 +431,33 @@ export async function runRpc(argv: string[]): Promise<CliResult> {
   } catch (e) {
     return { ok: false, stdout: "", stderr: String(e), data: null }
   }
+}
+
+/**
+ * Run an RPC call against the configured network-mode server.
+ * When the server reports that the calling member has no seat yet (imported
+ * the letter locally but never claimed it on the server), this auto-registers
+ * the stored letter (`team.import`) and retries the original call once.
+ */
+export async function runRpc(argv: string[]): Promise<CliResult> {
+  let r = await runRpcRaw(argv)
+  if (!r.ok && needsAutoClaim(r.stderr)) {
+    const claimed = await autoClaimLetter()
+    if (claimed) r = await runRpcRaw(argv)
+  }
+  return r
+}
+
+/** True when an RPC failure likely means "member seat not claimed yet". */
+function needsAutoClaim(err: string): boolean {
+  const e = err.toLowerCase()
+  // The server returns these when the calling member's seat does not exist yet
+  // (letter imported locally but never claimed server-side). Recovering those
+  // is exactly what auto-claim is for; anything else is left alone.
+  return (
+    e.includes("member") &&
+    (e.includes("not found") || e.includes("not a member") || e.includes("not in team") || e.includes("has it joined/imported"))
+  )
 }
 
 /**

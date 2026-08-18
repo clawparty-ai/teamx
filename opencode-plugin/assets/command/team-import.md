@@ -7,5 +7,6 @@ agent: teamx
 
 要点：
 - 成功后：mTLS 证书/私钥存到 `~/.teamx/letters/<invitation_id>/`，席位变为 pending，等待 owner approve。
-- 单机共享 DB 时一步到位（存证书 + 认领）；跨机时本地只落盘，需设 `TEAMX_SERVER_URL` 后由插件在服务器上完成认领。
-- 提示：若要实时推送，设置 `TEAMX_SERVER_URL=https://<owner局域网IP>:5781` 并重启 opencode。
+- 单机共享 DB 时一步到位（存证书 + 认领）；跨机时本地只落盘，需连接服务器完成认领。
+- **自动连接**：letter 内含 server URL，插件启动时会自动发现并进入网络模式（无需手动设置 `TEAMX_SERVER_URL`）；首次 RPC 会自动 `team.import` 认领席位并重试。
+- 提示：如需实时推送，确保 opencode 在导入 letter 后重启一次，插件即自动连上 `https://<owner局域网IP>:5781`。

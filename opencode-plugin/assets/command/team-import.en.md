@@ -7,5 +7,6 @@ User wants to import an invitation letter. Parameters: $ARGUMENTS (letter single
 
 Key points:
 - On success: mTLS certificate/private key is saved to `~/.teamx/letters/<invitation_id>/`, seat becomes pending, waiting for owner approval.
-- With a local shared DB, this completes in one step (save certificate + claim seat); cross-machine setups only save locally, requiring `TEAMX_SERVER_URL` to be set for the plugin to complete the claim on the server.
-- Tip: for real-time push, set `TEAMX_SERVER_URL=https://<owner_lan_ip>:5781` and restart opencode.
+- With a local shared DB, this completes in one step (save certificate + claim seat); cross-machine setups only save locally, requiring a server connection to complete the claim.
+- **Auto-connect**: the letter embeds its server URL; the plugin discovers it automatically on startup and enters network mode (no need to set `TEAMX_SERVER_URL` manually). The first RPC auto-claims the seat via `team.import` and retries.
+- Tip: for real-time push, restart opencode after importing the letter; the plugin auto-connects to `https://<owner_lan_ip>:5781`.

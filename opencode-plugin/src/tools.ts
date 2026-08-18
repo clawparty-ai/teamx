@@ -2,7 +2,7 @@
 // Each tool maps 1:1 to a `teamx` CLI subcommand and returns the JSON result.
 
 import { tool } from "@opencode-ai/plugin"
-import { instanceId, markMember, runCli, renderResult, sessionKey } from "./client"
+import { instanceId, markMember, runCli, renderResult, sessionKey, TEAMX_SERVER_URL } from "./client"
 import { serveStart, serveStatus, serveStop } from "./serve"
 
 type ToolCtx = { sessionID: string; directory: string }
@@ -106,9 +106,9 @@ export const tools = {
       lan_ip: tool.schema.string().optional().describe("provider LAN IP for direct-connect hints (auto-detected if absent)"),
     },
     async execute(args, _context: ToolCtx) {
-      const serverUrl = process.env.TEAMX_SERVER_URL
+      const serverUrl = TEAMX_SERVER_URL
       if (!serverUrl) {
-        return "teamx error: tunnel expose requires network mode; set TEAMX_SERVER_URL"
+        return "teamx error: tunnel expose requires network mode; set TEAMX_SERVER_URL (or import an invitation letter)"
       }
       const { exposeTunnel } = await import("./tunnel")
       const { saveTunnel } = await import("./tunnels-store")

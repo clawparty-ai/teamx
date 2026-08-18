@@ -16,7 +16,7 @@
 
 import { connect as tcpConnect, Socket } from "node:net"
 import { wsUrl } from "./ws"
-import { mtlsFor } from "./client"
+import { mtlsFor, TEAMX_SERVER_URL } from "./client"
 
 export interface TunnelExposeOpts {
   serverUrl: string
@@ -217,7 +217,7 @@ export async function runTunnelCli(argv: string[]): Promise<number> {
     const i = args.indexOf(`--${name}`)
     return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined
   }
-  const serverUrl = flag("server") ?? process.env.TEAMX_SERVER_URL
+  const serverUrl = flag("server") ?? TEAMX_SERVER_URL
   const name = flag("name")
   const port = Number(flag("port") ?? 0)
   if (!serverUrl || !name || !port) {

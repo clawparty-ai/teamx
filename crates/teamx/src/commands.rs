@@ -1088,13 +1088,22 @@ fn cmd_team_import(
     let inv_row = match invitation_by_id_opt(conn, invitation_id).map_err(|e| AppError(format!("db error: {e}")))? {
         Some(r) => r,
         None => {
-            return Ok(json!({
+            let server_url = inv["server"]["url"].as_str().unwrap_or("");
+            let mut payload = json!({
                 "ok": true,
                 "status": "stored",
                 "invitation_id": invitation_id,
                 "letters_dir": teamx_home_dir().join("letters").join(invitation_id).display().to_string(),
-                "note": "letter stored locally; connect to the server to complete registration",
-            }));
+                "note": "letter stored locally; the plugin will auto-connect to the server on next start",
+            });
+            if !server_url.is_empty() {
+                payload["server_url"] = json!(server_url);
+                payload["note"] = json!(format!(
+                    "letter stored locally; auto-connect to {server_url} on next opencode start \
+                     (or set TEAMX_SERVER_URL={server_url} now)"
+                ));
+            }
+            return Ok(payload);
         }
     };
 
