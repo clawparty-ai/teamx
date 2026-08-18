@@ -1,6 +1,6 @@
 # teamx ↔ loopx 桥接（V1）
 
-目标：**不重造 loopx 的轮子**。teamx 只做一层薄桥接：读取 loopx 的阶段性进度，把它作为 `loopx.progress` 事件发布进团队账本，让 team owner 通过 `teamx_sync` 就能看到各成员的 loopx 阶段进展。
+目标：**不重造 loopx 的轮子**。teamx 只做一层薄桥接：读取 loopx 的阶段性进度，把它作为 `loopx.progress` 事件发布进团队账本，让 team lead 通过 `teamx_sync` 就能看到各成员的 loopx 阶段进展。
 
 ## 原理
 

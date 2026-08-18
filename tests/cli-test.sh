@@ -189,7 +189,7 @@ expect_ok "$TEAMX" goal close --session s:o3
 expect_ok "$TEAMX" team archive --session s:o3
 expect_ok "$TEAMX" team create "AfterArchive" --session s:o3
 
-step "multi-team owner can approve with --team (regression)"
+step "multi-team lead can approve with --team (regression)"
 # a session may still be a MEMBER of another team while owning one; the owner
 # session must pass --team when its membership spans multiple teams.
 CREATE5=$($TEAMX team create "OwnerTeamA" --session s:owner2 --json)

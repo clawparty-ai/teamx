@@ -248,7 +248,7 @@ export const tools = {
 
   teamx_join: tool({
     description:
-      "Join a team via its invite_token. Creates a PENDING membership that the team owner must approve.",
+      "Join a team via its invite_token. Creates a PENDING membership that the team lead must approve.",
     args: {
       token: tool.schema.string().describe("team invite token"),
       name: tool.schema.string().describe("display name chosen at join time"),
@@ -359,7 +359,7 @@ export const tools = {
 
   teamx_role_propose: tool({
     description:
-      "Propose a custom role (key + label + job description). The team owner must approve it before it can be used. " +
+      "Propose a custom role (key + label + job description). The team lead must approve it before it can be used. " +
       "Any team member (including the owner) may propose. Role key must not conflict with a built-in role.",
     args: {
       role: tool.schema.string().describe("unique role key, e.g. devops"),

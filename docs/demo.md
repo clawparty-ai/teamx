@@ -1,6 +1,6 @@
 # teamx 双窗口协作 Demo：设计 + 评审
 
-> 场景：**"我"手动启动两个 opencode 窗口**，窗口 A 作为 team owner 根据需求做设计并创建团队；窗口 B 作为 member 加入团队、申请 `reviewer` 角色，对 owner 的方案进行评审并提出改进意见。全程通过 teamx `/Team` agent + `teamx_*` 工具协作，状态与事件落在 `~/.teamx/teamx.db`。
+> 场景：**"我"手动启动两个 opencode 窗口**，窗口 A 作为 team lead 根据需求做设计并创建团队；窗口 B 作为 member 加入团队、申请 `reviewer` 角色，对 owner 的方案进行评审并提出改进意见。全程通过 teamx `/Team` agent + `teamx_*` 工具协作，状态与事件落在 `~/.teamx/teamx.db`。
 
 ## 1. 数据流总览
 

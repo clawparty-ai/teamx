@@ -1,6 +1,6 @@
 # teamx 网络模式手动测试：owner + 测试 + 评审 三人并行
 
-> 场景：**一个 team owner** 创建团队、内嵌启动 `teamx serve`，**发两个 invitation letter**（一个给测试、一个给代码评审）；两个成员各自导入邀请函、经 **mTLS + WebSocket** 连到 owner 的 serve，**审批后同时开始工作**，owner 实时看到两人的进展。
+> 场景：**一个 team lead** 创建团队、内嵌启动 `teamx serve`，**发两个 invitation letter**（一个给测试、一个给代码评审）；两个成员各自导入邀请函、经 **mTLS + WebSocket** 连到 owner 的 serve，**审批后同时开始工作**，owner 实时看到两人的进展。
 >
 > 对比 `docs/demo-3p.md`（V1 单机 token 入队），本文走的是**网络模式**（形态① owner 内嵌 serve）：身份来自 mTLS 客户端证书（invitation letter），推送走 WebSocket，不再是"自报 session + 轮询"。
 

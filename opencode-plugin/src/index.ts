@@ -146,7 +146,7 @@ function summarize(data: SyncData): string {
   return parts.join("\n")
 }
 
-/** True if the sync data shows this session is a team owner (auto-execute excluded). */
+/** True if the sync data shows this session is a team lead (auto-execute excluded). */
 export function isOwnerSession(data: SyncData): boolean {
   return (data?.teams ?? []).some((t) => t.team?.my_role === "owner")
 }
@@ -202,7 +202,7 @@ export const Teamx: Plugin = async ({ client }) => {
   // Highest seq for which an auto-execute prompt has already been triggered
   // (per session), so we never double-wake a member for the same broadcast.
   const autoExecutedSeq = new Map<string, number>()
-  // Whether a session is a team owner (owner sessions don't auto-execute on
+  // Whether a session is a team lead (owner sessions don't auto-execute on
   // broadcasts they themselves emit, and generally drive, not execute).
   const ownerSessions = new Map<string, boolean>()
 

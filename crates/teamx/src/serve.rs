@@ -618,7 +618,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         return Err("member has been revoked".to_string());
     }
 
-    // Enforce team ownership on cross-team reads (network mode): a member may
+    // Enforce team leadership on cross-team reads (network mode): a member may
     // only read the status/roles/events/log of a team they belong to. Without
     // this, any member with a valid cert could read another team's state,
     // members, roles and invite_token.

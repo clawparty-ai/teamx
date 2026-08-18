@@ -279,7 +279,7 @@ fn ensure_owner(_conn: &Connection, actor: &MemberRow, team: &TeamRow) -> Result
         Ok(())
     } else {
         err(format!(
-            "only the team owner may do this (owner member {})",
+            "only the team lead may do this (owner member {})",
             team.owner_member_id.as_deref().unwrap_or("<none>")
         ))
     }
@@ -775,7 +775,7 @@ fn cmd_team_leave(conn: &mut Connection, session: &str, team_opt: Option<&str>) 
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
     if team.owner_member_id.as_deref() == Some(actor.id.as_str()) {
         return err(
-            "the team owner cannot leave (there is no ownership transfer yet). \
+            "the team lead cannot leave (there is no ownership transfer yet). \
              Close the goal or leave the team as-is.",
         );
     }
@@ -1511,7 +1511,7 @@ fn cmd_role_set(
     // the plugin's owner detection would otherwise trust).
     if role == "owner" && team.owner_member_id.as_deref() != Some(target.id.as_str()) {
         return err(format!(
-            "role `owner` is reserved for the team owner (member {})",
+            "role `owner` is reserved for the team lead (member {})",
             team.owner_member_id.as_deref().unwrap_or("<none>")
         ));
     }
@@ -2113,7 +2113,7 @@ pub fn is_revoked(conn: &Connection, member_id: &str) -> rusqlite::Result<bool> 
 }
 
 /// True if a member (by id) is a non-left/denied member of the given team.
-/// Used to enforce team ownership on cross-team reads in network mode.
+/// Used to enforce team leadership on cross-team reads in network mode.
 pub fn member_in_team(conn: &Connection, member_id: &str, team_id: &str) -> rusqlite::Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM members WHERE id = ?1 AND team_id = ?2 AND state NOT IN ('left','denied')",

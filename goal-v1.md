@@ -9,7 +9,7 @@
 | # | 决策 | 落地方式 |
 |---|---|---|
 | 1 | V1 单机本地 | 所有 opencode + teamx 在同一台机器；后续 V2 再实现跨网络 |
-| 2 | 用户驱动 + 复用 loopx | 不重造 loopx 轮子；teamx 只做薄桥接：读取 loopx 阶段性进度 → 发布为团队事件 → 同步给 team owner |
+| 2 | 用户驱动 + 复用 loopx | 不重造 loopx 轮子；teamx 只做薄桥接：读取 loopx 阶段性进度 → 发布为团队事件 → 同步给 team lead |
 | 3 | 全局存储 | 单一 DB：`~/.teamx/teamx.db` |
 | 4 | 成员身份 | join 时用户自命名（display name）；一个 opencode session 加入后 = 一个 team member；多个 session 加入 = 多个 member；不加入就不是 member |
 | 5 | 入队控制 | 用户发起加入，owner 审批（approve / deny） |
