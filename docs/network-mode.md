@@ -323,6 +323,101 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 
 ---
 
+## 9.5 隧道：暴露成员服务（反向代理，frp 风格）
+
+> 状态：**T1（frp 模式）已实现**；**T2（消费端本地转发）设计中**。
+> 关联：`crates/teamx/src/tunnel.rs`（registry + TCP relay）、`serve.rs`（`/tunnel` WS 端点）、`opencode-plugin/src/tunnel.ts`（provider 客户端）、`docs/manual-test-tunnel.md`（测试手册）。
+
+### 9.5.1 背景与两种模式
+
+成员（provider，如开发者 member-b）本机跑着一个服务（HTTP/SSH/数据库/自定义 TCP），需要让**其他成员**（consumer，如测试员 member-a）访问。teams 的跨网络语义是"成员零暴露、出站注册"，因此服务不能直接暴露成员机端口，而是通过 `teamx serve` 中继。
+
+**成员在 `expose` 时选择隧道模式**，决定服务在 server 上如何暴露：
+
+| 模式 | 消费端访问方式 | server 端口暴露 | 认证 | 场景 |
+|---|---|---|---|---|
+| **frp 模式（T1，默认）** | `curl http://teamx-server:9100/`（server 公开端口） | ✅ server 绑 `0.0.0.0:<public>` | TCP 裸连（无成员级认证） | 服务可公开、简单直连 |
+| **本地转发模式（T2）** | `curl http://127.0.0.1:<local>`（member-a 本地端口） | ❌ server 不绑端口 | mTLS WS（成员证书） | 更安全、仅成员可访问、SSH `-L` 体验 |
+
+> **frp 模式** = 现有行为（`tunnel expose demo --port 8081` 即 frp）。server 在公开端口池（9100–9999）分配端口，`run_tcp_relay` 监听并接受**任意** TCP 连接转发到 provider 的 WS。
+> **本地转发模式** = 新增能力（`tunnel forward`）。server **不暴露**任何端口；consumer 用 `teamx_tunnel_forward` 在**自己机器**监听本地端口，经 **mTLS WS** 连接 server，请求接入某隧道，字节经 server 桥接到 provider。消费体验如同访问本地服务（`curl http://127.0.0.1:8081/`），且天然走成员证书认证。
+
+### 9.5.2 数据流
+
+**frp 模式（T1，现状）**
+
+```
+member-b(provider)                     teamx-server                    member-a(consumer)
+ :8081 ◄──WS(/tunnel)──► registry + run_tcp_relay ◄──TCP──  curl http://server:9100/
+        expose demo --port 8081        监听 0.0.0.0:9100
+```
+
+**本地转发模式（T2，新增）**
+
+```
+member-a(consumer)                                  teamx-server                  member-b(provider)
+ 本地监听 :8081 ◄──TCP── 本机 socket                  registry                       :8081
+        │                                            │                              │
+        └──mTLS WS(/tunnel)── "connect" ──► 桥接 stream ──► open_stream ──► 中继 ──►│
+        curl http://127.0.0.1:8081/                  不暴露任何端口                    expose demo --port 8081
+```
+
+- **T1**：consumer 直接 TCP 连 `server:<public>`，每个 TCP 连接 = 一个 stream；server 经 provider 的 WS 转发字节。
+- **T2**：consumer 本地监听，每个本地连接 = 一个 mTLS WS 到 `/tunnel`，发 `{type:"connect", name:"demo"}`；server 校验成员属于该隧道团队后，把该 WS 与 provider 的 WS 桥接（复用同一 stream 数据帧协议：`[4-byte stream_id][payload]`）。
+- 两种模式**同一数据面**（provider 的 WS stream 机制），差异仅在消费端接入方式。
+
+### 9.5.3 协议
+
+复用 `tunnel.rs` 的帧协议：
+
+```
+provider → server（text 控制帧）:
+  {"type":"register","name":"demo","port":8081,"lan_ip":"192.168.1.5"}
+  {"type":"unregister","name":"demo"}
+  {"type":"close_stream","stream_id":3}
+consumer → server（text 控制帧，T2 新增）:
+  {"type":"connect","name":"demo"}
+server → 各端（text 控制帧）:
+  {"type":"registered","port":9100,"name":"demo"}
+  {"type":"open_stream","stream_id":1}
+  {"type":"error","message":"..."}
+data（binary，双向）: [4-byte BE stream_id][payload]
+```
+
+### 9.5.4 实现要点
+
+| 组件 | T1（frp，已有） | T2（本地转发，新增） |
+|---|---|---|
+| `Tunnel` 结构 | name/team/provider/port/target/lan_ip/ws_tx/streams/shutdown | 新增 `mode: Frp \| Local` |
+| `TunnelRegistry::register` | 现有 | 接受 mode；`Local` 时**不绑端口**（不 spawn `run_tcp_relay`） |
+| `handle_tunnel_ws` | register/unregister/data | 新增 `connect` 分支：校验成员 → 分配 stream → 桥接 |
+| 插件 | `exposeTunnel`（provider） | 新增 `forwardTunnel`（consumer 本地监听 + WS 桥接） |
+| 工具 | `teamx_tunnel_expose`（`--mode frp\|local`） | 新增 `teamx_tunnel_forward`（name + local-port） |
+| 持久化 | `tunnels.json`（expose 自动恢复） | 同样持久化，重启恢复 |
+
+### 9.5.5 消费端本地端口策略（T2）
+
+- 默认使用 **provider 的 target 端口**（如 8081），消费体验最自然。
+- 若本地端口被占用 → 提议**随机端口**，**需用户确认**后才监听（`teamx_tunnel_forward` 返回候选端口，确认后绑定）。
+- 监听地址默认 `127.0.0.1`（仅本机可访问），避免意外暴露消费端机器。
+
+### 9.5.6 认证与安全（T2）
+
+- consumer 的 WS 复用 server 的 mTLS（成员证书才能连接）。
+- `connect` 时 server 校验：证书成员属于该隧道所在的团队（复用 `teams_for_member`）。
+- 无二次审批/输入——证书验证通过即转发，体验如本地服务。
+- T1 保持现状（server 公开端口，TCP 裸连）；T2 是更安全的替代（server 零暴露）。
+
+### 9.5.7 里程碑
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| **T1** | frp 模式：`expose` → server 公开端口 → TCP 直连 | ✅ 已完成（`tunnel.rs` + `manual-test-tunnel.md`，e2e 通过） |
+| **T2** | 本地转发模式：`expose --mode local`（不绑端口）+ `forward`（consumer 本地 WS 桥接）+ 持久化 | 📅 待实施 |
+| **T2+** | 可选：同网段直连优化（consumer 直接连 provider，绕 server） | 📅 未来 |
+
+---
+
 ## 10. 实施里程碑
 
 > **优先路径**：先做「opencode 内嵌 serve」（形态①，N0→N4，已完成）；独立 serve（形态②，N5）列入未来计划（暂缓）。
@@ -336,6 +431,8 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 | **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）+ 两机 runbook（`docs/n4-cross-network.md`），真机待验 |
 | **N5** | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | 📅 未来计划（暂缓，见下） |
 | **N6** | `teamx_member_peek` 同机只读直连 | 📅 未来计划（暂缓，见下） |
+| **T1** | 隧道 frp 模式：`expose` → server 公开端口 → TCP 直连 | ✅ 已完成（见 §9.5） |
+| **T2** | 隧道本地转发模式：`expose --mode local` + `forward` 消费端 WS 桥接 + 持久化 | 📅 待实施（见 §9.5.7） |
 
 ### 未来计划（暂缓，本轮不做）
 
