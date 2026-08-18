@@ -8,6 +8,7 @@ mod pki;
 mod serve;
 mod state;
 mod tunnel;
+mod tunnel_client;
 
 use clap::Parser;
 use cli::{Cli, Command};

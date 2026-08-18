@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, TeamCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, TeamCmd, TunnelCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -479,19 +479,53 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
             CertCmd::Ca => cmd_cert_ca()?,
         },
-        // Tunnel commands are network-mode only: they operate on the server's
-        // in-memory tunnel registry, which is not reachable from a plain CLI
-        // invocation. The plugin performs the actual WS/relay work; here we
-        // surface a clear error so a user knows tunnels need a running server.
-        Command::Tunnel(_) => {
-            return err(
-                "tunnel commands require a running `teamx serve` server; \
-                 use the opencode plugin tools (teamx_tunnel_expose / teamx_tunnel_list / ...) \
-                 or set TEAMX_SERVER_URL and re-run through the plugin",
-            )
+        // Tunnel commands: network-mode only. `expose`/`forward` are long-lived
+        // WS clients; `list`/`status`/`close` are HTTP RPC calls.
+        Command::Tunnel(cmd) => {
+            let url = resolve_server_url(match cmd {
+                TunnelCmd::Expose { server, .. } => server.as_deref(),
+                TunnelCmd::List { server, .. } => server.as_deref(),
+                TunnelCmd::Status { server, .. } => server.as_deref(),
+                TunnelCmd::Close { server, .. } => server.as_deref(),
+                TunnelCmd::Forward { server, .. } => server.as_deref(),
+            })?;
+            let result = match cmd {
+                TunnelCmd::Expose { name, port, lan_ip, mode, .. } => {
+                    crate::tunnel_client::expose(&url, name, *port, mode, lan_ip.as_deref())
+                }
+                TunnelCmd::List { .. } => crate::tunnel_client::rpc(&url, "tunnel.list", serde_json::json!({})),
+                TunnelCmd::Status { name, .. } => {
+                    crate::tunnel_client::rpc(&url, "tunnel.status", serde_json::json!({ "name": name }))
+                }
+                TunnelCmd::Close { name, .. } => {
+                    crate::tunnel_client::rpc(&url, "tunnel.close", serde_json::json!({ "name": name }))
+                }
+                TunnelCmd::Forward { name, local_port, .. } => {
+                    crate::tunnel_client::forward(&url, name, local_port.unwrap_or(0))
+                }
+            };
+            return result.map_err(AppError);
         }
     };
     Ok(out)
+}
+
+/// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`
+/// env > auto-discovered from an imported letter > default localhost.
+fn resolve_server_url(explicit: Option<&str>) -> Result<String> {
+    if let Some(u) = explicit {
+        return Ok(u.to_string());
+    }
+    if let Ok(u) = std::env::var("TEAMX_SERVER_URL") {
+        if !u.is_empty() {
+            return Ok(u);
+        }
+    }
+    // Fall back to the letter's embedded server URL.
+    if let Some(u) = crate::tunnel_client::discover_server_url() {
+        return Ok(u);
+    }
+    Ok("https://127.0.0.1:5781".to_string())
 }
 
 // ---------------------------------------------------------------------------

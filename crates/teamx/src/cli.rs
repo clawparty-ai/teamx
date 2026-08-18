@@ -481,4 +481,19 @@ pub enum TunnelCmd {
         #[arg(long)]
         server: Option<String>,
     },
+    /// Forward a teammate's tunnel to a local port (consumer, local-forward mode).
+    Forward {
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// local port to listen on (default: provider's target port)
+        #[arg(long)]
+        local_port: Option<u16>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
 }
