@@ -10,6 +10,7 @@
 #   8. network-mode WebSocket push test
 #   9. network-mode cross-network (LAN IP) test
 #   10. network-mode reverse-tunnel test
+#   11. TEAM.md bootstrap test (teamfile-test.sh)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -68,6 +69,10 @@ if command -v bun >/dev/null 2>&1; then
 else
   echo "bun not found; skipping tunnel test"
 fi
+
+echo
+echo "== 11/11 TEAM.md bootstrap test =="
+./tests/teamfile-test.sh
 
 echo
 echo "ALL TEST SUITES PASSED"

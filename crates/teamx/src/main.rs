@@ -7,6 +7,7 @@ mod loopx;
 mod pki;
 mod serve;
 mod state;
+mod teamfile;
 mod tunnel;
 mod tunnel_client;
 

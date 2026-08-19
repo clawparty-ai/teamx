@@ -613,13 +613,167 @@ fn cmd_team_create(
         goal_id = Some(cmd_goal_set_inner(conn, &team_id, &member_id, title, goal_body)?);
     }
 
+    // TEAM.md bootstrap: if `.teamx/TEAM.md` exists in the project root, parse it
+    // and auto-initialize — set the goal (if none set yet), issue per-member
+    // invitation letters, generate member AGENTS.md and create work directories.
+    let mut teamfile_info = None;
+    if let Ok(cwd) = std::env::current_dir() {
+        match crate::teamfile::load_team_file(&cwd) {
+            Ok(Some(tf)) => {
+                let boot = bootstrap_from_teamfile(conn, &team_id, &member_id, session, &tf, goal_id.is_none())?;
+                if goal_id.is_none() {
+                    goal_id = boot.goal_id;
+                }
+                teamfile_info = Some(json!({
+                    "file": cwd.join(".teamx").join("TEAM.md").display().to_string(),
+                    "team_name": tf.team_name,
+                    "goals": tf.goals,
+                    "members": boot.members,
+                    "note": "TEAM.md detected; team bootstrapped",
+                }));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                // Invalid TEAM.md should not block team creation: surface a warning.
+                teamfile_info = Some(json!({ "error": e, "note": "TEAM.md present but could not be parsed; team created without bootstrap" }));
+            }
+        }
+    }
+
     let team = team_by_id(conn, &team_id)?;
-    Ok(json!({
+    let mut out = json!({
         "ok": true,
         "team": { "id": team.id, "name": team.name, "state": team.state, "invite_token": team.invite_token },
         "owner_member_id": member_id,
         "goal_id": goal_id,
-    }))
+    });
+    if let Some(info) = teamfile_info {
+        if let Some(o) = out.as_object_mut() {
+            o.insert("teamfile".to_string(), info);
+        }
+    }
+    Ok(out)
+}
+
+/// Result of a TEAM.md bootstrap run.
+struct BootstrapOutcome {
+    goal_id: Option<String>,
+    members: Vec<serde_json::Value>,
+}
+
+/// Parse TEAM.md and auto-initialize the team: goal (if none set), per-member
+/// invitation letters (saved + printed), member AGENTS.md, member work dirs.
+fn bootstrap_from_teamfile(
+    conn: &mut Connection,
+    team_id: &str,
+    owner_member_id: &str,
+    owner_session: &str,
+    tf: &crate::teamfile::TeamFile,
+    set_goal: bool,
+) -> Result<BootstrapOutcome> {
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let teamx_dir = cwd.join(".teamx");
+    let members_dir = teamx_dir.join("members");
+    let server_url = std::env::var("TEAMX_SERVER_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://127.0.0.1:5781".to_string());
+
+    // 1. Goal: title = team name (or first goal), body = background + goals.
+    let mut goal_id = None;
+    if set_goal {
+        let title = if !tf.team_name.is_empty() { tf.team_name.as_str() } else { "team goal" };
+        let mut body = Vec::new();
+        if let Some(b) = &tf.background {
+            body.push(b.clone());
+        }
+        for g in &tf.goals {
+            body.push(format!("- {g}"));
+        }
+        let body = if body.is_empty() { None } else { Some(body.join("\n")) };
+        goal_id = Some(cmd_goal_set_inner(conn, team_id, owner_member_id, title, body.as_deref())?);
+    }
+
+    // Project-root AGENTS.md (if present) to merge into each member's AGENTS.md.
+    let root_agents = cwd.join("AGENTS.md");
+    let root_agents_text = std::fs::read_to_string(&root_agents).ok();
+
+    // 2. Per-member bootstrap: letter + AGENTS.md + work dir.
+    let mut members = Vec::new();
+    for (i, m) in tf.members.iter().enumerate() {
+        // Skip the owner member (the creating session already owns the team).
+        let is_owner = m.role.as_deref() == Some("owner") && i == 0;
+        let role_desc = m
+            .description
+            .as_ref()
+            .map(|d| format!("{}: {}", m.role.as_deref().unwrap_or("contributor"), d))
+            .unwrap_or_else(|| m.role.clone().unwrap_or_else(|| "contributor".to_string()));
+
+        // 2a. Invitation letter (role from TEAM.md, member name as hint).
+        let mut letter_value = None;
+        let mut letter_file = None;
+        if !is_owner {
+            let inv = cmd_team_invite(conn, &role_desc, Some(&m.display_name), Some(&server_url), owner_session, Some(team_id))?;
+            let letter = inv.get("letter").and_then(|l| l.as_str()).unwrap_or("").to_string();
+            letter_value = Some(inv.clone());
+
+            // Save the letter into the member's work dir.
+            let mdir = members_dir.join(&m.key);
+            std::fs::create_dir_all(&mdir).map_err(|e| AppError(format!("mkdir {mdir:?}: {e}")))?;
+            let lp = mdir.join("invitation.letter");
+            std::fs::write(&lp, &letter).map_err(|e| AppError(format!("write letter {lp:?}: {e}")))?;
+            letter_file = Some(lp.display().to_string());
+        }
+
+        // 2b. Member AGENTS.md (project root AGENTS.md + member profile).
+        let mdir = members_dir.join(&m.key);
+        std::fs::create_dir_all(&mdir).map_err(|e| AppError(format!("mkdir {mdir:?}: {e}")))?;
+        let agents = build_member_agents(root_agents_text.as_deref(), tf, m);
+        let ap = mdir.join("AGENTS.md");
+        std::fs::write(&ap, &agents).map_err(|e| AppError(format!("write AGENTS.md {ap:?}: {e}")))?;
+
+        members.push(json!({
+            "name": m.display_name,
+            "key": m.key,
+            "role": m.role,
+            "letter": letter_value,
+            "letter_file": letter_file,
+            "agents_file": ap.display().to_string(),
+            "workdir": mdir.display().to_string(),
+        }));
+    }
+
+    Ok(BootstrapOutcome { goal_id, members })
+}
+
+/// Build a member-specific AGENTS.md by merging the project-root AGENTS.md
+/// (if any) with the member's profile from TEAM.md.
+fn build_member_agents(root_agents: Option<&str>, tf: &crate::teamfile::TeamFile, m: &crate::teamfile::MemberProfile) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("# AGENTS.md — {}（{}）\n\n", m.display_name, m.role.clone().unwrap_or_else(|| "member".to_string())));
+    if let Some(root) = root_agents {
+        if !root.trim().is_empty() {
+            s.push_str("## 来自项目根 AGENTS.md\n\n");
+            s.push_str(root.trim());
+            s.push_str("\n\n");
+        }
+    }
+    s.push_str("## 团队角色\n\n");
+    s.push_str(&format!("- 角色: {}\n", m.role.clone().unwrap_or_else(|| "member".to_string())));
+    if let Some(d) = &m.description {
+        s.push_str(&format!("- 分工: {d}\n"));
+    }
+    if !m.skills.is_empty() {
+        s.push_str(&format!("- 技能: {}\n", m.skills.join(", ")));
+    }
+    if !m.outputs.is_empty() {
+        s.push_str(&format!("- 工作输出: {}\n", m.outputs.join(", ")));
+    }
+    s.push_str("\n## 团队上下文\n\n");
+    s.push_str(&format!("- 团队: {}\n", if tf.team_name.is_empty() { "team" } else { &tf.team_name }));
+    s.push_str(&format!("- 成员目录: `.teamx/members/{}/`\n", m.key));
+    s.push_str("- 工作方式: 通过 `teamx` 工具同步进度、查阅团队事件、汇报结果。\n");
+    s
 }
 
 fn cmd_team_join(
