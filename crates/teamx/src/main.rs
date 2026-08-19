@@ -1,3 +1,4 @@
+mod activity;
 mod broadcast;
 mod cli;
 mod commands;

@@ -2166,6 +2166,16 @@ pub fn member_in_team(conn: &Connection, member_id: &str, team_id: &str) -> rusq
     Ok(n > 0)
 }
 
+/// True if the member is the owner (team lead) of the given team.
+pub fn is_team_owner(conn: &Connection, member_id: &str, team_id: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM teams WHERE id = ?1 AND owner_member_id = ?2",
+        params![team_id, member_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 fn member_json(m: &MemberRow) -> Value {
     json!({
         "id": m.id,

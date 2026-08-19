@@ -735,6 +735,81 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
                 _ => unreachable!(),
             }
         }
+        // Enterprise analytics (A1): activity write + read RPCs. Authorization:
+        //  - `activity.push`: a member may only write rows for their own member_id;
+        //    node_id/node_name must be present (audit).
+        //  - read RPCs (`summary`/`by_member`/`by_node`/`tools`/`files`/`rows`/
+        //    `human_rows`): owner sees all rows for the team; a member sees only
+        //    their own rows.
+        "activity.push" => {
+            let rows: Vec<crate::activity::ActivityRow> = args
+                .get("rows")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect())
+                .unwrap_or_default();
+            if rows.is_empty() {
+                return Err("activity.push requires non-empty `rows`".to_string());
+            }
+            for r in &rows {
+                if r.member_id != member_id {
+                    return Err(format!(
+                        "activity.push: member `{member_id}` may only write their own activity (got `{}`)",
+                        r.member_id
+                    ));
+                }
+                if r.node_id.is_empty() {
+                    return Err("activity.push: `node_id` is required (audit)".to_string());
+                }
+                if r.team_id.is_empty() {
+                    return Err("activity.push: `team_id` is required".to_string());
+                }
+                if !commands::member_in_team(conn, &member_id, &r.team_id).map_err(|e| e.to_string())? {
+                    return Err(format!(
+                        "activity.push: member `{member_id}` is not a member of team `{}`",
+                        r.team_id
+                    ));
+                }
+            }
+            let n = crate::activity::push_activities(conn, &rows).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "inserted": n }));
+        }
+        m if m.starts_with("activity.") => {
+            // Read RPCs. Resolve the target team, then enforce authorization.
+            let tid = s("team").ok_or_else(|| "activity query requires `team`".to_string())?;
+            if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+                return Err(format!("member `{member_id}` is not a member of team {tid}"));
+            }
+            let is_owner = commands::is_team_owner(conn, &member_id, &tid).map_err(|e| e.to_string())?;
+            let member = s("member");
+            // Owner: can pass any `member` filter. Member: forced to their own id.
+            let member_filter = if is_owner {
+                member
+            } else {
+                Some(member_id.clone())
+            };
+            let node = s("node");
+            let kind = s("kind");
+            let from = s("from");
+            let to = s("to");
+            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(100);
+            return match m {
+                "activity.summary" => crate::activity::summary(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                    .map_err(|e| e.to_string()),
+                "activity.by_member" => crate::activity::by_member(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                    .map_err(|e| e.to_string()),
+                "activity.by_node" => crate::activity::by_node(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                    .map_err(|e| e.to_string()),
+                "activity.tools" => crate::activity::tools(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
+                    .map_err(|e| e.to_string()),
+                "activity.files" => crate::activity::files(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
+                    .map_err(|e| e.to_string()),
+                "activity.rows" => crate::activity::rows(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref(), limit)
+                    .map_err(|e| e.to_string()),
+                "activity.human_rows" => crate::activity::human_rows(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref(), limit)
+                    .map_err(|e| e.to_string()),
+                other => return Err(format!("unknown rpc method `{other}`")),
+            };
+        }
         _ => {}
     }
 

@@ -134,6 +134,31 @@ CREATE TABLE IF NOT EXISTS invitations (
   used_at       TEXT,
   revoked_at    TEXT
 );
+
+-- enterprise analytics: per-node member activity (time/duration/tokens/cost/
+-- work content) pushed to the team lead's serve database. `node_id` is the
+-- source machine's instance_id; sensitive fields are kept in full (audit).
+CREATE TABLE IF NOT EXISTS activity (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id          TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  member_id        TEXT NOT NULL,
+  node_id          TEXT NOT NULL,
+  node_name        TEXT,
+  started_at       TEXT NOT NULL,
+  ended_at         TEXT,
+  duration_ms      INTEGER,
+  kind             TEXT NOT NULL,
+  detail           TEXT,
+  tokens_input     INTEGER,
+  tokens_output    INTEGER,
+  tokens_reasoning INTEGER,
+  cost             REAL,
+  has_human        INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_team_time ON activity(team_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_activity_member_time ON activity(member_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_activity_node ON activity(node_id);
 ";
 
 /// Apply the schema (idempotent) + migrations.
@@ -201,7 +226,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 5)?;
+    conn.pragma_update(None, "user_version", 6)?;
     Ok(())
 }
 
