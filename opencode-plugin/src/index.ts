@@ -21,6 +21,7 @@ import {
 } from "./client"
 import { tools } from "./tools"
 import { connectWs } from "./ws"
+import { collect, initActivity } from "./activity"
 import { t } from "./i18n"
 
 const LOG_SERVICE = "teamx"
@@ -45,6 +46,50 @@ type SyncData = { teams?: TeamBlock[]; new_events?: SyncEvent[] }
 function shorten(s: string, max = 40): string {
   const flat = (s ?? "").replace(/\s+/g, " ").trim()
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat
+}
+
+/** Current UTC time as an RFC3339 string. */
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+// ---------------------------------------------------------------------------
+// A3 work_session tracking: the idle→idle gap is one "work segment". A segment
+// is closed when the session goes idle; if any human activity (input, approval,
+// command) happened inside it, has_human is set. Uses a module-level map so
+// multiple sessions are tracked independently.
+// ---------------------------------------------------------------------------
+const workSegments = new Map<string, { startedAt: string; hasHuman: boolean }>()
+
+/** Record human activity inside the current work segment (if any). */
+function markHuman(sessionID: string | undefined): void {
+  if (!sessionID) return
+  const seg = workSegments.get(sessionID)
+  if (seg) seg.hasHuman = true
+}
+
+/**
+ * Close the current work segment for a session and emit a `work_session`
+ * activity row (started_at = segment start, ended_at = now, duration_ms =
+ * elapsed). If no segment is open (e.g. idle fired without a prior busy turn),
+ * nothing is emitted.
+ */
+function closeWorkSegment(sessionID: string, now: string): void {
+  const seg = workSegments.get(sessionID)
+  workSegments.delete(sessionID)
+  if (!seg) return
+  const startMs = Date.parse(seg.startedAt)
+  const endMs = Date.parse(now)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return
+  collect({
+    node_id: instanceId(),
+    started_at: seg.startedAt,
+    ended_at: now,
+    duration_ms: endMs - startMs,
+    kind: "work_session",
+    detail: { sessionID },
+    has_human: seg.hasHuman,
+  })
 }
 
 /** Session idle mirrors are pure noise; filter them out of digests/toasts. */
@@ -185,6 +230,17 @@ export function shouldAutoExecute(opts: {
 
 export const Teamx: Plugin = async ({ client }) => {
   const instance = instanceId()
+
+  // Enable the enterprise activity collector. The flush path needs a session
+  // key to attribute rows in V1 local mode; network mode uses the mTLS cert.
+  initActivity({
+    sessionKey: () => sessionKey(instance, currentSessionID),
+    log: (level, message, extra) => log(level, message, extra),
+  })
+
+  // The most recent session id seen by the event hook, used as the fallback
+  // session for activity flushes (V1 local mode).
+  let currentSessionID: string | undefined
 
   const log = (
     level: "debug" | "info" | "warn" | "error",
@@ -382,43 +438,182 @@ export const Teamx: Plugin = async ({ client }) => {
     tool: tools,
 
     event: async ({ event }) => {
-      // Mirror session activity into the team ledger. Membership is checked
-      // once per session and cached so non-member sessions never trigger a
-      // `teamx` subprocess again.
-      if (event.type !== "session.idle") return
       const props = event.properties as Record<string, unknown> | undefined
-      const sessionID = props?.sessionID as string | undefined
-      if (!sessionID) return
+      const sessionID = (props?.sessionID as string | undefined) ?? (props?.session_id as string | undefined)
+      if (sessionID) currentSessionID = sessionID
 
-      let isMember = memberStatus(sessionID)
-      // Resolve owner status independently of the membership cache. The
-      // membership cache may already be populated (e.g. after using a teamx
-      // tool), which used to skip this block and leave ownerSessions empty,
-      // letting the owner's own broadcasts auto-execute on itself.
-      if (isMember === undefined || !ownerSessions.has(sessionID)) {
+      // ---- Enterprise activity collection (A2): record work + human actions.
+      // Collected for member sessions only; the flush path handles both modes.
+      const record = (row: Parameters<typeof collect>[0]) => {
+        // Non-member sessions are skipped (cache check; resolved lazily below).
+        if (isMember !== true) return
+        collect(row)
+      }
+
+      // Membership: only resolve once per session (cached). Unknown sessions
+      // trigger a one-time `team list` to decide.
+      let isMember = sessionID ? memberStatus(sessionID) : undefined
+      if (sessionID && (isMember === undefined || !ownerSessions.has(sessionID))) {
         const key = sessionKey(instance, sessionID)
         const r = await runCli(["team", "list", "--session", key])
         const teams = r.data?.teams as { my_role?: string }[] | undefined
         isMember = r.ok && Array.isArray(teams) && teams.length > 0
         markMember(sessionID, isMember)
-        // An owner's own broadcasts shouldn't auto-execute on itself.
         const isOwner = r.ok && Array.isArray(teams) && teams.some((t) => t.my_role === "owner")
         ownerSessions.set(sessionID, isOwner)
         if (isMember) refreshDigest(sessionID).catch(() => {})
       }
-      if (!isMember) return
 
-      const r = await runCli([
-        "publish",
-        "activity",
-        "--data",
-        JSON.stringify({ kind: "session.idle" }),
-        "--session",
-        sessionKey(instance, sessionID),
-      ])
-      if (!r.ok) {
-        log("debug", "activity publish failed", { sessionID, stderr: r.stderr })
+      switch (event.type) {
+        case "session.idle": {
+          if (!sessionID || isMember !== true) return
+          // Keep the V1 heartbeat publish (existing behavior).
+          const r = await runCli([
+            "publish",
+            "activity",
+            "--data",
+            JSON.stringify({ kind: "session.idle" }),
+            "--session",
+            sessionKey(instance, sessionID),
+          ])
+          if (!r.ok) {
+            log("debug", "activity publish failed", { sessionID, stderr: r.stderr })
+          }
+          // A3 work_session: close the previous work segment now that the
+          // session is idle; the segment's has_human flag is set by any human
+          // activity that happened inside it (see closeWorkSegment).
+          closeWorkSegment(sessionID, nowIso())
+          return
+        }
+
+        case "session.status": {
+          if (!sessionID || isMember !== true) return
+          const status = (props?.status as Record<string, unknown> | undefined)?.type
+          if (status === "busy" && !workSegments.has(sessionID)) {
+            // A turn is starting: open a work segment. Its end is the next
+            // session.idle (closeWorkSegment).
+            workSegments.set(sessionID, { startedAt: nowIso(), hasHuman: false })
+          }
+          return
+        }
+
+        case "message.part.updated": {
+          if (isMember !== true) return
+          const part = props?.part as Record<string, unknown> | undefined
+          if (!part) return
+          const started = nowIso()
+          if (part.type === "tool") {
+            const state = (part.state ?? {}) as Record<string, unknown>
+            const input = state.input ?? {}
+            const status = state.status ?? "unknown"
+            const time = state.time as { start?: number; end?: number } | undefined
+            const durationMs = time?.start && time?.end ? time.end - time.start : undefined
+            record({
+              node_id: instance,
+              started_at: time?.start ? new Date(time.start).toISOString() : started,
+              duration_ms: durationMs,
+              kind: "tool_call",
+              detail: { tool: part.tool, state: status, arguments: input },
+            })
+          } else if (part.type === "step-finish") {
+            const tokens = (part.tokens ?? {}) as Record<string, unknown> | undefined
+            const cache = (tokens?.cache ?? {}) as Record<string, unknown> | undefined
+            const ti = (tokens?.input as number) ?? undefined
+            const to = (tokens?.output as number) ?? undefined
+            const tr = (tokens?.reasoning as number) ?? undefined
+            record({
+              node_id: instance,
+              started_at: started,
+              kind: "step_finish",
+              detail: { reason: (part.reason as string) ?? undefined },
+              tokens_input: ti,
+              tokens_output: to,
+              tokens_reasoning: tr,
+              cost: (part.cost as number) ?? undefined,
+              // Note: input/output include cached read tokens for accounting.
+              ...(cache && {
+                detail: {
+                  reason: (part.reason as string) ?? undefined,
+                  cache_read: (cache.read as number) ?? undefined,
+                  cache_write: (cache.write as number) ?? undefined,
+                },
+              }),
+            })
+          }
+          return
+        }
+
+        case "command.executed": {
+          if (isMember !== true) return
+          record({
+            node_id: instance,
+            started_at: nowIso(),
+            kind: "command",
+            detail: { name: (props?.name as string) ?? undefined, args: (props?.arguments as string) ?? undefined },
+          })
+          return
+        }
+
+        case "file.edited": {
+          if (isMember !== true) return
+          record({
+            node_id: instance,
+            started_at: nowIso(),
+            kind: "file_edit",
+            detail: { file: (props?.file as string) ?? undefined },
+          })
+          return
+        }
+
+        case "permission.replied": {
+          if (isMember !== true) return
+          record({
+            node_id: instance,
+            started_at: nowIso(),
+            kind: "human_approval",
+            detail: {
+              permissionID: (props?.permissionID as string) ?? undefined,
+              response: (props?.response as string) ?? undefined,
+            },
+          })
+          markHuman(sessionID)
+          return
+        }
+
+        case "tui.command.execute": {
+          if (isMember !== true) return
+          record({
+            node_id: instance,
+            started_at: nowIso(),
+            kind: "human_command",
+            detail: { name: (props?.command as string) ?? undefined },
+          })
+          markHuman(sessionID)
+          return
+        }
+
+        default:
+          return
       }
+    },
+
+    // Human input: the chat.message hook fires when a user message arrives,
+    // with the full UserMessage + parts (text). This is the "human actually
+    // did X" signal.
+    "chat.message": async ({ sessionID }, { message, parts }) => {
+      if (!sessionID || memberStatus(sessionID) !== true) return
+      currentSessionID = sessionID
+      const texts = (parts ?? [])
+        .filter((p) => p.type === "text")
+        .map((p) => (p as { text?: string }).text ?? "")
+        .join("\n")
+      collect({
+        node_id: instance,
+        started_at: nowIso(),
+        kind: "human_input",
+        detail: { sessionID, text: texts || undefined },
+      })
+      markHuman(sessionID)
     },
 
     "experimental.chat.system.transform": async ({ sessionID }, { system }) => {
@@ -433,6 +628,8 @@ export const Teamx: Plugin = async ({ client }) => {
       if (refreshTimer) clearTimeout(refreshTimer)
       wsHandle?.close()
       for (const h of restoredTunnelHandles) h.close()
+      const { drain } = await import("./activity")
+      drain()
     },
   }
 }

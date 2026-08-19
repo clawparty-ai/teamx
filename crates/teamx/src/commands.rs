@@ -506,8 +506,83 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             };
             return result.map_err(AppError);
         }
+        // Member activity analytics (enterprise). V1 local mode: `activity push`
+        // writes to the local DB (resolving member_id from the session key);
+        // `activity query` reads from it. Network mode goes through the RPC
+        // dispatch in serve.rs instead.
+        Command::Activity(cmd) => match cmd {
+            crate::cli::ActivityCmd::Push { data, session } => {
+                let rows: Vec<crate::activity::ActivityRow> = serde_json::from_str(data)
+                    .map_err(|e| AppError(format!("activity.push: invalid `data` JSON: {e}")))?;
+                if rows.is_empty() {
+                    return err("activity.push requires non-empty `data` array");
+                }
+                let members = memberships_for_session(conn, session)
+                    .map_err(|e| AppError(format!("activity.push: {e}")))?;
+                if members.is_empty() {
+                    return err(format!("activity.push: session `{session}` is not a member of any team"));
+                }
+                let team_ids: Vec<&str> = members.iter().map(|m| m.team_id.as_str()).collect();
+                let node_id = crate::db::instance_id();
+                let node_name = hostname();
+                let mut out = Vec::new();
+                for r in &rows {
+                    let mut row = r.clone();
+                    // Auto-fill team_id from the session's single team when the
+                    // plugin omitted it (mirrors the serve RPC behavior).
+                    if row.team_id.is_empty() {
+                        if team_ids.len() != 1 {
+                            return err(format!(
+                                "activity.push: `team_id` required (session `{session}` belongs to {} teams)",
+                                team_ids.len()
+                            ));
+                        }
+                        row.team_id = team_ids[0].to_string();
+                    }
+                    if !team_ids.contains(&row.team_id.as_str()) {
+                        return err(format!(
+                            "activity.push: session `{session}` is not a member of team `{}`",
+                            row.team_id
+                        ));
+                    }
+                    let member = members
+                        .iter()
+                        .find(|m| m.team_id == row.team_id)
+                        .map(|m| m.id.clone())
+                        .unwrap_or_default();
+                    row.member_id = member;
+                    if row.node_id.is_empty() {
+                        row.node_id = node_id.clone();
+                    }
+                    if row.node_name.is_none() {
+                        row.node_name = Some(node_name.clone());
+                    }
+                    out.push(row);
+                }
+                let n = crate::activity::push_activities(conn, &out)
+                    .map_err(|e| AppError(format!("activity.push failed: {e}")))?;
+                json!({ "ok": true, "inserted": n })
+            }
+            crate::cli::ActivityCmd::Query(q) => match q {
+                crate::cli::ActivityQueryCmd::Summary { team, from, to } => {
+                    crate::activity::summary(conn, team, None, None, None, from.as_deref(), to.as_deref())
+                        .map_err(|e| AppError(e.to_string()))?
+                }
+                crate::cli::ActivityQueryCmd::Rows { team, from, to, member, kind, limit } => {
+                    crate::activity::rows(conn, team, member.as_deref(), None, kind.as_deref(), from.as_deref(), to.as_deref(), *limit)
+                        .map_err(|e| AppError(e.to_string()))?
+                }
+            },
+        },
     };
     Ok(out)
+}
+
+/// The machine hostname (best-effort; fallback "unknown").
+fn hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 /// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`

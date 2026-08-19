@@ -750,18 +750,27 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             if rows.is_empty() {
                 return Err("activity.push requires non-empty `rows`".to_string());
             }
-            for r in &rows {
-                if r.member_id != member_id {
-                    return Err(format!(
-                        "activity.push: member `{member_id}` may only write their own activity (got `{}`)",
-                        r.member_id
-                    ));
+            // The certificate identity is authoritative for member_id: whatever
+            // the client claims, the row is attributed to the cert CN member.
+            let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+            if teams.is_empty() {
+                return Err(format!("activity.push: member `{member_id}` has no active team"));
+            }
+            let mut rows = rows;
+            for r in &mut rows {
+                r.member_id = member_id.clone();
+                if r.team_id.is_empty() {
+                    // Only auto-fill when the member belongs to exactly one team.
+                    if teams.len() != 1 {
+                        return Err(format!(
+                            "activity.push: `team_id` required (member belongs to {} teams)",
+                            teams.len()
+                        ));
+                    }
+                    r.team_id = teams[0].clone();
                 }
                 if r.node_id.is_empty() {
                     return Err("activity.push: `node_id` is required (audit)".to_string());
-                }
-                if r.team_id.is_empty() {
-                    return Err("activity.push: `team_id` is required".to_string());
                 }
                 if !commands::member_in_team(conn, &member_id, &r.team_id).map_err(|e| e.to_string())? {
                     return Err(format!(

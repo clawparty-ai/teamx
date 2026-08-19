@@ -128,6 +128,55 @@ pub enum Command {
     /// Reverse tunnels (network mode): expose a local service to teammates
     #[command(subcommand)]
     Tunnel(TunnelCmd),
+
+    /// Member activity analytics (enterprise): push/query activity rows
+    #[command(subcommand)]
+    Activity(ActivityCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityCmd {
+    /// Push a batch of activity rows into the local database (V1 mode)
+    Push {
+        /// JSON array of activity rows (ActivityRow[]), each with team_id,
+        /// member_id, node_id, node_name, started_at, kind, detail, tokens, cost...
+        #[arg(long)]
+        data: String,
+        /// actor session key (resolves member_id in V1 local mode)
+        #[arg(long)]
+        session: String,
+    },
+    /// Query activity from the local database (V1 mode)
+    #[command(subcommand)]
+    Query(ActivityQueryCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityQueryCmd {
+    /// Aggregate overview for a team
+    Summary {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Recent activity rows
+    Rows {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: i64,
+    },
 }
 
 #[derive(Args, Debug, Clone)]

@@ -12,7 +12,15 @@ use serde_json::{json, Value};
 /// A single activity row, as sent by a member plugin (V1 push) or queried.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ActivityRow {
+    /// Team the activity belongs to. Omitted by the plugin in network mode
+    /// (serve fills it from the member's single team) and in V1 local mode
+    /// (CLI fills it from the session's team). Required when ambiguous.
+    #[serde(default)]
     pub team_id: String,
+    /// Member the activity is attributed to. Omitted by the plugin; the serve
+    /// RPC and the V1 local CLI both resolve it from the authenticated
+    /// identity / session key.
+    #[serde(default)]
     pub member_id: String,
     pub node_id: String,
     #[serde(default)]
@@ -23,8 +31,10 @@ pub struct ActivityRow {
     #[serde(default)]
     pub duration_ms: Option<i64>,
     pub kind: String,
+    /// JSON detail (tool/command args, user message text). Accepts an object
+    /// (serialized on insert) or a pre-serialized JSON string.
     #[serde(default)]
-    pub detail: Option<String>,
+    pub detail: Option<Value>,
     #[serde(default)]
     pub tokens_input: Option<i64>,
     #[serde(default)]
@@ -61,6 +71,8 @@ pub fn push_activities(conn: &mut Connection, rows: &[ActivityRow]) -> rusqlite:
             let mut stmt = tx.prepare(ActivityRow::INSERT)?;
             for row in rows {
                 let now = crate::db::now();
+                let detail = row.detail.as_ref().map(|v| v.to_string());
+                let has_human = row.has_human.map(|h| if h { 1i64 } else { 0i64 }).unwrap_or(0);
                 stmt.execute(params![
                     row.team_id,
                     row.member_id,
@@ -70,12 +82,12 @@ pub fn push_activities(conn: &mut Connection, rows: &[ActivityRow]) -> rusqlite:
                     row.ended_at,
                     row.duration_ms,
                     row.kind,
-                    row.detail,
+                    detail,
                     row.tokens_input,
                     row.tokens_output,
                     row.tokens_reasoning,
                     row.cost,
-                    row.has_human,
+                    has_human,
                     now,
                 ])?;
                 inserted += 1;
@@ -84,11 +96,6 @@ pub fn push_activities(conn: &mut Connection, rows: &[ActivityRow]) -> rusqlite:
         Ok(())
     })?;
     Ok(inserted)
-}
-
-/// Parse an RFC3339 timestamp into epoch millis (for duration math).
-pub fn parse_ts(ts: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp_millis())
 }
 
 /// Build a `WHERE` fragment (with bindable params) from optional filters.
@@ -285,6 +292,7 @@ pub fn files(conn: &Connection, team: &str, member: Option<&str>, node: Option<&
 }
 
 /// Detail rows (recent activity list), newest first, optional limit.
+#[allow(clippy::too_many_arguments)]
 pub fn rows(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
     let f = filter(Some(team), member, node, kind, from, to);
     let limit = limit.clamp(1, 1000);
@@ -403,14 +411,14 @@ mod tests {
     fn push_and_query_summary() {
         let mut conn = test_conn();
         seed_team(&conn, "t1", "m1");
-        let mut rows = vec![base_row("t1", "m1", "tool_call")];
-        rows[0].detail = Some(r#"{"tool":"bash","state":"completed"}"#.to_string());
+        let mut rows = [base_row("t1", "m1", "tool_call")];
+        rows[0].detail = Some(serde_json::json!({"tool":"bash","state":"completed"}));
         rows[0].tokens_input = Some(100);
         rows[0].tokens_output = Some(50);
         rows[0].cost = Some(0.01);
         rows[0].started_at = "2026-08-19T10:00:00Z".to_string();
         let mut h = base_row("t1", "m1", "human_input");
-        h.detail = Some(r#"{"sessionID":"s1","text":"fix the bug"}"#.to_string());
+        h.detail = Some(serde_json::json!({"sessionID":"s1","text":"fix the bug"}));
         h.started_at = "2026-08-19T11:00:00Z".to_string();
         push_activities(&mut conn, &[rows[0].clone(), h]).unwrap();
 
@@ -443,15 +451,15 @@ mod tests {
         let mut conn = test_conn();
         seed_team(&conn, "t1", "m1");
         let mut t1 = base_row("t1", "m1", "tool_call");
-        t1.detail = Some(r#"{"tool":"bash","state":"completed"}"#.to_string());
+        t1.detail = Some(serde_json::json!({"tool":"bash","state":"completed"}));
         let mut t2 = base_row("t1", "m1", "tool_call");
-        t2.detail = Some(r#"{"tool":"bash","state":"completed"}"#.to_string());
+        t2.detail = Some(serde_json::json!({"tool":"bash","state":"completed"}));
         let mut t3 = base_row("t1", "m1", "tool_call");
-        t3.detail = Some(r#"{"tool":"edit","state":"completed"}"#.to_string());
+        t3.detail = Some(serde_json::json!({"tool":"edit","state":"completed"}));
         let mut f1 = base_row("t1", "m1", "file_edit");
-        f1.detail = Some(r#"{"file":"src/main.rs"}"#.to_string());
+        f1.detail = Some(serde_json::json!({"file":"src/main.rs"}));
         let mut f2 = base_row("t1", "m1", "file_edit");
-        f2.detail = Some(r#"{"file":"src/main.rs"}"#.to_string());
+        f2.detail = Some(serde_json::json!({"file":"src/main.rs"}));
         push_activities(&mut conn, &[t1, t2, t3, f1, f2]).unwrap();
 
         let tools = tools(&conn, "t1", None, None, None, None).unwrap();
@@ -470,10 +478,10 @@ mod tests {
         let mut conn = test_conn();
         seed_team(&conn, "t1", "m1");
         let mut a = base_row("t1", "m1", "tool_call");
-        a.detail = Some(r#"{"tool":"bash"}"#.to_string());
+        a.detail = Some(serde_json::json!({"tool":"bash"}));
         a.started_at = "2026-08-19T10:00:00Z".to_string();
         let mut b = base_row("t1", "m1", "human_command");
-        b.detail = Some(r#"{"name":"/team","args":"status"}"#.to_string());
+        b.detail = Some(serde_json::json!({"name":"/team","args":"status"}));
         b.started_at = "2026-08-19T11:00:00Z".to_string();
         push_activities(&mut conn, &[a, b]).unwrap();
 

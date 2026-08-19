@@ -24,8 +24,7 @@ pub fn default_db_path() -> PathBuf {
 }
 
 /// Open (creating if needed) the SQLite DB with WAL, busy timeout and FKs.
-pub fn open(db_path: &Path) -> rusqlite::Result<Connection> {
-    if let Some(dir) = db_path.parent() {
+pub fn open(db_path: &Path) -> rusqlite::Result<Connection> {    if let Some(dir) = db_path.parent() {
         fs::create_dir_all(dir).ok();
     }
     let conn = Connection::open(db_path)?;
@@ -34,6 +33,25 @@ pub fn open(db_path: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)
+}
+
+/// The stable per-machine instance id, persisted at `~/.teamx/instance.json`
+/// (same file the plugin uses). Created on first use.
+pub fn instance_id() -> String {
+    let file = teamx_home().join("instance.json");
+    if let Ok(raw) = std::fs::read_to_string(&file) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(id) = v.get("instance_id").and_then(|x| x.as_str()) {
+                if !id.is_empty() {
+                    return id.to_string();
+                }
+            }
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    std::fs::create_dir_all(teamx_home()).ok();
+    let _ = std::fs::write(&file, format!("{{\n  \"instance_id\": \"{id}\"\n}}\n"));
+    id
 }
 
 const SCHEMA: &str = "
