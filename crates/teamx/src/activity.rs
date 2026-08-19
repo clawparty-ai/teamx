@@ -291,6 +291,40 @@ pub fn files(conn: &Connection, team: &str, member: Option<&str>, node: Option<&
     Ok(json!(out))
 }
 
+/// Timeline / Gantt data for a team: work segments (work_session rows with
+/// started_at + ended_at + duration_ms) plus point-in-time events (tool_call,
+/// step_finish, command, file_edit, human_*) — all grouped per member, ordered
+/// by start time. Used by the `Timeline` (Gantt) view of the dashboard.
+pub fn timeline(conn: &Connection, team: &str, member: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(Some(team), member, None, None, from, to);
+    let q = format!(
+        "SELECT member_id, node_name, kind, started_at, ended_at, duration_ms, detail, tokens_input, tokens_output, tokens_reasoning, cost \
+         FROM activity WHERE {} ORDER BY started_at ASC",
+        f.sql
+    );
+    let mut stmt = conn.prepare(&q)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(f.params.iter().map(Value::as_str)), |r| {
+        Ok(json!({
+            "member_id": r.get::<_, String>(0)?,
+            "node_name": r.get::<_, Option<String>>(1)?,
+            "kind": r.get::<_, String>(2)?,
+            "started_at": r.get::<_, String>(3)?,
+            "ended_at": r.get::<_, Option<String>>(4)?,
+            "duration_ms": r.get::<_, Option<i64>>(5)?,
+            "detail": r.get::<_, Option<String>>(6)?,
+            "tokens_input": r.get::<_, Option<i64>>(7)?,
+            "tokens_output": r.get::<_, Option<i64>>(8)?,
+            "tokens_reasoning": r.get::<_, Option<i64>>(9)?,
+            "cost": r.get::<_, Option<f64>>(10)?,
+        }))
+    })?;
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row?);
+    }
+    Ok(json!(items))
+}
+
 /// Detail rows (recent activity list), newest first, optional limit.
 #[allow(clippy::too_many_arguments)]
 pub fn rows(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
