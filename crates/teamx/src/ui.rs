@@ -144,7 +144,7 @@ fn page_html() -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>teamx · team activity</title>
+<title>Teamx Enterprise</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #f6f8fa; }
