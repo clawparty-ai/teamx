@@ -110,16 +110,22 @@ fn filter(team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Op
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
     if let Some(t) = team {
-        clauses.push("team_id = ?".to_string());
-        params.push(json!(t));
+        if !t.is_empty() {
+            clauses.push("team_id = ?".to_string());
+            params.push(json!(t));
+        }
     }
     if let Some(m) = member {
-        clauses.push("member_id = ?".to_string());
-        params.push(json!(m));
+        if !m.is_empty() {
+            clauses.push("member_id = ?".to_string());
+            params.push(json!(m));
+        }
     }
     if let Some(n) = node {
-        clauses.push("node_id = ?".to_string());
-        params.push(json!(n));
+        if !n.is_empty() {
+            clauses.push("node_id = ?".to_string());
+            params.push(json!(n));
+        }
     }
     if let Some(k) = kind {
         clauses.push("kind = ?".to_string());
@@ -143,8 +149,8 @@ fn filter(team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Op
 
 /// Aggregate overview for a team + filters: totals for duration/tokens/cost,
 /// active member/node counts, and human-vs-ai distribution.
-pub fn summary(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, kind, from, to);
+pub fn summary(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, kind, from, to);
     // One-row aggregate helper: returns {duration_ms,cost,tokens_*,count}.
     let aggregate = |extra_clause: &str| -> rusqlite::Result<Value> {
         let q = format!(
@@ -181,7 +187,7 @@ pub fn summary(conn: &Connection, team: &str, member: Option<&str>, node: Option
     let members = count_distinct("member_id")?;
     let nodes = count_distinct("node_id")?;
     Ok(json!({
-        "team_id": team,
+        "team_id": team.unwrap_or_default(),
         "overall": overall,
         "human": human,
         "ai": ai,
@@ -191,8 +197,8 @@ pub fn summary(conn: &Connection, team: &str, member: Option<&str>, node: Option
 }
 
 /// Per-member aggregates (duration/tokens/cost + counts), for a team.
-pub fn by_member(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, kind, from, to);
+pub fn by_member(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, kind, from, to);
     let q = format!(
         "SELECT member_id, SUM(duration_ms), SUM(cost), SUM(tokens_input), SUM(tokens_output), SUM(tokens_reasoning), COUNT(*) \
          FROM activity WHERE {} GROUP BY member_id ORDER BY COUNT(*) DESC",
@@ -218,8 +224,8 @@ pub fn by_member(conn: &Connection, team: &str, member: Option<&str>, node: Opti
 }
 
 /// Per-node aggregates for a team.
-pub fn by_node(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, kind, from, to);
+pub fn by_node(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, kind, from, to);
     let q = format!(
         "SELECT node_id, MAX(node_name), SUM(duration_ms), SUM(cost), SUM(tokens_input), SUM(tokens_output), SUM(tokens_reasoning), COUNT(*) \
          FROM activity WHERE {} GROUP BY node_id ORDER BY COUNT(*) DESC",
@@ -247,8 +253,8 @@ pub fn by_node(conn: &Connection, team: &str, member: Option<&str>, node: Option
 
 /// Tool-call distribution (top N by count), for a team. Reads `kind = 'tool_call'`
 /// rows and counts distinct tool names from the JSON detail.
-pub fn tools(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, Some("tool_call"), from, to);
+pub fn tools(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, Some("tool_call"), from, to);
     let q = format!("SELECT detail FROM activity WHERE {}", f.sql);
     let mut stmt = conn.prepare(&q)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(f.params.iter().map(Value::as_str)), |r| r.get::<_, String>(0))?;
@@ -270,8 +276,8 @@ pub fn tools(conn: &Connection, team: &str, member: Option<&str>, node: Option<&
 
 /// File-edit distribution (top N by count), for a team. Reads `kind = 'file_edit'`
 /// rows and counts distinct file paths from the JSON detail.
-pub fn files(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, Some("file_edit"), from, to);
+pub fn files(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, Some("file_edit"), from, to);
     let q = format!("SELECT detail FROM activity WHERE {}", f.sql);
     let mut stmt = conn.prepare(&q)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(f.params.iter().map(Value::as_str)), |r| r.get::<_, String>(0))?;
@@ -295,8 +301,8 @@ pub fn files(conn: &Connection, team: &str, member: Option<&str>, node: Option<&
 /// started_at + ended_at + duration_ms) plus point-in-time events (tool_call,
 /// step_finish, command, file_edit, human_*) — all grouped per member, ordered
 /// by start time. Used by the `Timeline` (Gantt) view of the dashboard.
-pub fn timeline(conn: &Connection, team: &str, member: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, None, None, from, to);
+pub fn timeline(conn: &Connection, team: Option<&str>, member: Option<&str>, from: Option<&str>, to: Option<&str>) -> rusqlite::Result<Value> {
+    let f = filter(team, member, None, None, from, to);
     let q = format!(
         "SELECT member_id, node_name, kind, started_at, ended_at, duration_ms, detail, tokens_input, tokens_output, tokens_reasoning, cost \
          FROM activity WHERE {} ORDER BY started_at ASC",
@@ -327,8 +333,8 @@ pub fn timeline(conn: &Connection, team: &str, member: Option<&str>, from: Optio
 
 /// Detail rows (recent activity list), newest first, optional limit.
 #[allow(clippy::too_many_arguments)]
-pub fn rows(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, kind, from, to);
+pub fn rows(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, kind: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, kind, from, to);
     let limit = limit.clamp(1, 1000);
     let q = format!(
         "SELECT id, team_id, member_id, node_id, node_name, started_at, ended_at, duration_ms, kind, detail, tokens_input, tokens_output, tokens_reasoning, cost, has_human, created_at \
@@ -365,8 +371,8 @@ pub fn rows(conn: &Connection, team: &str, member: Option<&str>, node: Option<&s
 
 /// Human activity (human_input / human_approval / human_command) rows, for
 /// answering "what did the human actually do". Newest first.
-pub fn human_rows(conn: &Connection, team: &str, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
-    let f = filter(Some(team), member, node, None, from, to);
+pub fn human_rows(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
+    let f = filter(team, member, node, None, from, to);
     let limit = limit.clamp(1, 1000);
     let q = format!(
         "SELECT id, member_id, node_id, node_name, started_at, kind, detail \
@@ -456,7 +462,7 @@ mod tests {
         h.started_at = "2026-08-19T11:00:00Z".to_string();
         push_activities(&mut conn, &[rows[0].clone(), h]).unwrap();
 
-        let s = summary(&conn, "t1", None, None, None, None, None).unwrap();
+        let s = summary(&conn, Some("t1"), None, None, None, None, None).unwrap();
         assert_eq!(s["overall"]["count"], 2);
         assert_eq!(s["overall"]["tokens_input"], 100);
         assert_eq!(s["overall"]["tokens_output"], 50);
@@ -476,7 +482,7 @@ mod tests {
         seed_team(&conn, "t1", "m1");
         let r = base_row("t1", "m2", "tool_call");
         push_activities(&mut conn, &[r]).unwrap();
-        let s = summary(&conn, "t1", None, None, None, None, None).unwrap();
+        let s = summary(&conn, Some("t1"), None, None, None, None, None).unwrap();
         assert_eq!(s["overall"]["count"], 1);
     }
 
@@ -496,13 +502,13 @@ mod tests {
         f2.detail = Some(serde_json::json!({"file":"src/main.rs"}));
         push_activities(&mut conn, &[t1, t2, t3, f1, f2]).unwrap();
 
-        let tools = tools(&conn, "t1", None, None, None, None).unwrap();
+        let tools = tools(&conn, Some("t1"), None, None, None, None).unwrap();
         assert_eq!(tools[0]["tool"], "bash");
         assert_eq!(tools[0]["count"], 2);
         assert_eq!(tools[1]["tool"], "edit");
         assert_eq!(tools[1]["count"], 1);
 
-        let files = files(&conn, "t1", None, None, None, None).unwrap();
+        let files = files(&conn, Some("t1"), None, None, None, None).unwrap();
         assert_eq!(files[0]["file"], "src/main.rs");
         assert_eq!(files[0]["count"], 2);
     }
@@ -519,11 +525,11 @@ mod tests {
         b.started_at = "2026-08-19T11:00:00Z".to_string();
         push_activities(&mut conn, &[a, b]).unwrap();
 
-        let rows = rows(&conn, "t1", None, None, None, None, None, 10).unwrap();
+        let rows = rows(&conn, Some("t1"), None, None, None, None, None, 10).unwrap();
         assert_eq!(rows.as_array().unwrap().len(), 2);
         assert_eq!(rows[0]["kind"], "human_command"); // newest first
 
-        let h = human_rows(&conn, "t1", None, None, None, None, 10).unwrap();
+        let h = human_rows(&conn, Some("t1"), None, None, None, None, 10).unwrap();
         assert_eq!(h.as_array().unwrap().len(), 1);
         assert_eq!(h[0]["kind"], "human_command");
     }

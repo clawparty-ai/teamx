@@ -802,19 +802,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             let to = s("to");
             let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(100);
             return match m {
-                "activity.summary" => crate::activity::summary(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                "activity.summary" => crate::activity::summary(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
                     .map_err(|e| e.to_string()),
-                "activity.by_member" => crate::activity::by_member(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                "activity.by_member" => crate::activity::by_member(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
                     .map_err(|e| e.to_string()),
-                "activity.by_node" => crate::activity::by_node(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
+                "activity.by_node" => crate::activity::by_node(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref())
                     .map_err(|e| e.to_string()),
-                "activity.tools" => crate::activity::tools(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
+                "activity.tools" => crate::activity::tools(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
                     .map_err(|e| e.to_string()),
-                "activity.files" => crate::activity::files(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
+                "activity.files" => crate::activity::files(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref())
                     .map_err(|e| e.to_string()),
-                "activity.rows" => crate::activity::rows(conn, &tid, member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref(), limit)
+                "activity.rows" => crate::activity::rows(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), kind.as_deref(), from.as_deref(), to.as_deref(), limit)
                     .map_err(|e| e.to_string()),
-                "activity.human_rows" => crate::activity::human_rows(conn, &tid, member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref(), limit)
+                "activity.human_rows" => crate::activity::human_rows(conn, Some(&tid), member_filter.as_deref(), node.as_deref(), from.as_deref(), to.as_deref(), limit)
                     .map_err(|e| e.to_string()),
                 other => return Err(format!("unknown rpc method `{other}`")),
             };

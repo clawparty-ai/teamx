@@ -571,11 +571,11 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
             crate::cli::ActivityCmd::Query(q) => match q {
                 crate::cli::ActivityQueryCmd::Summary { team, from, to } => {
-                    crate::activity::summary(conn, team, None, None, None, from.as_deref(), to.as_deref())
+                    crate::activity::summary(conn, Some(team.as_str()), None, None, None, from.as_deref(), to.as_deref())
                         .map_err(|e| AppError(e.to_string()))?
                 }
                 crate::cli::ActivityQueryCmd::Rows { team, from, to, member, kind, limit } => {
-                    crate::activity::rows(conn, team, member.as_deref(), None, kind.as_deref(), from.as_deref(), to.as_deref(), *limit)
+                    crate::activity::rows(conn, Some(team.as_str()), member.as_deref(), None, kind.as_deref(), from.as_deref(), to.as_deref(), *limit)
                         .map_err(|e| AppError(e.to_string()))?
                 }
             },
