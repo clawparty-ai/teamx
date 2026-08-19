@@ -148,113 +148,142 @@ fn page_html() -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Teamx Enterprise</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --primary: #1E40AF;
+    --primary-hover: #1D4ED8;
+    --on-primary: #FFFFFF;
+    --secondary: #3B82F6;
+    --accent: #D97706;
+    --on-accent: #FFFFFF;
+    --bg: #F8FAFC;
+    --fg: #1E293B;
+    --card: #FFFFFF;
+    --card-fg: #1E293B;
+    --muted: #E9EEF6;
+    --muted-fg: #475569;
+    --border: #E2E8F0;
+    --destructive: #DC2626;
+    --ring: #1E40AF;
+    --radius: 10px;
+    --shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+    --shadow-hover: 0 4px 12px rgba(16, 24, 40, 0.12);
+    --font-sans: "Fira Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --transition: 150ms ease;
+  }
   * { box-sizing: border-box; }
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #f6f8fa; color: #1f2328; }
-  .dark body { background: #0d1117; color: #c9d1d9; }
-  header { background: #24292f; color: #fff; display: flex; align-items: center; gap: 20px; padding: 0 20px; height: 52px; position: sticky; top: 0; z-index: 10; }
-  .dark header { background: #161b22; }
-  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
-  nav { display: flex; gap: 4px; }
-  nav button { background: none; border: none; color: #c9d1d9; font-size: 14px; padding: 8px 12px; border-radius: 6px; cursor: pointer; }
-  nav button:hover { background: rgba(255,255,255,0.08); color: #fff; }
-  nav button.active { background: #0969da; color: #fff; }
-  .dark nav button.active { background: #1f6feb; }
-  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 20px; align-items: center; background: #fff; border-bottom: 1px solid #d0d7de; }
-  .dark .toolbar { background: #161b22; border-bottom-color: #30363d; }
-  .container { max-width: 1280px; margin: 0 auto; padding: 20px; }
+  body { font-family: var(--font-sans); font-size: 14px; line-height: 1.55; margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+  header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; gap: 24px; padding: 0 24px; height: 56px; background: var(--card); border-bottom: 1px solid var(--border); box-shadow: var(--shadow); }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; color: var(--fg); letter-spacing: -0.01em; }
+  header h1 .mark { color: var(--primary); font-weight: 700; }
+  nav { display: flex; gap: 2px; }
+  nav button { background: none; border: none; font: inherit; font-size: 13.5px; font-weight: 500; color: var(--muted-fg); padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: background var(--transition), color var(--transition); }
+  nav button:hover { background: var(--muted); color: var(--fg); }
+  nav button.active { background: var(--primary); color: var(--on-primary); box-shadow: 0 1px 3px rgba(30,64,175,0.35); }
+  nav button:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .toolbar { display: flex; gap: 14px; flex-wrap: wrap; padding: 16px 24px; align-items: flex-end; background: var(--card); border-bottom: 1px solid var(--border); }
+  .filters label { display: flex; flex-direction: column; font-size: 11px; font-weight: 500; color: var(--muted-fg); gap: 4px; letter-spacing: 0.02em; }
+  select, input { font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--fg); transition: border-color var(--transition), box-shadow var(--transition); }
+  select:hover, input:hover { border-color: var(--secondary); }
+  select:focus, input:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px rgba(30,64,175,0.15); }
+  button { font: inherit; }
+  .btn { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--fg); font-weight: 500; cursor: pointer; transition: all var(--transition); }
+  .btn:hover { border-color: var(--primary); color: var(--primary); box-shadow: var(--shadow); }
+  .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  .btn-primary:hover { background: var(--primary-hover); color: var(--on-primary); border-color: var(--primary-hover); }
+  .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
   .view { display: none; }
-  .view.active { display: block; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; }
-  .dark .card { background: #161b22; border-color: #30363d; }
-  .card .label { font-size: 12px; color: #57606a; }
-  .dark .card .label { color: #8b949e; }
-  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+  .view.active { display: block; animation: fadein 200ms ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); transition: transform var(--transition), box-shadow var(--transition); }
+  .card:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+  .card .label { font-size: 11.5px; font-weight: 500; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-family: var(--font-mono); font-size: 21px; font-weight: 600; margin-top: 4px; color: var(--fg); letter-spacing: -0.01em; }
+  .card .value .unit { font-size: 12px; font-weight: 400; color: var(--muted-fg); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
   @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
-  section.panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .dark section.panel { background: #161b22; border-color: #30363d; }
-  h2 { font-size: 14px; margin: 0 0 12px; }
+  section.panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 20px; box-shadow: var(--shadow); }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 14px; color: var(--fg); letter-spacing: 0.02em; text-transform: uppercase; }
+  h2 .count { font-family: var(--font-mono); font-weight: 500; color: var(--muted-fg); margin-left: 6px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eaeef2; }
-  .dark th, .dark td { border-bottom-color: #21262d; }
-  th { color: #57606a; font-weight: 600; }
-  .dark th { color: #8b949e; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
-  .badge.proposed, .badge.blocked { background: #fef2c0; color: #9a6700; }
-  .dark .badge.proposed, .dark .badge.blocked { background: #3d2f00; color: #d29922; }
-  .badge.shared, .badge.in_progress { background: #ddf4ff; color: #0969da; }
-  .dark .badge.shared, .dark .badge.in_progress { background: #0a2942; color: #58a6ff; }
-  .badge.achieved, .badge.completed, .badge.closed { background: #dafbe1; color: #1a7f37; }
-  .dark .badge.achieved, .dark .badge.completed, .dark .badge.closed { background: #122d1d; color: #3fb950; }
-  .badge.refining { background: #fbefff; color: #8250df; }
-  .badge.owner { background: #ddf4ff; color: #0969da; }
-  .badge.contributor { background: #dafbe1; color: #1a7f37; }
-  .badge.reviewer { background: #fbefff; color: #8250df; }
-  .badge.observer { background: #fff1e5; color: #bf8700; }
-  .badge.active { background: #dafbe1; color: #1a7f37; }
-  .badge.idle, .badge.pending { background: #f6f8fa; color: #57606a; }
-  .badge.waiting { background: #fef2c0; color: #9a6700; }
-  .badge.left { background: #ffebe9; color: #cf222e; }
-  .detail { font-family: ui-monospace, monospace; font-size: 11px; color: #57606a; white-space: pre-wrap; word-break: break-all; max-width: 480px; }
-  .dark .detail { color: #8b949e; }
-  .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-  .kb-col { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px; min-height: 120px; }
-  .dark .kb-col { background: #161b22; border-color: #30363d; }
-  .kb-col h3 { margin: 0 0 8px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
-  .kb-card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
-  .dark .kb-card { background: #0d1117; border-color: #30363d; }
-  .gantt { overflow-x: auto; }
-  .gantt-row { display: flex; align-items: center; height: 34px; border-bottom: 1px solid #eaeef2; }
-  .dark .gantt-row { border-bottom-color: #21262d; }
-  .gantt-label { width: 140px; flex-shrink: 0; font-size: 12px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gantt-track { position: relative; flex: 1; height: 100%; min-width: 400px; }
-  .gantt-bar { position: absolute; height: 16px; top: 9px; border-radius: 4px; background: #0969da; opacity: 0.85; min-width: 2px; }
-  .gantt-bar.work { background: #0969da; }
-  .gantt-bar.tool { background: #8250df; }
-  .gantt-bar.step { background: #bf8700; }
-  .gantt-bar.human { background: #1a7f37; }
-  .gantt-point { position: absolute; top: 10px; width: 10px; height: 10px; border-radius: 50%; margin-left: -5px; }
-  .gantt-point.tool { background: #8250df; }
-  .gantt-point.step { background: #bf8700; }
-  .gantt-point.human { background: #1a7f37; }
-  .gantt-axis { display: flex; margin-left: 140px; font-size: 11px; color: #57606a; }
-  .gantt-axis span { flex: 1; border-left: 1px solid #eaeef2; padding-left: 4px; }
-  .dark .gantt-axis span { border-left-color: #21262d; }
-  .lifecycle { position: relative; padding: 8px 0 0 0; }
-  .lc-track { display: flex; align-items: flex-start; gap: 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr { transition: background var(--transition); }
+  tbody tr:hover { background: var(--muted); }
+  th { color: var(--muted-fg); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 1.5; }
+  .badge.proposed, .badge.blocked { background: #FEF3C7; color: #92400E; }
+  .badge.shared, .badge.in_progress, .badge.active { background: #DBEAFE; color: #1E40AF; }
+  .badge.achieved, .badge.completed, .badge.closed { background: #DCFCE7; color: #166534; }
+  .badge.refining { background: #F3E8FF; color: #7E22CE; }
+  .badge.owner { background: #DBEAFE; color: #1E40AF; }
+  .badge.contributor { background: #DCFCE7; color: #166534; }
+  .badge.reviewer { background: #F3E8FF; color: #7E22CE; }
+  .badge.observer { background: #FFEDD5; color: #C2410C; }
+  .badge.idle, .badge.pending { background: #F1F5F9; color: #475569; }
+  .badge.waiting { background: #FEF3C7; color: #92400E; }
+  .badge.left { background: #FEE2E2; color: #B91C1C; }
+  .detail { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: pre-wrap; word-break: break-all; max-width: 480px; }
+  .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 140px; }
+  .kb-col h3 { margin: 0 0 10px; font-size: 12.5px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; color: var(--fg); text-transform: uppercase; letter-spacing: 0.03em; }
+  .kb-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; font-size: 12px; box-shadow: var(--shadow); transition: transform var(--transition), box-shadow var(--transition); }
+  .kb-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+  .gantt { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .gantt-row { display: flex; align-items: center; height: 34px; border-bottom: 1px solid var(--border); }
+  .gantt-label { width: 150px; flex-shrink: 0; font-size: 12px; font-weight: 500; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .gantt-track { position: relative; flex: 1; height: 100%; min-width: 420px; }
+  .gantt-bar { position: absolute; height: 16px; top: 9px; border-radius: 4px; opacity: 0.9; min-width: 2px; cursor: pointer; transition: opacity var(--transition); }
+  .gantt-bar:hover { opacity: 1; }
+  .gantt-bar.work { background: linear-gradient(90deg, var(--primary), var(--secondary)); }
+  .gantt-bar.tool { background: #8B5CF6; }
+  .gantt-bar.step { background: #D97706; }
+  .gantt-bar.human { background: #059669; }
+  .gantt-point { position: absolute; top: 11px; width: 9px; height: 9px; border-radius: 50%; margin-left: -4.5px; cursor: pointer; transition: transform var(--transition); }
+  .gantt-point:hover { transform: scale(1.6); }
+  .gantt-point.tool { background: #8B5CF6; }
+  .gantt-point.step { background: #D97706; }
+  .gantt-point.human { background: #059669; }
+  .gantt-axis { display: flex; margin-left: 150px; font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); }
+  .gantt-axis span { flex: 1; border-left: 1px solid var(--border); padding-left: 5px; }
+  .lifecycle { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 20px 14px; margin-bottom: 20px; box-shadow: var(--shadow); }
+  .lc-track { display: flex; align-items: flex-start; }
   .lc-step { flex: 1; text-align: center; position: relative; min-width: 90px; }
-  .lc-step .dot { width: 12px; height: 12px; border-radius: 50%; margin: 0 auto 6px; background: #d0d7de; position: relative; z-index: 1; }
-  .dark .lc-step .dot { background: #30363d; }
-  .lc-step.done .dot { background: #0969da; }
-  .lc-step.current .dot { background: #1f6feb; box-shadow: 0 0 0 4px rgba(9,105,218,0.25); }
-  .lc-step.current .dot::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid #0969da; }
-  .lc-step .name { font-size: 12px; color: #57606a; }
-  .dark .lc-step .name { color: #8b949e; }
-  .lc-step .date { font-size: 11px; color: #8b949e; margin-top: 2px; }
-  .lc-line { height: 2px; background: #d0d7de; position: relative; top: -7px; margin: 0 6%; }
-  .dark .lc-line { background: #30363d; }
-  .lc-line.fill { background: #0969da; }
-  .goal-hero { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
-  .dark .goal-hero { background: #161b22; border-color: #30363d; }
-  .goal-hero h2 { font-size: 18px; margin: 0 0 6px; }
-  .goal-body { color: #57606a; margin: 0 0 10px; max-width: 720px; }
-  .dark .goal-body { color: #8b949e; }
-  .filters label { display: flex; flex-direction: column; font-size: 11px; color: #57606a; gap: 3px; }
-  .dark .filters label { color: #8b949e; }
-  select, input, button { padding: 5px 8px; border: 1px solid #d0d7de; border-radius: 5px; background: #fff; color: #1f2328; }
-  .dark select, .dark input, .dark button { background: #0d1117; border-color: #30363d; color: #c9d1d9; }
-  button { cursor: pointer; }
-  button:hover { border-color: #0969da; }
-  .muted { color: #8b949e; font-size: 12px; }
+  .lc-step .dot { width: 14px; height: 14px; border-radius: 50%; margin: 0 auto 7px; background: var(--border); position: relative; z-index: 1; border: 2px solid var(--card); }
+  .lc-step.done .dot { background: var(--primary); border-color: var(--primary); }
+  .lc-step.current .dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 5px rgba(217,119,6,0.18); }
+  .lc-step .name { font-size: 12px; font-weight: 500; color: var(--muted-fg); }
+  .lc-step.done .name { color: var(--fg); }
+  .lc-step.current .name { color: var(--accent); font-weight: 600; }
+  .lc-step .date { font-size: 11px; color: var(--muted-fg); margin-top: 2px; font-family: var(--font-mono); }
+  .lc-line { height: 3px; background: var(--border); position: relative; top: -9px; margin: 0 6%; border-radius: 2px; }
+  .lc-line.fill { background: linear-gradient(90deg, var(--primary), var(--secondary)); }
+  .goal-hero { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px; margin-bottom: 20px; box-shadow: var(--shadow); border-left: 4px solid var(--primary); }
+  .goal-hero h2 { font-size: 19px; margin: 0 0 8px; font-weight: 700; text-transform: none; letter-spacing: -0.01em; }
+  .goal-body { color: var(--muted-fg); margin: 0 0 12px; max-width: 760px; font-size: 14px; line-height: 1.6; }
+  .muted { color: var(--muted-fg); font-size: 12px; }
+  .mono { font-family: var(--font-mono); }
+  .goal-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); border-radius: 6px; transition: background var(--transition); }
+  .goal-row:last-child { border-bottom: none; }
+  .goal-row:hover { background: var(--muted); }
+  .goal-row.current { background: rgba(30,64,175,0.05); }
+  .goal-row-title { font-weight: 500; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .goal-row-meta { color: var(--muted-fg); font-size: 11.5px; white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Teamx Enterprise</h1>
+  <h1><span class="mark">Teamx</span> Enterprise</h1>
   <nav>
     <button data-view="goal" class="active">Goal</button>
     <button data-view="kanban">KanBan</button>
@@ -272,7 +301,7 @@ fn page_html() -> String {
     <option>file_edit</option><option>work_session</option><option>human_input</option>
     <option>human_approval</option><option>human_command</option>
   </select></label>
-  <button onclick="refresh()">Refresh</button>
+  <button class="btn btn-primary" onclick="refresh()">Refresh</button>
 </div>
 
 <div class="container">
@@ -280,6 +309,7 @@ fn page_html() -> String {
   <div class="view active" id="view-goal">
     <div id="goalHero"></div>
     <div id="goalLifecycle"></div>
+    <div id="goalHistory" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:20px;box-shadow:var(--shadow)"></div>
     <div class="cards" id="goalCards"></div>
     <div class="grid2">
       <section class="panel"><h2>By member</h2><table id="gByMember"><tbody></tbody></table></section>
@@ -316,7 +346,6 @@ fn page_html() -> String {
     <section class="panel"><h2>Members</h2><table id="membersTable"><tbody></tbody></table></section>
   </div>
 </div>
-
 <script>
 const $ = (s) => document.querySelector(s)
 const $$ = (s) => Array.from(document.querySelectorAll(s))
@@ -374,7 +403,7 @@ async function renderGoal() {
     jget("/api/by_member?" + q), jget("/api/by_node?" + q),
   ])
   fillTeamSelect(teams)
-  const g = goal.goal
+  const g = goal.current
   const hero = $("#goalHero")
   if (g) {
     hero.innerHTML = `<div class="goal-hero">
@@ -383,9 +412,10 @@ async function renderGoal() {
       <div class="muted">created ${fmtDate(g.created_at)} · updated ${fmtDate(g.updated_at)}</div>
     </div>`
   } else {
-    hero.innerHTML = `<div class="goal-hero"><h2>No goal set</h2><p class="goal-body muted">Use <code>teamx goal set</code> to define the team goal.</p></div>`
+    hero.innerHTML = `<div class="goal-hero"><h2>No active goal</h2><p class="goal-body muted">Use <code>teamx goal set</code> to define the team goal.</p></div>`
   }
   renderLifecycle(goal.lifecycle, g?.state)
+  renderGoalHistory(goal.goals, g?.id)
   const o = overview.overview ?? {}
   $("#goalCards").innerHTML = [
     ["Total work time", fmtMs(o.duration_ms)],
@@ -411,6 +441,22 @@ async function renderGoal() {
     (e) => fmtDate(e.created_at), (e) => badge(e.type),
     (e) => esc(e.member_id?.slice(0, 8)), (e) => esc(row(e.payload)),
   ])
+}
+
+// Render the team's goal history (all goals, newest first; current highlighted).
+function renderGoalHistory(goals, currentId) {
+  const host = document.getElementById("goalHistory")
+  if (!host) return
+  const list = (goals ?? []).slice().reverse()
+  if (list.length === 0) {
+    host.innerHTML = '<div class="muted">No goals yet. Set the team goal with <code>teamx goal set</code>.</div>'
+    return
+  }
+  host.innerHTML = `<h2>Goal history <span class="count">${list.length}</span></h2>` + list.map((g) => `
+    <div class="goal-row ${g.id === currentId ? "current" : ""}">
+      <span class="goal-row-title">${esc(g.title)} ${g.id === currentId ? `<span class="badge active">active</span>` : g.closed_at ? badge("closed") : ""}</span>
+      <span class="goal-row-meta mono">${fmtDate(g.created_at)} → ${g.closed_at ? fmtDate(g.closed_at) : "now"}</span>
+    </div>`).join("")
 }
 
 function renderLifecycle(lifecycle, currentState) {
@@ -817,9 +863,9 @@ async fn api_human(State(state): State<S>, Query(params): Query<HashMap0>, heade
 // Enterprise dashboard v2 API: goal-centric views.
 // ---------------------------------------------------------------------------
 
-/// Goal-centric overview: the team's current goal + its lifecycle phases
-/// (derived from the events ledger: goal.set / goal.shared / goal.state_changed
-/// / goal.achieved / team.completed) with per-phase activity aggregates.
+/// Goal-centric overview: all of the team's goals (current + history) with
+/// their lifecycle events. The team's current goal is `teams.goal_id`; closed
+/// goals have `closed_at` set and appear below the current one.
 async fn api_goal(State(state): State<S>, Query(params): Query<HashMap0>, headers: axum::http::HeaderMap) -> axum::response::Response {
     if let Err(r) = guard(&state, &headers) {
         return r;
@@ -830,9 +876,9 @@ async fn api_goal(State(state): State<S>, Query(params): Query<HashMap0>, header
     };
     let c = lock(&state);
 
-    // Current goal row.
-    let goal = match c.query_row(
-        "SELECT g.id, g.title, g.body, g.state, g.created_at, g.updated_at
+    // Current goal row (teams.goal_id -> goals).
+    let current_goal = match c.query_row(
+        "SELECT g.id, g.title, g.body, g.state, g.created_at, g.updated_at, g.closed_at
          FROM goals g JOIN teams t ON t.goal_id = g.id WHERE t.id = ?1",
         [team],
         |r| {
@@ -843,6 +889,7 @@ async fn api_goal(State(state): State<S>, Query(params): Query<HashMap0>, header
                 "state": r.get::<_, String>(3)?,
                 "created_at": r.get::<_, String>(4)?,
                 "updated_at": r.get::<_, String>(5)?,
+                "closed_at": r.get::<_, Option<String>>(6)?,
             }))
         },
     ) {
@@ -851,6 +898,32 @@ async fn api_goal(State(state): State<S>, Query(params): Query<HashMap0>, header
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response();
         }
+    };
+
+    // All goals for the team (history, newest first), with current flag.
+    let mut stmt = match c.prepare(
+        "SELECT g.id, g.title, g.body, g.state, g.created_at, g.updated_at, g.closed_at
+         FROM goals g WHERE g.team_id = ?1 ORDER BY g.created_at ASC",
+    ) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    };
+    let goals = match stmt.query_map([team], |r| {
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "title": r.get::<_, String>(1)?,
+            "body": r.get::<_, Option<String>>(2)?,
+            "state": r.get::<_, String>(3)?,
+            "created_at": r.get::<_, String>(4)?,
+            "updated_at": r.get::<_, String>(5)?,
+            "closed_at": r.get::<_, Option<String>>(6)?,
+        }))
+    }) {
+        Ok(rows) => match rows.collect::<Result<Vec<_>, _>>() {
+            Ok(v) => v,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+        },
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     };
 
     // Lifecycle events from the events ledger.
@@ -883,7 +956,13 @@ async fn api_goal(State(state): State<S>, Query(params): Query<HashMap0>, header
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     };
 
-    Json(json!({ "team_id": team, "goal": goal, "lifecycle": lifecycle })).into_response()
+    Json(json!({
+        "team_id": team,
+        "current": current_goal,
+        "goals": goals,
+        "lifecycle": lifecycle,
+    }))
+    .into_response()
 }
 
 /// Members view: every member with role/state + per-member activity aggregates

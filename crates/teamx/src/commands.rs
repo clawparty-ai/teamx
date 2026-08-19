@@ -66,6 +66,7 @@ struct GoalRow {
     title: String,
     body: Option<String>,
     state: String,
+    closed_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -131,6 +132,7 @@ fn goal_row(r: &rusqlite::Row) -> rusqlite::Result<GoalRow> {
         title: r.get(2)?,
         body: r.get(3)?,
         state: r.get(4)?,
+        closed_at: r.get(5)?,
     })
 }
 
@@ -191,7 +193,7 @@ fn team_by_token(conn: &Connection, token: &str) -> Result<TeamRow> {
 
 fn goal_by_id(conn: &Connection, goal_id: &str) -> Result<GoalRow> {
     conn.query_row(
-        "SELECT id, team_id, title, body, state FROM goals WHERE id = ?1",
+        "SELECT id, team_id, title, body, state, closed_at FROM goals WHERE id = ?1",
         [goal_id],
         goal_row,
     )
@@ -1493,7 +1495,7 @@ fn cmd_goal_set_inner(
 ) -> Result<String> {
     let existing: Option<GoalRow> = team_goal(conn, team_id)?;
     match existing {
-        Some(g) => {
+        Some(g) if g.closed_at.is_none() => {
             let event_type = if g.state == "proposed" { "goal.set" } else { "goal.updated" };
             db::with_write(conn, |tx| {
                 tx.execute(
@@ -1512,7 +1514,7 @@ fn cmd_goal_set_inner(
             .map_err(|e| AppError(format!("goal set failed: {e}")))?;
             Ok(g.id)
         }
-        None => {
+        _ => {
             let goal_id = uuid::Uuid::new_v4().to_string();
             let now = db::now();
             db::with_write(conn, |tx| {
@@ -1521,7 +1523,12 @@ fn cmd_goal_set_inner(
                      VALUES (?1, ?2, ?3, ?4, 'proposed', ?5, ?5)",
                     params![goal_id, team_id, title, body, now],
                 )?;
-                tx.execute("UPDATE teams SET goal_id = ?1 WHERE id = ?2", params![goal_id, team_id])?;
+                // A completed team re-opens as forming when a new goal is set
+                // (it must be shared again to go active).
+                tx.execute(
+                    "UPDATE teams SET goal_id = ?1, state = CASE WHEN state = 'completed' THEN 'forming' ELSE state END, updated_at = ?2 WHERE id = ?3",
+                    params![goal_id, now, team_id],
+                )?;
                 emit_json(tx, team_id, Some(member_id), "goal.set", json!({ "title": title }))?;
                 Ok(())
             })
@@ -1572,8 +1579,14 @@ fn cmd_goal_close(conn: &mut Connection, session: &str, team_opt: Option<&str>) 
     let now = db::now();
 
     db::with_write(conn, |tx| {
-        tx.execute("UPDATE goals SET state = ?1, updated_at = ?2 WHERE id = ?3", params![g_to, now, goal.id])?;
-        tx.execute("UPDATE teams SET state = ?1, updated_at = ?2 WHERE id = ?3", params![t_to, now, team.id])?;
+        tx.execute(
+            "UPDATE goals SET state = ?1, updated_at = ?2, closed_at = ?2 WHERE id = ?3",
+            params![g_to, now, goal.id],
+        )?;
+        // Detach the closed goal from the team so a new `goal set` creates a
+        // fresh row (multi-goal history). The closed goal stays in the goals
+        // table (with closed_at) for the team's goal history view.
+        tx.execute("UPDATE teams SET goal_id = NULL, state = ?1, updated_at = ?2 WHERE id = ?3", params![t_to, now, team.id])?;
         emit_json(tx, &team.id, Some(&actor.id), "goal.state_changed", json!({ "from": g_from, "to": g_to, "kind": "close" }))?;
         emit_json(tx, &team.id, Some(&actor.id), "team.completed", json!({ "goal": goal.title }))?;
         Ok(())

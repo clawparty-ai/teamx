@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS goals (
   body       TEXT,
   state      TEXT NOT NULL DEFAULT 'proposed',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  closed_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS roles (
@@ -244,7 +245,27 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 6)?;
+    if version < 7 {
+        // v7: multi-goal support. A team can now have a history of goals:
+        //   - goals.closed_at marks a goal as finished (closed/completed).
+        //   - the UNIQUE(team_id) index is dropped so several goals can exist
+        //     per team (teams.goal_id keeps pointing at the current one).
+        // Existing single-goal DBs keep their current goal; no data loss.
+        let goal_cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(goals)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        if !goal_cols.iter().any(|c| c == "closed_at") {
+            conn.execute_batch("ALTER TABLE goals ADD COLUMN closed_at TEXT;")?;
+        }
+        conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;
+    }
+    conn.pragma_update(None, "user_version", 7)?;
     Ok(())
 }
 
