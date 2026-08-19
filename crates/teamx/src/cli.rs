@@ -132,6 +132,9 @@ pub enum Command {
     /// Member activity analytics (enterprise): push/query activity rows
     #[command(subcommand)]
     Activity(ActivityCmd),
+
+    /// Web dashboard (enterprise): activity analytics UI (HTTPS + token, owner only)
+    Ui(UiCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -177,6 +180,22 @@ pub enum ActivityQueryCmd {
         #[arg(long, default_value_t = 100)]
         limit: i64,
     },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UiCmd {
+    /// bind address
+    #[arg(long, default_value = "127.0.0.1")]
+    pub addr: String,
+    /// bind port
+    #[arg(long, default_value_t = 9527)]
+    pub port: u16,
+    /// actor session key (the team lead's session, verified as an owner)
+    #[arg(long)]
+    pub session: String,
+    /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
+    #[arg(long)]
+    pub db: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]

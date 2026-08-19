@@ -474,6 +474,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Serve(_) => {
             return err("`teamx serve` must be run as its own process")
         }
+        // `teamx ui` is a long-running dashboard process (handled in main).
+        Command::Ui(_) => {
+            return err("`teamx ui` must be run as its own process")
+        }
         Command::Cert(c) => match c {
             CertCmd::Init => cmd_cert_init()?,
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,

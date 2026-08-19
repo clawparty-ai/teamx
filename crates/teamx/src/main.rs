@@ -10,16 +10,27 @@ mod serve;
 mod state;
 mod tunnel;
 mod tunnel_client;
+mod ui;
 
 use clap::Parser;
 use cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
-    // `teamx serve` runs forever and manages its own DB lifecycle; it bypasses
-    // the normal open-once-per-invocation flow.
+    // `teamx serve` and `teamx ui` run forever and manage their own DB
+    // lifecycle; they bypass the normal open-once-per-invocation flow.
     if let Command::Serve(sc) = &cli.command {
         match serve::serve(sc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Command::Ui(uc) = &cli.command {
+        match ui::ui(uc) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
