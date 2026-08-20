@@ -6,6 +6,7 @@ mod events;
 mod loopx;
 mod pki;
 mod serve;
+mod socks5;
 mod state;
 mod teamfile;
 mod tunnel;
