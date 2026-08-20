@@ -139,3 +139,78 @@ CLI 里 `name`/`token`/`member_id`/`role`/`title`/`state`/`role_desc`/`letter`/`
 5. **修 H2/H4** — 把 auto-execute 状态桥接给 index，mapCommandToRpc 补 sync + positional
 6. **修 H5** — 打开类型检查，让编译器兜底
 7. 清理 M1-M6 死代码/重复实现
+
+---
+
+# 第二轮 Review（第一轮修复后）
+
+- 评审日期: 2026-08-20（第二轮）
+- 结论: 第一轮 C1-C6/H1-H5/M1-M6 已修复，但本轮对照 `serve.rs` 网络模式与 `commands.rs` JSON 输出，发现**新的字段名不匹配 bug**，网络模式仍无法运行。
+
+## 第二轮 CRITICAL
+
+### R2-C1. `runRpc` 请求体字段名错误：`params` 应为 `args`
+
+`client.ts runRpc` 发送 `{ method, params }`，但 `serve.rs` 的 `RpcRequest` 声明的是：
+
+```rust
+struct RpcRequest { method: String, #[serde(default)] args: Value }
+```
+
+`#[serde(default)]` 使 `args` 缺省为 `null`，导致网络模式下**所有 RPC 命令参数丢失**（服务器读到的 `args` 永远是 null，`dispatch` 里 `args.get(...)` 全部返回 None）。opencode-plugin 用的是 `{ method, args }`（`client.ts:404`）。
+
+### R2-C2. `runRpc` 响应体字段名错误：`result` 应为 `data`
+
+`client.ts runRpc` 读 `parsed.result`，但 `serve.rs rpc` 返回：
+
+```rust
+(StatusCode::OK, Json(json!({ "ok": true, "data": data })))
+```
+
+字段名是 **`data`**，不是 `result`。网络模式下所有 RPC 返回值被 resolve 成 `undefined`。opencode-plugin 读 `data.data`（`client.ts:427`）。
+
+### R2-C3. WS 端点身份机制误判：header 无效，依赖 mTLS 证书
+
+`serve.rs` 的 `/ws` 端点通过 **mTLS peer 证书 CN** 识别成员（`parse_member_cn(identity.0)`），不读取任何 HTTP header：
+
+```rust
+async fn ws_handler(..., Extension(identity): Extension<PeerIdentity>, ...) {
+    let member_id = pki::parse_member_cn(&identity.0) ...  // 来自证书 CN
+    let teams = commands::teams_for_member(&conn, &mid)?;
+    let mut rx = state.hub.subscribe(&member_id, &teams);
+```
+
+dsh-plugin 的 `ws.ts` 发送的 `X-Teamx-Team`/`X-Teamx-Session` header 被**完全忽略**；`createWsClient` 的 `team`/`session` 参数是误导性的死参数。且当没有 mTLS 证书时（`mtlsFor()` 返回 null），`ws.ts` 仍会尝试连接 → 服务器返回 `no_identity` → 无限重连。网络模式 WS 推送需要 mTLS 证书才能工作。
+
+### R2-C4. digest 字段名错误：`display_name`/`payload` 误写成 `name`/`data`
+
+`commands.rs` 的 sync 输出（`member_json`/`event_json`）：
+
+```rust
+member_json => { "id", "display_name", "role", "state", ... }   // 是 display_name 不是 name
+event_json  => { "seq", "team_id", "member_id", "type", "payload", ... }  // 是 payload 不是 data
+```
+
+`digest.ts formatDigest` 用 `m.name`（应为 `display_name`）和 `e.data?.message`（应为 `e.payload?.message`），导致 digest 内容错乱（成员名显示 undefined，事件消息丢失）。
+
+## 第二轮 MEDIUM
+
+### R2-M1. `agent/status` idle 心跳未检查成员身份
+
+opencode-plugin 在发 heartbeat 前检查 `isMember === true`（`index.ts:469`）。dsh-plugin 的 `agent/status` idle 分支直接发 `publish activity`，非成员会话也会发（失败被吞）。应在 `markMember` 缓存里查 `memberStatus(agentId)?.isMember`。
+
+### R2-M2. 网络模式 server URL 无法从邀请函自动发现
+
+opencode-plugin 有 `discoverServerUrl()`：成员 import 邀请函后，从 letter 内嵌的 `server.url` 自动进入网络模式（无需手动设 `TEAMX_SERVER_URL`）。dsh-plugin 缺失这个，成员 import letter 后仍停留在本地模式。功能缺失。
+
+### R2-M3. `cliArgsToRpc` 里 `sync`/`events`/`log` 的 positional slot 是死配置
+
+`sync: ['session']`、`events: ['after', 'team']`、`log: ['team', 'limit', 'after']` 这些 method 的参数全部通过 `--flag` 传递（无 positional），`rest` 永远为空，slot 永不命中。`sync: ['session']` 尤其误导（session 是 flag 不是 positional）。应删除这些 slot 条目。
+
+## 第二轮确认正确
+
+- R2 已验证 `publish activity --data {kind:session.idle}` 是有效命令（映射 `progress.published`，不改 goal/team 状态），heartbeat 逻辑正确
+- R2 已验证 `team list` 对非成员返回 `{teams: []}`（不报错），membership 检测正确
+- R2 已验证 `followup` 返回 `void`，`await agent.followup(...)` 合法
+- R2 已验证 `cliArgsToRpc` 17 用例全部通过（method + args 映射正确）
+- R2 已验证 sync 响应 `teams[].team.my_member_id` 与 auto-execute 匹配逻辑一致
