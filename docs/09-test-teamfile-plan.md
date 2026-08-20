@@ -1,6 +1,6 @@
 # teamx TEAM.md 团队初始化 — 测试方案（Test Plan）
 
-> 关联设计：`docs/teamfile.md`；本计划针对 main 分支新增的 TEAM.md 驱动初始化功能。
+> 关联设计：`docs/05-design-teamfile.md`；本计划针对 main 分支新增的 TEAM.md 驱动初始化功能。
 
 ## 1. 范围与目标
 
