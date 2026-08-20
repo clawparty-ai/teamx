@@ -11,6 +11,7 @@
 #   9. network-mode cross-network (LAN IP) test
 #   10. network-mode reverse-tunnel test
 #   11. enterprise activity analytics test (network mode)
+#   12. TEAM.md bootstrap test (teamfile-test.sh)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -71,8 +72,12 @@ else
 fi
 
 echo
-echo "== 11/11 enterprise activity analytics test (network mode) =="
+echo "== 11/12 enterprise activity analytics test (network mode) =="
 ./tests/activity-test.sh
+
+echo
+echo "== 12/12 TEAM.md bootstrap test =="
+./tests/teamfile-test.sh
 
 echo
 echo "ALL TEST SUITES PASSED"
