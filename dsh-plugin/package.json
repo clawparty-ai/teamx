@@ -1,0 +1,50 @@
+{
+  "name": "@teamx/dsh-plugin",
+  "version": "0.1.0",
+  "description": "teamx deepseek-harness plugin: multi-agent team collaboration with teamx_* tools, /team-* slash commands, and real-time digest injection",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**/*.ts",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-system-prompt": "workspace:^",
+    "@deepseek-ai/dsh-commands": "workspace:^",
+    "@deepseek-ai/schemastery": "workspace:^",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "file:../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/dsh-agent": "file:../deepseek-harness/packages/core/agent",
+    "@deepseek-ai/dsh-agent-loop": "file:../deepseek-harness/packages/core/agent-loop",
+    "@deepseek-ai/dsh-session": "file:../deepseek-harness/packages/core/session",
+    "@deepseek-ai/dsh-system-prompt": "file:../deepseek-harness/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "file:../deepseek-harness/packages/core/tools",
+    "@deepseek-ai/dsh-commands": "file:../deepseek-harness/packages/interaction/commands",
+    "@deepseek-ai/schemastery": "file:../deepseek-harness/vendor/schemastery",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.6.0",
+    "zod": "^4.4.3"
+  }
+}
