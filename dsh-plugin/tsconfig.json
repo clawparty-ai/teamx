@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "strict": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -10,7 +11,6 @@
     "declaration": false,
     "noEmit": true,
     "noImplicitAny": false,
-    "noCheck": true,
     "baseUrl": ".",
     "paths": {
       "@deepseek-ai/cordis": ["../../deepseek-harness/vendor/cordis/src/index.ts"],
@@ -21,7 +21,9 @@
       "@deepseek-ai/dsh-commands": ["../../deepseek-harness/packages/interaction/commands/src/index.ts"],
       "@deepseek-ai/schemastery": ["../../deepseek-harness/vendor/schemastery/src/index.ts"],
       "@deepseek-ai/dsh-llm": ["../../deepseek-harness/packages/llm/llm/src/index.ts"],
-      "@deepseek-ai/dsh-scope": ["../../deepseek-harness/packages/core/scope/src/index.ts"]
+      "@deepseek-ai/dsh-scope": ["../../deepseek-harness/packages/core/scope/src/index.ts"],
+      "@deepseek-ai/dsh-typert-protocol": ["../../deepseek-harness/packages/typert/protocol/src/index.ts"],
+      "@deepseek-ai/dsh-invariants": ["../../deepseek-harness/packages/core/invariants/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"]

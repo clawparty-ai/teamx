@@ -23,7 +23,7 @@ export function getDigest(agentId: string): string {
  */
 export async function refreshDigest(agentId: string, sessionKey: string): Promise<string> {
   try {
-    const result = await runCli(['team', 'sync', '--session', sessionKey])
+    const result = await runCli(['sync', '--no-advance', '--session', sessionKey])
     const digest = formatDigest(result)
     digestCache.set(agentId, digest)
     return digest
@@ -46,77 +46,92 @@ export function clearDigest(agentId?: string): void {
 // ---------------------------------------------------------------------------
 
 interface SyncResult {
-  team?: {
-    id: string
-    name: string
-    state: string
-  }
-  goal?: {
-    title: string
-    body?: string
-    state: string
-  }
-  members?: Array<{
-    id: string
-    name: string
-    role: string
-    state: string
+  teams?: Array<{
+    team?: {
+      id: string
+      name: string
+      state: string
+    }
+    goal?: {
+      title: string
+      body?: string
+      state: string
+    } | null
+    members?: Array<{
+      id: string
+      name: string
+      role: string
+      state: string
+    }>
+    recent_events?: Array<{
+      seq: number
+      type: string
+      data?: any
+    }>
+    questions?: Array<{ state?: string; question?: string }>
   }>
-  events?: Array<{
-    id: number
+  new_events?: Array<{
+    seq: number
     type: string
     data?: any
-    created_at?: string
   }>
 }
 
+/**
+ * Format a `teamx sync --no-advance` response into a compact digest.
+ * The CLI returns `{ teams: [{ team, goal, members, questions, recent_events }], new_events }`.
+ */
 function formatDigest(data: any): string {
   if (!data || typeof data !== 'object') return ''
 
+  const teams = Array.isArray(data.teams) ? data.teams : []
+  if (teams.length === 0) return ''
+
   const lines: string[] = []
-  const team = data.team || data
-  const teamName = team.name || 'Team'
-  const teamState = team.state || 'unknown'
+  for (const teamBlock of teams) {
+    const team = teamBlock.team || {}
+    const teamName = team.name || 'Team'
+    const teamState = team.state || 'unknown'
 
-  // Header
-  lines.push(`📋 **${teamName}** (status: ${teamState})`)
+    lines.push(`📋 **${teamName}** (status: ${teamState})`)
 
-  // Goal
-  const goal = data.goal
-  if (goal) {
-    const goalState = goal.state || 'unknown'
-    lines.push(`🎯 **Goal** (${goalState}): ${goal.title || 'Untitled'}`)
-    if (goal.body) {
-      lines.push(`   ${goal.body.slice(0, 200)}${goal.body.length > 200 ? '…' : ''}`)
+    // Goal
+    const goal = teamBlock.goal
+    if (goal) {
+      const goalState = goal.state || 'unknown'
+      lines.push(`🎯 **Goal** (${goalState}): ${goal.title || 'Untitled'}`)
+      if (goal.body) {
+        lines.push(`   ${goal.body.slice(0, 200)}${goal.body.length > 200 ? '…' : ''}`)
+      }
     }
-  }
 
-  // Members
-  const members = data.members
-  if (Array.isArray(members) && members.length > 0) {
-    lines.push('👥 **Members**:')
-    for (const m of members) {
-      const state = m.state || 'active'
-      const emoji = state === 'idle' ? '😴' : state === 'active' ? '⚡' : '❓'
-      lines.push(`  ${emoji} ${m.name} (${m.role || 'member'}) — ${state}`)
+    // Members
+    const members = teamBlock.members
+    if (Array.isArray(members) && members.length > 0) {
+      lines.push('👥 **Members**:')
+      for (const m of members) {
+        const state = m.state || 'active'
+        const emoji = state === 'idle' ? '😴' : state === 'active' ? '⚡' : '❓'
+        lines.push(`  ${emoji} ${m.name} (${m.role || 'member'}) — ${state}`)
+      }
     }
-  }
 
-  // Recent events (last 3)
-  const events = data.events
-  if (Array.isArray(events) && events.length > 0) {
-    const recent = events.slice(-3)
-    lines.push('📝 **Recent**:')
-    for (const e of recent) {
-      const msg = e.data?.message || e.data?.kind || e.type || 'event'
-      lines.push(`  • ${msg}`)
+    // Open questions
+    const openQuestions = (teamBlock.questions || []).filter((q: any) => q?.state === 'open')
+    if (openQuestions.length > 0) {
+      lines.push(`❓ **Open questions** (${openQuestions.length})`)
     }
-  }
 
-  // Open questions
-  const openQuestions = data.openQuestions || data.open_questions
-  if (Array.isArray(openQuestions) && openQuestions.length > 0) {
-    lines.push(`❓ **Open questions** (${openQuestions.length})`)
+    // Recent events (last 3)
+    const events = teamBlock.recent_events
+    if (Array.isArray(events) && events.length > 0) {
+      const recent = events.slice(-3)
+      lines.push('📝 **Recent**:')
+      for (const e of recent) {
+        const msg = e.data?.message || e.data?.kind || e.type || 'event'
+        lines.push(`  • ${msg}`)
+      }
+    }
   }
 
   return lines.join('\n')

@@ -5,7 +5,8 @@
  */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { runCli, memberStatus } from './client.js'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { sessionKey, instanceId, memberStatus } from './client.js'
 import { getDigest, refreshDigest } from './digest.js'
 
 export interface AutoExecuteState {
@@ -41,32 +42,44 @@ export function unregisterAgent(agentId: string): void {
 }
 
 /**
+ * Get the session key for a registered agent.
+ */
+export function agentSessionKey(agentId: string): string {
+  return sessionKey(instanceId(), agentId)
+}
+
+/**
  * Process incoming events and trigger auto-execute for directed tasks.
  * Called by the event loop (poller or WS push).
+ * @param agentId - the agent to process events for.
+ * @param events - new events from `sync --no-advance`.
+ * @returns the number of auto-execute prompts triggered.
  */
-export async function processEvents(agentId: string, events: any[]): Promise<void> {
+export async function processEvents(agentId: string, events: any[]): Promise<number> {
   const agent = state.agents.get(agentId)
-  if (!agent) return
+  if (!agent) return 0
 
   const teamId = state.agentTeam.get(agentId) || ''
-  const lastSeq = state.lastSeq.get(agentId) || 0
+  let triggered = 0
 
   for (const event of events) {
     const seq = event.seq || event.id || 0
+    const lastSeq = state.lastSeq.get(agentId) || 0
     if (seq <= lastSeq) continue
 
     // Check if this event is a directed task for this member
-    const data = event.data || event
+    const data = event.data || event.payload || event
     const assignee = data.assignee_member_id || data.assignee
     if (!assignee) continue
 
-    // Check if I'm the assignee
-    const myStatus = memberStatus(teamId, agentId)
-    if (!myStatus) continue
-    if (assignee !== myStatus.name && assignee !== agentId) continue
+    // Check if I'm the assignee (compare against my teamx member id)
+    const myStatus = memberStatus(agentId)
+    const myMemberId = myStatus?.memberId
+    if (!myMemberId) continue
+    if (assignee !== myMemberId) continue
 
-    // Refresh digest first
-    await refreshDigest(agentId, agentId)
+    // Refresh digest first (using the full session key)
+    await refreshDigest(agentId, agentSessionKey(agentId))
 
     // Build auto-execute message
     const eventMsg = data.message || data.kind || event.type || 'new task'
@@ -74,13 +87,19 @@ export async function processEvents(agentId: string, events: any[]): Promise<voi
 
     // Wake the agent
     try {
-      await agent.followup(autoMsg)
+      const userMessage = createUserMessage({
+        content: [{ type: 'text', text: autoMsg }],
+        source: { kind: 'user' },
+      })
+      await agent.followup(userMessage)
+      triggered++
+      state.lastSeq.set(agentId, seq)
     } catch (err) {
       console.error(`[teamx-dsh] auto-execute followup failed for ${agentId}:`, err)
     }
-
-    state.lastSeq.set(agentId, seq)
   }
+
+  return triggered
 }
 
 function buildAutoExecMessage(eventMsg: string, digest: string): string {
