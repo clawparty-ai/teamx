@@ -363,4 +363,22 @@ print('teamx-inv:v1:'+base64.b64encode(json.dumps(d).encode()).decode())
 ")
 expect_fail "$TEAMX" team import "$MALICIOUS" --name X --session s:evil
 
+step "input validation: empty team name / empty goal title / goal-set state"
+# empty team name must be rejected (regression)
+expect_fail "$TEAMX" team create "" --session s:empty1
+# whitespace-only team name must be rejected
+expect_fail "$TEAMX" team create "   " --session s:empty2
+# valid team for the goal checks
+expect_ok "$TEAMX" team create "ValTeam" --session s:val
+# empty goal title must be rejected (regression)
+expect_fail "$TEAMX" goal set "" --session s:val
+# fresh goal set returns state proposed
+GS=$($TEAMX goal set "ValGoal" --session s:val --json)
+echo "$GS" | python3 -c "import json,sys; assert json.load(sys.stdin)['state']=='proposed'" || fail "new goal set should report proposed"
+# after share+progress, goal set returns the real state (in_progress), not proposed
+expect_ok "$TEAMX" goal share --session s:val
+expect_ok "$TEAMX" publish progress --data '{"m":"x"}' --session s:val
+GSU=$($TEAMX goal set "ValGoal2" --session s:val --json)
+echo "$GSU" | python3 -c "import json,sys; assert json.load(sys.stdin)['state']=='in_progress', json.load(sys.stdin)" || fail "goal set on in_progress goal should report in_progress"
+
 step "ALL EDGE TESTS PASS"

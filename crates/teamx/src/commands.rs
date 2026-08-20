@@ -556,6 +556,10 @@ fn cmd_team_create(
     goal_title: Option<&str>,
     goal_body: Option<&str>,
 ) -> Result<Value> {
+    // Reject empty team names (model-driven calls can pass "" accidentally).
+    if name.trim().is_empty() {
+        return err("team name cannot be empty");
+    }
     // Idempotency guard for model-driven retries: if this session already owns
     // a non-archived team with the same name, return it instead of duplicating.
     let existing: Option<(String, String, String)> = conn
@@ -1567,8 +1571,18 @@ fn cmd_goal_set(
 ) -> Result<Value> {
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
     ensure_owner(conn, &actor, &team)?;
+    if title.trim().is_empty() {
+        return err("goal title cannot be empty");
+    }
     let goal_id = cmd_goal_set_inner(conn, &team.id, &actor.id, title, body)?;
-    Ok(json!({ "ok": true, "goal_id": goal_id, "state": "proposed" }))
+    // Reflect the goal's actual state (a `set` on an existing goal updates it
+    // in place and never rewinds the state machine).
+    let goal_state = team_goal(conn, &team.id)
+        .ok()
+        .flatten()
+        .map(|g| g.state)
+        .unwrap_or_else(|| "proposed".to_string());
+    Ok(json!({ "ok": true, "goal_id": goal_id, "state": goal_state }))
 }
 
 fn cmd_goal_set_inner(
