@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "noCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/cordis": ["../../deepseek-harness/vendor/cordis/src/index.ts"],
+      "@deepseek-ai/dsh-tools": ["../../deepseek-harness/packages/core/tools/src/index.ts"],
+      "@deepseek-ai/dsh-agent": ["../../deepseek-harness/packages/core/agent/src/index.ts"],
+      "@deepseek-ai/dsh-session": ["../../deepseek-harness/packages/core/session/src/index.ts"],
+      "@deepseek-ai/dsh-system-prompt": ["../../deepseek-harness/packages/core/system-prompt/src/index.ts"],
+      "@deepseek-ai/dsh-commands": ["../../deepseek-harness/packages/interaction/commands/src/index.ts"],
+      "@deepseek-ai/schemastery": ["../../deepseek-harness/vendor/schemastery/src/index.ts"],
+      "@deepseek-ai/dsh-llm": ["../../deepseek-harness/packages/llm/llm/src/index.ts"],
+      "@deepseek-ai/dsh-scope": ["../../deepseek-harness/packages/core/scope/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
