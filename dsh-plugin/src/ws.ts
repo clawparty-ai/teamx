@@ -74,12 +74,14 @@ export class WsClient extends EventEmitter {
       headers['Authorization'] = `Bearer ${this.opts.token}`
     }
 
+    // mTLS: pass ca/cert/key + rejectUnauthorized only when a client cert is
+    // configured. Without mTLS we keep rejectUnauthorized default (true) so a
+    // self-signed server cert fails loudly instead of silently downgrading.
     const ws = new WebSocket(wsUrl, {
       headers,
-      ca: mtls?.ca,
-      cert: mtls?.cert,
-      key: mtls?.key,
-      rejectUnauthorized: !!mtls,
+      ...(mtls
+        ? { ca: mtls.ca, cert: mtls.cert, key: mtls.key, rejectUnauthorized: true }
+        : {}),
     })
 
     this.ws = ws
@@ -91,8 +93,19 @@ export class WsClient extends EventEmitter {
 
     ws.on('message', (raw: Buffer) => {
       try {
-        const event = JSON.parse(raw.toString())
-        this.emit('event', event)
+        const msg = JSON.parse(raw.toString())
+        // Answer heartbeat pings (same as opencode-plugin's ws.ts)
+        if (msg?.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }))
+          return
+        }
+        // `{ type: "event", event: {...} }` frames carry ledger events
+        if (msg?.type === 'event' && msg.event) {
+          this.emit('event', msg.event)
+          return
+        }
+        // bare event objects (fallback)
+        this.emit('event', msg)
       } catch {
         // ignore malformed messages
       }

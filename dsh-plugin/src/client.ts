@@ -6,14 +6,14 @@
  */
 
 import { execFile } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import https from 'node:https'
 import http from 'node:http'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import { WebSocket } from 'ws'
 
 const execFileAsync = promisify(execFile)
 
@@ -21,16 +21,28 @@ const execFileAsync = promisify(execFile)
 // Identity
 // ---------------------------------------------------------------------------
 
-const INSTANCE_FILE = join(homedir(), '.teamx', 'instance.json')
+export const TEAMX_HOME = process.env.TEAMX_HOME ?? join(homedir(), '.teamx')
 
-export async function instanceId(): Promise<string> {
-  try {
-    const raw = await readFile(INSTANCE_FILE, 'utf-8')
-    const parsed = JSON.parse(raw)
-    return parsed.instance_id || parsed.instanceId || ''
-  } catch {
-    return ''
+const INSTANCE_FILE = join(TEAMX_HOME, 'instance.json')
+
+/**
+ * Read (or create) the teamx instance id. Synchronous, matching
+ * opencode-plugin: generates a UUID on first run and persists it.
+ */
+export function instanceId(): string {
+  const file = INSTANCE_FILE
+  if (existsSync(file)) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { instance_id?: string }
+      if (parsed.instance_id) return parsed.instance_id
+    } catch {
+      // fall through and regenerate
+    }
   }
+  const id = randomUUID()
+  mkdirSync(TEAMX_HOME, { recursive: true })
+  writeFileSync(file, JSON.stringify({ instance_id: id }, null, 2))
+  return id
 }
 
 /**
@@ -74,24 +86,64 @@ export async function mtlsFor(): Promise<MtlsConfig | null> {
 // Member cache
 // ---------------------------------------------------------------------------
 
-const membersByTeam = new Map<string, Map<string, { sessionId: string; name: string; role: string }>>()
-
-export function markMember(teamId: string, sessionId: string, name: string, role: string): void {
-  if (!membersByTeam.has(teamId)) membersByTeam.set(teamId, new Map())
-  membersByTeam.get(teamId)!.set(sessionId, { sessionId, name, role })
+export interface MemberInfo {
+  /** Whether this agent is a known teamx member. */
+  isMember: boolean
+  /** teamx member id (from sync: teams[].team.my_member_id). */
+  memberId?: string
+  /** team id the agent belongs to (first team). */
+  teamId?: string
+  /** display name (from team list: teams[].name is team name; member name resolved from status). */
+  name?: string
+  role?: string
 }
 
-export function memberStatus(teamId: string, sessionId: string): { name: string; role: string } | null {
-  return membersByTeam.get(teamId)?.get(sessionId) ?? null
+const members = new Map<string, MemberInfo>()
+
+/** Mark an agent as a teamx member (or not). */
+export function markMember(agentId: string, isMember: boolean, info?: Partial<MemberInfo>): void {
+  if (isMember) {
+    const prev = members.get(agentId)
+    members.set(agentId, { isMember: true, ...prev, ...info })
+  } else {
+    members.set(agentId, { isMember: false })
+  }
 }
 
-export function knownMemberSessions(teamId: string): string[] {
-  return [...(membersByTeam.get(teamId)?.keys() ?? [])]
+export function memberStatus(agentId: string): MemberInfo | null {
+  return members.get(agentId) ?? null
 }
 
-export function clearMemberCache(teamId?: string): void {
-  if (teamId) membersByTeam.delete(teamId)
-  else membersByTeam.clear()
+/** Agent ids currently known to be teamx members (for the poller/WS loop). */
+export function knownMemberSessions(): string[] {
+  const out: string[] = []
+  for (const [agentId, info] of members) {
+    if (info.isMember) out.push(agentId)
+  }
+  return out
+}
+
+/** Known member agent ids that belong to a specific team (for WS subscriptions). */
+export function sessionsForTeam(teamId: string): string[] {
+  const out: string[] = []
+  for (const [agentId, info] of members) {
+    if (info.isMember && info.teamId === teamId) out.push(agentId)
+  }
+  return out
+}
+
+/** Known team ids across all member agents (for WS subscriptions). */
+export function knownTeamIds(): string[] {
+  const teams = new Set<string>()
+  for (const info of members.values()) {
+    if (info.isMember && info.teamId) teams.add(info.teamId)
+  }
+  return [...teams]
+}
+
+export function clearMemberCache(agentId?: string): void {
+  if (agentId) members.delete(agentId)
+  else members.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -143,82 +195,100 @@ interface RpcResponse {
   error?: string
 }
 
-/**
- * Map a teamx CLI command + args to an RPC method + params.
- * Mirrors opencode-plugin's runRpcRaw command→method mapping.
- */
-function mapCommandToRpc(args: string[]): { method: string; params: Record<string, any> } | null {
-  const cmd = args[0]
-  const rest = args.slice(1)
-  const params: Record<string, any> = {}
+/** kebab/snake normalize: `goal-title` → `goal_title`, `no-advance` → `no_advance`. */
+function toSnake(s: string): string {
+  return s.replace(/-/g, '_')
+}
 
-  // Helper: parse --key value pairs from args
-  const parseFlags = (a: string[]) => {
-    for (let i = 0; i < a.length; i++) {
-      if (a[i].startsWith('--') && i + 1 < a.length) {
-        params[a[i].slice(2)] = a[i + 1]
-        i++
+/**
+ * Convert a V1-style CLI arg vector into an RPC { method, args } payload for
+ * network mode. Mirrors opencode-plugin's cliArgsToRpc.
+ *
+ * CLI shape: `[group] <subcommand> [positional...] [--flag value | --flag]...`
+ * Positional slots are mapped to their RPC field names per method.
+ */
+export function cliArgsToRpc(argv: string[]): { method: string; args: Record<string, string | boolean | number | null> } {
+  const positional: string[] = []
+  const flags: Record<string, string | boolean | number | null> = {}
+  let i = 0
+  while (i < argv.length) {
+    const a = argv[i]
+    if (a.startsWith('--')) {
+      const key = toSnake(a.slice(2))
+      const next = argv[i + 1]
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[key] = next
+        i += 2
+      } else {
+        flags[key] = true
+        i += 1
       }
+    } else {
+      positional.push(a)
+      i += 1
     }
   }
 
-  switch (cmd) {
-    case 'team':
-      if (rest[0] === 'create') { parseFlags(rest.slice(1)); return { method: 'team.create', params } }
-      if (rest[0] === 'join') { parseFlags(rest.slice(1)); return { method: 'team.join', params } }
-      if (rest[0] === 'approve') { parseFlags(rest.slice(1)); return { method: 'team.approve', params } }
-      if (rest[0] === 'deny') { parseFlags(rest.slice(1)); return { method: 'team.deny', params } }
-      if (rest[0] === 'list') { parseFlags(rest.slice(1)); return { method: 'team.list', params } }
-      if (rest[0] === 'status') { parseFlags(rest.slice(1)); return { method: 'team.status', params } }
-      if (rest[0] === 'leave') { parseFlags(rest.slice(1)); return { method: 'team.leave', params } }
-      if (rest[0] === 'archive') { parseFlags(rest.slice(1)); return { method: 'team.archive', params } }
-      if (rest[0] === 'destroy') { parseFlags(rest.slice(1)); return { method: 'team.destroy', params } }
-      if (rest[0] === 'invite') { parseFlags(rest.slice(1)); return { method: 'team.invite', params } }
-      if (rest[0] === 'invite-list') { parseFlags(rest.slice(1)); return { method: 'team.invite_list', params } }
-      if (rest[0] === 'invite-revoke') { parseFlags(rest.slice(1)); return { method: 'team.invite_revoke', params } }
-      if (rest[0] === 'import') { parseFlags(rest.slice(1)); return { method: 'team.import', params } }
-      break
-    case 'goal':
-      if (rest[0] === 'set') { parseFlags(rest.slice(1)); return { method: 'goal.set', params } }
-      if (rest[0] === 'share') { parseFlags(rest.slice(1)); return { method: 'goal.share', params } }
-      if (rest[0] === 'close') { parseFlags(rest.slice(1)); return { method: 'goal.close', params } }
-      break
-    case 'role':
-      if (rest[0] === 'list') { parseFlags(rest.slice(1)); return { method: 'role.list', params } }
-      if (rest[0] === 'set') { parseFlags(rest.slice(1)); return { method: 'role.set', params } }
-      if (rest[0] === 'propose') { parseFlags(rest.slice(1)); return { method: 'role.propose', params } }
-      if (rest[0] === 'approve') { parseFlags(rest.slice(1)); return { method: 'role.approve', params } }
-      if (rest[0] === 'deny') { parseFlags(rest.slice(1)); return { method: 'role.deny', params } }
-      if (rest[0] === 'update') { parseFlags(rest.slice(1)); return { method: 'role.update', params } }
-      break
-    case 'member':
-      if (rest[0] === 'set-state') { parseFlags(rest.slice(1)); return { method: 'member.set_state', params } }
-      break
-    case 'publish':
-      if (rest[0] === 'activity') { parseFlags(rest.slice(1)); return { method: 'activity.push', params } }
-      break
-    case 'events':
-      parseFlags(rest)
-      return { method: 'events', params }
-    case 'log':
-      parseFlags(rest)
-      return { method: 'log', params }
+  // Determine the dotted method from the first two positional tokens.
+  // Grouped commands (team.*, goal.*, member.*, role.*, loopx.*, tunnel.*,
+  // activity.*) use a two-token method; top-level commands
+  // (publish/ask/respond/events/log/sync) treat every positional as a parameter.
+  const GROUPED = new Set(['team', 'goal', 'member', 'role', 'loopx', 'tunnel', 'activity'])
+  const p0 = positional[0] ?? ''
+  const p1 = positional[1] ?? ''
+  let method: string
+  let rest: string[]
+  if (GROUPED.has(p0) && p1) {
+    method = `${p0}.${toSnake(p1)}`
+    rest = positional.slice(2)
+  } else {
+    method = p0
+    rest = positional.slice(1)
   }
 
-  return null
+  const args: Record<string, string | boolean | number | null> = { ...flags }
+
+  // Map positional parameters to their RPC field names per method.
+  const slots: Record<string, string[]> = {
+    'team.create': ['name'],
+    'team.join': ['token', 'name'],
+    'team.approve': ['member_id'],
+    'team.deny': ['member_id'],
+    'team.invite': ['role_desc'],
+    'team.invite_revoke': ['id'],
+    'team.import': ['letter'],
+    'goal.set': ['title', 'body'],
+    'member.set_state': ['state'],
+    'role.set': ['role'],
+    'role.propose': ['role', 'label', 'description'],
+    'role.approve': ['role'],
+    'role.deny': ['role'],
+    'role.update': ['role'],
+    'publish': ['type'],
+    'ask': ['member_id'],
+    'respond': ['ask_id', 'answer'],
+    'sync': ['session'],
+    'events': ['after', 'team'],
+    'log': ['team', 'limit', 'after'],
+  }
+  const fieldNames = slots[method] ?? []
+  for (let k = 0; k < rest.length && k < fieldNames.length; k++) {
+    args[fieldNames[k]] = rest[k]
+  }
+
+  return { method, args }
 }
 
 async function runRpc(args: string[]): Promise<any> {
   const serverUrl = process.env.TEAMX_SERVER_URL
   if (!serverUrl) throw new Error('TEAMX_SERVER_URL not set')
 
-  const mapped = mapCommandToRpc(args)
-  if (!mapped) throw new Error(`Cannot map CLI command to RPC: ${args.join(' ')}`)
+  const { method, args: params } = cliArgsToRpc(args)
 
   const mtls = await mtlsFor()
   const body = JSON.stringify({
-    method: mapped.method,
-    params: mapped.params,
+    method,
+    params,
   })
 
   const url = new URL('/rpc', serverUrl)
@@ -264,58 +334,3 @@ async function runRpc(args: string[]): Promise<any> {
   })
 }
 
-// ---------------------------------------------------------------------------
-// WS push client (for real-time event notifications)
-// ---------------------------------------------------------------------------
-
-export interface WsClientOptions {
-  serverUrl: string
-  team: string
-  session: string
-  token?: string
-  onEvent: (event: { type: string; data?: any }) => void
-}
-
-/**
- * Connect to the teamx server's WS endpoint for real-time event push.
- * Supports mTLS via TEAMX_MTLS_* env vars.
- * Returns a cleanup function to close the connection.
- */
-export async function connectWs(opts: WsClientOptions): Promise<() => void> {
-  const mtls = await mtlsFor()
-  const url = new URL('/ws', opts.serverUrl)
-  const wsUrl = url.toString().replace(/^http/, 'ws')
-
-  const headers: Record<string, string> = {
-    'X-Teamx-Team': opts.team,
-    'X-Teamx-Session': opts.session,
-  }
-  if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
-
-  const ws = new WebSocket(wsUrl, {
-    headers,
-    ca: mtls?.ca,
-    cert: mtls?.cert,
-    key: mtls?.key,
-    rejectUnauthorized: !!mtls,
-  })
-
-  ws.on('message', (raw: Buffer) => {
-    try {
-      const event = JSON.parse(raw.toString())
-      opts.onEvent(event)
-    } catch {
-      // ignore malformed messages
-    }
-  })
-
-  ws.on('error', (err) => {
-    console.error('[teamx-dsh] WS error:', err.message)
-  })
-
-  return () => {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-      ws.close()
-    }
-  }
-}

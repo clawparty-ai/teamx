@@ -1,38 +1,29 @@
 /**
  * teamx_* tools for dsh-plugin.
  * Each tool calls `runCli` to spawn the teamx binary (or HTTP RPC in network mode).
- * Session key is derived from `exec.agent.session.id` (dsh agent identity).
+ * Session key is `${instanceId}:${agent.session.id}` (same format as opencode-plugin).
+ * CLI args mirror `crates/teamx/src/cli.rs` exactly — positional args stay
+ * positional, only real flags use `--flag value`.
  * @module @teamx/dsh-plugin/tools
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { runCli, sessionKey, instanceId, markMember, knownMemberSessions } from './client.js'
-
-/** Get the teamx session key from a dsh tool execution context. */
+import { runCli, sessionKey, instanceId } from './client.js'
+/** Get the teamx session key for a dsh tool execution context. */
 function getKey(exec: ToolRunContext): string {
-  return `${exec.agent.session.id}`
+  return sessionKey(instanceId(), exec.agent.session.id)
 }
 
-/** Build CLI args array from named options, filtering undefined values. */
-function args(...pairs: (string | undefined | null)[]): string[] {
-  const out: string[] = []
-  for (let i = 0; i < pairs.length; i++) {
-    const v = pairs[i]
-    if (v != null && v !== '') {
-      out.push(v)
-      // next is the value for this flag
-      if (i + 1 < pairs.length && pairs[i + 1] != null) {
-        out.push(pairs[i + 1]!)
-        i++
-      }
-    } else {
-      i++ // skip the value too
-    }
-  }
-  return out
+/** Append `--flag value` when value is present. */
+function opt(name: string, value: string | undefined | null): string[] {
+  return value ? [name, value] : []
+}
+
+/** Append a positional value when present. */
+function pos(value: string | undefined | null): string[] {
+  return value ? [value] : []
 }
 
 // ---------------------------------------------------------------------------
@@ -57,11 +48,10 @@ export function registerTeamTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'create',
-        '--name', (a as any).name,
+        'team', 'create', (a as any).name,
         '--session', getKey(exec),
-        ...((a as any).goal_title ? ['--goal-title', (a as any).goal_title] : []),
-        ...((a as any).goal_body ? ['--goal-body', (a as any).goal_body] : []),
+        ...opt('--goal-title', (a as any).goal_title),
+        ...opt('--goal-body', (a as any).goal_body),
       ])
       return JSON.stringify(res)
     },
@@ -83,8 +73,7 @@ export function registerTeamTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'join',
-        '--token', (a as any).token,
+        'team', 'join', (a as any).token,
         '--name', (a as any).name,
         '--session', getKey(exec),
       ])
@@ -108,7 +97,7 @@ export function registerTeamTools(ctx: Context): void {
       const res = await runCli([
         'team', 'leave',
         '--session', getKey(exec),
-        ...((a as any).team ? ['--team', (a as any).team] : []),
+        ...opt('--team', (a as any).team),
       ])
       return JSON.stringify(res)
     },
@@ -148,7 +137,7 @@ export function registerTeamTools(ctx: Context): void {
       const res = await runCli([
         'team', 'status',
         '--session', getKey(exec),
-        ...((a as any).team ? ['--team', (a as any).team] : []),
+        ...opt('--team', (a as any).team),
       ])
       return JSON.stringify(res)
     },
@@ -157,7 +146,7 @@ export function registerTeamTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_sync',
     description:
-      'Pull the latest team state + NEW events since last sync. Call at the start of every turn before acting.',
+      'Pull the latest team state + NEW events since the last sync for every team the current session belongs to, then advance the sync cursor. Call this at the start of every turn before acting.',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -166,7 +155,7 @@ export function registerTeamTools(ctx: Context): void {
       },
     },
     async execute(_a, exec) {
-      const res = await runCli(['team', 'sync', '--session', getKey(exec)])
+      const res = await runCli(['sync', '--session', getKey(exec)])
       return JSON.stringify(res)
     },
   }))
@@ -174,15 +163,21 @@ export function registerTeamTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_archive',
     description: 'Archive a completed team (owner only). Archived teams accept no new members.',
-    parameters: {},
+    parameters: {
+      team: { type: 'string', description: 'Team ID (optional)' },
+    },
     output: {
       schema: { type: 'string' },
       render(_args, value) {
         return [{ type: 'text', text: String(value) }]
       },
     },
-    async execute(_a, exec) {
-      const res = await runCli(['team', 'archive', '--session', getKey(exec)])
+    async execute(a, exec) {
+      const res = await runCli([
+        'team', 'archive',
+        '--session', getKey(exec),
+        ...opt('--team', (a as any).team),
+      ])
       return JSON.stringify(res)
     },
   }))
@@ -190,15 +185,21 @@ export function registerTeamTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_team_destroy',
     description: 'Destroy the team permanently (owner only). This action cannot be undone.',
-    parameters: {},
+    parameters: {
+      team: { type: 'string', description: 'Team ID (optional)' },
+    },
     output: {
       schema: { type: 'string' },
       render(_args, value) {
         return [{ type: 'text', text: String(value) }]
       },
     },
-    async execute(_a, exec) {
-      const res = await runCli(['team', 'destroy', '--session', getKey(exec)])
+    async execute(a, exec) {
+      const res = await runCli([
+        'team', 'destroy',
+        '--session', getKey(exec),
+        ...opt('--team', (a as any).team),
+      ])
       return JSON.stringify(res)
     },
   }))
@@ -206,10 +207,10 @@ export function registerTeamTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_team_invite',
     description:
-      'Generate an invite link for a new member with a specific role. Returns the invite token.',
+      'Invite a member with a job role: issue a client cert + invitation letter (owner only). Pass role + description, e.g. "测试工程师: 负责测试并汇报缺陷".',
     parameters: {
-      role: { type: 'string', required: true, description: 'Role key (owner, supervisor, contributor, reviewer, subtask-implementer)' },
-      name_hint: { type: 'string', description: 'Suggested display name for the invitee' },
+      role_desc: { type: 'string', required: true, description: 'Job role + description, e.g. "测试工程师: 负责测试并汇报缺陷"' },
+      name_hint: { type: 'string', description: 'Suggested display name (member may override at import)' },
     },
     output: {
       schema: { type: 'string' },
@@ -219,10 +220,9 @@ export function registerTeamTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'invite',
-        '--role', (a as any).role,
+        'team', 'invite', (a as any).role_desc,
         '--session', getKey(exec),
-        ...((a as any).name_hint ? ['--name-hint', (a as any).name_hint] : []),
+        ...opt('--name-hint', (a as any).name_hint),
       ])
       return JSON.stringify(res)
     },
@@ -230,52 +230,11 @@ export function registerTeamTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_team_import',
-    description: 'Import a team invite letter from a letter file or JSON string.',
+    description:
+      'Import an invitation letter: store the client cert/key and claim the pending seat. Pass the letter (single-line `teamx-inv:v1:<base64>` or a path to a .json letter).',
     parameters: {
-      path_or_json: { type: 'string', required: true, description: 'Path to letter file or JSON string' },
-    },
-    output: {
-      schema: { type: 'string' },
-      render(_args, value) {
-        return [{ type: 'text', text: String(value) }]
-      },
-    },
-    async execute(a, exec) {
-      const val = (a as any).path_or_json
-      // Try as file path first, then as JSON
-      let args: string[]
-      try {
-        JSON.parse(val)
-        args = ['team', 'import', '--json', val, '--session', getKey(exec)]
-      } catch {
-        args = ['team', 'import', '--path', val, '--session', getKey(exec)]
-      }
-      const res = await runCli(args)
-      return JSON.stringify(res)
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'teamx_team_invite_list',
-    description: 'List pending invites for the team.',
-    parameters: {},
-    output: {
-      schema: { type: 'string' },
-      render(_args, value) {
-        return [{ type: 'text', text: String(value) }]
-      },
-    },
-    async execute(_a, exec) {
-      const res = await runCli(['team', 'invite-list', '--session', getKey(exec)])
-      return JSON.stringify(res)
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'teamx_team_invite_revoke',
-    description: 'Revoke a pending invite by token.',
-    parameters: {
-      token: { type: 'string', required: true, description: 'Invite token to revoke' },
+      letter: { type: 'string', required: true, description: 'Invitation letter (teamx-inv:v1:<base64> or path to .json letter)' },
+      name: { type: 'string', description: 'Display name (defaults to the letter name_hint)' },
     },
     output: {
       schema: { type: 'string' },
@@ -285,9 +244,54 @@ export function registerTeamTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'invite-revoke',
-        '--token', (a as any).token,
+        'team', 'import', (a as any).letter,
         '--session', getKey(exec),
+        ...opt('--name', (a as any).name),
+      ])
+      return JSON.stringify(res)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_team_invite_list',
+    description: 'List issued invitation letters for the team (owner only), with their state (unused/used/revoked).',
+    parameters: {
+      team: { type: 'string', description: 'Team ID (optional)' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(a, exec) {
+      const res = await runCli([
+        'team', 'invite-list',
+        '--session', getKey(exec),
+        ...opt('--team', (a as any).team),
+      ])
+      return JSON.stringify(res)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_team_invite_revoke',
+    description: 'Revoke an invitation letter (its cert is rejected at connect) (owner only).',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Invitation id to revoke' },
+      team: { type: 'string', description: 'Team ID (optional)' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(a, exec) {
+      const res = await runCli([
+        'team', 'invite-revoke', (a as any).id,
+        '--session', getKey(exec),
+        ...opt('--team', (a as any).team),
       ])
       return JSON.stringify(res)
     },
@@ -301,7 +305,7 @@ export function registerTeamTools(ctx: Context): void {
 export function registerGoalTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_set_goal',
-    description: 'Set or update the team goal (owner only).',
+    description: 'Set (or update) the team goal (owner only).',
     parameters: {
       title: { type: 'string', required: true, description: 'Goal title' },
       body: { type: 'string', description: 'Goal body / detailed description' },
@@ -314,10 +318,9 @@ export function registerGoalTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'goal', 'set',
-        '--title', (a as any).title,
+        'goal', 'set', (a as any).title,
         '--session', getKey(exec),
-        ...((a as any).body ? ['--body', (a as any).body] : []),
+        ...opt('--body', (a as any).body),
       ])
       return JSON.stringify(res)
     },
@@ -365,7 +368,7 @@ export function registerGoalTools(ctx: Context): void {
 export function registerMemberTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_approve',
-    description: 'Approve a pending membership request (owner only).',
+    description: 'Approve a pending membership request (owner only). Pass team when the owner session belongs to several teams.',
     parameters: {
       member_id: { type: 'string', required: true, description: 'The pending member id' },
       team: { type: 'string', description: 'Team ID (optional)' },
@@ -378,10 +381,9 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'approve',
-        '--member', (a as any).member_id,
+        'team', 'approve', (a as any).member_id,
         '--session', getKey(exec),
-        ...((a as any).team ? ['--team', (a as any).team] : []),
+        ...opt('--team', (a as any).team),
       ])
       return JSON.stringify(res)
     },
@@ -389,7 +391,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_deny',
-    description: 'Deny a pending membership request (owner only).',
+    description: 'Deny a pending membership request (owner only). Pass team when the owner session belongs to several teams.',
     parameters: {
       member_id: { type: 'string', required: true, description: 'The pending member id' },
       team: { type: 'string', description: 'Team ID (optional)' },
@@ -402,10 +404,9 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'team', 'deny',
-        '--member', (a as any).member_id,
+        'team', 'deny', (a as any).member_id,
         '--session', getKey(exec),
-        ...((a as any).team ? ['--team', (a as any).team] : []),
+        ...opt('--team', (a as any).team),
       ])
       return JSON.stringify(res)
     },
@@ -414,7 +415,7 @@ export function registerMemberTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_set_role',
     description:
-      'Choose a role for the current session (member self-service) or assign one to another member (owner only).',
+      'Set the current session role (member self-service); owner may specify on their behalf.',
     parameters: {
       role: { type: 'string', required: true, description: 'Role key from the team catalog' },
       member: { type: 'string', description: 'Target member id when assigning on someone behalf (owner only)' },
@@ -427,10 +428,9 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'role', 'set',
-        '--role', (a as any).role,
+        'role', 'set', (a as any).role,
         '--session', getKey(exec),
-        ...((a as any).member ? ['--member', (a as any).member] : []),
+        ...opt('--member', (a as any).member),
       ])
       return JSON.stringify(res)
     },
@@ -439,7 +439,7 @@ export function registerMemberTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_role_propose',
     description:
-      'Propose a custom role (key + label + job description). The team owner must approve it before it can be used.',
+      'Propose a custom role (member self-service); the owner must approve it before it can be used.',
     parameters: {
       role: { type: 'string', required: true, description: 'Unique role key, e.g. devops' },
       label: { type: 'string', required: true, description: 'Human-readable role label, e.g. DevOps 工程师' },
@@ -453,11 +453,9 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'role', 'propose',
-        '--role', (a as any).role,
-        '--label', (a as any).label,
+        'role', 'propose', (a as any).role, (a as any).label,
         '--session', getKey(exec),
-        ...((a as any).description ? ['--description', (a as any).description] : []),
+        ...pos((a as any).description),
       ])
       return JSON.stringify(res)
     },
@@ -465,7 +463,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_role_approve',
-    description: 'Approve a proposed custom role (owner only).',
+    description: 'Approve a proposed custom role and grant it to the proposer (owner only).',
     parameters: {
       role: { type: 'string', required: true, description: 'Role key to approve' },
     },
@@ -477,8 +475,7 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'role', 'approve',
-        '--role', (a as any).role,
+        'role', 'approve', (a as any).role,
         '--session', getKey(exec),
       ])
       return JSON.stringify(res)
@@ -499,8 +496,7 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'role', 'deny',
-        '--role', (a as any).role,
+        'role', 'deny', (a as any).role,
         '--session', getKey(exec),
       ])
       return JSON.stringify(res)
@@ -509,7 +505,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_role_update',
-    description: "Update a role's label and/or description (owner only).",
+    description: "Update a role's label/description (owner only).",
     parameters: {
       role: { type: 'string', required: true, description: 'Role key to update' },
       label: { type: 'string', description: 'New label (optional)' },
@@ -523,11 +519,10 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'role', 'update',
-        '--role', (a as any).role,
+        'role', 'update', (a as any).role,
         '--session', getKey(exec),
-        ...((a as any).label ? ['--label', (a as any).label] : []),
-        ...((a as any).description ? ['--description', (a as any).description] : []),
+        ...opt('--label', (a as any).label),
+        ...opt('--description', (a as any).description),
       ])
       return JSON.stringify(res)
     },
@@ -536,7 +531,7 @@ export function registerMemberTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_set_state',
     description:
-      'Set a member working state: idle (finished the current slice, no pending work) or active (resumed).',
+      "Set a member's working state: idle (finished the current slice, no pending work) or active (resumed).",
     parameters: {
       state: { type: 'string', required: true, enum: ['idle', 'active'] as readonly string[], description: 'Target member state' },
       member: { type: 'string', description: 'Target member id (owner only)' },
@@ -549,10 +544,9 @@ export function registerMemberTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'member', 'set-state',
-        '--state', (a as any).state,
+        'member', 'set-state', (a as any).state,
         '--session', getKey(exec),
-        ...((a as any).member ? ['--member', (a as any).member] : []),
+        ...opt('--member', (a as any).member),
       ])
       return JSON.stringify(res)
     },
@@ -580,8 +574,7 @@ export function registerInteractionTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'ask',
-        '--member', (a as any).member_id,
+        'ask', (a as any).member_id,
         '--question', (a as any).question,
         '--session', getKey(exec),
       ])
@@ -604,8 +597,7 @@ export function registerInteractionTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'respond',
-        '--ask-id', (a as any).ask_id,
+        'respond', (a as any).ask_id,
         '--answer', (a as any).answer,
         '--session', getKey(exec),
       ])
@@ -616,16 +608,16 @@ export function registerInteractionTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_publish',
     description:
-      'Publish an event to the team ledger. Types: start, progress, decision, update, blocked, resumed, achieved, refine.',
+      'Publish an event to the team ledger. Types: start, progress, decision, update, blocked, resumed, achieved, refine, activity.',
     parameters: {
       type: {
         type: 'string',
         required: true,
-        enum: ['start', 'progress', 'decision', 'update', 'blocked', 'resumed', 'achieved', 'refine'] as readonly string[],
+        enum: ['start', 'progress', 'decision', 'update', 'blocked', 'resumed', 'achieved', 'refine', 'activity'] as readonly string[],
         description: 'Event type',
       },
-      data: { type: 'string', description: 'JSON string payload, e.g. {"message":"..."}' },
-      assignee: { type: 'string', description: 'Member id the task/event is directed to' },
+      data: { type: 'string', description: 'JSON payload for the event' },
+      assignee: { type: 'string', description: 'Assign the task/event to a specific member (auto-execute on that member only)' },
     },
     output: {
       schema: { type: 'string' },
@@ -635,11 +627,10 @@ export function registerInteractionTools(ctx: Context): void {
     },
     async execute(a, exec) {
       const res = await runCli([
-        'publish',
-        (a as any).type,
+        'publish', (a as any).type,
         '--session', getKey(exec),
-        ...((a as any).data ? ['--data', (a as any).data] : []),
-        ...((a as any).assignee ? ['--assignee', (a as any).assignee] : []),
+        ...opt('--data', (a as any).data),
+        ...opt('--assignee', (a as any).assignee),
       ])
       return JSON.stringify(res)
     },

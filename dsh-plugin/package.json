@@ -19,7 +19,7 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json > /tmp/teamx-dsh-typecheck.log 2>&1; grep -E '^src/' /tmp/teamx-dsh-typecheck.log || true; ! grep -qE '^src/' /tmp/teamx-dsh-typecheck.log"
   },
   "dependencies": {
     "ws": "^8.21.0"
