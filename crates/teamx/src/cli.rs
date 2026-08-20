@@ -135,6 +135,11 @@ pub enum Command {
 
     /// Web dashboard (enterprise): activity analytics UI (HTTPS + token, owner only)
     Ui(UiCmd),
+
+    /// SOCKS5 outbound proxy (network mode): a local SOCKS5 port on member-a
+    /// tunnels traffic through the team server to member-b's proxy exit.
+    #[command(subcommand)]
+    Proxy(ProxyCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -560,6 +565,39 @@ pub enum TunnelCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
+}
+
+/// SOCKS5 outbound proxy commands (network mode).
+///
+/// - `proxy exit`: provider side — member-b registers a proxy exit and dials
+///   the target of every incoming SOCKS5 stream (long-lived).
+/// - `proxy start`: consumer side — member-a serves a local SOCKS5 port and
+///   tunnels every CONNECT through the team server to the exit (long-lived).
+#[derive(Subcommand, Debug)]
+pub enum ProxyCmd {
+    /// Start a proxy exit (provider side): register with the server and dial
+    /// the SOCKS5 target of each stream. Long-lived.
+    Exit {
+        /// exit name (unique per team; consumed via `proxy start --exit`)
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Serve a local SOCKS5 proxy port that tunnels to a team proxy exit.
+    /// Long-lived.
+    Start {
+        /// local SOCKS5 port to listen on
+        #[arg(long, default_value_t = 1080)]
+        port: u16,
+        /// proxy exit name to route traffic through
+        #[arg(long)]
+        exit: String,
         /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
         #[arg(long)]
         server: Option<String>,

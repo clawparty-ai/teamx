@@ -306,9 +306,14 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                 let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                                 let target = v.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
                                 let lan_ip = v.get("lan_ip").and_then(Value::as_str).map(str::to_string);
-                                // mode: "local" (default) or "frp" — see TunnelMode::parse.
+                                // mode: "local" (default), "frp" or "proxy" — see TunnelMode::parse.
                                 let mode = crate::tunnel::TunnelMode::parse(v.get("mode").and_then(Value::as_str));
-                                if name.is_empty() || target == 0 {
+                                // Proxy exits have no fixed target port; Local/Frp require one.
+                                let port_ok = match mode {
+                                    crate::tunnel::TunnelMode::Proxy => true,
+                                    _ => target != 0,
+                                };
+                                if name.is_empty() || !port_ok {
                                     let _ = sender.send(ws_text(r#"{"type":"error","message":"register requires name and port"}"#)).await;
                                     continue;
                                 }
@@ -417,6 +422,8 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
     };
     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    // Optional SOCKS5 target (host:port) for Proxy-mode exits.
+    let target = v.get("target").and_then(Value::as_str).map(str::to_string);
     if ty != "connect" || name.is_empty() {
         let _ = socket.send(ws_text(r#"{"type":"error","message":"expected {\"type\":\"connect\",\"name\":\"<tunnel>\"}"}"#)).await;
         return;
@@ -453,9 +460,10 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
         }
     };
 
-    // Open a stream on the tunnel; the provider dials its local target.
+    // Open a stream on the tunnel; the provider dials its local target (or
+    // the SOCKS5 target for Proxy-mode exits).
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let sid = match state.tunnels.open_stream(&team_id, &tunnel_name, tx) {
+    let sid = match state.tunnels.open_stream(&team_id, &tunnel_name, tx, target.as_deref()) {
         Some(sid) => sid,
         None => {
             let _ = socket.send(ws_text(r#"{"type":"error","message":"tunnel disappeared"}"#)).await;

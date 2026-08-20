@@ -1,6 +1,6 @@
 # teamx 双窗口 Demo 手动测试指引（Manual Test）
 
-> 本文件是 `docs/demo.md` 的配套测试 runbook：**"我"手动启动两个 opencode 窗口**，窗口 A 作为 team lead 创建团队并产出设计方案，窗口 B 作为 reviewer 加入并评审方案，全程通过 teamx `/Team` agent + `teamx_*` 工具协作。
+> 本文件是 `docs/12-demo-overview.md` 的配套测试 runbook：**"我"手动启动两个 opencode 窗口**，窗口 A 作为 team lead 创建团队并产出设计方案，窗口 B 作为 reviewer 加入并评审方案，全程通过 teamx `/Team` agent + `teamx_*` 工具协作。
 
 ## 0. 前置检查（30 秒）
 

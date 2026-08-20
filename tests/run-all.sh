@@ -12,6 +12,7 @@
 #   10. network-mode reverse-tunnel test
 #   11. enterprise activity analytics test (network mode)
 #   12. TEAM.md bootstrap test (teamfile-test.sh)
+#   13. SOCKS5 proxy test (proxy-test.ts)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -72,12 +73,20 @@ else
 fi
 
 echo
-echo "== 11/12 enterprise activity analytics test (network mode) =="
+echo "== 11/13 enterprise activity analytics test (network mode) =="
 ./tests/activity-test.sh
 
 echo
-echo "== 12/12 TEAM.md bootstrap test =="
+echo "== 12/13 TEAM.md bootstrap test =="
 ./tests/teamfile-test.sh
+
+echo
+echo "== 13/13 SOCKS5 proxy test =="
+if command -v bun >/dev/null 2>&1; then
+  bun tests/proxy-test.ts
+else
+  echo "bun not found; skipping proxy test"
+fi
 
 echo
 echo "ALL TEST SUITES PASSED"

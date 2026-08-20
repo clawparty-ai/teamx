@@ -11,7 +11,7 @@
 ## 0. 前置条件
 
 1. `./install.sh` 已执行并重启 opencode（`/team tunnel` 子命令可用）。
-2. 已有一个网络模式的团队（owner 已 `serve start`，成员已 import letter + approve，见 `docs/manual-test-network.md`）。
+2. 已有一个网络模式的团队（owner 已 `serve start`，成员已 import letter + approve，见 `docs/16-manual-network.md`）。
 3. member-b 机器上有一个正在运行的本地服务（本示例用 HTTP 服务，隧道本身支持任意 TCP 协议：SSH / 数据库 / 自定义协议）。
 
 ## 1. 数据流

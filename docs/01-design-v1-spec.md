@@ -110,7 +110,7 @@ publish 类型与状态影响：
 - **无鉴权**：`session_key` 由调用方自报（`--session`），CLI 不校验调用方身份；`invite_token` 对全队成员可见（`team list`/`team status` 均返回）。
 - **定位**：V1 是"信任本机"的协作约定；"owner 审批/角色"是协作语义，不是安全边界。
 - **owner 保护**：owner 不能 `team leave`（无所有权转移机制，防止团队变孤儿）；一个 session 至多作为**一个**非 `archived` 团队的 owner（`team create` 拒绝第二团队，幂等同名复用除外）；`team` 处于 `completed/archived` 后不可再入队。
-- **真实鉴权**在 V2（token 签发/校验、成员凭证，见 `docs/v2-design.md`）。
+- **真实鉴权**在 V2（token 签发/校验、成员凭证，见 `docs/02-design-v2-architecture.md`）。
 
 ## 并发与一致性
 

@@ -1,6 +1,6 @@
 # teamx V2 设计（Design）
 
-V2 把 teamx 从"单机 CLI-only"升级为**可跨网络、可实时推送、成员零暴露**的版本。本文是 V2 设计蓝图；V1 实现见 `docs/v1-spec.md`。
+V2 把 teamx 从"单机 CLI-only"升级为**可跨网络、可实时推送、成员零暴露**的版本。本文是 V2 设计蓝图；V1 实现见 `docs/01-design-v1-spec.md`。
 
 > **核心架构决策（v2-design 修订版）**：
 > 成员通过 **opencode plugin 外连注册**到 `teamx serve`（中央 broker），server 向成员**推送**事件。

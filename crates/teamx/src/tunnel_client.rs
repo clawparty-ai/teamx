@@ -164,6 +164,22 @@ pub fn forward(server_url: &str, name: &str, local_port: u16) -> Result<serde_js
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/// `teamx proxy start` — block forever serving SOCKS5 on a local port,
+/// tunnelling every CONNECT to the team's proxy exit through the server.
+pub fn socks5_proxy(server_url: &str, exit_name: &str, local_port: u16) -> Result<serde_json::Value, String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
+    rt.block_on(run_socks5_proxy(server_url, exit_name, local_port))?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// `teamx proxy exit` — block forever as a proxy exit (provider side).
+/// Registers mode=proxy and dials the SOCKS5 target of each stream.
+pub fn proxy_exit(server_url: &str, name: &str) -> Result<serde_json::Value, String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
+    rt.block_on(run_expose(server_url, name, 0, "proxy", None))?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 /// `teamx tunnel list|status|close` — one RPC call, print the JSON result.
 pub fn rpc(server_url: &str, method: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
     run_rpc(server_url, method, args)
@@ -248,9 +264,13 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
                         if sid == 0 {
                             continue;
                         }
+                        // Proxy-mode exits carry a dynamic target (host:port);
+                        // otherwise dial the fixed local port.
+                        let target = v.get("target").and_then(|t| t.as_str()).map(str::to_string);
+                        let dial: String = target.unwrap_or_else(|| format!("127.0.0.1:{port}"));
                         let writers2 = writers.clone();
                         let tx2 = to_server_tx.clone();
-                        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                        match tokio::net::TcpStream::connect(dial.as_str()).await {
                             Ok(sock) => {
                                 let (w_tx, mut w_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                                 writers2.lock().unwrap().insert(sid, w_tx);
@@ -413,6 +433,171 @@ pub async fn run_forward(server_url: &str, name: &str, local_port: u16) -> Resul
     }
 }
 
+/// Consumer side (proxy): serve SOCKS5 on a local port. Each accepted
+/// connection completes the SOCKS5 handshake, parses the CONNECT target,
+/// opens a tunnel stream to the team's proxy exit (sending the target), and
+/// bridges bytes. Runs forever.
+pub async fn run_socks5_proxy(server_url: &str, exit_name: &str, local_port: u16) -> Result<(), String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind(("127.0.0.1", local_port)).await
+        .map_err(|e| format!("bind 127.0.0.1:{local_port}: {e}"))?;
+    println!("ok proxy: exit={exit_name} SOCKS5 listening on 127.0.0.1:{local_port} (set curl --socks5-hostname or browser proxy)");
+
+    loop {
+        let (client, _peer) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
+        let server_url = server_url.to_string();
+        let exit_name = exit_name.to_string();
+        tokio::spawn(async move {
+            let (mut c_read, mut c_write) = client.into_split();
+
+            // 1. SOCKS5 greeting: VER NMETHODS METHODS... -> reply 05 00.
+            let mut gbuf = [0u8; 64];
+            let mut gused = 0;
+            let greeting_ok = loop {
+                match c_read.read(&mut gbuf[gused..]).await {
+                    Ok(0) => break false,
+                    Ok(n) => {
+                        gused += n;
+                        match crate::socks5::parse_greeting(&gbuf[..gused]) {
+                            Ok(_) => break true,
+                            Err(e) if gused >= 2 => {
+                                let _ = c_write.write_all(&[0x05, 0xff]).await;
+                                eprintln!("proxy: greeting rejected: {e}");
+                                break false;
+                            }
+                            Err(_) => continue, // need more bytes
+                        }
+                    }
+                    Err(_) => break false,
+                }
+            };
+            if !greeting_ok {
+                return;
+            }
+            if c_write.write_all(&[0x05, 0x00]).await.is_err() {
+                return;
+            }
+
+            // 2. CONNECT request: read until parseable.
+            let mut rbuf = [0u8; 512];
+            let mut rused = 0;
+            let target = loop {
+                match c_read.read(&mut rbuf[rused..]).await {
+                    Ok(0) => {
+                        let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                        return;
+                    }
+                    Ok(n) => {
+                        rused += n;
+                        match crate::socks5::parse_connect_request(&rbuf[..rused]) {
+                            Ok((_, t)) => break t,
+                            Err(e) if rused >= 4 => {
+                                let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                                eprintln!("proxy: connect rejected: {e}");
+                                return;
+                            }
+                            Err(_) => continue, // need more bytes
+                        }
+                    }
+                    Err(_) => return,
+                }
+            };
+
+            // 3. Open a tunnel stream to the exit with the target address.
+            let mtls = match mtls_for(&server_url) {
+                Some(m) => m,
+                None => {
+                    let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                    return;
+                }
+            };
+            let config = match client_config(&mtls) {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                    return;
+                }
+            };
+            let connector = Connector::Rustls(config);
+            let url = ws_url(&server_url, "/tunnel/forward");
+            let (mut ws, _) = match connect_async_tls_with_config(url.as_str(), None, false, Some(connector)).await {
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                    return;
+                }
+            };
+            let _ = ws
+                .send(Message::Text(
+                    serde_json::json!({ "type": "connect", "name": exit_name, "target": format!("{}:{}", target.host, target.port) })
+                        .to_string(),
+                ))
+                .await;
+
+            // 4. Wait for `stream_open`; buffer local bytes meanwhile.
+            let mut sid: Option<u64> = None;
+            let mut pending: Vec<Vec<u8>> = Vec::new();
+            let mut buf = [0u8; 8192];
+
+            loop {
+                tokio::select! {
+                    m = ws.next() => match m {
+                        Some(Ok(Message::Text(t))) => {
+                            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
+                            match v["type"].as_str() {
+                                Some("stream_open") => {
+                                    sid = v["stream_id"].as_u64();
+                                    if let Some(s) = sid {
+                                        // SOCKS5 success reply, then flush buffered bytes.
+                                        let _ = c_write.write_all(&crate::socks5::SOCKS5_SUCCESS_REPLY).await;
+                                        for b in pending.drain(..) {
+                                            let mut frame = Vec::with_capacity(4 + b.len());
+                                            frame.extend_from_slice(&(s as u32).to_be_bytes());
+                                            frame.extend_from_slice(&b);
+                                            if ws.send(Message::Binary(frame)).await.is_err() {
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                                Some("error") => {
+                                    let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Ok(Message::Binary(f))) => {
+                            if f.len() >= 4 && sid.is_some() {
+                                let _ = c_write.write_all(&f[4..]).await;
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) | None => return,
+                    },
+                    n = c_read.read(&mut buf) => match n {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            match sid {
+                                Some(s) => {
+                                    let mut frame = Vec::with_capacity(4 + n);
+                                    frame.extend_from_slice(&(s as u32).to_be_bytes());
+                                    frame.extend_from_slice(&buf[..n]);
+                                    if ws.send(Message::Binary(frame)).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                None => pending.push(buf[..n].to_vec()),
+                            }
+                        }
+                    },
+                }
+            }
+        });
+    }
+}
 
 /// Discover the server URL from the most recently imported letter.
 pub fn discover_server_url() -> Option<String> {

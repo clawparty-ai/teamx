@@ -70,7 +70,7 @@
 |---|---|---|---|
 | TC-301 | 并发写 seq 单调 | 5 会话 × 3 并行 publish（`tests/concurrency.sh`） | 15 条事件 seq 严格递增且唯一 |
 
-## D2. 三人协作（`tests/three-member.sh`，等价于 demo-3p）
+## D2. 三人协作（`tests/three-member.sh`，等价于 demo-team）
 
 | ID | 名称 | 步骤 | 预期 |
 |---|---|---|---|
@@ -93,5 +93,5 @@
 | TM-01 | 完整闭环 | 窗口 A `/Team 创建团队 "Demo" ...`；窗口 B `/Team 加入 <token> ...`；A 审批并分享目标；B 选角色、汇报进展、问澄清、报告完成；A 验证关闭 | 双窗口状态一致，事件可追溯，team completed |
 | TM-02 | 多成员角色 | 3 窗口：owner + contributor + observer | observer 只读观察；owner 广播被所有成员 sync 到 |
 | TM-03 | loopx 联动 | member 绑定 loopx 项目，`teamx_loopx_report` 发布，owner sync 可见 loopx.progress | 事件含 goal_state/gate/next_todo/quota |
-| TM-04 | 三人协作 | 3 窗口：owner + contributor + reviewer，走 `docs/demo-3p.md` 全流程 | 终态 archived/closed；design-plan.md + review-plan.md 产出 |
+| TM-04 | 三人协作 | 3 窗口：owner + contributor + reviewer，走 `docs/13-demo-team.md` 全流程 | 终态 archived/closed；design-plan.md + review-plan.md 产出 |
 | TM-05 | 模型级验收（headless） | `tests/acceptance.sh`：`opencode run --agent teamx` 让真实模型建队 | 账本出现 team.created/goal.set，团队名正确 |

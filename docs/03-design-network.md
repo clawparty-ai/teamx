@@ -1,7 +1,7 @@
 # teamx 网络模式（Network Mode）设计方案
 
 > 状态：**N0/N1/N3/N4 已实现**（`teamx serve` mTLS HTTP RPC + WS 推送 + 插件事件驱动/轮询降级 + 跨网络局域网验证 + 邀请函 I1/I2）；N5/N6 列入**未来计划**（暂缓）
-> 关联文档：`docs/v1-spec.md`（V1 现状）、`docs/v2-design.md`（架构蓝图）
+> 关联文档：`docs/01-design-v1-spec.md`（V1 现状）、`docs/02-design-v2-architecture.md`（架构蓝图）
 > 目标读者：实现者、owner、协作成员
 
 ---
@@ -326,7 +326,7 @@ transport = SERVER_URL ? netTransport : cliTransport   // 全插件透明
 ## 9.5 隧道：暴露成员服务（反向代理，frp 风格）
 
 > 状态：**T1（frp 模式）已实现**；**T2（消费端本地转发，默认模式）设计中**。
-> 关联：`crates/teamx/src/tunnel.rs`（registry + TCP relay）、`serve.rs`（`/tunnel` WS 端点）、`opencode-plugin/src/tunnel.ts`（provider 客户端）、`docs/manual-test-tunnel.md`（测试手册）。
+> 关联：`crates/teamx/src/tunnel.rs`（registry + TCP relay）、`serve.rs`（`/tunnel` WS 端点）、`opencode-plugin/src/tunnel.ts`（provider 客户端）、`docs/17-manual-tunnel.md`（测试手册）。
 
 ### 9.5.1 背景与两种模式
 
@@ -412,7 +412,7 @@ data（binary，双向）: [4-byte BE stream_id][payload]
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **T1** | frp 模式（显式 `--mode frp`）：`expose` → server 公开端口 → TCP 直连 | ✅ 已完成（`tunnel.rs` + `manual-test-tunnel.md`，e2e 通过） |
+| **T1** | frp 模式（显式 `--mode frp`）：`expose` → server 公开端口 → TCP 直连 | ✅ 已完成（`tunnel.rs` + `17-manual-tunnel.md`，e2e 通过） |
 | **T2** | 本地转发模式（默认）：`expose`（不绑端口）+ `forward`（consumer 本地 WS 桥接）+ 持久化 | 📅 待实施 |
 | **T2+** | 可选：同网段直连优化（consumer 直接连 provider，绕 server） | 📅 未来 |
 
@@ -428,7 +428,7 @@ data（binary，双向）: [4-byte BE stream_id][payload]
 | **N1** | WS 推送：register + 事件广播 + 心跳/重连/补发 | ✅ 已完成（`GET /ws` + `broadcast::Hub` + 插件 `connectWs`，见 `tests/ws-test.ts`） |
 | **N2** | token 签发/轮换/吊销 + RPC 鉴权；`serve stop` 优雅清理 + `dispose` | ⚠️ 身份已改用 mTLS 证书（I1），token 方案被取代 |
 | **N3** | 插件事件驱动改造 + 轮询降级 | ✅ 已完成（WS 时零轮询 + 去抖刷新 + 断线回退轮询，见 `tests/plugin-unit/ws.test.ts`） |
-| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）+ 两机 runbook（`docs/n4-cross-network.md`），真机待验 |
+| **N4** | 跨网络验证（两台机器 / 内网穿透，owner 内嵌 serve） | ✅ 单机局域网模拟通过（`tests/cross-network.sh`）+ 两机 runbook（`docs/11-test-cross-network.md`），真机待验 |
 | **N5** | **独立 serve（形态②）**：常驻进程 / Docker / systemd + TLS + 多团队 | 📅 未来计划（暂缓，见下） |
 | **N6** | `teamx_member_peek` 同机只读直连 | 📅 未来计划（暂缓，见下） |
 | **T1** | 隧道 frp 模式：`expose` → server 公开端口 → TCP 直连 | ✅ 已完成（见 §9.5） |

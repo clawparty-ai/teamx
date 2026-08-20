@@ -53,6 +53,9 @@ pub enum TunnelMode {
     Local,
     /// Server binds a public port; consumers connect tcp://server:port.
     Frp,
+    /// Proxy exit: provider dials the SOCKS5 target (host:port) from each
+    /// `open_stream` instead of a fixed local port. Server binds no port.
+    Proxy,
 }
 
 impl TunnelMode {
@@ -60,6 +63,7 @@ impl TunnelMode {
         match self {
             TunnelMode::Local => "local",
             TunnelMode::Frp => "frp",
+            TunnelMode::Proxy => "proxy",
         }
     }
 
@@ -67,6 +71,7 @@ impl TunnelMode {
     pub fn parse(s: Option<&str>) -> Self {
         match s.map(str::trim).unwrap_or("") {
             "frp" => TunnelMode::Frp,
+            "proxy" => TunnelMode::Proxy,
             _ => TunnelMode::Local,
         }
     }
@@ -173,7 +178,7 @@ impl TunnelRegistry {
             return Err(format!("tunnel `{name}` already exists in this team"));
         }
         let port = match mode {
-            TunnelMode::Local => 0,
+            TunnelMode::Local | TunnelMode::Proxy => 0,
             TunnelMode::Frp => self.alloc_port().ok_or("tunnel port pool exhausted (9000-9999)")?,
         };
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
@@ -250,11 +255,16 @@ impl TunnelRegistry {
     /// mode). Registers the stream's write channel in the tunnel's `streams`
     /// table and asks the provider to dial the local target. Returns the
     /// stream id, or None if the tunnel does not exist.
+    ///
+    /// `target` (host:port) is used for Proxy-mode exits: the provider dials
+    /// that address instead of its fixed `target_port`. None keeps the
+    /// fixed-port behaviour (tunnel forward).
     pub fn open_stream(
         &self,
         team_id: &str,
         name: &str,
         tx: UnboundedSender<Vec<u8>>,
+        target: Option<&str>,
     ) -> Option<u64> {
         let tunnel = self.get(team_id, name)?;
         let sid = {
@@ -264,11 +274,11 @@ impl TunnelRegistry {
             id
         };
         tunnel.streams.lock().unwrap().insert(sid, tx);
-        let _ = tunnel.ws_tx.send(Message::Text(
-            serde_json::json!({ "type": "open_stream", "stream_id": sid })
-                .to_string()
-                .into(),
-        ));
+        let mut msg = serde_json::json!({ "type": "open_stream", "stream_id": sid });
+        if let Some(t) = target {
+            msg["target"] = serde_json::json!(t);
+        }
+        let _ = tunnel.ws_tx.send(Message::Text(msg.to_string().into()));
         Some(sid)
     }
 
@@ -480,7 +490,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local).unwrap();
         let (stream_tx, _stream_rx) = unbounded_channel();
-        let sid = reg.open_stream("team1", "svc", stream_tx.clone()).unwrap();
+        let sid = reg.open_stream("team1", "svc", stream_tx.clone(), None).unwrap();
         assert!(sid >= 1);
         // provider should have been asked to open the stream
         let msg = rx.blocking_recv().unwrap();
@@ -491,6 +501,6 @@ mod tests {
         assert!(text.contains("open_stream"));
         assert!(text.contains(&format!("\"stream_id\":{sid}")));
         // unknown tunnel -> None
-        assert!(reg.open_stream("team1", "nope", stream_tx).is_none());
+        assert!(reg.open_stream("team1", "nope", stream_tx, None).is_none());
     }
 }

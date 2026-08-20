@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, TeamCmd, TunnelCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, TeamCmd, TunnelCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -580,6 +580,18 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
             },
         },
+        // Proxy commands: network-mode only, long-lived WS clients.
+        Command::Proxy(cmd) => {
+            let url = resolve_server_url(match cmd {
+                ProxyCmd::Exit { server, .. } => server.as_deref(),
+                ProxyCmd::Start { server, .. } => server.as_deref(),
+            })?;
+            let result = match cmd {
+                ProxyCmd::Exit { name, .. } => crate::tunnel_client::proxy_exit(&url, name),
+                ProxyCmd::Start { port, exit, .. } => crate::tunnel_client::socks5_proxy(&url, exit, *port),
+            };
+            return result.map_err(AppError);
+        }
     };
     Ok(out)
 }
