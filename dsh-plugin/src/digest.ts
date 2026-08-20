@@ -112,7 +112,7 @@ function formatDigest(data: any): string {
       for (const m of members) {
         const state = m.state || 'active'
         const emoji = state === 'idle' ? '😴' : state === 'active' ? '⚡' : '❓'
-        lines.push(`  ${emoji} ${m.name} (${m.role || 'member'}) — ${state}`)
+        lines.push(`  ${emoji} ${m.display_name || m.name || 'member'} (${m.role || 'member'}) — ${state}`)
       }
     }
 
@@ -128,7 +128,7 @@ function formatDigest(data: any): string {
       const recent = events.slice(-3)
       lines.push('📝 **Recent**:')
       for (const e of recent) {
-        const msg = e.data?.message || e.data?.kind || e.type || 'event'
+        const msg = e.payload?.message || e.payload?.kind || e.type || 'event'
         lines.push(`  • ${msg}`)
       }
     }

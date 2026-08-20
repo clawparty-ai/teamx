@@ -6,7 +6,7 @@
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -52,6 +52,53 @@ export function instanceId(): string {
  */
 export function sessionKey(teamxInstance: string, agentSessionId: string): string {
   return `${teamxInstance}:${agentSessionId}`
+}
+
+// ---------------------------------------------------------------------------
+// Network-mode server URL discovery (mirrors opencode-plugin)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover the network-mode server URL from imported invitation letters.
+ * A letter embeds its server URL (teamx_invitation.server.url). Returns the
+ * most recently imported letter's server URL, or null when no letter records
+ * one (pure single-machine V1 mode).
+ */
+function discoverServerUrl(): string | null {
+  const dir = join(TEAMX_HOME, 'letters')
+  if (!existsSync(dir)) return null
+  let entries: string[] = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  let best: { url: string; mtime: number } | null = null
+  for (const id of entries) {
+    const letterPath = join(dir, id, 'letter.json')
+    if (!existsSync(letterPath)) continue
+    try {
+      const letter = JSON.parse(readFileSync(letterPath, 'utf8')) as {
+        teamx_invitation?: { server?: { url?: string } }
+      }
+      const url = letter.teamx_invitation?.server?.url
+      if (!url) continue
+      const mtime = statSync(letterPath).mtimeMs
+      if (!best || mtime > best.mtime) best = { url, mtime }
+    } catch {
+      // skip unreadable letters
+    }
+  }
+  return best?.url ?? null
+}
+
+/**
+ * Resolve the network-mode server URL. Order: explicit TEAMX_SERVER_URL env
+ * wins; otherwise the most recently imported invitation letter's embedded
+ * server URL; empty string means pure V1 CLI mode (no network server).
+ */
+export function resolveServerUrl(): string {
+  return process.env.TEAMX_SERVER_URL || discoverServerUrl() || ''
 }
 
 // ---------------------------------------------------------------------------
@@ -123,24 +170,6 @@ export function knownMemberSessions(): string[] {
   return out
 }
 
-/** Known member agent ids that belong to a specific team (for WS subscriptions). */
-export function sessionsForTeam(teamId: string): string[] {
-  const out: string[] = []
-  for (const [agentId, info] of members) {
-    if (info.isMember && info.teamId === teamId) out.push(agentId)
-  }
-  return out
-}
-
-/** Known team ids across all member agents (for WS subscriptions). */
-export function knownTeamIds(): string[] {
-  const teams = new Set<string>()
-  for (const info of members.values()) {
-    if (info.isMember && info.teamId) teams.add(info.teamId)
-  }
-  return [...teams]
-}
-
 export function clearMemberCache(agentId?: string): void {
   if (agentId) members.delete(agentId)
   else members.clear()
@@ -162,9 +191,10 @@ export async function runCli(
   args: string[],
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<any> {
-  // Network mode: HTTP RPC
-  if (process.env.TEAMX_SERVER_URL) {
-    return runRpc(args)
+  // Network mode: HTTP RPC (explicit env or discovered from imported letter)
+  const serverUrl = resolveServerUrl()
+  if (serverUrl) {
+    return runRpc(args, serverUrl)
   }
 
   // Local mode: spawn binary
@@ -191,7 +221,7 @@ export async function runCli(
 
 interface RpcResponse {
   ok: boolean
-  result?: any
+  data?: any
   error?: string
 }
 
@@ -249,6 +279,8 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   const args: Record<string, string | boolean | number | null> = { ...flags }
 
   // Map positional parameters to their RPC field names per method.
+  // Only commands with positional args are listed; flag-only commands
+  // (sync/events/log/team.list/team.status/...) need no slots.
   const slots: Record<string, string[]> = {
     'team.create': ['name'],
     'team.join': ['token', 'name'],
@@ -267,9 +299,6 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     'publish': ['type'],
     'ask': ['member_id'],
     'respond': ['ask_id', 'answer'],
-    'sync': ['session'],
-    'events': ['after', 'team'],
-    'log': ['team', 'limit', 'after'],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {
@@ -279,16 +308,13 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   return { method, args }
 }
 
-async function runRpc(args: string[]): Promise<any> {
-  const serverUrl = process.env.TEAMX_SERVER_URL
-  if (!serverUrl) throw new Error('TEAMX_SERVER_URL not set')
-
+async function runRpc(args: string[], serverUrl: string): Promise<any> {
   const { method, args: params } = cliArgsToRpc(args)
 
   const mtls = await mtlsFor()
   const body = JSON.stringify({
     method,
-    params,
+    args: params,
   })
 
   const url = new URL('/rpc', serverUrl)
@@ -316,7 +342,7 @@ async function runRpc(args: string[]): Promise<any> {
       res.on('end', () => {
         try {
           const parsed: RpcResponse = JSON.parse(data)
-          if (parsed.ok) resolve(parsed.result)
+          if (parsed.ok) resolve(parsed.data)
           else reject(new Error(parsed.error || 'RPC error'))
         } catch {
           reject(new Error(`Invalid RPC response: ${data.slice(0, 200)}`))

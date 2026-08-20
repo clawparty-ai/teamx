@@ -22,7 +22,7 @@ import { registerCommands } from './commands.js'
 import { refreshDigest, clearDigest, getDigest } from './digest.js'
 import { registerAgent, unregisterAgent, processEvents, agentSessionKey } from './auto-execute.js'
 import { createWsClient } from './ws.js'
-import { instanceId, sessionKey, runCli, markMember, knownMemberSessions, knownTeamIds } from './client.js'
+import { instanceId, sessionKey, runCli, markMember, memberStatus, knownMemberSessions, resolveServerUrl } from './client.js'
 
 // ---------------------------------------------------------------------------
 // Plugin config (loaded from cordis config tree)
@@ -119,6 +119,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     const agentId = agent.session.id
     if (event.status !== 'idle') return
 
+    // Only members heartbeat (same guard as opencode-plugin's session.idle)
+    const isMember = memberStatus(agentId)?.isMember === true
+    if (!isMember) return
+
     // Publish heartbeat (same as opencode-plugin's session.idle activity row)
     try {
       await runCli([
@@ -206,7 +210,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // -----------------------------------------------------------------------
   // Start WS push (if network mode and enabled)
   // -----------------------------------------------------------------------
-  const serverUrl = process.env.TEAMX_SERVER_URL
+  const serverUrl = resolveServerUrl()
   const wsEnabled = config.wsEnabled !== false
 
   if (serverUrl && wsEnabled) {
@@ -215,37 +219,25 @@ export function apply(ctx: Context, config: Config = {}): void {
       const start = async () => {
         if (disposed) return
         try {
-          const teamIds = knownTeamIds()
-          if (teamIds.length === 0) {
-            // Try to discover teams by syncing first
-            for (const agentId of knownMemberSessions()) {
-              try {
-                await refreshAgent(agentId)
-              } catch {
-                // ignore
-              }
+          // WS identity comes from the mTLS client cert CN, so no team/session
+          // params are needed. We still sync once to warm the member cache
+          // (so the poller/auto-execute has member ids) before connecting.
+          for (const agentId of knownMemberSessions()) {
+            try {
+              await refreshAgent(agentId)
+            } catch {
+              // ignore
             }
           }
-          const teamsAfterSync = knownTeamIds()
-          if (teamsAfterSync.length === 0) return
+          if (disposed) return
 
-          // Connect one WS per team; events are broadcast per team
-          const sessions = knownMemberSessions()
-          if (sessions.length === 0) return
-          const session = sessions[0]
-          const team = teamsAfterSync[0]
-
-          wsClient = createWsClient({
-            serverUrl,
-            team,
-            session: sessionKey(instance, session),
-          })
+          wsClient = createWsClient({ serverUrl })
           wsClient.on('event', () => {
             // Any new event → refresh digest + auto-execute for all members
             refreshAll().catch(() => {})
           })
           await wsClient.start()
-          console.log(`[teamx-dsh] WS push connected (team ${team})`)
+          console.log('[teamx-dsh] WS push client started')
         } catch (err) {
           console.warn('[teamx-dsh] WS push failed:', err)
         }

@@ -1,7 +1,13 @@
 /**
  * WebSocket push client for teamx server events.
  * Mirrors opencode-plugin's ws.ts but runs on Node (using `ws` package).
- * Supports mTLS via TEAMX_MTLS_* env vars.
+ *
+ * IMPORTANT: the teamx server identifies the caller by the mTLS client
+ * certificate CN (`pki::parse_member_cn`), NOT by any HTTP header. So this
+ * client only needs the server URL + mTLS cert material; there are no
+ * team/session headers. Without a client cert the server replies
+ * `{"type":"error","code":"no_identity"}` and closes — we fail fast rather
+ * than reconnect forever.
  * @module @teamx/dsh-plugin/ws
  */
 
@@ -11,9 +17,6 @@ import { mtlsFor } from './client.js'
 
 export interface WsOptions {
   serverUrl: string
-  team: string
-  session: string
-  token?: string
 }
 
 const RECONNECT_BASE_MS = 1000
@@ -33,6 +36,7 @@ export class WsClient extends EventEmitter {
   private reconnectMs = RECONNECT_BASE_MS
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
+  private gaveUp = false
 
   constructor(opts: WsOptions) {
     super()
@@ -63,25 +67,24 @@ export class WsClient extends EventEmitter {
     if (this.stopped) return
 
     const mtls = await mtlsFor()
+    if (!mtls) {
+      // The server identifies members by client-cert CN; without a cert the
+      // connection can never succeed. Fail fast instead of reconnecting.
+      if (!this.gaveUp) {
+        this.gaveUp = true
+        console.warn('[teamx-dsh] WS push skipped: TEAMX_MTLS_CERT/KEY/CA not set (server identifies members via mTLS)')
+      }
+      return
+    }
+
     const url = new URL('/ws', this.opts.serverUrl)
     const wsUrl = url.toString().replace(/^http/, 'ws')
 
-    const headers: Record<string, string> = {
-      'X-Teamx-Team': this.opts.team,
-      'X-Teamx-Session': this.opts.session,
-    }
-    if (this.opts.token) {
-      headers['Authorization'] = `Bearer ${this.opts.token}`
-    }
-
-    // mTLS: pass ca/cert/key + rejectUnauthorized only when a client cert is
-    // configured. Without mTLS we keep rejectUnauthorized default (true) so a
-    // self-signed server cert fails loudly instead of silently downgrading.
     const ws = new WebSocket(wsUrl, {
-      headers,
-      ...(mtls
-        ? { ca: mtls.ca, cert: mtls.cert, key: mtls.key, rejectUnauthorized: true }
-        : {}),
+      ca: mtls.ca,
+      cert: mtls.cert,
+      key: mtls.key,
+      rejectUnauthorized: true,
     })
 
     this.ws = ws
@@ -104,8 +107,18 @@ export class WsClient extends EventEmitter {
           this.emit('event', msg.event)
           return
         }
-        // bare event objects (fallback)
-        this.emit('event', msg)
+        // `{ type: "error", code, message }` frames are terminal-ish auth errors
+        if (msg?.type === 'error') {
+          const code = msg?.code
+          if (code === 'no_identity' || code === 'revoked' || code === 'not_a_member') {
+            // Can't recover without re-importing / re-issuing a cert.
+            this.gaveUp = true
+            console.warn(`[teamx-dsh] WS push auth error (${code}): ${msg?.message ?? ''}`)
+            this.ws?.close()
+            return
+          }
+        }
+        // `registered` / `pong` are informational; ignore.
       } catch {
         // ignore malformed messages
       }
@@ -113,7 +126,7 @@ export class WsClient extends EventEmitter {
 
     ws.on('close', () => {
       this.ws = null
-      if (!this.stopped) {
+      if (!this.stopped && !this.gaveUp) {
         this.scheduleReconnect()
       }
     })
@@ -125,7 +138,7 @@ export class WsClient extends EventEmitter {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped) return
+    if (this.stopped || this.gaveUp) return
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
