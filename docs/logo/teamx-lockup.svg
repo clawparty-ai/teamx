@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 480" width="1700" height="480">
+  <!-- teamx lockup: mark + wordmark -->
+  <defs>
+    <linearGradient id="gbar" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="ggoal" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <!-- mark scaled to ~400px tall -->
+  <g transform="translate(40,40) scale(0.39)">
+    <line x1="250" y1="250" x2="774" y2="774" stroke="url(#gbar)" stroke-width="108" stroke-linecap="round"/>
+    <line x1="774" y1="250" x2="250" y2="774" stroke="url(#gbar)" stroke-width="108" stroke-linecap="round"/>
+    <circle cx="250" cy="250" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+    <circle cx="774" cy="250" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+    <circle cx="250" cy="774" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+    <circle cx="774" cy="774" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+    <circle cx="512" cy="512" r="118" fill="url(#ggoal)" stroke="#ffffff" stroke-width="18"/>
+    <circle cx="512" cy="512" r="46" fill="#ffffff"/>
+  </g>
+  <!-- wordmark -->
+  <text x="500" y="338" font-family="Arial, 'Helvetica Neue', 'PingFang SC', sans-serif" font-size="230" font-weight="800" fill="#0f172a" letter-spacing="-2">team</text>
+  <text x="1155" y="338" font-family="Arial, 'Helvetica Neue', 'PingFang SC', sans-serif" font-size="230" font-weight="800" fill="#2563eb" letter-spacing="-2">x</text>
+</svg>
