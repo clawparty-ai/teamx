@@ -1,7 +1,7 @@
 /**
  * Per-agent digest cache and sync refresh.
  * Mirrors opencode-plugin's digest.ts.
- * @module @teamx/dsh-plugin/digest
+ * @module @teamx-ai/dsh-plugin/digest
  */
 
 import { runCli } from './client.js'

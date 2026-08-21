@@ -1,4 +1,4 @@
-# @teamx/dsh-plugin
+# @teamx-ai/dsh-plugin
 
 teamx plugin for [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) — shared-goal human-in-the-loop collaboration across multiple dsh agents.
 
@@ -31,22 +31,34 @@ dsh-plugin/
 
 ## Installation
 
-The plugin loads via dsh's cordis plugin system. Add to your dsh profile's `cordis.patch.yml`:
+The plugin loads via dsh's cordis plugin system and is published to npm in two packages:
 
-```yaml
-- id: teamx
-  name: '@teamx/dsh-plugin'
+```bash
+# One-command install (bundle mounts the plugin into the profile):
+dsh plugin --profile <name> add @teamx-ai/dsh-plugin-bundle
+
+# Alternative: install the plugin package directly, then mount it in the
+# profile's cordis.patch.yml:
+npm install @teamx-ai/dsh-plugin   # into the profile's package.json
 ```
 
-For development, use a `file:` dependency in your dsh profile:
+```yaml
+# $DSH_HOME/profiles/<name>/cordis.patch.yml
+- id: teamx
+  name: '@teamx-ai/dsh-plugin'
+```
+
+For development against a local checkout, use a `file:` dependency in your dsh profile:
 
 ```json
 {
   "dependencies": {
-    "@teamx/dsh-plugin": "file:/path/to/teamx/dsh-plugin"
+    "@teamx-ai/dsh-plugin": "file:/path/to/teamx/dsh-plugin"
   }
 }
 ```
+
+The npm package ships a bundled `lib/index.js` (single-file ESM bundle); the `dsh` runtime provides the `@deepseek-ai/*` peer packages it imports. Local `file:` installs need a build first: `cd dsh-plugin && npm run build`.
 
 ## Session identity
 

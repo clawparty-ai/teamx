@@ -1,7 +1,7 @@
 /**
  * Auto-execute: detect directed tasks and call agent.followup().
  * Mirrors opencode-plugin's auto-execute logic.
- * @module @teamx/dsh-plugin/auto-execute
+ * @module @teamx-ai/dsh-plugin/auto-execute
  */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'

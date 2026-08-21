@@ -8,7 +8,7 @@
  * - Auto-execute directed tasks via agent.followup()
  * - M2 poller + WS push for real-time event notifications
  *
- * @module @teamx/dsh-plugin
+ * @module @teamx-ai/dsh-plugin
  */
 
 import type { Context } from '@deepseek-ai/cordis'

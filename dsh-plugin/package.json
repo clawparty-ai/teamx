@@ -1,38 +1,42 @@
 {
-  "name": "@teamx/dsh-plugin",
+  "name": "@teamx-ai/dsh-plugin",
   "version": "0.1.0",
   "description": "teamx deepseek-harness plugin: multi-agent team collaboration with teamx_* tools, /team-* slash commands, and real-time digest injection",
   "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "lib/index.js",
+  "types": "index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./index.d.ts",
+      "default": "./lib/index.js"
     },
-    "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
-    "src/**/*.ts",
-    "package.json",
+    "lib",
+    "index.d.ts",
     "README.md"
   ],
   "scripts": {
+    "build": "bun build src/index.ts --outfile lib/index.js --external '@deepseek-ai/*' --external 'ws' --format esm --target node",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json > /tmp/teamx-dsh-typecheck.log 2>&1; grep -E '^src/' /tmp/teamx-dsh-typecheck.log || true; ! grep -qE '^src/' /tmp/teamx-dsh-typecheck.log"
   },
   "dependencies": {
     "ws": "^8.21.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "workspace:^",
-    "@deepseek-ai/dsh-tools": "workspace:^",
-    "@deepseek-ai/dsh-agent": "workspace:^",
-    "@deepseek-ai/dsh-session": "workspace:^",
-    "@deepseek-ai/dsh-system-prompt": "workspace:^",
-    "@deepseek-ai/dsh-commands": "workspace:^",
-    "@deepseek-ai/schemastery": "workspace:^",
-    "zod": "^4.4.3"
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-llm": "*"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "file:../deepseek-harness/vendor/cordis",

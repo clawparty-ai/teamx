@@ -1,0 +1,32 @@
+{
+  "name": "@teamx-ai/dsh-plugin-bundle",
+  "version": "0.1.0",
+  "description": "Installable dsh bundle mounting the teamx collaboration plugin (teamx_* tools + /team-* commands + digest injection).",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@teamx-ai/dsh-plugin": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caishu/teamx"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "team",
+    "collaboration",
+    "multi-agent"
+  ]
+}

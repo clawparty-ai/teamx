@@ -8,7 +8,7 @@
  * team/session headers. Without a client cert the server replies
  * `{"type":"error","code":"no_identity"}` and closes — we fail fast rather
  * than reconnect forever.
- * @module @teamx/dsh-plugin/ws
+ * @module @teamx-ai/dsh-plugin/ws
  */
 
 import { EventEmitter } from 'node:events'

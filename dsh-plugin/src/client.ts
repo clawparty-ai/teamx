@@ -2,7 +2,7 @@
  * teamx CLI/RPC client for dsh-plugin.
  * Mirrors opencode-plugin's client.ts but runs on Node (not Bun).
  * Supports both local mode (spawn teamx binary) and network mode (HTTP mTLS RPC).
- * @module @teamx/dsh-plugin/client
+ * @module @teamx-ai/dsh-plugin/client
  */
 
 import { execFile } from 'node:child_process'

@@ -1,6 +1,7 @@
 target/
 node_modules/
 dist/
+lib/
 *.db
 *.db-wal
 *.db-shm

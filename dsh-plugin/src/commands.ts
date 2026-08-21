@@ -4,7 +4,7 @@
  *   team-approve, team-deny, team-invite, team-import, team-publish,
  *   team-role-*, team-state-*, team-ask, team-respond, team-help
  * CLI args mirror `crates/teamx/src/cli.rs` exactly (positional args stay positional).
- * @module @teamx/dsh-plugin/commands
+ * @module @teamx-ai/dsh-plugin/commands
  */
 
 import type { Context } from '@deepseek-ai/cordis'
