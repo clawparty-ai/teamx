@@ -313,6 +313,7 @@ curl --max-time 2 http://127.0.0.1:9102/ || echo "✓ 公网端口随断连关�
 | frp 端口连不上但 list 里有 | provider 进程已死或被防火墙拦截 | 确认 expose 进程存活；检查 server 主机防火墙放行 9100-9999 |
 | forward 卡住无响应 | provider 侧未桥接 / 本地目标端口不对 | 确认 B 的 expose 进程在跑且 `--port` 指向真实监听端口 |
 | SOCKS5 收到 `general SOCKS server failure`(05 05) | 出口不在线或目标不可达 | `tunnel list` 确认 egress 存在；在 B 上手动 `curl <目标>` 验证可达性 |
+| SOCKS5 收到 `Connection refused`(05 05) / `Can't complete SOCKS5 connection`(97) | **隧道 WS 空转被 NAT/中间设备静默掐断**，注册表里隧道已消失，或 provider 的 WS 已半开 | 确认 proxy exit / proxy start 已升级到含**心跳+自动重连**的版本（`>= 0.2.1`，见 §11）；两个进程会自动重连并重新注册，**无需手动重启**；若仍在旧版，重启两端即可临时恢复 |
 | `tunnel port pool exhausted (9000-9999)` | 900 条 frp 隧道占满 | 清理不再使用的隧道 |
 | 成员报 `not a member of team …` | 用了错误的 team 标识 / 未 approve | RPC 按**证书 CN** 定身份，确认该成员已被 approve |
 
@@ -332,3 +333,93 @@ curl --max-time 2 http://127.0.0.1:9102/ || echo "✓ 公网端口随断连关�
 ```bash
 bun tests/tunnel-proxy-comprehensive.ts    # 或 ./tests/run-all.sh 的第 13 步
 ```
+
+## 11. 连接保活与自愈（生产环境必读）
+
+### 背景
+
+长时间空转后，隧道 WebSocket（`/tunnel` provider 通道与 `/tunnel/forward` consumer 通道）可能被 NAT、云厂商防火墙或中间代理**静默掐断**——两端都感知不到（没有 FIN，只有丢弃），于是：
+
+- 注册表里仍显示隧道存在，但真实连接已死（stale / half-open）
+- 消费方的每个新请求在链路上丢失，表现为 `curl: (97) Can't complete SOCKS5 connection` 或 SOCKS5 `Connection refused`(05 05)
+- 旧版本需要**手动重启两端进程**才能恢复
+
+### 修复内容（代码层）
+
+从 `0.2.1` 起（commit `4167ab5`）：
+
+| 层 | 机制 | 效果 |
+|---|---|---|
+| server 侧 `serve.rs` | 所有隧道 WS 通道（provider `/tunnel` + consumer `/tunnel/forward`）每 **30s 发送应用层 `{"type":"ping"}`** 心跳 | 主动探测链路，让中间设备持续看到活跃流量，避免被当作空闲连接回收 |
+| client 侧 `tunnel_client.rs` | 客户端收到 `ping` 回 `pong`；`run_expose`（`proxy exit` / `tunnel expose`）在 WS 断开后**指数退避自动重连**（1s → 2s → 4s … 上限 30s）并**自动重新注册隧道** | provider 端断线自愈，新注册的隧道让消费方恢复可用 |
+
+> 版本检查：`teamx --version`。若 server 或 client 任一低于 0.2.1，请升级二进制（重新 `cargo build --release` 部署）。
+
+### 运维兜底（进程级）
+
+即使心跳 + 重连已覆盖 WS 层，仍建议对长期运行的进程做**进程级守护**，应对进程崩溃、机器重启等场景：
+
+**云主机（systemd）** —— `teamx serve` 与 `proxy exit` 各建一个 unit：
+
+```ini
+# /etc/systemd/system/teamx-serve.service
+[Unit]
+Description=teamx network-mode server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=TEAMX_HOME=/home/ubuntu/.teamx
+Environment=TEAMX_DB=/home/ubuntu/.teamx/teamx.db
+ExecStart=/usr/local/bin/teamx serve --addr 0.0.0.0 --port 8888 --san hub03.flomesh.io
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/teamx-proxy-exit.service
+[Unit]
+Description=teamx proxy exit egress
+After=teamx-serve.service
+Wants=teamx-serve.service
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/home/ubuntu/start-exit.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> `start-exit.sh` 里 export `TEAMX_HOME` / `TEAMX_DB` / `TEAMX_SERVER_URL` / `TEAMX_MTLS_CERT|KEY|CA` 后 `exec teamx proxy exit <name>`。
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now teamx-serve teamx-proxy-exit
+```
+
+**本地（macOS/Linux 客户端）** —— 用 while 循环守护 `proxy start`：
+
+```bash
+while true; do
+  teamx proxy start --port 1080 --exit egress
+  sleep 5   # 进程异常退出后自动重启
+done
+```
+
+### 验证清单
+
+- [ ] `teamx --version` >= 0.2.1（server 与 client 两侧）
+- [ ] 长空闲测试：`proxy start` + `proxy exit` 空闲 > 心跳周期（如 100s）后，`curl --socks5-hostname 127.0.0.1:1080 https://example.com` 仍可用
+- [ ] 自愈测试：`sudo systemctl kill -s SIGKILL teamx-serve` 后，serve 由 systemd 拉起，proxy exit 自动重连并重新注册 egress（观察 `journalctl -u teamx-proxy-exit` 出现 `ok tunnel registered`），代理全程可用

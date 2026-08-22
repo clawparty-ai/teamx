@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 — 2026-08-22
+
+### Tunnel WS keep-alive + auto-reconnect
+
+Long-idle tunnel WebSockets (`/tunnel` provider + `/tunnel/forward` consumer) were silently dropped by NAT/middleboxes, leaving stale registered tunnels and half-open connections — proxy flows then failed with `SOCKS5 (5) Connection refused` / `curl: (97)` until both processes were manually restarted.
+
+- **Server heartbeat** (`serve.rs`): both tunnel WS handlers now send a 30s application-level `{"type":"ping"}` (mirroring the `/ws` channel) and reply `pong` to client pings.
+- **Client pong** (`tunnel_client.rs`): `proxy exit` / `tunnel expose` / `tunnel forward` / `proxy start` reply `pong` to server pings.
+- **Provider auto-reconnect** (`run_expose`): `proxy exit` / `tunnel expose` automatically reconnect with exponential backoff (1s→30s) when the WS drops and re-register the tunnel, so consumers are never stranded.
+- `handle_tunnel_forward` merged two socket/provider tasks into one `select!` loop (single sink owner).
+- Docs: `docs/20-manual-tunnel-proxy-cli.md` §11 documents keep-alive + self-healing + systemd/while-loop production runbook.
+
+Verified: 43 unit tests, `tests/tunnel-proxy-comprehensive.ts` (43 asserts), `tests/proxy-test.ts`, `tests/cross-network.sh`; live kill/restart test on a cloud host confirms the provider reconnects and re-registers within seconds, and `systemd Restart=always` recovers a SIGKILLed server.
+
 ## 0.1.0 — 2026-08-17
 
 First release: Rust CLI (SQLite event ledger + state machine + mTLS server) + opencode plugin (30+ tools + `/team` commands + agent routing) + network mode + multi-member collaboration.
