@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, TeamCmd, TunnelCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -506,20 +506,100 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             };
             return result.map_err(AppError);
         }
-        // Proxy commands: network-mode only, long-lived WS clients.
+        // Proxy commands: network-mode only, long-lived WS clients. The
+        // `proxy routes` subcommands operate on the SQLite route table.
         Command::Proxy(cmd) => {
-            let url = resolve_server_url(match cmd {
-                ProxyCmd::Exit { server, .. } => server.as_deref(),
-                ProxyCmd::Start { server, .. } => server.as_deref(),
-            })?;
-            let result = match cmd {
-                ProxyCmd::Exit { name, .. } => crate::tunnel_client::proxy_exit(&url, name),
-                ProxyCmd::Start { port, exit, .. } => crate::tunnel_client::socks5_proxy(&url, exit, *port),
-            };
-            return result.map_err(AppError);
+            match cmd {
+                ProxyCmd::Exit { name, server } => {
+                    let url = resolve_server_url(server.as_deref())?;
+                    let result = crate::tunnel_client::proxy_exit(&url, name);
+                    return result.map_err(AppError);
+                }
+                ProxyCmd::Routes(rc) => {
+                    return proxy_routes_cmd(conn, rc);
+                }
+                ProxyCmd::Start { port, exit, routes, server } => {
+                    let url = resolve_server_url(server.as_deref())?;
+                    // Route resolution priority:
+                    //   1. -f / --routes JSON file (explicit, ephemeral)
+                    //   2. SQLite route table (persistent, default)
+                    //   3. --exit fixed name (legacy)
+                    //   4. error
+                    let table: Option<crate::routes::RouteTable> = match routes {
+                        Some(path) => {
+                            let text = std::fs::read_to_string(path)
+                                .map_err(|e| AppError(format!("routes file {}: {e}", path.display())))?;
+                            Some(crate::routes::RouteTable::parse(&text).map_err(AppError)?)
+                        }
+                        None => match crate::routes::load_from_db(conn) {
+                            Ok(Some(t)) => Some(t),
+                            Ok(None) => None,
+                            Err(e) => return Err(AppError(e)),
+                        },
+                    };
+                    let exit_name = match (&table, exit) {
+                        (Some(t), _) => t.default.clone(), // table has its own default
+                        (None, Some(e)) => e.clone(),
+                        (None, None) => {
+                            return Err(AppError(
+                                "proxy start: no exit configured — pass --exit <name>, \
+                                 -f <routes.json>, or configure `teamx proxy routes set-default`"
+                                    .to_string(),
+                            ))
+                        }
+                    };
+                    let result = crate::tunnel_client::socks5_proxy(&url, &exit_name, *port, table);
+                    return result.map_err(AppError);
+                }
+            }
         }
     };
     Ok(out)
+}
+
+/// Handle `teamx proxy routes <subcommand>` — manage the SQLite route table.
+fn proxy_routes_cmd(conn: &mut Connection, cmd: &RoutesCmd) -> Result<Value> {
+    use crate::routes;
+    Ok(match cmd {
+        RoutesCmd::List => {
+            match routes::load_from_db(conn) {
+                Ok(Some(t)) => routes::to_json(&t),
+                Ok(None) => {
+                    let mut m = serde_json::Map::new();
+                    m.insert("default".to_string(), Value::Null);
+                    m.insert("rules".to_string(), serde_json::json!([]));
+                    m.insert("note".to_string(), serde_json::json!(
+                        "no routes configured — run `teamx proxy routes set-default <exit>` \
+                         and `teamx proxy routes add <match> <exit>`"));
+                    Value::Object(m)
+                }
+                Err(e) => return Err(AppError(e)),
+            }
+        }
+        RoutesCmd::Add { match_, exit, seq } => {
+            let s = routes::upsert_rule(conn, *seq, match_, exit).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "seq": s, "match": match_, "exit": exit })
+        }
+        RoutesCmd::Remove { match_ } => {
+            let removed = routes::remove_rule(conn, match_).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "removed": removed, "match": match_ })
+        }
+        RoutesCmd::SetDefault { exit } => {
+            routes::set_default(conn, exit).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "default_exit": exit })
+        }
+        RoutesCmd::Import { path } => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| AppError(format!("routes file {}: {e}", path.display())))?;
+            let table = routes::RouteTable::parse(&text).map_err(AppError)?;
+            routes::save_to_db(conn, &table).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "imported": routes::to_json(&table) })
+        }
+        RoutesCmd::Clear => {
+            routes::clear_rules(conn).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "cleared": true })
+        }
+    })
 }
 
 /// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`

@@ -5,6 +5,7 @@ mod db;
 mod events;
 mod loopx;
 mod pki;
+mod routes;
 mod serve;
 mod socks5;
 mod state;

@@ -238,6 +238,55 @@ curl --max-time 2 --socks5-hostname 127.0.0.1:1080 http://127.0.0.1:8080/ \
   || echo "✓ 出口下线后代理不可用"
 ```
 
+### 5.5 多出口路由（按目标域名/IP 分流）
+
+同一团队可有多个 `proxy exit`（名字唯一），本地**一个 SOCKS5 端口**即可按目标自动选出口。
+
+**配置路由表（SQLite，默认行为）**：
+
+```bash
+$TEAMX proxy routes set-default egress           # 默认出口
+$TEAMX proxy routes add '*.cn' egress2           # .cn 域名走 egress2
+$TEAMX proxy routes add '10.0.0.0/8' egress2     # 内网 IP 段走 egress2
+$TEAMX proxy routes add '192.168.1.5' egress     # 指定 IP 走 egress
+$TEAMX proxy routes list                          # 查看
+```
+
+启动（**无需 --exit / -f**，从 SQLite 读取）：
+
+```bash
+$TEAMX proxy start --port 1080
+```
+
+**临时 JSON 文件（-f，不写 DB）**：
+
+```json
+{ "default": "egress", "rules": [ { "match": "*.cn", "exit": "egress2" } ] }
+```
+
+```bash
+$TEAMX proxy start --port 1080 -f routes.json
+```
+
+**验证分流**：
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 https://www.baidu.cn -o /dev/null -w '%{http_code}\n'  # → egress2
+curl --socks5-hostname 127.0.0.1:1080 https://example.com  -o /dev/null -w '%{http_code}\n'  # → egress
+# 出口 IP 对照：
+curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me   # 命中规则 → egress2 的 IP
+```
+
+**规则匹配**（first-match，`routes.rs`）：
+| 形式 | 示例 | 说明 |
+|------|------|------|
+| 精确域名 | `example.com` | 不匹配 `api.example.com` |
+| 通配后缀 | `*.cn` | 匹配 `www.baidu.cn`，不匹配 `cn.com` |
+| CIDR | `10.0.0.0/8`、`2001:db8::/32` | 目标为 IP 时按网段 |
+| 精确 IP | `192.168.1.5` | CIDR /32 简写 |
+
+管理命令：`proxy routes list / add / remove / set-default / import <file> / clear`。
+
 ## 6. 测试四：多隧道共存与选择性关闭
 
 **对应自动化断言：Section 5（8 项）**
@@ -316,6 +365,9 @@ curl --max-time 2 http://127.0.0.1:9102/ || echo "✓ 公网端口随断连关�
 | SOCKS5 收到 `Connection refused`(05 05) / `Can't complete SOCKS5 connection`(97) | **隧道 WS 空转被 NAT/中间设备静默掐断**，注册表里隧道已消失，或 provider 的 WS 已半开 | 确认 proxy exit / proxy start 已升级到含**心跳+自动重连**的版本（`>= 0.2.1`，见 §11）；两个进程会自动重连并重新注册，**无需手动重启**；若仍在旧版，重启两端即可临时恢复 |
 | `tunnel port pool exhausted (9000-9999)` | 900 条 frp 隧道占满 | 清理不再使用的隧道 |
 | 成员报 `not a member of team …` | 用了错误的 team 标识 / 未 approve | RPC 按**证书 CN** 定身份，确认该成员已被 approve |
+| `proxy start` 报 "no exit configured" | 未配 SQLite 路由、也没给 `--exit` / `-f` | `proxy routes set-default <exit>`，或传 `--exit <name>`，或用 `-f <routes.json>` |
+| 路由没按预期分流（某目标走了默认出口） | 规则顺序 / 匹配形式不对 | `proxy routes list` 检查；`*.cn` 不匹配 `cn.com`；域名规则不匹配 IP 目标（需用 CIDR） |
+| `proxy routes` 子命令报 Unknown 参数 | 二进制太旧 | 重新 `cargo build`（路由功能在 0.1.2+） |
 
 ## 10. 与自动化测试的对应关系
 

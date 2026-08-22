@@ -134,6 +134,23 @@ CREATE TABLE IF NOT EXISTS invitations (
   used_at       TEXT,
   revoked_at    TEXT
 );
+
+-- proxy exit routing table (local consumer config, see routes.rs).
+-- Holds the ordered per-target egress rules used by `teamx proxy start`
+-- when started without -f/--routes. `default` lives in proxy_settings.
+CREATE TABLE IF NOT EXISTS proxy_routes (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  seq      INTEGER NOT NULL,
+  match    TEXT NOT NULL,
+  exit     TEXT NOT NULL,
+  UNIQUE (seq)
+);
+
+-- Small key/value settings for the proxy consumer (e.g. default exit).
+CREATE TABLE IF NOT EXISTS proxy_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 ";
 
 /// Apply the schema (idempotent) + migrations.
@@ -201,7 +218,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 5)?;
+    conn.pragma_update(None, "user_version", 6)?;
     Ok(())
 }
 

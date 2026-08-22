@@ -186,9 +186,16 @@ pub fn forward(server_url: &str, name: &str, local_port: u16) -> Result<serde_js
 
 /// `teamx proxy start` — block forever serving SOCKS5 on a local port,
 /// tunnelling every CONNECT to the team's proxy exit through the server.
-pub fn socks5_proxy(server_url: &str, exit_name: &str, local_port: u16) -> Result<serde_json::Value, String> {
+/// When `routes` is provided, the exit is chosen per CONNECT target from the
+/// routing table (default: always `exit_name`).
+pub fn socks5_proxy(
+    server_url: &str,
+    exit_name: &str,
+    local_port: u16,
+    routes: Option<crate::routes::RouteTable>,
+) -> Result<serde_json::Value, String> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
-    rt.block_on(run_socks5_proxy(server_url, exit_name, local_port))?;
+    rt.block_on(run_socks5_proxy(server_url, exit_name, local_port, routes))?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -507,18 +514,28 @@ pub async fn run_forward(server_url: &str, name: &str, local_port: u16) -> Resul
 /// connection completes the SOCKS5 handshake, parses the CONNECT target,
 /// opens a tunnel stream to the team's proxy exit (sending the target), and
 /// bridges bytes. Runs forever.
-pub async fn run_socks5_proxy(server_url: &str, exit_name: &str, local_port: u16) -> Result<(), String> {
+///
+/// With `routes`, the exit is resolved per CONNECT target; otherwise the
+/// fixed `exit_name` is always used.
+pub async fn run_socks5_proxy(
+    server_url: &str,
+    exit_name: &str,
+    local_port: u16,
+    routes: Option<crate::routes::RouteTable>,
+) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = TcpListener::bind(("127.0.0.1", local_port)).await
         .map_err(|e| format!("bind 127.0.0.1:{local_port}: {e}"))?;
-    println!("ok proxy: exit={exit_name} SOCKS5 listening on 127.0.0.1:{local_port} (set curl --socks5-hostname or browser proxy)");
+    let mode_desc = if routes.is_some() { "routed" } else { "fixed" };
+    println!("ok proxy: exit={exit_name} ({mode_desc}) SOCKS5 listening on 127.0.0.1:{local_port} (set curl --socks5-hostname or browser proxy)");
 
     loop {
         let (client, _peer) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
         let server_url = server_url.to_string();
         let exit_name = exit_name.to_string();
+        let routes = routes.clone();
         tokio::spawn(async move {
             let (mut c_read, mut c_write) = client.into_split();
 
@@ -575,7 +592,12 @@ pub async fn run_socks5_proxy(server_url: &str, exit_name: &str, local_port: u16
                 }
             };
 
-            // 3. Open a tunnel stream to the exit with the target address.
+            // 3. Resolve the exit for this target (routes) or use the fixed
+            //    `--exit` name, then open a tunnel stream to that exit.
+            let exit = match &routes {
+                Some(t) => t.resolve(&target.host),
+                None => &exit_name,
+            };
             let mtls = match mtls_for(&server_url) {
                 Some(m) => m,
                 None => {
@@ -601,7 +623,7 @@ pub async fn run_socks5_proxy(server_url: &str, exit_name: &str, local_port: u16
             };
             let _ = ws
                 .send(Message::Text(
-                    serde_json::json!({ "type": "connect", "name": exit_name, "target": format!("{}:{}", target.host, target.port) })
+                    serde_json::json!({ "type": "connect", "name": exit, "target": format!("{}:{}", target.host, target.port) })
                         .to_string(),
                 ))
                 .await;

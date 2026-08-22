@@ -527,11 +527,60 @@ pub enum ProxyCmd {
         /// local SOCKS5 port to listen on
         #[arg(long, default_value_t = 1080)]
         port: u16,
-        /// proxy exit name to route traffic through
+        /// proxy exit name to route traffic through (default; used as the
+        /// fixed exit unless -f/--routes or the SQLite table provides one)
         #[arg(long)]
-        exit: String,
+        exit: Option<String>,
+        /// routing table JSON file (per-target domain/IP -> exit). Overrides
+        /// the SQLite route table for this invocation. `-f` is the short
+        /// alias. See docs/08-design-proxy-routes.md.
+        #[arg(long, short = 'f', value_name = "PATH")]
+        routes: Option<PathBuf>,
         /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
         #[arg(long)]
         server: Option<String>,
     },
+    /// Manage the SQLite-backed proxy routing table (per-target domain/IP ->
+    /// exit) used by `proxy start` when no -f/--routes file is given.
+    #[command(subcommand)]
+    Routes(RoutesCmd),
+}
+
+/// Subcommands for the SQLite-backed proxy routing table.
+#[derive(Subcommand, Debug)]
+pub enum RoutesCmd {
+    /// Show the current routing table (default exit + rules).
+    List,
+    /// Add or update a rule: <match> <exit>. Appends unless `--seq` given.
+    Add {
+        /// match pattern: `*.cn`, `example.com`, `10.0.0.0/8`, `192.168.1.5`
+        #[arg(value_name = "MATCH")]
+        match_: String,
+        /// exit name to route matched targets through
+        #[arg(value_name = "EXIT")]
+        exit: String,
+        /// position in the rule list (first-match order); default append
+        #[arg(long)]
+        seq: Option<i64>,
+    },
+    /// Remove a rule by its match pattern.
+    Remove {
+        /// the exact match pattern to remove
+        #[arg(value_name = "MATCH")]
+        match_: String,
+    },
+    /// Set the default exit used when no rule matches.
+    SetDefault {
+        /// exit name
+        #[arg(value_name = "EXIT")]
+        exit: String,
+    },
+    /// Import a route table from a JSON file (replaces the whole table).
+    Import {
+        /// JSON route table file
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+    /// Clear all rules (keeps the default exit).
+    Clear,
 }
