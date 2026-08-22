@@ -33,6 +33,7 @@
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
     "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-skill": "*",
     "@deepseek-ai/dsh-llm": "*"
   },
   "publishConfig": {
@@ -46,6 +47,7 @@
     "@deepseek-ai/dsh-system-prompt": "file:../deepseek-harness/packages/core/system-prompt",
     "@deepseek-ai/dsh-tools": "file:../deepseek-harness/packages/core/tools",
     "@deepseek-ai/dsh-commands": "file:../deepseek-harness/packages/interaction/commands",
+    "@deepseek-ai/dsh-skill": "file:../deepseek-harness/packages/skill/skill",
     "@deepseek-ai/schemastery": "file:../deepseek-harness/vendor/schemastery",
     "@types/ws": "^8.5.0",
     "typescript": "^5.6.0",

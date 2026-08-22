@@ -16,9 +16,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent'
 import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools } from './tools.js'
 import { registerCommands } from './commands.js'
+import { TEAMX_SKILL } from './skill.js'
 import { refreshDigest, clearDigest, getDigest } from './digest.js'
 import { registerAgent, unregisterAgent, processEvents, agentSessionKey } from './auto-execute.js'
 import { createWsClient } from './ws.js'
@@ -62,7 +64,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerMemberTools(ctx)
   registerInteractionTools(ctx)
   registerCommands(ctx)
-  console.log('[teamx-dsh] Plugin loaded, tools and commands registered')
+  ctx.effect(() => ctx.skills.register(TEAMX_SKILL))
+  console.log('[teamx-dsh] Plugin loaded, tools, commands and skill registered')
 
   // -----------------------------------------------------------------------
   // Per-agent lifecycle: check membership, inject digest
