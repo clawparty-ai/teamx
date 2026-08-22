@@ -19,6 +19,7 @@
       "@deepseek-ai/dsh-session": ["../../deepseek-harness/packages/core/session/src/index.ts"],
       "@deepseek-ai/dsh-system-prompt": ["../../deepseek-harness/packages/core/system-prompt/src/index.ts"],
       "@deepseek-ai/dsh-commands": ["../../deepseek-harness/packages/interaction/commands/src/index.ts"],
+      "@deepseek-ai/dsh-skill": ["../../deepseek-harness/packages/skill/skill/src/index.ts"],
       "@deepseek-ai/schemastery": ["../../deepseek-harness/vendor/schemastery/src/index.ts"],
       "@deepseek-ai/dsh-llm": ["../../deepseek-harness/packages/llm/llm/src/index.ts"],
       "@deepseek-ai/dsh-scope": ["../../deepseek-harness/packages/core/scope/src/index.ts"],

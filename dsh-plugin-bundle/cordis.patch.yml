@@ -1,0 +1,6 @@
+# Mounts the teamx collaboration plugin: team management, goal tracking,
+# member approval, role assignment, and real-time digest injection.
+# See @teamx-ai/dsh-plugin (docs: https://github.com/caishu/teamx).
+- insert:
+    - id: teamx
+      name: '@teamx-ai/dsh-plugin'

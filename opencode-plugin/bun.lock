@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@teamx/opencode-plugin",
+      "name": "@teamx-ai/opencode-plugin",
       "dependencies": {
         "@opencode-ai/plugin": "1.17.11",
       },

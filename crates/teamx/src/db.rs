@@ -178,6 +178,23 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS idx_activity_team_time ON activity(team_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_activity_member_time ON activity(member_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_activity_node ON activity(node_id);
+
+-- proxy exit routing table (local consumer config, see routes.rs).
+-- Holds the ordered per-target egress rules used by `teamx proxy start`
+-- when started without -f/--routes. `default` lives in proxy_settings.
+CREATE TABLE IF NOT EXISTS proxy_routes (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  seq      INTEGER NOT NULL,
+  match    TEXT NOT NULL,
+  exit     TEXT NOT NULL,
+  UNIQUE (seq)
+);
+
+-- Small key/value settings for the proxy consumer (e.g. default exit).
+CREATE TABLE IF NOT EXISTS proxy_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 ";
 
 /// Apply the schema (idempotent) + migrations.
@@ -245,8 +262,24 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
+    if version < 6 {
+        // v6: proxy exit routing table (from main). Idempotent: fresh DBs
+        // create these via SCHEMA, so only the version bump matters here.
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS proxy_routes (
+               id       INTEGER PRIMARY KEY AUTOINCREMENT,
+               seq      INTEGER NOT NULL,
+               match    TEXT NOT NULL,
+               exit     TEXT NOT NULL,
+               UNIQUE (seq)
+             );
+             CREATE TABLE IF NOT EXISTS proxy_settings (
+               key   TEXT PRIMARY KEY,
+               value TEXT NOT NULL
+             );")?;
+    }
     if version < 7 {
-        // v7: multi-goal support. A team can now have a history of goals:
+        // v7: multi-goal support (enterprise). A team can now have a history
+        // of goals:
         //   - goals.closed_at marks a goal as finished (closed/completed).
         //   - the UNIQUE(team_id) index is dropped so several goals can exist
         //     per team (teams.goal_id keeps pointing at the current one).

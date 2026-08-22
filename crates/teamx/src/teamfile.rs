@@ -99,8 +99,20 @@ fn split_list(v: &str) -> Vec<String> {
         .collect()
 }
 
+/// A member key doubles as a directory name under `.teamx/members/`, so it
+/// must never be empty/hidden or contain path separators / control characters.
+/// Non-ASCII keys (e.g. `小明`) are fine and remain allowed.
+fn is_safe_member_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with('.')
+        && !key
+            .chars()
+            .any(|c| matches!(c, '/' | '\\') || c.is_control())
+}
+
 /// Parse TEAM.md text. Returns an Err only when the file is unreadable or
-/// empty; structural looseness (missing sections/fields) never fails.
+/// empty (or a member key is unsafe — it is used as a path component);
+/// structural looseness (missing sections/fields) never fails.
 pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -127,8 +139,15 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
         }
         // Member subsection header: `### key`
         if let Some(key) = trimmed.strip_prefix("### ") {
+            let key = key.trim();
+            if !is_safe_member_key(key) {
+                return Err(format!(
+                    "unsafe TEAM.md member key `{key}`: no path separators, control chars or \
+                     leading dot (the key becomes a directory name)"
+                ));
+            }
             flush_member(&mut tf, &member);
-            member = Some(MemberProfile::from_key(key.trim()));
+            member = Some(MemberProfile::from_key(key));
             continue;
         }
         // Section header: `## name`
@@ -310,6 +329,25 @@ mod tests {
         assert_eq!(tf.members[0].key, "小明");
         assert_eq!(tf.members[0].display_name, "小明");
         assert!(tf.members[0].role.is_none());
+    }
+
+    #[test]
+    fn member_key_traversal_rejected() {
+        for key in ["../../evil", "..", ".hidden", "a/b", "a\\b"] {
+            let text = format!("# T\n## 成员\n### {key}\n姓名: x\n");
+            let err = parse_team_file_text(&text).unwrap_err();
+            assert!(err.contains("unsafe TEAM.md member key"), "{key}: {err}");
+        }
+        // non-ASCII keys (e.g. 小明) are fine — they contain no separators
+        let tf = parse_team_file_text("# T\n## Members\n### 小明\n").unwrap();
+        assert_eq!(tf.members[0].key, "小明");
+    }
+
+    #[test]
+    fn member_key_dotted_ok() {
+        let tf = parse_team_file_text("# T\n## Members\n### alice.dev_2\nname: Alice\n").unwrap();
+        assert_eq!(tf.members[0].key, "alice.dev_2");
+        assert_eq!(tf.members[0].display_name, "Alice");
     }
 
     #[test]

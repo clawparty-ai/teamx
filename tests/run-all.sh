@@ -9,10 +9,12 @@
 #   7. network-mode mTLS identity test
 #   8. network-mode WebSocket push test
 #   9. network-mode cross-network (LAN IP) test
-#   10. network-mode reverse-tunnel test
-#   11. enterprise activity analytics test (network mode)
-#   12. TEAM.md bootstrap test (teamfile-test.sh)
-#   13. SOCKS5 proxy test (proxy-test.ts)
+ #   10. network-mode reverse-tunnel test
+ #   11. TEAM.md bootstrap test (teamfile-test.sh)
+ #   12. SOCKS5 proxy test (proxy-test.ts)
+ #   13. comprehensive tunnel + proxy test (all modes, edge cases, port pool)
+ #   14. enterprise activity analytics test (network mode)
+ #   15. enterprise TEAM.md bootstrap test
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -86,6 +88,14 @@ if command -v bun >/dev/null 2>&1; then
   bun tests/proxy-test.ts
 else
   echo "bun not found; skipping proxy test"
+fi
+
+echo
+echo "== 13/13 comprehensive tunnel + proxy test =="
+if command -v bun >/dev/null 2>&1; then
+  bun tests/tunnel-proxy-comprehensive.ts
+else
+  echo "bun not found; skipping comprehensive tunnel/proxy test"
 fi
 
 echo

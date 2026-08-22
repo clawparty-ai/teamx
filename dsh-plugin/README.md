@@ -1,4 +1,4 @@
-# @teamx/dsh-plugin
+# @teamx-ai/dsh-plugin
 
 teamx plugin for [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) — shared-goal human-in-the-loop collaboration across multiple dsh agents.
 
@@ -6,6 +6,7 @@ teamx plugin for [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepsee
 
 - **28 `teamx_*` tools** registered via `ctx.tools.register(defineTool(...))` for team management, goal tracking, member approval, role assignment, and real-time collaboration
 - **21 `/team-*` flat slash commands** registered via `ctx.commands.register`
+- **Runtime `teamx` skill** registered via `ctx.skills.register(...)` — provides the collaboration protocol / usage guide so agents know how to use teamx_* tools (Per-Turn Protocol, State Machine, Workflow Guidance)
 - **Per-agent digest injection** via `ctx.systemPrompt.variable` — each agent sees live team state in its system prompt
 - **Auto-execute**: directed tasks wake the target agent via `agent.followup()`
 - **Real-time push**: WebSocket + poll-based digest refresh (configurable via `pollIntervalMs`)
@@ -20,6 +21,7 @@ dsh-plugin/
 │   ├── client.ts         # sessionKey/instanceId/runCli(binary)/runRpc(mTLS)/mtlsFor/member cache
 │   ├── tools.ts          # teamx_* tools → ctx.tools.register(defineTool(...))
 │   ├── commands.ts       # /team-* flat slash commands → ctx.commands.register
+│   ├── skill.ts          # Runtime teamx skill (collaboration protocol) → ctx.skills.register()
 │   ├── ws.ts             # WebSocket push client (Node ws package, mTLS, reconnect)
 │   ├── digest.ts         # Per-agent digest cache + sync refresh + formatting
 │   ├── auto-execute.ts   # Directed task detection → agent.followup()
@@ -31,22 +33,34 @@ dsh-plugin/
 
 ## Installation
 
-The plugin loads via dsh's cordis plugin system. Add to your dsh profile's `cordis.patch.yml`:
+The plugin loads via dsh's cordis plugin system and is published to npm in two packages:
 
-```yaml
-- id: teamx
-  name: '@teamx/dsh-plugin'
+```bash
+# One-command install (bundle mounts the plugin into the profile):
+dsh plugin --profile <name> add @teamx-ai/dsh-plugin-bundle
+
+# Alternative: install the plugin package directly, then mount it in the
+# profile's cordis.patch.yml:
+npm install @teamx-ai/dsh-plugin   # into the profile's package.json
 ```
 
-For development, use a `file:` dependency in your dsh profile:
+```yaml
+# $DSH_HOME/profiles/<name>/cordis.patch.yml
+- id: teamx
+  name: '@teamx-ai/dsh-plugin'
+```
+
+For development against a local checkout, use a `file:` dependency in your dsh profile:
 
 ```json
 {
   "dependencies": {
-    "@teamx/dsh-plugin": "file:/path/to/teamx/dsh-plugin"
+    "@teamx-ai/dsh-plugin": "file:/path/to/teamx/dsh-plugin"
   }
 }
 ```
+
+The npm package ships a bundled `lib/index.js` (single-file ESM bundle); the `dsh` runtime provides the `@deepseek-ai/*` peer packages it imports. Local `file:` installs need a build first: `cd dsh-plugin && npm run build`.
 
 ## Session identity
 
@@ -136,6 +150,18 @@ The plugin injects a live team digest into each agent's system prompt via `ctx.s
 
 Each agent gets its own isolated digest (via `agent.ctx.systemPrompt`). Refreshed every `pollIntervalMs` ms (default 15s) via poller or WebSocket push.
 
+## Skill (collaboration protocol)
+
+The plugin registers a runtime `teamx` skill via `ctx.skills.register(...)` during startup. This skill provides the **collaboration protocol** that teaches agents how to use teamx_* tools effectively:
+
+- **Available Commands** — flat slash commands and corresponding tools
+- **Per-Turn Protocol** — sync before acting, report progress, owner summarizes
+- **State Machine** — team/member/goal lifecycle references
+- **Workflow Guidance** — step-by-step flows for create/join/invite/roles
+- **Auto-execute** — directed task handling rules
+
+The skill appears in the agent's `<available_skills>` catalog (via dsh's `dsh-tool-skill` consumer, present in standard/code/cordis presets). Agents can also load it on demand via the `skill` tool. The digest (above) provides live state; the skill provides static protocol — they complement each other.
+
 ## Auto-execute
 
 When a task is published with `--assignee <member>`, the plugin detects it and calls `agent.followup(message)` to wake the target agent. The agent receives a structured message with the task details and digest, then starts working automatically.
@@ -149,7 +175,8 @@ apply(ctx, config)
   ├── ctx.on('ready')
   │   ├── Discover teamx instance ID
   │   ├── Register 28 teamx_* tools
-  │   └── Register 21 /team-* commands
+  │   ├── Register 21 /team-* commands
+  │   └── Register teamx skill (ctx.skills.register)
   │
   ├── ctx.on('agent/session-start')
   │   ├── Check team membership → markMember()
@@ -215,6 +242,7 @@ Session key format `${teamxInstance}:${agentSessionID}` is shared with opencode-
 | Runtime | Bun | Node 22+ |
 | Tool registration | `ctx.client.tool(...)` | `ctx.tools.register(defineTool(...))` |
 | Command registration | Markdown files in assets/ | `ctx.commands.register(...)` |
+| Agent context / skill | agent/teamx.md file (installed to ~/.config/opencode/agent/) | Runtime skill via `ctx.skills.register(...)` |
 | System prompt injection | `experimental.chat.system.transform` | `ctx.systemPrompt.variable()` + `.section()` |
 | Auto-execute | `session.promptAsync()` | `agent.followup()` |
 | WS client | Bun WebSocket | `ws` npm package |
@@ -229,6 +257,7 @@ Session key format `${teamxInstance}:${agentSessionID}` is shared with opencode-
 - `@deepseek-ai/dsh-session` — Session events
 - `@deepseek-ai/dsh-system-prompt` — System prompt injection
 - `@deepseek-ai/dsh-commands` — Slash command registration
+- `@deepseek-ai/dsh-skill` — Skill registration (`ctx.skills.register`)
 - `ws` — WebSocket client (mTLS support)
 
 ## Development

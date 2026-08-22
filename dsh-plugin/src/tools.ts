@@ -4,7 +4,7 @@
  * Session key is `${instanceId}:${agent.session.id}` (same format as opencode-plugin).
  * CLI args mirror `crates/teamx/src/cli.rs` exactly — positional args stay
  * positional, only real flags use `--flag value`.
- * @module @teamx/dsh-plugin/tools
+ * @module @teamx-ai/dsh-plugin/tools
  */
 
 import type { Context } from '@deepseek-ai/cordis'

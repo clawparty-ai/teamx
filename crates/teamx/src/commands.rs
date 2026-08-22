@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, TeamCmd, TunnelCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -580,17 +580,52 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
             },
         },
-        // Proxy commands: network-mode only, long-lived WS clients.
+        // Proxy commands: network-mode only, long-lived WS clients. The
+        // `proxy routes` subcommands operate on the SQLite route table.
         Command::Proxy(cmd) => {
-            let url = resolve_server_url(match cmd {
-                ProxyCmd::Exit { server, .. } => server.as_deref(),
-                ProxyCmd::Start { server, .. } => server.as_deref(),
-            })?;
-            let result = match cmd {
-                ProxyCmd::Exit { name, .. } => crate::tunnel_client::proxy_exit(&url, name),
-                ProxyCmd::Start { port, exit, .. } => crate::tunnel_client::socks5_proxy(&url, exit, *port),
-            };
-            return result.map_err(AppError);
+            match cmd {
+                ProxyCmd::Exit { name, server } => {
+                    let url = resolve_server_url(server.as_deref())?;
+                    let result = crate::tunnel_client::proxy_exit(&url, name);
+                    return result.map_err(AppError);
+                }
+                ProxyCmd::Routes(rc) => {
+                    return proxy_routes_cmd(conn, rc);
+                }
+                ProxyCmd::Start { port, exit, routes, server } => {
+                    let url = resolve_server_url(server.as_deref())?;
+                    // Route resolution priority:
+                    //   1. -f / --routes JSON file (explicit, ephemeral)
+                    //   2. SQLite route table (persistent, default)
+                    //   3. --exit fixed name (legacy)
+                    //   4. error
+                    let table: Option<crate::routes::RouteTable> = match routes {
+                        Some(path) => {
+                            let text = std::fs::read_to_string(path)
+                                .map_err(|e| AppError(format!("routes file {}: {e}", path.display())))?;
+                            Some(crate::routes::RouteTable::parse(&text).map_err(AppError)?)
+                        }
+                        None => match crate::routes::load_from_db(conn) {
+                            Ok(Some(t)) => Some(t),
+                            Ok(None) => None,
+                            Err(e) => return Err(AppError(e)),
+                        },
+                    };
+                    let exit_name = match (&table, exit) {
+                        (Some(t), _) => t.default.clone(), // table has its own default
+                        (None, Some(e)) => e.clone(),
+                        (None, None) => {
+                            return Err(AppError(
+                                "proxy start: no exit configured — pass --exit <name>, \
+                                 -f <routes.json>, or configure `teamx proxy routes set-default`"
+                                    .to_string(),
+                            ))
+                        }
+                    };
+                    let result = crate::tunnel_client::socks5_proxy(&url, &exit_name, *port, table);
+                    return result.map_err(AppError);
+                }
+            }
         }
     };
     Ok(out)
@@ -601,6 +636,51 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Handle `teamx proxy routes <subcommand>` — manage the SQLite route table.
+fn proxy_routes_cmd(conn: &mut Connection, cmd: &RoutesCmd) -> Result<Value> {
+    use crate::routes;
+    Ok(match cmd {
+        RoutesCmd::List => {
+            match routes::load_from_db(conn) {
+                Ok(Some(t)) => routes::to_json(&t),
+                Ok(None) => {
+                    let mut m = serde_json::Map::new();
+                    m.insert("default".to_string(), Value::Null);
+                    m.insert("rules".to_string(), serde_json::json!([]));
+                    m.insert("note".to_string(), serde_json::json!(
+                        "no routes configured — run `teamx proxy routes set-default <exit>` \
+                         and `teamx proxy routes add <match> <exit>`"));
+                    Value::Object(m)
+                }
+                Err(e) => return Err(AppError(e)),
+            }
+        }
+        RoutesCmd::Add { match_, exit, seq } => {
+            let s = routes::upsert_rule(conn, *seq, match_, exit).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "seq": s, "match": match_, "exit": exit })
+        }
+        RoutesCmd::Remove { match_ } => {
+            let removed = routes::remove_rule(conn, match_).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "removed": removed, "match": match_ })
+        }
+        RoutesCmd::SetDefault { exit } => {
+            routes::set_default(conn, exit).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "default_exit": exit })
+        }
+        RoutesCmd::Import { path } => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| AppError(format!("routes file {}: {e}", path.display())))?;
+            let table = routes::RouteTable::parse(&text).map_err(AppError)?;
+            routes::save_to_db(conn, &table).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "imported": routes::to_json(&table) })
+        }
+        RoutesCmd::Clear => {
+            routes::clear_rules(conn).map_err(AppError)?;
+            serde_json::json!({ "ok": true, "cleared": true })
+        }
+    })
 }
 
 /// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`
@@ -818,7 +898,8 @@ fn bootstrap_from_teamfile(
             let mdir = members_dir.join(&m.key);
             std::fs::create_dir_all(&mdir).map_err(|e| AppError(format!("mkdir {mdir:?}: {e}")))?;
             let lp = mdir.join("invitation.letter");
-            std::fs::write(&lp, &letter).map_err(|e| AppError(format!("write letter {lp:?}: {e}")))?;
+            // The letter embeds the member's private key — keep it 0600.
+            write_private(&lp, &letter)?;
             letter_file = Some(lp.display().to_string());
         }
 
@@ -881,7 +962,9 @@ fn cmd_team_join(
     loopx_project: Option<&str>,
 ) -> Result<Value> {
     let team = team_by_token(conn, token)?;
-    if matches!(team.state.as_str(), "completed" | "archived") {
+    // `destroyed` teams are hidden from every listing; joining one would leave
+    // the member pending forever with no way to see or leave the team.
+    if matches!(team.state.as_str(), "completed" | "archived" | "destroyed") {
         return err(format!("team `{}` is {} and no longer accepts members", team.name, team.state));
     }
 
@@ -1565,9 +1648,7 @@ fn store_letter(invitation_id: &str, letter: &Value, ca_pem: &str, client_cert: 
     std::fs::create_dir_all(&dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
     let write = |name: &str, content: &str| -> Result<()> {
         let p = dir.join(name);
-        std::fs::write(&p, content).map_err(|e| AppError(format!("write {}: {e}", p.display())))?;
-        chmod_0600(&p);
-        Ok(())
+        write_private(&p, content)
     };
     write("letter.json", &serde_json::to_string_pretty(letter).unwrap_or_default())?;
     write("ca.crt", ca_pem)?;
@@ -1587,6 +1668,30 @@ fn chmod_0600(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+/// Write a secret file (keys, invitation letters), creating it with mode 0600
+/// directly — `write` + `chmod` leaves a 0644 window on unix.
+fn write_private(path: &std::path::Path, content: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+        f.write_all(content.as_bytes())
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content).map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+    }
+    Ok(())
 }
 
 /// True for a canonical v4-UUID shape (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
@@ -2557,8 +2662,8 @@ fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) ->
             std::fs::create_dir_all(dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
             let cert_path = dir.join("member.crt");
             let key_path = dir.join("member.key");
-            std::fs::write(&cert_path, &issued.cert_pem).map_err(|e| AppError(format!("write cert: {e}")))?;
-            std::fs::write(&key_path, &issued.key_pem).map_err(|e| AppError(format!("write key: {e}")))?;
+            write_private(&cert_path, &issued.cert_pem)?;
+            write_private(&key_path, &issued.key_pem)?;
             Ok(json!({
                 "ok": true,
                 "cn": cn,

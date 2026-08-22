@@ -1,4 +1,4 @@
-# @teamx/opencode-plugin
+# @teamx-ai/opencode-plugin
 
 teamx plugin for [opencode](https://github.com/opencode-ai/opencode) — shared-goal human-in-the-loop collaboration across multiple opencode sessions.
 
@@ -35,18 +35,22 @@ opencode-plugin/
 
 ## Installation
 
-The plugin loads automatically when opencode starts (configured in opencode.json):
+The plugin is published to npm as `@teamx-ai/opencode-plugin`. Add it to opencode's `plugin` array (opencode resolves npm specs itself — no manual `npm install` needed):
 
 ```json
 {
-  "plugin": {
-    "teamx": {
-      "install": ["npm", "install", "@teamx/opencode-plugin"],
-      "path": "node_modules/@teamx/opencode-plugin/dist/teamx.js"
-    }
-  }
+  "plugin": ["@teamx-ai/opencode-plugin"]
 }
 ```
+
+Pin a version if you want: `"plugin": ["@teamx-ai/opencode-plugin@0.1.0"]`. After editing `opencode.json`, restart opencode.
+
+> Older opencode builds that don't resolve npm specs can install manually:
+> ```bash
+> npm install @teamx-ai/opencode-plugin
+> # then reference the bundled entry:
+> "plugin": ["node_modules/@teamx-ai/opencode-plugin/dist/teamx.js"]
+> ```
 
 ## Session identity
 

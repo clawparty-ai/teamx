@@ -32,7 +32,16 @@ pub fn emit(
         |r| r.get(0),
     )?;
     let created_at = db_now();
-    let payload_json = payload.map(|p| serde_json::to_string(p).unwrap_or_default());
+    let payload_json = match payload.map(serde_json::to_string) {
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => {
+            // Should be unreachable for serde_json values; never silently
+            // store an empty string as if the event had no payload.
+            eprintln!("teamx: event payload serialize failed for `{event_type}`: {e}");
+            None
+        }
+        None => None,
+    };
     tx.execute(
         "INSERT INTO events (team_id, member_id, seq, type, payload_json, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -93,13 +102,21 @@ pub fn recent(
 
 fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     let payload_json: Option<String> = r.get(5)?;
+    let payload = payload_json.and_then(|s| match serde_json::from_str(&s) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            // Surface corruption instead of silently hiding it as `null`.
+            eprintln!("teamx: corrupt event payload (seq {}): {e}", r.get::<_, i64>(3).unwrap_or(-1));
+            None
+        }
+    });
     Ok(Event {
         id: r.get(0)?,
         team_id: r.get(1)?,
         member_id: r.get(2)?,
         seq: r.get(3)?,
         r#type: r.get(4)?,
-        payload: payload_json.and_then(|s| serde_json::from_str(&s).ok()),
+        payload,
         created_at: r.get(6)?,
     })
 }

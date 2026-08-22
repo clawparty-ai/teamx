@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- teamx mark on a rounded gradient tile -->
+  <defs>
+    <linearGradient id="gtile" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1d4ed8"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="ggoal2" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="220" fill="url(#gtile)"/>
+  <!-- X: two converging strokes -->
+  <line x1="250" y1="250" x2="774" y2="774" stroke="#ffffff" stroke-width="108" stroke-linecap="round" opacity="0.96"/>
+  <line x1="774" y1="250" x2="250" y2="774" stroke="#ffffff" stroke-width="108" stroke-linecap="round" opacity="0.96"/>
+  <!-- 4 member nodes -->
+  <circle cx="250" cy="250" r="66" fill="#bfdbfe" stroke="#172554" stroke-width="14"/>
+  <circle cx="774" cy="250" r="66" fill="#bfdbfe" stroke="#172554" stroke-width="14"/>
+  <circle cx="250" cy="774" r="66" fill="#bfdbfe" stroke="#172554" stroke-width="14"/>
+  <circle cx="774" cy="774" r="66" fill="#bfdbfe" stroke="#172554" stroke-width="14"/>
+  <!-- shared goal -->
+  <circle cx="512" cy="512" r="118" fill="url(#ggoal2)" stroke="#172554" stroke-width="14"/>
+  <circle cx="512" cy="512" r="46" fill="#172554"/>
+</svg>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- teamx mark: 4 member nodes converge on the shared goal at the center of the X -->
+  <defs>
+    <linearGradient id="gbar" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="ggoal" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <!-- X: two converging strokes -->
+  <line x1="250" y1="250" x2="774" y2="774" stroke="url(#gbar)" stroke-width="108" stroke-linecap="round"/>
+  <line x1="774" y1="250" x2="250" y2="774" stroke="url(#gbar)" stroke-width="108" stroke-linecap="round"/>
+  <!-- 4 member nodes at the ends of the X -->
+  <circle cx="250" cy="250" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+  <circle cx="774" cy="250" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+  <circle cx="250" cy="774" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+  <circle cx="774" cy="774" r="66" fill="#1e3a8a" stroke="#ffffff" stroke-width="14"/>
+  <!-- shared goal at the crossing point -->
+  <circle cx="512" cy="512" r="118" fill="url(#ggoal)" stroke="#ffffff" stroke-width="18"/>
+  <circle cx="512" cy="512" r="46" fill="#ffffff"/>
+</svg>

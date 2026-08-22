@@ -25,6 +25,18 @@ State is shared through a persistent event ledger until the goal is achieved.
 └──────────────┘      └──────────────┘
 ```
 
+## Concept: Idempotent delivery
+
+A common pain in enterprise software delivery: **documentation, code, and delivery drift apart**. Management tools try to force consistency, but execution deviates in practice — and front-line engineers end up feeling that "the management overhead is just extra work."
+
+teamx's team mode flips this. Requirements, design, prototypes, tests, and documentation all run under one automated execution control, so delivery becomes **idempotent**: change the requirement document, and teamx automatically drives every stage — design, review, test plans, development, documentation — to a new, consistent delivery, until the goal is achieved.
+
+Humans stay in the loop only where judgment matters: approving membership, resolving review conflicts, and verifying the goal before closing it. The details (documents, communication, code) are handled by AI. Automation plus a strict review gate delivers quality close to — or better than — a human-only process, while AI absorbs the coordination work that used to burn engineering hours.
+
+The net effect: **the same headcount delivers more.** Less human effort per delivery, higher consistency, and teams ship more features per unit of people.
+
+See the worked example: [`templates/01-product-dev-team.TEAM.md`](templates/01-product-dev-team.TEAM.md) — a four-role product team (PM / UI-Dev / Java-Dev / Tester) that enforces three iron rules (design-first, mandatory review, test-first) so every iteration delivers requirements, prototypes, dev docs, and test plans in lockstep.
+
 ## Features
 
 - **Goal lifecycle** — `proposed → shared → in_progress → achieved → closed` with owner-driven transitions

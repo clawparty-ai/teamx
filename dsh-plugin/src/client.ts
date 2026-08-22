@@ -2,7 +2,7 @@
  * teamx CLI/RPC client for dsh-plugin.
  * Mirrors opencode-plugin's client.ts but runs on Node (not Bun).
  * Supports both local mode (spawn teamx binary) and network mode (HTTP mTLS RPC).
- * @module @teamx/dsh-plugin/client
+ * @module @teamx-ai/dsh-plugin/client
  */
 
 import { execFile } from 'node:child_process'
@@ -293,12 +293,17 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     'member.set_state': ['state'],
     'role.set': ['role'],
     'role.propose': ['role', 'label', 'description'],
-    'role.approve': ['role'],
-    'role.deny': ['role'],
-    'role.update': ['role'],
-    'publish': ['type'],
-    'ask': ['member_id'],
-    'respond': ['ask_id', 'answer'],
+     'role.approve': ['role'],
+     'role.deny': ['role'],
+     'role.update': ['role'],
+     // Keep in sync with opencode-plugin/src/client.ts — these were missing and
+     // silently dropped the positional args in network mode.
+     'loopx.report': ['project'],
+     'tunnel.status': ['name'],
+     'tunnel.close': ['name'],
+     'publish': ['type'],
+     'ask': ['member_id'],
+     'respond': ['ask_id', 'answer'],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {

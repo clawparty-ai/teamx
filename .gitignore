@@ -1,6 +1,7 @@
 target/
 node_modules/
 dist/
+lib/
 *.db
 *.db-wal
 *.db-shm
@@ -15,3 +16,6 @@ demo/workspace/.opencode/node_modules/
 
 # internal code review notes (not source)
 code-review-codex-0817.md
+
+# TEAM.md bootstrap work dirs contain invitation letters (private keys)
+.teamx/members/

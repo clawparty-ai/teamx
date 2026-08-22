@@ -72,9 +72,22 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
   let ws: WebSocket | null = null
   let attempts = 0
   let timer: ReturnType<typeof setTimeout> | null = null
+  // Last known registration result; lets ready() return immediately even when
+  // the `registered` ack arrives before the caller calls ready().
+  let readyResult: number | null | undefined = undefined
   let readyResolve: ((port: number | null) => void) | null = null
   let readyTimer: ReturnType<typeof setTimeout> | null = null
   const streams = new Map<number, Socket>()
+
+  function settleReady(v: number | null) {
+    readyResult = v
+    if (readyResolve) {
+      const r = readyResolve
+      readyResolve = null
+      if (readyTimer) clearTimeout(readyTimer)
+      r(v)
+    }
+  }
 
   function scheduleReconnect() {
     if (closed) return
@@ -104,6 +117,7 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
       sock = tcpConnect({ host: "127.0.0.1", port: opts.port })
     } catch (e) {
       log("warn", `connect local service: ${String(e)}`)
+      notifyServerClose(sid)
       return
     }
     streams.set(sid, sock)
@@ -114,8 +128,22 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
       buf.copy(frame, 4)
       ws.send(frame)
     })
-    sock.on("close", () => streams.delete(sid))
-    sock.on("error", () => streams.delete(sid))
+    sock.on("close", () => {
+      // The local end is gone (dial failed / closed): tell the server so the
+      // consumer is not left waiting on a half-open stream.
+      streams.delete(sid)
+      notifyServerClose(sid)
+    })
+    sock.on("error", () => {
+      // 'close' fires afterwards and does the cleanup + notification.
+    })
+  }
+
+  /** Tell the server to tear down a stream (best-effort). */
+  function notifyServerClose(sid: number) {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "close_stream", stream_id: sid }))
+    }
   }
 
   function closeStream(sid: number) {
@@ -157,11 +185,7 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
         }
         if (msg.type === "registered") {
           log("info", `tunnel "${opts.name}" registered on public port ${msg.port}`)
-          if (readyResolve) {
-            readyResolve(msg.port ?? null)
-            readyResolve = null
-            if (readyTimer) clearTimeout(readyTimer)
-          }
+          settleReady(msg.port ?? null)
         } else if (msg.type === "open_stream" && typeof msg.stream_id === "number") {
           openStream(msg.stream_id)
         } else if (msg.type === "close_stream" && typeof msg.stream_id === "number") {
@@ -222,7 +246,7 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
       ws = null
     },
     ready(): Promise<number | null> {
-      if (readyResolve) return new Promise((r) => (readyResolve = r))
+      if (readyResult !== undefined) return Promise.resolve(readyResult)
       return new Promise((r) => {
         readyResolve = r
         readyTimer = setTimeout(() => {
@@ -282,8 +306,21 @@ export function forwardTunnel(opts: TunnelForwardOpts): TunnelForwardHandle {
   let closed = false
   const sockets = new Set<Socket>()
   const streams = new Map<number, Socket>()
+  // Last known bind result; lets ready() return immediately even when the
+  // listener binds before the caller calls ready().
+  let readyResult: number | null | undefined = undefined
   let readyResolve: ((port: number | null) => void) | null = null
   let readyTimer: ReturnType<typeof setTimeout> | null = null
+
+  function settleReady(v: number | null) {
+    readyResult = v
+    if (readyResolve) {
+      const r = readyResolve
+      readyResolve = null
+      if (readyTimer) clearTimeout(readyTimer)
+      r(v)
+    }
+  }
 
   const server = netCreateServer((clientSocket) => {
     if (closed) {
@@ -381,36 +418,28 @@ export function forwardTunnel(opts: TunnelForwardOpts): TunnelForwardHandle {
 
   // Bind the local listener (default: provider target port).
   const defaultPort = opts.localPort ?? opts.targetPort ?? 0
-  let bound = 0
   const tryBind = (port: number) => {
     return new Promise<number | null>((resolve) => {
       const onErr = (e: NodeJS.ErrnoException) => {
         server.off("listening", onOk)
-        if (e.code === "EADDRINUSE" && port !== 0) {
-          // conflict → report a random candidate for user confirmation
-          resolve(null)
-        } else {
-          resolve(null)
-        }
+        // Surface the errno so a bind failure is diagnosable.
+        log("warn", `bind 127.0.0.1:${port} failed: ${e.code ?? e.message}`)
+        resolve(null)
       }
       const onOk = () => {
         server.off("error", onErr)
-        resolve(bound)
+        // Resolve the ACTUAL bound port: with port=0 the OS assigns an
+        // ephemeral port and reporting the requested 0 would be wrong.
+        const addr = server.address()
+        resolve(typeof addr === "object" && addr !== null ? addr.port : null)
       }
       server.once("error", onErr)
       server.once("listening", onOk)
       server.listen(port, "127.0.0.1")
-      bound = port
     })
   }
 
-  tryBind(defaultPort).then((p) => {
-    if (readyResolve) {
-      readyResolve(p)
-      readyResolve = null
-      if (readyTimer) clearTimeout(readyTimer)
-    }
-  })
+  tryBind(defaultPort).then(settleReady)
 
   return {
     close() {
@@ -429,7 +458,7 @@ export function forwardTunnel(opts: TunnelForwardOpts): TunnelForwardHandle {
       }
     },
     ready(): Promise<number | null> {
-      if (readyResolve) return new Promise((r) => (readyResolve = r))
+      if (readyResult !== undefined) return Promise.resolve(readyResult)
       return new Promise((r) => {
         readyResolve = r
         readyTimer = setTimeout(() => {
