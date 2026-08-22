@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0 — 2026-08-23
+
+### tun0 virtual NIC (transparent proxy, needs root)
+
+A TUN device routes matching traffic through teamx proxy exits **without**
+configuring apps — apps keep talking to the network normally; traffic to the
+fake-ip range is transparently captured, TCP is reassembled in user space
+(smoltcp) and forwarded through the chosen exit.
+
+- **`teamx tun0 start`** (requires root): creates the tun device, injects the
+  fake-ip route, runs a fake-ip DNS responder and bridges connections.
+  - `--exit <name>` / `-f <routes.json>` to pick the default / routed exit.
+  - `--ip` (gateway, default 198.18.0.1), `--net/--net-prefix` (fake-ip net,
+    default 198.18.0.0/15), `--max-conns`.
+- **`teamx tun0 stop|status`**.
+- **fake-ip DNS** (`tun_dns.rs`): answers A queries with 198.18.x.x fake IPs,
+  keeps a fake_ip↔domain map so the exit dials by hostname.
+- **smoltcp user-space stack** (`tun_stack.rs`) with a local patch
+  (`vendor/smoltcp`, `[patch.crates-io]`) enabling `listen(0)` as an any-port
+  wildcard — required for transparent interception of arbitrary target ports.
+- **Bridge** (`tun_socks.rs`): per-connection `open_tunnel_bridge` (extracted
+  from `run_socks5_proxy`) reuses the existing WS→server→egress channel;
+  **server and egress are unchanged**.
+- Cross-platform: Linux `/dev/net/tun` + `ip route`, macOS `utun` + `route`.
+- Reuses `routes.rs` for per-target exit selection (IP/CIDR + fake-ip domain).
+- Tests: 64 unit tests (fake-ip alloc/lookup/DNS round-trip, routes, …).
+  Linux live verification on hub03: tun0 up, fake-ip route, DNS returns fake
+  A, example.com content fetched through the tunnel via egress2, .com flows
+  confirmed dialing through the egress2 exit. macOS: `tests/tun0-macos-test.sh`.
+- Docs: `docs/09-design-tun0.md` (detailed design).
+
 ## 0.1.2 — 2026-08-22
 
 ### Proxy per-target egress routing

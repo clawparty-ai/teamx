@@ -12,6 +12,11 @@ mod state;
 mod teamfile;
 mod tunnel;
 mod tunnel_client;
+mod tun_cli;
+mod tun_dev;
+mod tun_dns;
+mod tun_socks;
+mod tun_stack;
 
 use clap::Parser;
 use cli::{Cli, Command};

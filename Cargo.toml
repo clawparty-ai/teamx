@@ -2,6 +2,12 @@
 resolver = "2"
 members = ["crates/teamx"]
 
+# Vendor smoltcp with a local patch: allow `listen(0)` as an any-port
+# wildcard so the tun0 transparent proxy can accept connections to arbitrary
+# destination ports (upstream smoltcp requires an exact listen port).
+[patch.crates-io]
+smoltcp = { path = "vendor/smoltcp" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
