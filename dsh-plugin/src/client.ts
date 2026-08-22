@@ -296,6 +296,11 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     'role.approve': ['role'],
     'role.deny': ['role'],
     'role.update': ['role'],
+    // Keep in sync with opencode-plugin/src/client.ts — these were missing and
+    // silently dropped the positional args in network mode.
+    'loopx.report': ['project'],
+    'tunnel.status': ['name'],
+    'tunnel.close': ['name'],
     'publish': ['type'],
     'ask': ['member_id'],
     'respond': ['ask_id', 'answer'],

@@ -257,17 +257,26 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
         }
     };
 
-    // Resolve the member's teams (reuse the same check as /ws).
+    // Resolve the member's teams (reuse the same check as /ws). A revoked
+    // invitation still passes the mTLS handshake, so the tunnel data plane
+    // must reject it here too — same rule as /ws.
     let teams = {
         let db = state.db.clone();
         let mid = member_id.clone();
-        match tokio::task::spawn_blocking(move || {
+        match tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
             let conn = db.lock().unwrap();
-            commands::teams_for_member(&conn, &mid)
+            if commands::is_revoked(&conn, &mid).map_err(|e| e.to_string())? {
+                return Err("revoked".to_string());
+            }
+            commands::teams_for_member(&conn, &mid).map_err(|e| e.to_string())
         })
         .await
         {
             Ok(Ok(v)) => v,
+            Ok(Err(e)) if e == "revoked" => {
+                let _ = socket.send(ws_text(r#"{"type":"error","code":"revoked"}"#)).await;
+                return;
+            }
             _ => {
                 let _ = socket.send(ws_text(r#"{"type":"error","message":"internal"}"#)).await;
                 return;
@@ -283,8 +292,9 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     let team_id = teams[0].clone();
 
     let (mut sender, mut receiver) = socket.split();
-    // Track which tunnel name this WS currently owns, so a disconnect frees it.
-    let mut owned: Option<String> = None;
+    // Track every tunnel this WS registered so a disconnect frees them all
+    // (registering a second tunnel must not leak the first one).
+    let mut owned: std::collections::HashSet<String> = std::collections::HashSet::new();
     let registry = state.tunnels.clone();
 
     // Outbound channel: relays (run_tcp_relay) push WS messages here for the
@@ -319,7 +329,7 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                 }
                                 match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone(), mode) {
                                     Ok(port) => {
-                                        owned = Some(name.clone());
+                                        owned.insert(name.clone());
                                         if mode == crate::tunnel::TunnelMode::Frp {
                                             // Spawn the TCP relay for this tunnel (frp mode only).
                                             let reg = registry.clone();
@@ -340,20 +350,24 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                             "unregister" => {
                                 if let Some(name) = v.get("name").and_then(Value::as_str) {
                                     registry.remove(&team_id, name);
-                                    if owned.as_deref() == Some(name) {
-                                        owned = None;
-                                    }
+                                    owned.remove(name);
                                 }
                             }
                             _ => {}
                         }
                     }
                     Some(Ok(Message::Binary(buf))) => {
-                        // Provider → consumer data frame. `owned` is the tunnel
-                        // name this WS registered; route the bytes to the stream.
-                        if let Some(name) = owned.as_deref() {
-                            let name = name.to_string();
-                            crate::tunnel::route_provider_data(&registry, &team_id, &name, buf.as_ref());
+                        // Provider → consumer data frame ([4B stream_id][payload]).
+                        // A provider may register several tunnels over one WS and
+                        // stream ids come from one server-wide counter, so exactly
+                        // one owned tunnel holds each id.
+                        if !owned.is_empty() {
+                            crate::tunnel::route_provider_data_owned(
+                                &registry,
+                                &team_id,
+                                &owned,
+                                buf.as_ref(),
+                            );
                         }
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
@@ -375,8 +389,8 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
         }
     }
 
-    // Provider disconnected: free any tunnel it owned.
-    if let Some(name) = owned.as_deref() {
+    // Provider disconnected: free every tunnel it registered on this WS.
+    for name in &owned {
         registry.remove(&team_id, name);
     }
 }
@@ -437,6 +451,9 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
         let tunnels = state.tunnels.clone();
         match tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
             let conn = db.lock().unwrap();
+            if commands::is_revoked(&conn, &mid).map_err(|e| e.to_string())? {
+                return Err("revoked".to_string());
+            }
             let teams = commands::teams_for_member(&conn, &mid).map_err(|e| e.to_string())?;
             // Find the team that owns a tunnel with this name.
             for tid in teams {
@@ -570,7 +587,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
         return;
     }
 
-    let mut rx = state.hub.subscribe(&member_id, &teams);
+    let (mut rx, sub) = state.hub.subscribe(&member_id, &teams);
     let registered = json!({
         "type": "registered",
         "member_id": &member_id,
@@ -579,7 +596,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
     .to_string();
     let (mut sender, mut receiver) = socket.split();
     if sender.send(ws_text(&registered)).await.is_err() {
-        state.hub.unsubscribe(&member_id, &teams);
+        state.hub.unsubscribe(&sub);
         return;
     }
 
@@ -624,7 +641,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
         }
     }
 
-    state.hub.unsubscribe(&member_id, &teams);
+    state.hub.unsubscribe(&sub);
 }
 
 async fn rpc(

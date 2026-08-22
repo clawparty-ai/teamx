@@ -737,7 +737,8 @@ fn bootstrap_from_teamfile(
             let mdir = members_dir.join(&m.key);
             std::fs::create_dir_all(&mdir).map_err(|e| AppError(format!("mkdir {mdir:?}: {e}")))?;
             let lp = mdir.join("invitation.letter");
-            std::fs::write(&lp, &letter).map_err(|e| AppError(format!("write letter {lp:?}: {e}")))?;
+            // The letter embeds the member's private key — keep it 0600.
+            write_private(&lp, &letter)?;
             letter_file = Some(lp.display().to_string());
         }
 
@@ -800,7 +801,9 @@ fn cmd_team_join(
     loopx_project: Option<&str>,
 ) -> Result<Value> {
     let team = team_by_token(conn, token)?;
-    if matches!(team.state.as_str(), "completed" | "archived") {
+    // `destroyed` teams are hidden from every listing; joining one would leave
+    // the member pending forever with no way to see or leave the team.
+    if matches!(team.state.as_str(), "completed" | "archived" | "destroyed") {
         return err(format!("team `{}` is {} and no longer accepts members", team.name, team.state));
     }
 
@@ -1484,9 +1487,7 @@ fn store_letter(invitation_id: &str, letter: &Value, ca_pem: &str, client_cert: 
     std::fs::create_dir_all(&dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
     let write = |name: &str, content: &str| -> Result<()> {
         let p = dir.join(name);
-        std::fs::write(&p, content).map_err(|e| AppError(format!("write {}: {e}", p.display())))?;
-        chmod_0600(&p);
-        Ok(())
+        write_private(&p, content)
     };
     write("letter.json", &serde_json::to_string_pretty(letter).unwrap_or_default())?;
     write("ca.crt", ca_pem)?;
@@ -1506,6 +1507,30 @@ fn chmod_0600(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+/// Write a secret file (keys, invitation letters), creating it with mode 0600
+/// directly — `write` + `chmod` leaves a 0644 window on unix.
+fn write_private(path: &std::path::Path, content: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+        f.write_all(content.as_bytes())
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content).map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))?;
+    }
+    Ok(())
 }
 
 /// True for a canonical v4-UUID shape (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
@@ -2455,8 +2480,8 @@ fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) ->
             std::fs::create_dir_all(dir).map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
             let cert_path = dir.join("member.crt");
             let key_path = dir.join("member.key");
-            std::fs::write(&cert_path, &issued.cert_pem).map_err(|e| AppError(format!("write cert: {e}")))?;
-            std::fs::write(&key_path, &issued.key_pem).map_err(|e| AppError(format!("write key: {e}")))?;
+            write_private(&cert_path, &issued.cert_pem)?;
+            write_private(&key_path, &issued.key_pem)?;
             Ok(json!({
                 "ok": true,
                 "cn": cn,

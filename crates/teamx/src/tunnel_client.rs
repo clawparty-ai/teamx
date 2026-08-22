@@ -51,6 +51,37 @@ fn parse_key(pem: &str) -> Option<PrivateKeyDer<'static>> {
         .flatten()
 }
 
+/// Build an MtlsMaterial from raw PEM strings. Returns None (with a stderr
+/// note) instead of panicking on malformed material.
+fn material_from_pem(cert_pem: &str, key_pem: &str, ca_pem: &str, source: &str) -> Option<MtlsMaterial> {
+    let cert = match parse_cert(cert_pem) {
+        Some(c) => c,
+        None => {
+            eprintln!("teamx: {source}: no PEM certificate found");
+            return None;
+        }
+    };
+    let key = match parse_key(key_pem) {
+        Some(k) => k,
+        None => {
+            eprintln!("teamx: {source}: no PEM private key found");
+            return None;
+        }
+    };
+    let ca = match parse_cert(ca_pem) {
+        Some(c) => c,
+        None => {
+            eprintln!("teamx: {source}: no CA certificate found");
+            return None;
+        }
+    };
+    Some(MtlsMaterial {
+        cert,
+        key,
+        ca: vec![ca],
+    })
+}
+
 /// Env override: TEAMX_MTLS_CERT/KEY/CA point at PEM files.
 fn env_mtls() -> Option<MtlsMaterial> {
     let cert = std::env::var("TEAMX_MTLS_CERT").ok()?;
@@ -62,19 +93,7 @@ fn env_mtls() -> Option<MtlsMaterial> {
     let cert_pem = read_pem(Path::new(&cert))?;
     let key_pem = read_pem(Path::new(&key))?;
     let ca_pem = read_pem(Path::new(&ca))?;
-    Some(MtlasFromPem(cert_pem, key_pem, ca_pem).build())
-}
-
-/// Holder to build MtlsMaterial from raw PEM strings.
-struct MtlasFromPem(String, String, String);
-impl MtlasFromPem {
-    fn build(self) -> MtlsMaterial {
-        MtlsMaterial {
-            cert: parse_cert(&self.0).unwrap_or_else(|| panic!("invalid TEAMX_MTLS_CERT")),
-            key: parse_key(&self.1).unwrap_or_else(|| panic!("invalid TEAMX_MTLS_KEY")),
-            ca: vec![parse_cert(&self.2).expect("invalid TEAMX_MTLS_CA")],
-        }
-    }
+    material_from_pem(&cert_pem, &key_pem, &ca_pem, "TEAMX_MTLS_CERT/KEY/CA")
 }
 
 /// Host portion of a URL.
@@ -131,7 +150,7 @@ fn letter_mtls(server_url: &str) -> Option<MtlsMaterial> {
     let cert = read_pem(&chosen.join("client.crt"))?;
     let key = read_pem(&chosen.join("client.key"))?;
     let ca = read_pem(&chosen.join("ca.crt"))?;
-    Some(MtlasFromPem(cert, key, ca).build())
+    material_from_pem(&cert, &key, &ca, "invitation letter")
 }
 
 /// Build a rustls ClientConfig with the mTLS material (server cert verified
@@ -246,9 +265,10 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
     };
     println!("ok tunnel registered: name={name} mode={mode} port={public_port}");
 
-    // Channel: local-service tasks push [sid][payload] frames here; the main
-    // loop forwards them to the server WS.
-    let (to_server_tx, mut to_server_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Channel: local-service tasks push frames here; the main loop forwards
+    // them to the server WS. Binary frames carry [sid][payload]; text frames
+    // carry control messages (e.g. close_stream after a failed local dial).
+    let (to_server_tx, mut to_server_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     // Per-stream writer channels: server→local bytes for each open stream.
     // sid → Sender that delivers payload bytes to the stream's local socket.
     let writers: Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>> =
@@ -286,7 +306,7 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
                                                     let mut frame = Vec::with_capacity(4 + n);
                                                     frame.extend_from_slice(&(sid as u32).to_be_bytes());
                                                     frame.extend_from_slice(&buf[..n]);
-                                                    if tx2.send(frame).is_err() {
+                                                    if tx2.send(Message::Binary(frame)).is_err() {
                                                         break;
                                                     }
                                                 }
@@ -304,9 +324,22 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
                                     }
                                     let _ = write_err;
                                     writers2.lock().unwrap().remove(&sid);
+                                    // The local end is gone: tell the server to tear
+                                    // the stream down so the consumer is not left
+                                    // waiting on a half-open connection.
+                                    let _ = tx2.send(Message::Text(
+                                        serde_json::json!({ "type": "close_stream", "stream_id": sid }).to_string(),
+                                    ));
                                 });
                             }
-                            Err(e) => eprintln!("tunnel `{name}`: connect local service: {e}"),
+                            Err(e) => {
+                                eprintln!("tunnel `{name}`: connect local service {dial}: {e}");
+                                // Dial failed: notify the server so the consumer
+                                // learns the stream will never carry data.
+                                let _ = tx2.send(Message::Text(
+                                    serde_json::json!({ "type": "close_stream", "stream_id": sid }).to_string(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -323,10 +356,10 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
                 Some(Err(e)) => return Err(format!("ws error: {e}")),
                 None => return Err("server closed the connection".to_string()),
             },
-            frame = to_server_rx.recv() => {
-                match frame {
-                    Some(f) => {
-                        if ws.send(Message::Binary(f)).await.is_err() {
+            m = to_server_rx.recv() => {
+                match m {
+                    Some(m) => {
+                        if ws.send(m).await.is_err() {
                             return Err("server closed the connection".to_string());
                         }
                     }
@@ -645,6 +678,8 @@ pub fn run_rpc(server_url: &str, method: &str, args: serde_json::Value) -> Resul
 }
 
 /// Minimal HTTPS POST with mTLS (rustls client over tokio TcpStream).
+/// Hardened with a 15s overall timeout and an HTTP status check so a stalled
+/// server or an error page is surfaced as an error, not garbage JSON.
 async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<ClientConfig>) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
@@ -658,21 +693,40 @@ async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<Clien
         None => (host.to_string(), 443),
     };
     let addr = format!("{host_name}:{port}");
-    let tcp = tokio::net::TcpStream::connect(&addr).await.map_err(|e| format!("connect {addr}: {e}"))?;
-    let server_name = rustls::pki_types::ServerName::try_from(host_name.clone())
-        .map_err(|e| format!("invalid server name {host_name}: {e}"))?;
-    let connector = TlsConnector::from(config.clone());
-    let mut tls = connector.connect(server_name, tcp).await.map_err(|e| format!("tls: {e}"))?;
+    let request = async {
+        let tcp = tokio::net::TcpStream::connect(&addr)
+            .await
+            .map_err(|e| format!("connect {addr}: {e}"))?;
+        let server_name = rustls::pki_types::ServerName::try_from(host_name.clone())
+            .map_err(|e| format!("invalid server name {host_name}: {e}"))?;
+        let connector = TlsConnector::from(config.clone());
+        let mut tls = connector.connect(server_name, tcp).await.map_err(|e| format!("tls: {e}"))?;
 
-    let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    tls.write_all(req.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
-    let mut resp = Vec::new();
-    tls.read_to_end(&mut resp).await.map_err(|e| format!("read: {e}"))?;
-    let text = String::from_utf8_lossy(&resp).to_string();
-    // Split headers/body at the first blank line.
-    let body_part = text.split("\r\n\r\n").nth(1).unwrap_or(&text);
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tls.write_all(req.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+        let mut resp = Vec::new();
+        tls.read_to_end(&mut resp).await.map_err(|e| format!("read: {e}"))?;
+        Ok::<_, String>(String::from_utf8_lossy(&resp).to_string())
+    };
+    let text = tokio::time::timeout(std::time::Duration::from_secs(15), request)
+        .await
+        .map_err(|_| "rpc timed out after 15s".to_string())??;
+
+    // Split status line / headers / body at the blank line.
+    let (head, body_part) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h, b),
+        None => (text.as_str(), text.as_str()),
+    };
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("malformed http response: {}", head.lines().next().unwrap_or("empty")))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("http {status}: {}", body_part.trim().chars().take(200).collect::<String>()));
+    }
     Ok(body_part.trim().to_string())
 }

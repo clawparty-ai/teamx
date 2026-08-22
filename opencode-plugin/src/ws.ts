@@ -68,13 +68,40 @@ export function connectWs(opts: {
       } catch {
         return
       }
-      const m = msg as { type?: string; event?: WsEvent }
+      const m = msg as { type?: string; event?: WsEvent; code?: string; message?: string }
       if (m.type === "event" && m.event) {
         opts.onEvent(m.event)
       } else if (m.type === "ping") {
         sock.send(JSON.stringify({ type: "pong" }))
+      } else if (m.type === "close") {
+        // Server-initiated terminal close (sentinel frame, e.g. invitation
+        // revoked): reconnecting can never succeed — the cert is still valid
+        // for mTLS but every connection gets dropped again.
+        closed = true
+        opts.onStatus?.(false)
+        try {
+          sock.close()
+        } catch {
+          // ignore
+        }
+        opts.log?.("warn", `ws closed by server (${m.code ?? "closed"})`)
+      } else if (
+        m.type === "error" &&
+        m.code &&
+        ["no_identity", "revoked", "not_a_member"].includes(m.code)
+      ) {
+        // Terminal auth errors: same treatment as the close sentinel — fail
+        // fast instead of reconnecting forever.
+        closed = true
+        opts.onStatus?.(false)
+        try {
+          sock.close()
+        } catch {
+          // ignore
+        }
+        opts.log?.("warn", `ws auth error (${m.code}): ${m.message ?? ""}`)
       }
-      // `registered` / `pong` / `error` are informational; the poller/sync
+      // `registered` / `pong` / other errors are informational; the poller/sync
       // stays the fallback path, so no special handling is required here.
     }
     sock.onclose = () => {

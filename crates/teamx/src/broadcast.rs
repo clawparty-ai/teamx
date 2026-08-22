@@ -5,19 +5,38 @@
 //! fan it out to every online member of that team. Delivery is best-effort:
 //! a dropped frame is recovered by the member's next `sync` (the ledger stays
 //! the single source of truth).
+//!
+//! A member may hold several live connections at once (e.g. two windows); each
+//! `subscribe` call gets its own subscription key (`<member_id>\0<seq>`), so a
+//! new connection never silently replaces an earlier one's sender.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-/// team_id -> member_id -> sender (one sender per live connection)
+/// team_id -> subscription_key -> sender (one sender per live connection)
 type LiveMap = HashMap<String, HashMap<String, UnboundedSender<Value>>>;
+
+/// Handle identifying one live connection's subscriptions; pass it back to
+/// [`Hub::unsubscribe`] on disconnect.
+#[derive(Debug, Clone)]
+pub struct Subscription {
+    key: String,
+    teams: Vec<String>,
+}
 
 #[derive(Clone, Default)]
 pub struct Hub {
     live: Arc<Mutex<LiveMap>>,
+    next_conn: Arc<AtomicU64>,
+}
+
+fn key_prefix(member_id: &str) -> String {
+    // member ids are UUIDs and never contain NUL, so this separator is safe.
+    format!("{member_id}\u{0}")
 }
 
 impl Hub {
@@ -26,24 +45,28 @@ impl Hub {
     }
 
     /// Register a member connection for a set of team ids; returns the receiver
-    /// through which events for any of those teams are delivered.
-    pub fn subscribe(&self, member_id: &str, teams: &[String]) -> UnboundedReceiver<Value> {
+    /// through which events for any of those teams are delivered, plus the
+    /// subscription handle used to remove it later.
+    pub fn subscribe(&self, member_id: &str, teams: &[String]) -> (UnboundedReceiver<Value>, Subscription) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let key = format!("{}{}", key_prefix(member_id), self.next_conn.fetch_add(1, Ordering::Relaxed));
         let mut live = self.live.lock().unwrap();
         for team in teams {
             live.entry(team.clone())
                 .or_default()
-                .insert(member_id.to_string(), tx.clone());
+                .insert(key.clone(), tx.clone());
         }
-        rx
+        let sub = Subscription { key, teams: teams.to_vec() };
+        (rx, sub)
     }
 
-    /// Remove a member connection (on disconnect).
-    pub fn unsubscribe(&self, member_id: &str, teams: &[String]) {
+    /// Remove one member connection (on disconnect). Only the subscriptions
+    /// made by the matching `subscribe` call are removed.
+    pub fn unsubscribe(&self, sub: &Subscription) {
         let mut live = self.live.lock().unwrap();
-        for team in teams {
+        for team in &sub.teams {
             if let Some(members) = live.get_mut(team) {
-                members.remove(member_id);
+                members.remove(&sub.key);
                 if members.is_empty() {
                     live.remove(team);
                 }
@@ -67,9 +90,12 @@ impl Hub {
     /// into a connection close.
     pub fn disconnect_member(&self, member_id: &str) {
         let live = self.live.lock().unwrap();
+        let prefix = key_prefix(member_id);
         for members in live.values() {
-            if let Some(tx) = members.get(member_id) {
-                let _ = tx.send(serde_json::json!({ "type": "close", "code": "revoked" }));
+            for (key, tx) in members {
+                if key.starts_with(&prefix) {
+                    let _ = tx.send(serde_json::json!({ "type": "close", "code": "revoked" }));
+                }
             }
         }
     }

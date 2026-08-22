@@ -90,12 +90,20 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
   const current = serveStatus()
   if (current.running) return current
 
-  const addr = opts.addr ?? "0.0.0.0"
+  // Secure default: bind loopback like the CLI does. Binding a public
+  // interface is opt-in (`addr`) so LAN-exposed frp ports are not opened by
+  // accident when the plugin auto-starts the server.
+  const addr = opts.addr ?? "127.0.0.1"
   const port = opts.port ?? 5781
   const db = opts.db ?? process.env.TEAMX_DB ?? join(TEAMX_HOME, "teamx.db")
   const ip = localIP()
+  const publicBind = addr !== "127.0.0.1" && addr !== "localhost"
+  const advertiseHost = publicBind ? ip : addr
 
-  const args = ["serve", "--addr", addr, "--port", String(port), "--san", ip]
+  const args = ["serve", "--addr", addr, "--port", String(port)]
+  // Only add the LAN-IP SAN (and the server-cert churn it causes) when the
+  // server is actually reachable beyond loopback.
+  if (publicBind && ip !== "127.0.0.1") args.push("--san", ip)
   if (opts.db || process.env.TEAMX_DB) args.push("--db", db)
 
   const proc = Bun.spawn([teamxBin(), ...args], {
@@ -108,7 +116,7 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
     pid: proc.pid,
     addr,
     port,
-    url: `https://${ip}:${port}`,
+    url: `https://${advertiseHost}:${port}`,
     db,
     started_at: new Date().toISOString(),
   }

@@ -312,15 +312,28 @@ impl TunnelRegistry {
 }
 
 /// Relay data frames coming back from a provider (via its tunnel WS) into the
-/// matching consumer TCP connection's writer channel.
-pub fn route_provider_data(registry: &TunnelRegistry, team_id: &str, name: &str, buf: &[u8]) {
-    let (sid, payload) = match TunnelFrame::decode_data(buf) {
-        Some(v) => v,
-        None => return,
+/// matching consumer TCP connection's writer channel. `names` covers every
+/// tunnel registered over the same provider connection: stream ids come from
+/// one server-wide counter, so exactly one candidate holds each id.
+pub fn route_provider_data_owned(
+    registry: &TunnelRegistry,
+    team_id: &str,
+    names: &std::collections::HashSet<String>,
+    buf: &[u8],
+) {
+    let Some((sid, payload)) = TunnelFrame::decode_data(buf) else {
+        return;
     };
-    if let Some(t) = registry.get(team_id, name) {
-        if let Some(tx) = t.streams.lock().unwrap().get(&sid) {
-            let _ = tx.send(payload.to_vec());
+    for name in names {
+        let Some(t) = registry.get(team_id, name) else {
+            continue;
+        };
+        let hit = t.streams.lock().unwrap().contains_key(&sid);
+        if hit {
+            if let Some(tx) = t.streams.lock().unwrap().get(&sid) {
+                let _ = tx.send(payload.to_vec());
+            }
+            return;
         }
     }
 }
@@ -341,6 +354,9 @@ pub async fn run_tcp_relay(
         Ok(l) => l,
         Err(e) => {
             eprintln!("teamx tunnel `{name}` bind {bind} failed: {e}");
+            // Free the registry entry and its port-pool slot: the tunnel
+            // advertised itself as active but can never accept traffic.
+            registry.remove(&team_id, &name);
             return Err(format!("bind tunnel port {port}: {e}"));
         }
     };

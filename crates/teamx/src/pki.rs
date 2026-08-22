@@ -31,22 +31,31 @@ fn now() -> OffsetDateTime {
     OffsetDateTime::now_utc()
 }
 
-/// Ensure a file has restrictive permissions (0600) — best effort on unix.
-fn chmod_0600(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
-}
-
 fn read_pem(path: &Path) -> PkiResult<String> {
     fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
 fn write_pem(path: &Path, pem: &str) -> PkiResult<()> {
-    fs::write(path, pem).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    chmod_0600(path);
+    // Create private-key material with mode 0600 directly — a plain
+    // `fs::write` + `chmod` leaves a 0644 window on unix.
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        f.write_all(pem.as_bytes())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, pem).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
     Ok(())
 }
 
