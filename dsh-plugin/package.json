@@ -1,6 +1,6 @@
 {
   "name": "@teamx-ai/dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "teamx deepseek-harness plugin: multi-agent team collaboration with teamx_* tools, /team-* slash commands, and real-time digest injection",
   "license": "MIT",
   "type": "module",

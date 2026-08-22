@@ -1,7 +1,7 @@
 {
   "name": "@teamx-ai/dsh-plugin-bundle",
-  "version": "0.1.0",
-  "description": "Installable dsh bundle mounting the teamx collaboration plugin (teamx_* tools + /team-* commands + digest injection).",
+  "version": "0.2.0",
+  "description": "Installable dsh bundle mounting the teamx collaboration plugin (teamx_* tools + /team-* commands + teamx skill + digest injection).",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@teamx-ai/dsh-plugin": "0.1.0"
+    "@teamx-ai/dsh-plugin": "0.2.0"
   },
   "publishConfig": {
     "access": "public"
