@@ -302,6 +302,13 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     // shares it. We must keep the receiver alive and forward to the socket.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
+    // Keep the tunnel control plane alive across NAT/proxies: same 30s
+    // heartbeat as the /ws channel. An idle tunnel WS that neither side probes
+    // can be silently dropped by middleboxes, leaving a stale registered
+    // tunnel and half-open connections (proxy flows then fail with SOCKS5 (5)).
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(ws_heartbeat_secs()));
+    heartbeat.tick().await; // consume the immediate first tick
+
     loop {
         tokio::select! {
             msg = receiver.next() => {
@@ -312,6 +319,12 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                         };
                         let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
                         match ty {
+                            "ping" => {
+                                // Application-level ping: reply so the client
+                                // can detect a dead peer without relying on
+                                // transport-level timeouts.
+                                let _ = sender.send(ws_text(r#"{"type":"pong"}"#)).await;
+                            }
                             "register" => {
                                 let name = v.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                                 let target = v.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
@@ -384,6 +397,11 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                         }
                     }
                     None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                if sender.send(ws_text(r#"{"type":"ping"}"#)).await.is_err() {
+                    break;
                 }
             }
         }
@@ -501,35 +519,56 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
     let registry = state.tunnels.clone();
     let tid = team_id.clone();
     let tnm = tunnel_name.clone();
-    let consumer_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
-                Message::Binary(buf) => {
-                    if let Some(t) = registry.get(&tid, &tnm) {
-                        let _ = t.ws_tx.send(Message::Binary(buf));
+
+    // Keep this consumer forward channel alive across NAT/proxies: a 30s
+    // heartbeat mirrors the provider /tunnel channel so an idle `proxy start`
+    // / `tunnel forward` connection is not silently dropped by middleboxes
+    // (which would strand the local SOCKS5 listener).
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(ws_heartbeat_secs()));
+    heartbeat.tick().await; // consume the immediate first tick
+
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(buf))) => {
+                        if let Some(t) = registry.get(&tid, &tnm) {
+                            let _ = t.ws_tx.send(Message::Binary(buf));
+                        }
                     }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(v) = serde_json::from_str::<Value>(text.as_str()) {
+                            if v.get("type").and_then(Value::as_str) == Some("ping") {
+                                let _ = sender.send(ws_text(r#"{"type":"pong"}"#)).await;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    _ => {}
                 }
-                Message::Text(_) => { /* control frames from consumer: ignore */ }
-                Message::Close(_) | Message::Ping(_) | Message::Pong(_) => {}
+            }
+            bytes = rx.recv() => {
+                match bytes {
+                    Some(bytes) => {
+                        // Re-attach the stream id header: consumers expect [4B stream_id][payload].
+                        let mut frame = Vec::with_capacity(4 + bytes.len());
+                        frame.extend_from_slice(&(sid as u32).to_be_bytes());
+                        frame.extend_from_slice(&bytes);
+                        if sender.send(Message::Binary(frame.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                if sender.send(ws_text(r#"{"type":"ping"}"#)).await.is_err() {
+                    break;
+                }
             }
         }
-        registry.close_stream(&tid, &tnm, sid);
-    });
-
-    let provider_task = tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            // Re-attach the stream id header: consumers expect [4B stream_id][payload].
-            let mut frame = Vec::with_capacity(4 + bytes.len());
-            frame.extend_from_slice(&(sid as u32).to_be_bytes());
-            frame.extend_from_slice(&bytes);
-            if sender.send(Message::Binary(frame.into())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let _ = consumer_task.await;
-    let _ = provider_task.await;
+    }
+    registry.close_stream(&tid, &tnm, sid);
 }
 
 /// Build a text WebSocket frame (axum 0.8 uses `Utf8Bytes` for text frames).

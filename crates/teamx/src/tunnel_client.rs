@@ -17,6 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ClientConfig;
@@ -233,8 +234,30 @@ async fn connect_tunnel_ws(server_url: &str, path: &str) -> Result<tokio_tungste
 }
 
 /// Provider side: expose a local service. Registers the tunnel and relays
-/// bytes between the server WS and the local service. Runs forever.
+/// bytes between the server WS and the local service. Runs forever, and
+/// automatically reconnects (with backoff) if the WS is dropped — a long-idle
+/// tunnel WS can be silently closed by NAT/middleboxes, which would leave the
+/// registered tunnel stale and strand consumers (SOCKS5 (5)).
 pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan_ip: Option<&str>) -> Result<(), String> {
+    // Fixed small backoff: reconnect fast (1s) on the first retry, growing to
+    // at most 30s so a long outage does not hammer the server.
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match expose_once(server_url, name, port, mode, lan_ip).await {
+            Ok(()) => return Ok(()), // clean shutdown path (unused today)
+            Err(e) => {
+                eprintln!("tunnel `{name}`: connection lost ({e}); reconnecting in {}s", backoff.as_secs());
+                tokio::time::sleep(backoff).await;
+                if backoff.as_secs() < 30 {
+                    backoff = backoff.saturating_mul(2);
+                }
+            }
+        }
+    }
+}
+
+/// One connected lifetime of the provider-side tunnel relay (no reconnect).
+async fn expose_once(server_url: &str, name: &str, port: u16, mode: &str, lan_ip: Option<&str>) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -279,7 +302,14 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
             m = ws.next() => match m {
                 Some(Ok(Message::Text(t))) => {
                     let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
-                    if v["type"] == "open_stream" {
+                    match v["type"].as_str() {
+                        Some("ping") => {
+                            // Application-level heartbeat: reply so the server
+                            // knows we are alive and the WS is not half-open.
+                            let _ = ws.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await;
+                        }
+                        _ => {
+                            if v["type"] == "open_stream" {
                         let sid = v["stream_id"].as_u64().unwrap_or(0);
                         if sid == 0 {
                             continue;
@@ -340,6 +370,8 @@ pub async fn run_expose(server_url: &str, name: &str, port: u16, mode: &str, lan
                                     serde_json::json!({ "type": "close_stream", "stream_id": sid }).to_string(),
                                 ));
                             }
+                        }
+                    }
                         }
                     }
                 }
@@ -432,6 +464,11 @@ pub async fn run_forward(server_url: &str, name: &str, local_port: u16) -> Resul
                                     }
                                 }
                                 Some("error") => return,
+                                Some("ping") => {
+                                    // Application-level heartbeat: reply so the
+                                    // server knows we are alive.
+                                    let _ = ws.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await;
+                                }
                                 _ => {}
                             }
                         }
@@ -598,6 +635,11 @@ pub async fn run_socks5_proxy(server_url: &str, exit_name: &str, local_port: u16
                                 Some("error") => {
                                     let _ = c_write.write_all(&crate::socks5::SOCKS5_FAIL_REPLY).await;
                                     return;
+                                }
+                                Some("ping") => {
+                                    // Application-level heartbeat: reply so the
+                                    // server knows we are alive.
+                                    let _ = ws.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await;
                                 }
                                 _ => {}
                             }
