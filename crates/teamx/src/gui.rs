@@ -11,11 +11,6 @@
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
 
-// Control-panel HTTP server types.
-use axum::extract::State as AxState;
-use axum::http::StatusCode;
-use axum::{Json, Router};
-
 /// Current state of one managed worker process.
 #[derive(Default)]
 pub struct ManagedProc {
@@ -60,101 +55,11 @@ impl GuiState {
     }
 }
 
-/// Shared state for the tray + the embedded control-panel HTTP server.
-pub type SharedState = std::sync::Arc<std::sync::Mutex<GuiState>>;
-
-/// Start the embedded control-panel HTTP server on 127.0.0.1:<port>.
-/// Returns the bound port. Handlers share `state` with the tray.
-fn start_control_panel(state: SharedState, port: u16) -> Result<u16, String> {
-    use axum::routing::get;
-
-    let app = Router::new()
-        .route("/", get(root_page))
-        .route("/api/status", get(get_status))
-        .route("/api/tun0/start", get(tun0_start))
-        .route("/api/tun0/stop", get(tun0_stop))
-        .route("/api/proxy/start", get(proxy_start))
-        .route("/api/proxy/stop", get(proxy_stop))
-        .with_state(state);
-
-    // Bind inside a dedicated tokio runtime thread. A std TcpListener cannot
-    // be registered with a current-thread runtime, so we bind with tokio's
-    // async listener and serve forever on this thread.
-    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-    let (tx, rx) = std::sync::mpsc::channel::<Result<u16, String>>();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("panel rt");
-        let tx_err = tx.clone();
-        let port_result = rt.block_on(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("bind {addr}: {e}"))?;
-            let local = listener.local_addr().map_err(|e| e.to_string())?;
-            let p = local.port();
-            let _ = tx.send(Ok(p));
-            let _ = axum::serve(listener, app).await;
-            Ok::<u16, String>(p)
-        });
-        if let Err(e) = port_result {
-            let _ = tx_err.send(Err(e));
-        }
-    });
-    rx.recv().map_err(|e| format!("control panel: {e}"))?
-}
-
-async fn root_page() -> axum::response::Html<&'static str> {
-    axum::response::Html(include_str!("gui_panel.html"))
-}
-
-async fn get_status(AxState(state): AxState<SharedState>) -> Json<serde_json::Value> {
-    let mut st = state.lock().unwrap();
-    Json(serde_json::json!({
-        "tun0": st.tun0.is_running(),
-        "proxy": st.proxy.is_running(),
-    }))
-}
-
-async fn tun0_start(AxState(state): AxState<SharedState>) -> (StatusCode, Json<serde_json::Value>) {
-    set_proc(&state, "tun0", true)
-}
-async fn tun0_stop(AxState(state): AxState<SharedState>) -> (StatusCode, Json<serde_json::Value>) {
-    set_proc(&state, "tun0", false)
-}
-async fn proxy_start(AxState(state): AxState<SharedState>) -> (StatusCode, Json<serde_json::Value>) {
-    set_proc(&state, "proxy", true)
-}
-async fn proxy_stop(AxState(state): AxState<SharedState>) -> (StatusCode, Json<serde_json::Value>) {
-    set_proc(&state, "proxy", false)
-}
-
-fn set_proc(state: &SharedState, which: &str, start: bool) -> (StatusCode, Json<serde_json::Value>) {
-    let mut st = state.lock().unwrap();
-    let envs = worker_env();
-    let res = if start {
-        match which {
-            "tun0" => st.tun0.spawn(&["tun0", "start"], &envs),
-            _ => st.proxy.spawn(&["proxy", "start", "--port", "1080"], &envs),
-        }
-    } else {
-        if which == "tun0" { st.tun0.kill() } else { st.proxy.kill() }
-        Ok(())
-    };
-    match res {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": e}))),
-    }
-}
-
-/// Open the control panel in the system browser.
-fn open_control_panel(port: u16) {
-    let url = format!("http://127.0.0.1:{port}/");
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&url).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", ""]).arg(&url).spawn();
+/// Open the native control-panel window (spawn `teamx gui-panel`).
+fn open_control_panel() {
+    let _ = std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string()).unwrap_or_else(|_| "teamx".into()))
+        .arg("gui-panel")
+        .spawn();
 }
 
 /// Environment shared by worker processes (mTLS material etc.) — read from
@@ -229,21 +134,8 @@ pub fn run_tray() -> Result<(), String> {
     .map_err(|e| format!("menu: {e}"))?;
 
     let mut tray: Option<tray_icon::TrayIcon> = None;
-    let state: SharedState = std::sync::Arc::new(std::sync::Mutex::new(GuiState::new()));
+    let mut state = GuiState::new();
     let envs = worker_env();
-
-    // Start the embedded control-panel HTTP server (shared with the tray).
-    let panel_port = match start_control_panel(state.clone(), 12727) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = writeln!(log, "control panel failed: {e}");
-            let _ = log.flush();
-            eprintln!("control panel: {e}");
-            0 // no panel; tray still works
-        }
-    };
-    let _ = writeln!(log, "control panel on http://127.0.0.1:{panel_port}/");
-    let _ = log.flush();
 
     // Tray icon: load the teamx logo PNG if available (env TEAMX_TRAY_ICON,
     // or a sibling resources path), else fall back to a placeholder square.
@@ -287,48 +179,39 @@ pub fn run_tray() -> Result<(), String> {
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if e.id == open_panel.id() {
-                    if panel_port > 0 {
-                        open_control_panel(panel_port);
-                    }
+                    open_control_panel();
                 } else if e.id == start_tun.id() {
-                    let mut st = state.lock().unwrap();
-                    match st.tun0.spawn(&["tun0", "start"], &envs) {
+                    match state.tun0.spawn(&["tun0", "start"], &envs) {
                         Ok(_) => status_item.set_text("tun0: starting…"),
                         Err(err) => status_item.set_text(&format!("tun0 error: {err}")),
                     }
                 } else if e.id == stop_tun.id() {
-                    state.lock().unwrap().tun0.kill();
+                    state.tun0.kill();
                     status_item.set_text("status: tun0 stopped");
                 } else if e.id == start_proxy.id() {
-                    let mut st = state.lock().unwrap();
-                    match st.proxy.spawn(&["proxy", "start", "--port", "1080"], &envs) {
+                    match state.proxy.spawn(&["proxy", "start", "--port", "1080"], &envs) {
                         Ok(_) => status_item.set_text("proxy: starting…"),
                         Err(err) => status_item.set_text(&format!("proxy error: {err}")),
                     }
                 } else if e.id == stop_proxy.id() {
-                    state.lock().unwrap().proxy.kill();
+                    state.proxy.kill();
                     status_item.set_text("status: proxy stopped");
                 } else if e.id == quit.id() {
-                    let mut st = state.lock().unwrap();
-                    st.tun0.kill();
-                    st.proxy.kill();
+                    state.tun0.kill();
+                    state.proxy.kill();
                     tray.take();
                     *control_flow = ControlFlow::Exit;
                 }
             }
             Event::UserEvent(UserEvent::Tray(_e)) => {
-                // Clicking the tray icon opens the control panel.
-                if panel_port > 0 {
-                    open_control_panel(panel_port);
-                }
+                // Clicking the tray icon opens the native control panel.
+                open_control_panel();
                 // And refresh the status line.
-                let mut st = state.lock().unwrap();
                 let s = format!(
                     "tun0: {}  proxy: {}",
-                    if st.tun0.is_running() { "on" } else { "off" },
-                    if st.proxy.is_running() { "on" } else { "off" },
+                    if state.tun0.is_running() { "on" } else { "off" },
+                    if state.proxy.is_running() { "on" } else { "off" },
                 );
-                drop(st);
                 status_item.set_text(&s);
             }
             _ => {}

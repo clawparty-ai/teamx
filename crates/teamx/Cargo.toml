@@ -38,10 +38,12 @@ serde_yaml = "0.9"
 tray-icon = { version = "0.24", optional = true }
 tao = { version = "0.37", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+eframe = { version = "0.31", features = ["default_fonts"], optional = true }
+egui = { version = "0.31", optional = true }
 
 [features]
 default = []
-gui = ["dep:tray-icon", "dep:tao", "dep:image"]
+gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui"]
 
 [[bin]]
 name = "teamx"

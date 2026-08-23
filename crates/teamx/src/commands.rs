@@ -561,6 +561,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Gui => {
             return Err(AppError("gui must be launched via `teamx gui`".to_string()));
         }
+        // `teamx gui-panel` is handled in main() before the DB opens.
+        Command::GuiPanel => {
+            return Err(AppError("gui-panel must be launched via `teamx gui-panel`".to_string()));
+        }
     };
     Ok(out)
 }

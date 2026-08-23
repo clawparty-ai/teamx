@@ -142,6 +142,10 @@ pub enum Command {
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
     Gui,
+
+    /// Native control-panel window (L1): status + start/stop for tun0 and
+    /// the SOCKS5 proxy, and the default exit. Spawned by `teamx gui`.
+    GuiPanel,
 }
 
 /// `teamx tun0` subcommands.
