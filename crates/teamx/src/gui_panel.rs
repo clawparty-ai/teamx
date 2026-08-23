@@ -1,157 +1,167 @@
 //! gui_panel.rs — native control-panel window for the teamx tray (L1).
 //!
 //! `teamx gui-panel` opens an egui/eframe window showing the status of the
-//! tun0 proxy and SOCKS5 proxy with start/stop controls and the default exit.
-//! All operations go through the `teamx` CLI as child processes (the same
-//! binary this panel is built from), so the panel is a thin UI over the CLI.
+//! tun0 proxy and SOCKS5 proxy with start/stop controls, the default exit,
+//! and a live log panel. All operations go through the `teamx` CLI as child
+//! processes; their stdout/stderr is captured into the log panel so failures
+//! are visible instead of silent.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+/// Maximum log lines kept in the panel.
+const LOG_CAP: usize = 400;
+
+/// A shared ring buffer of log lines.
+#[derive(Clone, Default)]
+pub struct LogBuf(Arc<Mutex<VecDeque<String>>>);
+
+impl LogBuf {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAP))))
+    }
+
+    fn push(&self, line: String) {
+        let mut q = self.0.lock().unwrap();
+        if q.len() >= LOG_CAP {
+            q.pop_front();
+        }
+        q.push_back(line);
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+/// One managed worker: the child process + its stdout/stderr pump.
+struct Worker {
+    child: Option<Child>,
+    log: LogBuf,
+    name: &'static str,
+}
+
+impl Worker {
+    fn new(name: &'static str, log: &LogBuf) -> Self {
+        Worker { child: None, log: log.clone(), name }
+    }
+
+    fn is_running(&mut self) -> bool {
+        self.child.as_mut().map(|c| c.try_wait().ok().flatten().is_none()).unwrap_or(false)
+    }
+
+    /// Spawn `teamx <args>` with piped stdout/stderr, pumping lines into the
+    /// log. Any env vars passed are applied.
+    fn spawn(&mut self, args: &[&str], envs: &[(&str, String)]) -> Result<(), String> {
+        self.kill();
+        let mut cmd = Command::new(exe_path());
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("spawn {}: {e}", args.join(" ")))?;
+
+        // Pump stdout + stderr into the shared log.
+        let log = self.log.clone();
+        let name = self.name;
+        if let Some(stdout) = child.stdout.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    log.push(format!("[{name}] {line}"));
+                }
+            });
+        }
+        let log = self.log.clone();
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    log.push(format!("[{name}] {line}"));
+                }
+            });
+        }
+        self.child = Some(child);
+        Ok(())
+    }
+
+    fn kill(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
 
 /// The control panel application state.
 pub struct PanelApp {
     tun0_running: bool,
     proxy_running: bool,
-    last_msg: String,
     exit_name: String,
-    workers: WorkerSet,
-}
-
-struct WorkerSet {
-    tun0: Option<Child>,
-    proxy: Option<Child>,
-}
-
-impl Default for WorkerSet {
-    fn default() -> Self {
-        WorkerSet { tun0: None, proxy: None }
-    }
+    log: LogBuf,
+    show_log: bool,
+    tun0_worker: Worker,
+    proxy_worker: Worker,
 }
 
 impl PanelApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Load a CJK-capable system font so Chinese labels render (egui's
-        // default font has no CJK glyphs -> tofu boxes).
         setup_cjk_font(&cc.egui_ctx);
+        let log = LogBuf::new();
+        log.push("Teamx 控制面板已启动".to_string());
+        let tun0_worker = Worker::new("tun0", &log);
+        let proxy_worker = Worker::new("proxy", &log);
         PanelApp {
             tun0_running: false,
             proxy_running: false,
-            last_msg: String::new(),
             exit_name: current_default_exit(),
-            workers: WorkerSet::default(),
+            log,
+            show_log: false,
+            tun0_worker,
+            proxy_worker,
         }
     }
 
     fn refresh_status(&mut self) {
-        self.tun0_running = self.workers.tun0.as_mut().map(|c| c.try_wait().ok().flatten().is_none()).unwrap_or(false);
-        self.proxy_running = self.workers.proxy.as_mut().map(|c| c.try_wait().ok().flatten().is_none()).unwrap_or(false);
+        self.tun0_running = self.tun0_worker.is_running();
+        self.proxy_running = self.proxy_worker.is_running();
         self.exit_name = current_default_exit();
     }
 
     fn start_tun0(&mut self) {
-        if let Some(mut c) = self.workers.tun0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        self.log.push("→ 启动 tun0 ...".to_string());
+        match self.tun0_worker.spawn(&["tun0", "start"], &[]) {
+            Ok(()) => self.log.push("tun0 已启动（后台运行）".to_string()),
+            Err(e) => self.log.push(format!("✗ tun0 启动失败: {e}")),
         }
-        let mut cmd = Command::new(exe_path());
-        cmd.args(["tun0", "start"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        self.workers.tun0 = cmd.spawn().ok();
-        self.last_msg = "tun0 start requested".to_string();
         self.refresh_status();
     }
 
     fn stop_tun0(&mut self) {
-        if let Some(mut c) = self.workers.tun0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        self.last_msg = "tun0 stopped".to_string();
+        self.log.push("→ 停止 tun0".to_string());
+        self.tun0_worker.kill();
         self.refresh_status();
     }
 
     fn start_proxy(&mut self) {
-        if let Some(mut c) = self.workers.proxy.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        self.log.push("→ 启动 SOCKS5 代理 (1080) ...".to_string());
+        match self.proxy_worker.spawn(&["proxy", "start", "--port", "1080"], &[]) {
+            Ok(()) => self.log.push("SOCKS5 代理已启动".to_string()),
+            Err(e) => self.log.push(format!("✗ 代理启动失败: {e}")),
         }
-        let mut cmd = Command::new(exe_path());
-        cmd.args(["proxy", "start", "--port", "1080"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        self.workers.proxy = cmd.spawn().ok();
-        self.last_msg = "SOCKS5 proxy start requested".to_string();
         self.refresh_status();
     }
 
     fn stop_proxy(&mut self) {
-        if let Some(mut c) = self.workers.proxy.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        self.last_msg = "SOCKS5 proxy stopped".to_string();
+        self.log.push("→ 停止 SOCKS5 代理".to_string());
+        self.proxy_worker.kill();
         self.refresh_status();
     }
-}
-
-/// Path to the teamx binary (this executable).
-fn exe_path() -> std::path::PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| "teamx".into())
-}
-
-/// Load a CJK system font into egui so Chinese text renders (not tofu).
-/// Tries known font paths per platform; best-effort (silently no-op on
-/// failure — Latin text still works).
-fn setup_cjk_font(ctx: &egui::Context) {
-    use egui::{FontData, FontDefinitions, FontFamily, FontId};
-
-    let candidates: &[&str] = &[
-        // macOS
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        // Linux
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/arphic/uming.ttc",
-        // Windows
-        "C:/Windows/Fonts/msyh.ttc",
-    ];
-
-    let mut found: Option<Vec<u8>> = None;
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            found = Some(bytes);
-            break;
-        }
-    }
-    let Some(bytes) = found else { return };
-
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "cjk".to_owned(),
-        std::sync::Arc::new(FontData::from_owned(bytes)),
-    );
-    // Put CJK font as fallback for both proportional and monospace families.
-    for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("cjk".to_owned());
-    }
-    ctx.set_fonts(fonts);
-    let _ = FontId::default(); // silence unused import in some builds
-}
-
-/// Read the default exit from the SQLite route table (best-effort).
-fn current_default_exit() -> String {
-    let out = Command::new(exe_path()).args(["proxy", "routes", "list", "--json"]).output();
-    if let Ok(o) = out {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
-            if let Some(d) = v.get("default").and_then(|d| d.as_str()) {
-                return d.to_string();
-            }
-        }
-    }
-    "(none)".to_string()
 }
 
 impl eframe::App for PanelApp {
@@ -160,29 +170,15 @@ impl eframe::App for PanelApp {
         apply_style(ctx);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(style_bg()).inner_margin(18.0))
+            .frame(egui::Frame::default().fill(style_bg()).inner_margin(16.0))
             .show(ctx, |ui| {
                 // Header
                 ui.horizontal(|ui| {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new("Teamx")
-                            .size(24.0)
-                            .strong()
-                            .color(style_accent()),
-                    );
-                    ui.label(
-                        egui::RichText::new("控制面板")
-                            .size(14.0)
-                            .color(style_muted()),
-                    );
+                    ui.label(egui::RichText::new("Teamx").size(24.0).strong().color(style_accent()));
+                    ui.label(egui::RichText::new("控制面板").size(14.0).color(style_muted()));
                 });
                 ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("tun0 透明代理 · SOCKS5 代理")
-                        .size(12.0)
-                        .color(style_muted()),
-                );
+                ui.label(egui::RichText::new("tun0 透明代理 · SOCKS5 代理").size(12.0).color(style_muted()));
                 ui.add_space(12.0);
 
                 // --- tun0 card ---
@@ -212,48 +208,68 @@ impl eframe::App for PanelApp {
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("默认出口")
-                                    .size(13.0)
-                                    .strong()
-                                    .color(style_fg()),
-                            );
+                            ui.label(egui::RichText::new("默认出口").size(13.0).strong().color(style_fg()));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(
-                                    egui::RichText::new(&self.exit_name)
-                                        .size(13.0)
-                                        .color(style_accent()),
-                                );
+                                ui.label(egui::RichText::new(&self.exit_name).size(13.0).color(style_accent()));
                             });
                         });
                         ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("用 `teamx proxy routes set-default <exit>` 修改")
-                                .size(11.0)
-                                .color(style_muted()),
-                        );
+                        ui.label(egui::RichText::new("用 `teamx proxy routes set-default <exit>` 修改").size(11.0).color(style_muted()));
                     });
 
-                if !self.last_msg.is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(&self.last_msg)
-                            .size(12.0)
-                            .color(style_muted()),
-                    );
+                ui.add_space(10.0);
+
+                // --- log toggle ---
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(if self.show_log { "隐藏日志" } else { "显示日志" })
+                                .size(12.0)
+                                .color(style_fg()),
+                        ).fill(card_bg()).corner_radius(6.0))
+                        .clicked()
+                    {
+                        self.show_log = !self.show_log;
+                    }
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("清空日志").size(12.0).color(style_fg()),
+                        ).fill(card_bg()).corner_radius(6.0))
+                        .clicked()
+                    {
+                        self.log.0.lock().unwrap().clear();
+                    }
+                });
+
+                // --- log panel ---
+                if self.show_log {
+                    ui.add_space(6.0);
+                    let lines = self.log.snapshot();
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add_space(2.0);
+                            for line in &lines {
+                                let colored = if line.starts_with("✗") || line.contains("error") {
+                                    red()
+                                } else if line.starts_with("→") {
+                                    style_accent()
+                                } else {
+                                    style_fg()
+                                };
+                                ui.label(egui::RichText::new(line).size(11.0).color(colored));
+                            }
+                        });
                 }
 
-                ui.add_space(14.0);
+                ui.add_space(12.0);
                 if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("退出").size(13.0).color(style_fg()))
-                            .fill(card_bg())
-                            .corner_radius(6.0),
-                    )
+                    .add(egui::Button::new(egui::RichText::new("退出").size(13.0).color(style_fg())).fill(card_bg()).corner_radius(6.0))
                     .clicked()
                 {
-                    self.stop_tun0();
-                    self.stop_proxy();
+                    self.tun0_worker.kill();
+                    self.proxy_worker.kill();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
@@ -271,7 +287,6 @@ enum CardAction {
 }
 
 /// A status card: title + description + on/off badge + start/stop buttons.
-/// Returns the button the user clicked.
 fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> CardAction {
     let mut action = CardAction::None;
     egui::Frame::group(ui.style())
@@ -290,22 +305,14 @@ fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> Car
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("启动").color(style_fg()))
-                            .fill(btn_start_bg())
-                            .corner_radius(6.0),
-                    )
+                    .add(egui::Button::new(egui::RichText::new("启动").color(style_fg())).fill(btn_start_bg()).corner_radius(6.0))
                     .clicked()
                 {
                     action = CardAction::Start;
                 }
                 ui.add_space(6.0);
                 if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("停止").color(style_fg()))
-                            .fill(btn_stop_bg())
-                            .corner_radius(6.0),
-                    )
+                    .add(egui::Button::new(egui::RichText::new("停止").color(style_fg())).fill(btn_stop_bg()).corner_radius(6.0))
                     .clicked()
                 {
                     action = CardAction::Stop;
@@ -338,36 +345,16 @@ fn badge(ui: &mut egui::Ui, on: bool) {
 fn rgba(r: u8, g: u8, b: u8, a: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
+fn style_bg() -> egui::Color32 { rgba(18, 22, 32, 255) }
+fn card_bg() -> egui::Color32 { rgba(28, 34, 48, 255) }
+fn style_accent() -> egui::Color32 { rgba(80, 160, 255, 255) }
+fn style_fg() -> egui::Color32 { rgba(232, 238, 248, 255) }
+fn style_muted() -> egui::Color32 { rgba(140, 150, 168, 255) }
+fn green() -> egui::Color32 { rgba(60, 210, 130, 255) }
+fn red() -> egui::Color32 { rgba(240, 90, 80, 255) }
+fn btn_start_bg() -> egui::Color32 { rgba(40, 140, 90, 255) }
+fn btn_stop_bg() -> egui::Color32 { rgba(180, 60, 55, 255) }
 
-fn style_bg() -> egui::Color32 {
-    rgba(18, 22, 32, 255)
-}
-fn card_bg() -> egui::Color32 {
-    rgba(28, 34, 48, 255)
-}
-fn style_accent() -> egui::Color32 {
-    rgba(80, 160, 255, 255)
-}
-fn style_fg() -> egui::Color32 {
-    rgba(232, 238, 248, 255)
-}
-fn style_muted() -> egui::Color32 {
-    rgba(140, 150, 168, 255)
-}
-fn green() -> egui::Color32 {
-    rgba(60, 210, 130, 255)
-}
-fn red() -> egui::Color32 {
-    rgba(240, 90, 80, 255)
-}
-fn btn_start_bg() -> egui::Color32 {
-    rgba(40, 140, 90, 255)
-}
-fn btn_stop_bg() -> egui::Color32 {
-    rgba(180, 60, 55, 255)
-}
-
-/// Apply a consistent dark style once.
 fn apply_style(ctx: &egui::Context) {
     let mut visual = egui::Visuals::dark();
     visual.panel_fill = style_bg();
@@ -384,11 +371,59 @@ fn apply_style(ctx: &egui::Context) {
     ctx.set_visuals(visual);
 }
 
+/// Path to the teamx binary (this executable).
+fn exe_path() -> std::path::PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| "teamx".into())
+}
+
+/// Load a CJK system font into egui so Chinese text renders (not tofu).
+fn setup_cjk_font(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily};
+
+    let candidates: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+    ];
+    let mut found: Option<Vec<u8>> = None;
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            found = Some(bytes);
+            break;
+        }
+    }
+    let Some(bytes) = found else { return };
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert("cjk".to_owned(), std::sync::Arc::new(FontData::from_owned(bytes)));
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("cjk".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Read the default exit from the SQLite route table (best-effort).
+fn current_default_exit() -> String {
+    let out = Command::new(exe_path()).args(["proxy", "routes", "list", "--json"]).output();
+    if let Ok(o) = out {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+            if let Some(d) = v.get("default").and_then(|d| d.as_str()) {
+                return d.to_string();
+            }
+        }
+    }
+    "(none)".to_string()
+}
+
 /// Blocking entrypoint: run the native control-panel window.
 pub fn run_panel() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([460.0, 380.0])
+            .with_inner_size([500.0, 520.0])
             .with_title("Teamx 控制面板"),
         ..Default::default()
     };
