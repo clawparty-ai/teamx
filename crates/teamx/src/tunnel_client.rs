@@ -240,6 +240,160 @@ async fn connect_tunnel_ws(server_url: &str, path: &str) -> Result<tokio_tungste
     Ok(_ws)
 }
 
+/// A reusable byte-stream bridge to a teamx proxy exit.
+///
+/// `open_tunnel_bridge` connects to `wss://<server>/tunnel/forward`, sends a
+/// `connect` frame for `exit`/`target`, and returns a handle whose
+/// `send` half pushes bytes to the exit and whose `recv` half yields bytes
+/// relayed back from the exit. It is the shared primitive behind both
+/// `proxy start` (SOCKS5) and `tun0` (user-space TCP stack).
+///
+/// The bridge task handles `stream_open` ack, application-level pings and
+/// disconnects. On close it emits an `eof` notification.
+pub struct TunnelBridge {
+    /// Send bytes to the exit.
+    pub tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    /// Receive bytes relayed from the exit.
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    /// Notified when the exit half closes the stream (EOF).
+    pub eof: tokio::sync::watch::Receiver<bool>,
+    /// Close the bridge (abort the WS).
+    pub close: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Open a bridge to `exit` for `target` (`host:port` or `domain:port`).
+pub async fn open_tunnel_bridge(
+    server_url: &str,
+    exit: &str,
+    target: &str,
+) -> Result<TunnelBridge, String> {
+    use futures_util::{SinkExt, StreamExt};
+
+    let mut ws = connect_tunnel_ws(server_url, "/tunnel/forward").await?;
+    ws.send(Message::Text(
+        serde_json::json!({ "type": "connect", "name": exit, "target": target }).to_string(),
+    ))
+    .await
+    .map_err(|e| format!("bridge connect: {e}"))?;
+
+    // Wait for stream_open so the caller knows the exit accepted.
+    let mut stream_open = false;
+    while !stream_open {
+        match ws.next().await {
+            Some(Ok(Message::Text(t))) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
+                match v["type"].as_str() {
+                    Some("stream_open") => stream_open = true,
+                    Some("error") => {
+                        return Err(format!(
+                            "bridge error: {}",
+                            v["message"].as_str().unwrap_or("tunnel not found")
+                        ))
+                    }
+                    Some("ping") => {
+                        let _ = ws
+                            .send(Message::Text(serde_json::json!({"type":"pong"}).to_string()))
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+            Some(Ok(Message::Binary(_))) => { /* data before ack: buffered below */ }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => return Err(format!("bridge ws error: {e}")),
+            None => return Err("bridge: server closed the connection".to_string()),
+        }
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (eof_tx, eof_rx) = tokio::sync::watch::channel(false);
+    let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        use futures_util::{SinkExt, StreamExt};
+        // pump outbound (caller->exit) into the WS
+        let mut ws_out = ws;
+        let mut sid: Option<u64> = None;
+        let mut pending: Vec<Vec<u8>> = Vec::new();
+
+        loop {
+            tokio::select! {
+                m = ws_out.next() => {
+                    match m {
+                        Some(Ok(Message::Text(t))) => {
+                            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
+                            match v["type"].as_str() {
+                                Some("stream_open") => {
+                                    sid = v["stream_id"].as_u64();
+                                    if let Some(s) = sid {
+                                        for b in pending.drain(..) {
+                                            let mut frame = Vec::with_capacity(4 + b.len());
+                                            frame.extend_from_slice(&(s as u32).to_be_bytes());
+                                            frame.extend_from_slice(&b);
+                                            if ws_out.send(Message::Binary(frame)).await.is_err() {
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                                Some("ping") => {
+                                    let _ = ws_out.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await;
+                                }
+                                Some("error") => {
+                                    let _ = eof_tx.send(true);
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Ok(Message::Binary(f))) => {
+                            if f.len() >= 4 && sid.is_some() {
+                                let _ = out_tx.send(f[4..].to_vec());
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) | None => {
+                            let _ = eof_tx.send(true);
+                            return;
+                        }
+                    }
+                }
+                b = rx.recv() => {
+                    match b {
+                        Some(b) => {
+                            let frame = match sid {
+                                Some(s) => {
+                                    let mut f = Vec::with_capacity(4 + b.len());
+                                    f.extend_from_slice(&(s as u32).to_be_bytes());
+                                    f.extend_from_slice(&b);
+                                    f
+                                }
+                                None => {
+                                    pending.push(b);
+                                    continue;
+                                }
+                            };
+                            if ws_out.send(Message::Binary(frame.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                        None => return, // caller dropped tx -> close
+                    }
+                }
+                _ = &mut close_rx => {
+                    let _ = eof_tx.send(true);
+                    let _ = ws_out.close(None).await;
+                    return;
+                }
+            }
+        }
+    });
+
+    Ok(TunnelBridge { tx, rx: out_rx, eof: eof_rx, close: close_tx })
+}
+
 /// Provider side: expose a local service. Registers the tunnel and relays
 /// bytes between the server WS and the local service. Runs forever, and
 /// automatically reconnects (with backoff) if the WS is dropped — a long-idle
@@ -697,8 +851,7 @@ pub async fn run_socks5_proxy(
 }
 
 /// Discover the server URL from the most recently imported letter.
-pub fn discover_server_url() -> Option<String> {
-    let home = crate::db::teamx_home();
+pub fn discover_server_url() -> Option<String> {    let home = crate::db::teamx_home();
     let dir = home.join("letters");
     if !dir.is_dir() {
         return None;

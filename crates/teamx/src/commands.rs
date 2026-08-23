@@ -627,6 +627,14 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
             }
         }
+        // tun0 virtual NIC: needs root, bridges matching traffic to exits.
+        Command::Tun0(cmd) => {
+            return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
+        }
+        // `teamx gui` is handled in main() before the DB opens; unreachable here.
+        Command::Gui => {
+            return Err(AppError("gui must be launched via `teamx gui`".to_string()));
+        }
     };
     Ok(out)
 }

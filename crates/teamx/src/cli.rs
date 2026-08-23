@@ -140,6 +140,65 @@ pub enum Command {
     /// tunnels traffic through the team server to member-b's proxy exit.
     #[command(subcommand)]
     Proxy(ProxyCmd),
+
+    /// tun0 virtual NIC (network mode, needs root): a TUN device that routes
+    /// matching traffic through teamx proxy exits without configuring apps.
+    #[command(subcommand)]
+    Tun0(Tun0Cmd),
+
+    /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
+    /// or system tray. Needs a desktop session.
+    Gui,
+}
+
+/// `teamx tun0` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum Tun0Cmd {
+    /// Start the tun0 virtual NIC: create the device, inject the fake-ip
+    /// route, run the fake-ip DNS and bridge traffic to the configured exits.
+    /// Requires root. Long-lived.
+    Start {
+        /// server URL (default: TEAMX_SERVER_URL or auto-discovered letter)
+        #[arg(long)]
+        server: Option<String>,
+        /// default exit when no route matches (optional if -f provides one)
+        #[arg(long)]
+        exit: Option<String>,
+        /// routing table JSON file (per-target domain/IP -> exit)
+        #[arg(long, short = 'f', value_name = "PATH")]
+        routes: Option<PathBuf>,
+        /// Clash config YAML (compat mode): maps rules (DOMAIN-SUFFIX/DOMAIN/
+        /// IP-CIDR/MATCH) onto the teamx route table. Takes precedence over
+        /// -f/--routes when both are given.
+        #[arg(long, value_name = "PATH")]
+        clash_config: Option<PathBuf>,
+        /// tun interface IP (gateway for the fake-ip net)
+        #[arg(long, default_value = "198.18.0.1")]
+        ip: std::net::Ipv4Addr,
+        /// fake-ip network (CIDR prefix)
+        #[arg(long, default_value = "15")]
+        net_prefix: u8,
+        /// fake-ip network base
+        #[arg(long, default_value = "198.18.0.0")]
+        net: std::net::Ipv4Addr,
+        /// max concurrent TCP connections
+        #[arg(long, default_value_t = 64)]
+        max_conns: usize,
+    },
+    /// Stop the tun0 device (removes the route + device). Requires root.
+    Stop {
+        /// fake-ip network base (to remove the route)
+        #[arg(long, default_value = "198.18.0.0")]
+        net: std::net::Ipv4Addr,
+        /// fake-ip network prefix
+        #[arg(long, default_value = "15")]
+        net_prefix: u8,
+        /// tun interface name (default tun0)
+        #[arg(long, default_value = "tun0")]
+        dev: String,
+    },
+    /// Show tun0 status (device exists?).
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
