@@ -105,7 +105,6 @@ pub struct PanelApp {
     exit_name: String,
     log: LogBuf,
     show_log: bool,
-    tun0_worker: Worker,
     proxy_worker: Worker,
 }
 
@@ -114,38 +113,22 @@ impl PanelApp {
         setup_cjk_font(&cc.egui_ctx);
         let log = LogBuf::new();
         log.push("Teamx 控制面板已启动".to_string());
-        let tun0_worker = Worker::new("tun0", &log);
         let proxy_worker = Worker::new("proxy", &log);
         PanelApp {
-            tun0_running: false,
+            tun0_running: is_tun0_running(),
             proxy_running: false,
             exit_name: current_default_exit(),
             log,
             show_log: false,
-            tun0_worker,
             proxy_worker,
         }
     }
 
     fn refresh_status(&mut self) {
-        self.tun0_running = self.tun0_worker.is_running();
+        // tun0 is launched as root (detached) — detect by pgrep.
+        self.tun0_running = is_tun0_running();
         self.proxy_running = self.proxy_worker.is_running();
         self.exit_name = current_default_exit();
-    }
-
-    fn start_tun0(&mut self) {
-        self.log.push("→ 启动 tun0 ...".to_string());
-        match self.tun0_worker.spawn(&["tun0", "start"], &[]) {
-            Ok(()) => self.log.push("tun0 已启动（后台运行）".to_string()),
-            Err(e) => self.log.push(format!("✗ tun0 启动失败: {e}")),
-        }
-        self.refresh_status();
-    }
-
-    fn stop_tun0(&mut self) {
-        self.log.push("→ 停止 tun0".to_string());
-        self.tun0_worker.kill();
-        self.refresh_status();
     }
 
     fn start_proxy(&mut self) {
@@ -162,6 +145,94 @@ impl PanelApp {
         self.proxy_worker.kill();
         self.refresh_status();
     }
+
+    fn start_tun0(&mut self) {
+        self.log.push("→ 启动 tun0（需要系统授权）...".to_string());
+        match start_tun0_privileged(&self.log) {
+            Ok(()) => self.log.push("已请求以 root 启动 tun0".to_string()),
+            Err(e) => self.log.push(format!("✗ tun0 启动失败: {e}")),
+        }
+        self.refresh_status();
+    }
+
+    fn stop_tun0(&mut self) {
+        self.log.push("→ 停止 tun0（需要系统授权）...".to_string());
+        match stop_tun0_privileged(&self.log) {
+            Ok(()) => self.log.push("已请求停止 tun0".to_string()),
+            Err(e) => self.log.push(format!("✗ tun0 停止失败: {e}")),
+        }
+        self.refresh_status();
+    }
+}
+
+/// Start tun0 as root via a system authorization prompt (macOS osascript /
+/// Linux pkexec). The process is spawned detached (nohup ... &) so the auth
+/// dialog returns quickly and the worker keeps running independently; status
+/// is detected via pgrep.
+fn start_tun0_privileged(log: &LogBuf) -> Result<(), String> {
+    let teamx = exe_path().display().to_string();
+    // Build a shell line that exports the mTLS env (if any) and launches
+    // `teamx tun0 start` detached with a log file.
+    let mut env_prefix = String::new();
+    for k in ["TEAMX_HOME", "TEAMX_DB", "TEAMX_SERVER_URL", "TEAMX_MTLS_CERT", "TEAMX_MTLS_KEY", "TEAMX_MTLS_CA"] {
+        if let Ok(v) = std::env::var(k) {
+            env_prefix.push_str(&format!("export {}='{}'; ", k, v.replace('\'', "'\\''")));
+        }
+    }
+    let cmd = format!(
+        "{}nohup '{}' tun0 start > /tmp/teamx-tun0.log 2>&1 &",
+        env_prefix, teamx
+    );
+    run_privileged(&cmd, log)
+}
+
+fn stop_tun0_privileged(log: &LogBuf) -> Result<(), String> {
+    let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null".to_string();
+    run_privileged(&cmd, log)
+}
+
+/// Run a shell command with elevated privileges, pumping its output to the log.
+#[cfg(target_os = "macos")]
+fn run_privileged(cmd: &str, log: &LogBuf) -> Result<(), String> {
+    let script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        cmd.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("osascript: {e}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("授权失败或被取消: {err}"));
+    }
+    log.push(format!("(sudo) {cmd}"));
+    Ok(())
+}
+
+/// Linux: use pkexec to run the command as root.
+#[cfg(target_os = "linux")]
+fn run_privileged(cmd: &str, log: &LogBuf) -> Result<(), String> {
+    let output = Command::new("pkexec")
+        .args(["sh", "-c", cmd])
+        .output()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("授权失败或被取消: {err}"));
+    }
+    log.push(format!("(sudo) {cmd}"));
+    Ok(())
+}
+
+/// Whether a tun0 worker process is currently running (detected by pgrep,
+/// since a root-launched process is not a child of this process).
+fn is_tun0_running() -> bool {
+    let out = Command::new("pgrep").args(["-f", "teamx tun0 start"]).output();
+    if let Ok(o) = out {
+        return o.status.success() && !o.stdout.is_empty();
+    }
+    false
 }
 
 impl eframe::App for PanelApp {
@@ -268,7 +339,6 @@ impl eframe::App for PanelApp {
                     .add(egui::Button::new(egui::RichText::new("退出").size(13.0).color(style_fg())).fill(card_bg()).corner_radius(6.0))
                     .clicked()
                 {
-                    self.tun0_worker.kill();
                     self.proxy_worker.kill();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
