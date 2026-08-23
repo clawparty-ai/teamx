@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teamx Control Panel</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2233; --fg:#e8edf5; --muted:#8a94a8; --accent:#2878dc; --ok:#2ecc71; --off:#e74c3c; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .panel { width:100%; max-width:520px; }
+  h1 { font-size:22px; margin-bottom:4px; display:flex; align-items:center; gap:10px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:14px; }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; }
+  .row + .row { border-top:1px solid rgba(255,255,255,.06); }
+  .name { font-weight:600; }
+  .desc { color:var(--muted); font-size:12px; margin-top:2px; }
+  .status { font-size:13px; font-weight:600; padding:3px 10px; border-radius:20px; }
+  .status.on { color:var(--ok); background:rgba(46,204,113,.12); }
+  .status.off { color:var(--off); background:rgba(231,76,60,.12); }
+  .btns { display:flex; gap:8px; }
+  button { border:0; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:600; cursor:pointer; color:#fff; }
+  button.start { background:var(--ok); }
+  button.stop { background:var(--off); }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#2a3450; color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .25s; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>⚙️ Teamx</h1>
+  <div class="sub">控制面板 · tun0 透明代理 &amp; SOCKS5 代理</div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="name">tun0 虚拟网卡</div>
+        <div class="desc">透明代理（需 root），按路由表分流到 egress</div>
+      </div>
+      <span class="status off" id="tun0-status">off</span>
+    </div>
+    <div class="row">
+      <div><div class="name">操作</div></div>
+      <div class="btns">
+        <button class="start" id="tun0-start" onclick="action('tun0','start')">启动</button>
+        <button class="stop" id="tun0-stop" onclick="action('tun0','stop')">停止</button>
+      </div>
+    </div>
+    <div class="hint">tun0 需要 root 权限；托盘进程若以普通用户运行，启动可能失败</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="name">SOCKS5 代理</div>
+        <div class="desc">本地端口 1080，按路由表分流到 egress</div>
+      </div>
+      <span class="status off" id="proxy-status">off</span>
+    </div>
+    <div class="row">
+      <div><div class="name">操作</div></div>
+      <div class="btns">
+        <button class="start" id="proxy-start" onclick="action('proxy','start')">启动</button>
+        <button class="stop" id="proxy-stop" onclick="action('proxy','stop')">停止</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="name">出口配置</div>
+        <div class="desc">默认出口 &amp; 路由规则</div>
+      </div>
+      <button class="start" onclick="window.open('https://github.com/clawparty-ai/teamx','_blank')">文档</button>
+    </div>
+    <div class="hint">用 <code>teamx proxy routes set-default &lt;exit&gt;</code> 管理出口；重启 tun0/proxy 后生效</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    set('tun0', s.tun0);
+    set('proxy', s.proxy);
+  } catch(e) {}
+}
+function set(name, on) {
+  const el = document.getElementById(name + '-status');
+  el.textContent = on ? 'on' : 'off';
+  el.className = 'status ' + (on ? 'on' : 'off');
+  document.getElementById(name + '-start').disabled = on;
+  document.getElementById(name + '-stop').disabled = !on;
+}
+async function action(name, act) {
+  const btn = document.getElementById(name + '-' + act);
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/${name}/${act}`);
+    const j = await r.json();
+    toast(j.ok ? (name + ' ' + act + ' ok') : (j.error || 'failed'));
+  } catch(e) { toast('request failed'); }
+  btn.disabled = false;
+  refresh();
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
