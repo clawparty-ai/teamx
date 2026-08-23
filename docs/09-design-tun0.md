@@ -407,3 +407,20 @@ fake-ip 前缀路由，实现透明拦截。
 - fake-ip AAAA（IPv6）应答
 - UDP 转发（非 DNS）
 - 配置持久化（`teamx tun0 config`）
+
+## 12. 企业版 TODO（enterprise 分支，L2/L3）
+
+main（开源免费版）实现到 L1 托盘；以下桌面增强列入企业版：
+
+### L2 — 托盘 + 设置窗口（egui 原生 GUI）
+- [ ] 路由规则可视化编辑（读/写 SQLite route table：增删规则、调序）
+- [ ] fake-ip DNS 开关 + DNS 服务器地址配置
+- [ ] 日志面板（子进程 stdout/stderr 实时滚动）
+- [ ] 出口（egress）在线状态列表 + 一键切换默认出口
+- [ ] 连接数 / 流量统计
+
+### L3 — Tauri 完整 GUI
+- [ ] 节点 / 团队管理（多团队、多 egress）
+- [ ] 订阅 / 配置导入（Clash 配置可视化 + 差异对比）
+- [ ] 流量图表、连接详情
+- [ ] 系统集成（开机自启、网络变化自动恢复、DNS 设置）
