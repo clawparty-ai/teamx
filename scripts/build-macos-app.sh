@@ -80,4 +80,38 @@ fi
 rm -rf "$ICONSET_DIR"
 echo
 echo "Done: $APP_DIR"
-echo "Double-click Teamx.app to launch the tray. Quit via its menu."
+echo
+echo "Launch options:"
+echo "  1) Double-click Teamx.app in Finder (LaunchServices)."
+echo "  2) Reliable launch (works even if LaunchServices refuses the tray):"
+echo "       launchctl submit -l teamx -- \"$APP_DIR/Contents/MacOS/teamx\" gui"
+echo "  3) Login auto-start (installs a LaunchAgent):"
+echo "       $0 --install-agent"
+echo "Quit via the tray menu."
+
+if [[ "${1:-}" == "--install-agent" ]]; then
+    AGENT_DIR="$HOME/Library/LaunchAgents"
+    AGENT_PLIST="$AGENT_DIR/io.flomesh.teamx.plist"
+    mkdir -p "$AGENT_DIR"
+    cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>              <string>io.flomesh.teamx</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${APP_DIR}/Contents/MacOS/teamx</string>
+        <string>gui</string>
+    </array>
+    <key>RunAtLoad</key>          <true/>
+    <key>KeepAlive</key>          <true/>
+    <key>ProcessType</key>        <string>Interactive</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "$AGENT_PLIST" 2>/dev/null || true
+    launchctl load "$AGENT_PLIST"
+    echo
+    echo "LaunchAgent installed: $AGENT_PLIST (auto-starts at login, restarts if killed)"
+fi
