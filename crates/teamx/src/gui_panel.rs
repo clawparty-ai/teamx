@@ -28,7 +28,10 @@ impl Default for WorkerSet {
 }
 
 impl PanelApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load a CJK-capable system font so Chinese labels render (egui's
+        // default font has no CJK glyphs -> tofu boxes).
+        setup_cjk_font(&cc.egui_ctx);
         PanelApp {
             tun0_running: false,
             proxy_running: false,
@@ -90,6 +93,52 @@ impl PanelApp {
 /// Path to the teamx binary (this executable).
 fn exe_path() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| "teamx".into())
+}
+
+/// Load a CJK system font into egui so Chinese text renders (not tofu).
+/// Tries known font paths per platform; best-effort (silently no-op on
+/// failure — Latin text still works).
+fn setup_cjk_font(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily, FontId};
+
+    let candidates: &[&str] = &[
+        // macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        // Windows
+        "C:/Windows/Fonts/msyh.ttc",
+    ];
+
+    let mut found: Option<Vec<u8>> = None;
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            found = Some(bytes);
+            break;
+        }
+    }
+    let Some(bytes) = found else { return };
+
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "cjk".to_owned(),
+        std::sync::Arc::new(FontData::from_owned(bytes)),
+    );
+    // Put CJK font as fallback for both proportional and monospace families.
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("cjk".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    let _ = FontId::default(); // silence unused import in some builds
 }
 
 /// Read the default exit from the SQLite route table (best-effort).

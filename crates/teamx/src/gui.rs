@@ -62,6 +62,20 @@ fn open_control_panel() {
         .spawn();
 }
 
+/// Quit the tray for real: unload the LaunchAgent (so KeepAlive cannot
+/// auto-restart us) and stop any managed workers.
+fn quit_tray(state: &mut GuiState) {
+    // macOS LaunchAgent: remove the job so `KeepAlive` won't relaunch us.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("launchctl")
+            .args(["remove", "io.flomesh.teamx"])
+            .status();
+    }
+    state.tun0.kill();
+    state.proxy.kill();
+}
+
 /// Environment shared by worker processes (mTLS material etc.) — read from
 /// the current process env so the user can launch the tray from a configured
 /// shell.
@@ -197,8 +211,7 @@ pub fn run_tray() -> Result<(), String> {
                     state.proxy.kill();
                     status_item.set_text("status: proxy stopped");
                 } else if e.id == quit.id() {
-                    state.tun0.kill();
-                    state.proxy.kill();
+                    quit_tray(&mut state);
                     tray.take();
                     *control_flow = ControlFlow::Exit;
                 }
