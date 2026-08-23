@@ -146,49 +146,48 @@ impl PanelApp {
         self.refresh_status();
     }
 
-    fn start_tun0(&mut self) {
+    fn start_tun0(&mut self, ctx: &egui::Context) {
         self.log.push("→ 启动 tun0（需要系统授权）...".to_string());
-        match start_tun0_privileged(&self.log) {
-            Ok(()) => self.log.push("已请求以 root 启动 tun0".to_string()),
-            Err(e) => self.log.push(format!("✗ tun0 启动失败: {e}")),
-        }
-        self.refresh_status();
+        let log = self.log.clone();
+        let ctx = ctx.clone();
+        let cmd = tun0_start_cmd();
+        std::thread::spawn(move || {
+            match run_privileged(&cmd, &log) {
+                Ok(()) => log.push("已请求以 root 启动 tun0".to_string()),
+                Err(e) => log.push(format!("✗ tun0 启动失败: {e}")),
+            }
+            ctx.request_repaint();
+        });
     }
 
-    fn stop_tun0(&mut self) {
+    fn stop_tun0(&mut self, ctx: &egui::Context) {
         self.log.push("→ 停止 tun0（需要系统授权）...".to_string());
-        match stop_tun0_privileged(&self.log) {
-            Ok(()) => self.log.push("已请求停止 tun0".to_string()),
-            Err(e) => self.log.push(format!("✗ tun0 停止失败: {e}")),
-        }
-        self.refresh_status();
+        let log = self.log.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null".to_string();
+            match run_privileged(&cmd, &log) {
+                Ok(()) => log.push("已请求停止 tun0".to_string()),
+                Err(e) => log.push(format!("✗ tun0 停止失败: {e}")),
+            }
+            ctx.request_repaint();
+        });
     }
 }
 
-/// Start tun0 as root via a system authorization prompt (macOS osascript /
-/// Linux pkexec). The process is spawned detached (nohup ... &) so the auth
-/// dialog returns quickly and the worker keeps running independently; status
-/// is detected via pgrep.
-fn start_tun0_privileged(log: &LogBuf) -> Result<(), String> {
+/// Build the elevated shell command that launches `teamx tun0 start` detached.
+fn tun0_start_cmd() -> String {
     let teamx = exe_path().display().to_string();
-    // Build a shell line that exports the mTLS env (if any) and launches
-    // `teamx tun0 start` detached with a log file.
     let mut env_prefix = String::new();
     for k in ["TEAMX_HOME", "TEAMX_DB", "TEAMX_SERVER_URL", "TEAMX_MTLS_CERT", "TEAMX_MTLS_KEY", "TEAMX_MTLS_CA"] {
         if let Ok(v) = std::env::var(k) {
             env_prefix.push_str(&format!("export {}='{}'; ", k, v.replace('\'', "'\\''")));
         }
     }
-    let cmd = format!(
+    format!(
         "{}nohup '{}' tun0 start > /tmp/teamx-tun0.log 2>&1 &",
         env_prefix, teamx
-    );
-    run_privileged(&cmd, log)
-}
-
-fn stop_tun0_privileged(log: &LogBuf) -> Result<(), String> {
-    let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null".to_string();
-    run_privileged(&cmd, log)
+    )
 }
 
 /// Run a shell command with elevated privileges, pumping its output to the log.
@@ -255,8 +254,8 @@ impl eframe::App for PanelApp {
                 // --- tun0 card ---
                 let act = status_card(ui, "tun0 虚拟网卡", "透明代理 · 需 root", self.tun0_running);
                 match act {
-                    CardAction::Start => self.start_tun0(),
-                    CardAction::Stop => self.stop_tun0(),
+                    CardAction::Start => self.start_tun0(ctx),
+                    CardAction::Stop => self.stop_tun0(ctx),
                     CardAction::None => {}
                 }
 
