@@ -157,73 +157,231 @@ fn current_default_exit() -> String {
 impl eframe::App for PanelApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.refresh_status();
+        apply_style(ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Teamx");
-            ui.label("tun0 透明代理 & SOCKS5 代理控制面板");
-            ui.separator();
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(style_bg()).inner_margin(18.0))
+            .show(ctx, |ui| {
+                // Header
+                ui.horizontal(|ui| {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new("Teamx")
+                            .size(24.0)
+                            .strong()
+                            .color(style_accent()),
+                    );
+                    ui.label(
+                        egui::RichText::new("控制面板")
+                            .size(14.0)
+                            .color(style_muted()),
+                    );
+                });
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("tun0 透明代理 · SOCKS5 代理")
+                        .size(12.0)
+                        .color(style_muted()),
+                );
+                ui.add_space(12.0);
 
-            // tun0 card
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("tun0 虚拟网卡");
-                    ui.label(if self.tun0_running { "🟢 on" } else { "⚪ off" });
-                });
-                ui.label("透明代理（需 root）");
-                ui.horizontal(|ui| {
-                    if ui.button("启动").clicked() {
-                        self.start_tun0();
-                    }
-                    if ui.button("停止").clicked() {
-                        self.stop_tun0();
-                    }
-                });
+                // --- tun0 card ---
+                let act = status_card(ui, "tun0 虚拟网卡", "透明代理 · 需 root", self.tun0_running);
+                match act {
+                    CardAction::Start => self.start_tun0(),
+                    CardAction::Stop => self.stop_tun0(),
+                    CardAction::None => {}
+                }
+
+                ui.add_space(10.0);
+
+                // --- SOCKS5 proxy card ---
+                let act = status_card(ui, "SOCKS5 代理", "本地端口 1080", self.proxy_running);
+                match act {
+                    CardAction::Start => self.start_proxy(),
+                    CardAction::Stop => self.stop_proxy(),
+                    CardAction::None => {}
+                }
+
+                ui.add_space(10.0);
+
+                // --- exit card ---
+                egui::Frame::group(ui.style())
+                    .fill(card_bg())
+                    .corner_radius(8.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("默认出口")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(style_fg()),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    egui::RichText::new(&self.exit_name)
+                                        .size(13.0)
+                                        .color(style_accent()),
+                                );
+                            });
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("用 `teamx proxy routes set-default <exit>` 修改")
+                                .size(11.0)
+                                .color(style_muted()),
+                        );
+                    });
+
+                if !self.last_msg.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(&self.last_msg)
+                            .size(12.0)
+                            .color(style_muted()),
+                    );
+                }
+
+                ui.add_space(14.0);
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("退出").size(13.0).color(style_fg()))
+                            .fill(card_bg())
+                            .corner_radius(6.0),
+                    )
+                    .clicked()
+                {
+                    self.stop_tun0();
+                    self.stop_proxy();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             });
-
-            ui.add_space(6.0);
-
-            // SOCKS5 proxy card
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("SOCKS5 代理");
-                    ui.label(if self.proxy_running { "🟢 on" } else { "⚪ off" });
-                });
-                ui.label("本地端口 1080");
-                ui.horizontal(|ui| {
-                    if ui.button("启动").clicked() {
-                        self.start_proxy();
-                    }
-                    if ui.button("停止").clicked() {
-                        self.stop_proxy();
-                    }
-                });
-            });
-
-            ui.add_space(6.0);
-
-            // exit info
-            ui.group(|ui| {
-                ui.strong("默认出口");
-                ui.label(format!("{}", self.exit_name));
-                ui.label("用 `teamx proxy routes set-default <exit>` 修改");
-            });
-
-            if !self.last_msg.is_empty() {
-                ui.add_space(6.0);
-                ui.label(&self.last_msg);
-            }
-
-            ui.add_space(10.0);
-            if ui.button("退出").clicked() {
-                self.stop_tun0();
-                self.stop_proxy();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        });
 
         // Refresh every 2 seconds.
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
+}
+
+/// What button the user pressed on a status card.
+enum CardAction {
+    Start,
+    Stop,
+    None,
+}
+
+/// A status card: title + description + on/off badge + start/stop buttons.
+/// Returns the button the user clicked.
+fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> CardAction {
+    let mut action = CardAction::None;
+    egui::Frame::group(ui.style())
+        .fill(card_bg())
+        .corner_radius(8.0)
+        .inner_margin(14.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(title).size(14.0).strong().color(style_fg()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    badge(ui, running);
+                });
+            });
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(desc).size(11.0).color(style_muted()));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("启动").color(style_fg()))
+                            .fill(btn_start_bg())
+                            .corner_radius(6.0),
+                    )
+                    .clicked()
+                {
+                    action = CardAction::Start;
+                }
+                ui.add_space(6.0);
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("停止").color(style_fg()))
+                            .fill(btn_stop_bg())
+                            .corner_radius(6.0),
+                    )
+                    .clicked()
+                {
+                    action = CardAction::Stop;
+                }
+            });
+        });
+    action
+}
+
+/// A green/red status pill.
+fn badge(ui: &mut egui::Ui, on: bool) {
+    let (text, color, bg) = if on {
+        ("运行中", green(), rgba(46, 204, 113, 36))
+    } else {
+        ("已停止", red(), rgba(231, 76, 60, 30))
+    };
+    egui::Frame::new()
+        .fill(bg)
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(10, 3))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).size(12.0).strong().color(color));
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Style helpers
+// ---------------------------------------------------------------------------
+
+fn rgba(r: u8, g: u8, b: u8, a: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+fn style_bg() -> egui::Color32 {
+    rgba(18, 22, 32, 255)
+}
+fn card_bg() -> egui::Color32 {
+    rgba(28, 34, 48, 255)
+}
+fn style_accent() -> egui::Color32 {
+    rgba(80, 160, 255, 255)
+}
+fn style_fg() -> egui::Color32 {
+    rgba(232, 238, 248, 255)
+}
+fn style_muted() -> egui::Color32 {
+    rgba(140, 150, 168, 255)
+}
+fn green() -> egui::Color32 {
+    rgba(60, 210, 130, 255)
+}
+fn red() -> egui::Color32 {
+    rgba(240, 90, 80, 255)
+}
+fn btn_start_bg() -> egui::Color32 {
+    rgba(40, 140, 90, 255)
+}
+fn btn_stop_bg() -> egui::Color32 {
+    rgba(180, 60, 55, 255)
+}
+
+/// Apply a consistent dark style once.
+fn apply_style(ctx: &egui::Context) {
+    let mut visual = egui::Visuals::dark();
+    visual.panel_fill = style_bg();
+    visual.window_fill = style_bg();
+    visual.extreme_bg_color = card_bg();
+    visual.faint_bg_color = rgba(34, 40, 56, 255);
+    visual.widgets.noninteractive.bg_fill = card_bg();
+    visual.widgets.inactive.bg_fill = rgba(42, 50, 68, 255);
+    visual.widgets.hovered.bg_fill = rgba(52, 62, 84, 255);
+    visual.widgets.active.bg_fill = rgba(60, 72, 96, 255);
+    visual.widgets.noninteractive.fg_stroke.color = style_fg();
+    visual.widgets.inactive.fg_stroke.color = style_fg();
+    visual.selection.bg_fill = style_accent();
+    ctx.set_visuals(visual);
 }
 
 /// Blocking entrypoint: run the native control-panel window.
