@@ -16,6 +16,7 @@
 #   TEST_SERVER    optional: start a local serve on this port (default 5805)
 #   TEST_HOME      teamx home for the local serve (default $TMPDIR/tun0-lab)
 set -uo pipefail
+: "${TMPDIR:=/tmp}"   # macOS sudo may not set TMPDIR
 
 TEAMX="${TEAMX:-$(cd "$(dirname "$0")/.." && pwd)/target/debug/teamx}"
 SERVER_URL="${SERVER_URL:-}"

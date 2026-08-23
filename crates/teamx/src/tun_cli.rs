@@ -14,27 +14,35 @@ use crate::tun_dns::FakeIpDns;
 /// Handle `teamx tun0 ...` (network-mode; needs root for start/stop).
 pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
     match cmd {
-        Tun0Cmd::Start { server, exit, routes, ip, net_prefix, net, max_conns } => {
+        Tun0Cmd::Start { server, exit, routes, clash_config, ip, net_prefix, net, max_conns } => {
             crate::tun_dev::require_root()?;
             let server_url = resolve_server_url(server.as_deref())?;
 
-            let table = match routes {
-                Some(path) => {
-                    let text = std::fs::read_to_string(path)
-                        .map_err(|e| format!("routes file {}: {e}", path.display()))?;
-                    Some(crate::routes::RouteTable::parse(&text)?)
-                }
-                None => {
-                    // Read the SQLite route table from the default DB.
-                    let db_path = std::env::var("TEAMX_DB")
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|_| crate::db::teamx_home().join("teamx.db"));
-                    let conn = crate::db::open(&db_path).map_err(|e| format!("db open: {e}"))?;
-                    crate::db::migrate(&conn).map_err(|e| format!("db migrate: {e}"))?;
-                    match crate::routes::load_from_db(&conn) {
-                        Ok(Some(t)) => Some(t),
-                        Ok(None) => None,
-                        Err(e) => return Err(e),
+            // Route table source priority:
+            //   1. --clash-config (Clash compat mode)
+            //   2. -f/--routes JSON file
+            //   3. SQLite route table
+            let table = if let Some(path) = clash_config {
+                Some(crate::tun_clash::parse_clash_config(path, exit.as_deref().unwrap_or(""))?)
+            } else {
+                match routes {
+                    Some(path) => {
+                        let text = std::fs::read_to_string(path)
+                            .map_err(|e| format!("routes file {}: {e}", path.display()))?;
+                        Some(crate::routes::RouteTable::parse(&text)?)
+                    }
+                    None => {
+                        // Read the SQLite route table from the default DB.
+                        let db_path = std::env::var("TEAMX_DB")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| crate::db::teamx_home().join("teamx.db"));
+                        let conn = crate::db::open(&db_path).map_err(|e| format!("db open: {e}"))?;
+                        crate::db::migrate(&conn).map_err(|e| format!("db migrate: {e}"))?;
+                        match crate::routes::load_from_db(&conn) {
+                            Ok(Some(t)) => Some(t),
+                            Ok(None) => None,
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             };
@@ -43,7 +51,7 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
                 (None, Some(e)) if !e.is_empty() => e.clone(),
                 _ => return Err(
                     "tun0 start: no exit configured — pass --exit <name>, -f <routes.json>, \
-                     or `teamx proxy routes set-default`".to_string(),
+                     --clash-config <clash.yaml>, or `teamx proxy routes set-default`".to_string(),
                 ),
             };
 

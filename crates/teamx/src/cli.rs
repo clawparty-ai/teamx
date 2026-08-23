@@ -138,6 +138,10 @@ pub enum Command {
     /// matching traffic through teamx proxy exits without configuring apps.
     #[command(subcommand)]
     Tun0(Tun0Cmd),
+
+    /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
+    /// or system tray. Needs a desktop session.
+    Gui,
 }
 
 /// `teamx tun0` subcommands.
@@ -156,6 +160,11 @@ pub enum Tun0Cmd {
         /// routing table JSON file (per-target domain/IP -> exit)
         #[arg(long, short = 'f', value_name = "PATH")]
         routes: Option<PathBuf>,
+        /// Clash config YAML (compat mode): maps rules (DOMAIN-SUFFIX/DOMAIN/
+        /// IP-CIDR/MATCH) onto the teamx route table. Takes precedence over
+        /// -f/--routes when both are given.
+        #[arg(long, value_name = "PATH")]
+        clash_config: Option<PathBuf>,
         /// tun interface IP (gateway for the fake-ip net)
         #[arg(long, default_value = "198.18.0.1")]
         ip: std::net::Ipv4Addr,

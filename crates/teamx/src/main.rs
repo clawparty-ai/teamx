@@ -3,6 +3,8 @@ mod cli;
 mod commands;
 mod db;
 mod events;
+#[cfg(feature = "gui")]
+mod gui;
 mod loopx;
 mod pki;
 mod routes;
@@ -12,6 +14,7 @@ mod state;
 mod teamfile;
 mod tunnel;
 mod tunnel_client;
+mod tun_clash;
 mod tun_cli;
 mod tun_dev;
 mod tun_dns;
@@ -34,6 +37,24 @@ fn main() {
             }
         }
         return;
+    }
+    // `teamx gui` is a desktop tray app (L1); it manages child processes and
+    // does not open the DB itself. Requires the `gui` feature.
+    #[cfg(feature = "gui")]
+    if let Command::Gui = &cli.command {
+        match gui::run_tray() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    #[cfg(not(feature = "gui"))]
+    if let Command::Gui = &cli.command {
+        eprintln!("teamx error: `gui` requires the `gui` feature — rebuild with --features gui");
+        std::process::exit(1);
     }
     let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);
 

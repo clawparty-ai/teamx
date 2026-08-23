@@ -31,6 +31,16 @@ base64 = "0.22"
 tun = "0.8.14"
 smoltcp = { version = "0.14.0", features = ["std", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "phy-tuntap_interface"] }
 libc = "0.2"
+serde_yaml = "0.9"
+
+# Desktop tray (L1) — optional: needs a desktop session (macOS menu bar /
+# Linux appindicator + GTK). Not required for headless servers.
+tray-icon = { version = "0.24", optional = true }
+tao = { version = "0.37", optional = true }
+
+[features]
+default = []
+gui = ["dep:tray-icon", "dep:tao"]
 
 [[bin]]
 name = "teamx"

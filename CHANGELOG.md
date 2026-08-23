@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-08-23
+
+### Clash config compatibility + L1 desktop tray
+
+**Clash 兼容模式**（`tun0 start --clash-config <path>`）：解析 Clash YAML，
+把 `rules` 映射到 teamx 路由表（DOMAIN-SUFFIX→通配、DOMAIN→精确、IP-CIDR→CIDR、
+MATCH→default）。`proxies`/`proxy-groups` 忽略（出口从 teamx 的 egress 集选择）；
+DIRECT/REJECT 规则 v1 跳过。`tun_clash.rs` + 8 个单元测试。
+
+**L1 桌面托盘**（`teamx gui`）：tray-icon + tao（纯 Rust，跨平台 macOS 菜单栏 /
+Linux appindicator）。菜单启停 tun0 / SOCKS5 proxy、状态显示、退出。子进程由
+`teamx gui` 管理（spawn `teamx tun0 start` / `teamx proxy start`）。L2/L3
+（设置窗口、规则可视化、Tauri 完整 GUI）列入 enterprise 分支 TODO。
+
 ## 0.3.0 — 2026-08-23
 
 ### tun0 virtual NIC (transparent proxy, needs root)
