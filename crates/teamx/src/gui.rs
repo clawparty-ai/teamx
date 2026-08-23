@@ -120,28 +120,19 @@ pub fn run_tray() -> Result<(), String> {
     let mut state = GuiState::new();
     let envs = worker_env();
 
-    // Minimal tray icon: a 16x16 filled square (RGBA). Production would ship
-    // a real PNG asset; this keeps the build dependency-free.
-    let icon_px: Vec<u8> = {
-        let mut px = Vec::with_capacity(16 * 16 * 4);
-        for y in 0..16u32 {
-            for x in 0..16u32 {
-                let on = (x / 4 + y / 4) % 2 == 0;
-                if on {
-                    px.extend_from_slice(&[40, 120, 220, 255]); // blue
-                } else {
-                    px.extend_from_slice(&[20, 40, 80, 255]);
-                }
-            }
-        }
-        px
-    };
+    // Tray icon: load the teamx logo PNG if available (env TEAMX_TRAY_ICON,
+    // or a sibling resources path), else fall back to a placeholder square.
+    let icon_rgba: Option<(Vec<u8>, u32, u32)> = load_tray_icon_png();
 
     event_loop.run(move |event, _elwt, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                let icon = match Icon::from_rgba(icon_px.clone(), 16, 16) {
+                let icon = match &icon_rgba {
+                    Some((px, w, h)) => Icon::from_rgba(px.clone(), *w, *h),
+                    None => Icon::from_rgba(placeholder_icon(), 16, 16),
+                };
+                let icon = match icon {
                     Ok(i) => i,
                     Err(e) => {
                         eprintln!("tray icon: {e}");
@@ -207,4 +198,59 @@ pub fn run_tray() -> Result<(), String> {
     // event_loop.run() never returns normally; this keeps the Result type.
     #[allow(unreachable_code)]
     Ok(())
+}
+
+/// Load the tray icon from a PNG. Resolution order:
+///   1. `TEAMX_TRAY_ICON` env var
+///   2. `<current_exe_dir>/../Resources/tray.png` (inside a .app bundle)
+///   3. a `tray.png` next to the binary
+/// Returns `(rgba, width, height)` or `None` to fall back to the placeholder.
+fn load_tray_icon_png() -> Option<(Vec<u8>, u32, u32)> {
+    use std::io::BufReader;
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("TEAMX_TRAY_ICON") {
+        candidates.push(std::path::PathBuf::from(p));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("Resources").join("tray.png")); // .app bundle
+            candidates.push(dir.join("tray.png"));
+        }
+    }
+
+    for path in candidates {
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let decoder = match image::ImageReader::new(BufReader::new(file)).with_guessed_format() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let img = match decoder.decode() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width(), rgba.height());
+        return Some((rgba.into_raw(), w, h));
+    }
+    None
+}
+
+/// 16x16 placeholder (used only when no logo PNG is found).
+fn placeholder_icon() -> Vec<u8> {
+    let mut px = Vec::with_capacity(16 * 16 * 4);
+    for y in 0..16u32 {
+        for x in 0..16u32 {
+            let on = (x / 4 + y / 4) % 2 == 0;
+            if on {
+                px.extend_from_slice(&[40, 120, 220, 255]); // blue
+            } else {
+                px.extend_from_slice(&[20, 40, 80, 255]);
+            }
+        }
+    }
+    px
 }

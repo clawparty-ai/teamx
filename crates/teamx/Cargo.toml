@@ -37,10 +37,11 @@ serde_yaml = "0.9"
 # Linux appindicator + GTK). Not required for headless servers.
 tray-icon = { version = "0.24", optional = true }
 tao = { version = "0.37", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
 [features]
 default = []
-gui = ["dep:tray-icon", "dep:tao"]
+gui = ["dep:tray-icon", "dep:tao", "dep:image"]
 
 [[bin]]
 name = "teamx"
