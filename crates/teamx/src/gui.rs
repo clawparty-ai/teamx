@@ -8,6 +8,7 @@
 //!
 //! Built on `tray-icon` + `tao` (pure Rust, macOS menu bar + Linux appindicator).
 
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
 
 /// Current state of one managed worker process.
@@ -73,6 +74,16 @@ fn worker_env() -> Vec<(&'static str, String)> {
 
 /// The L1 tray entrypoint. Blocks forever (event loop).
 pub fn run_tray() -> Result<(), String> {
+    // Startup diagnostics: write to a log file so LaunchServices launches
+    // (which drop stdout/stderr) can be debugged.
+    let log_path = std::env::temp_dir().join("teamx-gui.log");
+    let mut log = std::io::BufWriter::new(
+        std::fs::File::create(&log_path).expect("create teamx-gui.log in temp dir"),
+    );
+    let _ = writeln!(log, "teamx gui starting at {}", crate::db::now());
+    let _ = log.flush();
+    eprintln!("teamx gui: log -> {}", log_path.display());
+
     use tao::event::{Event, StartCause};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -135,6 +146,8 @@ pub fn run_tray() -> Result<(), String> {
                 let icon = match icon {
                     Ok(i) => i,
                     Err(e) => {
+                        let _ = writeln!(log, "tray icon error: {e}");
+                        let _ = log.flush();
                         eprintln!("tray icon: {e}");
                         return;
                     }
@@ -148,11 +161,15 @@ pub fn run_tray() -> Result<(), String> {
                     {
                         Ok(t) => t,
                         Err(e) => {
+                            let _ = writeln!(log, "tray build error: {e}");
+                            let _ = log.flush();
                             eprintln!("tray: {e}");
                             return;
                         }
                     },
                 );
+                let _ = writeln!(log, "tray built OK");
+                let _ = log.flush();
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if e.id == start_tun.id() {

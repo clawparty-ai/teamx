@@ -57,10 +57,12 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>      <string>io.flomesh.teamx</string>
     <key>CFBundleVersion</key>         <string>0.3.1</string>
     <key>CFBundleShortVersionString</key><string>0.3.1</string>
+    <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>CFBundleExecutable</key>      <string>teamx</string>
     <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>   <string>11.0</string>
     <key>LSUIElement</key>             <true/>
+    <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSHighResolutionCapable</key> <true/>
     <key>NSHumanReadableCopyright</key><string>© 2026 teamx</string>
 </dict>
