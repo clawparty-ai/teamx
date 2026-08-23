@@ -231,7 +231,11 @@ fn load_tray_icon_png() -> Option<(Vec<u8>, u32, u32)> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("Resources").join("tray.png")); // .app bundle
+            // Inside a .app bundle: <app>/Contents/MacOS/teamx
+            // Resources live at <app>/Contents/Resources/tray.png
+            if let Some(contents) = dir.parent() {
+                candidates.push(contents.join("Resources").join("tray.png"));
+            }
             candidates.push(dir.join("tray.png"));
         }
     }
