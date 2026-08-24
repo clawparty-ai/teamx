@@ -280,10 +280,10 @@ final class TeamxCore {
         return out.contains("198.18.0.1")
     }
 
-    /// Tail the tun0 launch log (/tmp/teamx-tun0.log) into the app log so the
+    /// Tail the tun0 launch log ($TEAMX_HOME/tun0.log) into the app log so the
     /// user can see why tun0 failed when it doesn't come up.
     func pumpTun0Log() {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: "/tmp/teamx-tun0.log")),
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: NSHomeDirectory() + "/.teamx/tun0.log")),
               let s = String(data: data, encoding: .utf8) else { return }
         let lines = s.split(separator: "\n")
         guard let last = lines.last else { return }

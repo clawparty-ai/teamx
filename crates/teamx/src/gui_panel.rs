@@ -218,7 +218,7 @@ fn tun0_start_cmd() -> String {
     // `do shell script` has no tty, so `nohup` fails ("can't detach from
     // console"). A plain background `&` with stdio redirected detaches fine.
     format!(
-        "{}'{}' tun0 start > /tmp/teamx-tun0.log 2>&1 </dev/null &",
+        "{}mkdir -p \"$TEAMX_HOME\" 2>/dev/null; '{}' tun0 start > \"$TEAMX_HOME/tun0.log\" 2>&1 </dev/null &",
         env_prefix, teamx
     )
 }

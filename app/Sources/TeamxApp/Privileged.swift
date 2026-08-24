@@ -16,7 +16,9 @@ import Foundation
 
 enum Privileged {
     /// Start tun0 as root. Builds a shell command that exports the mTLS env
-    /// and launches `teamx tun0 start` detached, logging to /tmp/teamx-tun0.log.
+    /// and launches `teamx tun0 start` detached, logging to $TEAMX_HOME/tun0.log
+    /// (NOT /tmp: a fixed /tmp path would let any local user pre-create a symlink
+    /// and have the elevated process overwrite an arbitrary file).
     /// Always clears any previous tun0 process first so only one instance runs.
     static func startTun0() {
         guard let teamx = TeamxCore.teamxURL()?.path else {
@@ -27,7 +29,7 @@ enum Privileged {
         // Kill any prior instance, then start fresh (guarantees a single tun0).
         // teamx tun0 start sets system DNS itself (fake-ip gateway + fallback).
         let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null; sleep 1; " +
-                  "\(envPrefix)'\(teamx)' tun0 start > /tmp/teamx-tun0.log 2>&1 </dev/null &"
+                  "\(envPrefix)mkdir -p \"$TEAMX_HOME\" 2>/dev/null; '\(teamx)' tun0 start > \"$TEAMX_HOME/tun0.log\" 2>&1 </dev/null &"
         LogBuffer.shared.push("[tun0] 请求系统授权以启动 tun0 …")
         runDetached(cmd)
     }
@@ -57,7 +59,7 @@ enum Privileged {
         let cmd = "\(envPrefix)'\(teamx)' tun0 stop 2>/dev/null; " +
                   "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null; " +
                   "sleep 1; " +
-                  "\(envPrefix)'\(teamx)' tun0 start > /tmp/teamx-tun0.log 2>&1 </dev/null &"
+                  "\(envPrefix)mkdir -p \"$TEAMX_HOME\" 2>/dev/null; '\(teamx)' tun0 start > \"$TEAMX_HOME/tun0.log\" 2>&1 </dev/null &"
         LogBuffer.shared.push("[tun0] 请求系统授权以重启 tun0 …")
         runDetached(cmd)
     }

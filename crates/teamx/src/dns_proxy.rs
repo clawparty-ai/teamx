@@ -11,7 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::tun_dns::{build_a_response, parse_dns_query};
+use crate::tun_dns::{build_a_response, build_empty_response, parse_dns_query};
 
 /// Cached resolution for one domain.
 struct CacheEntry {
@@ -50,15 +50,25 @@ pub fn spawn(
             let Some((name, qtype, _)) = parse_dns_query(&query) else {
                 continue;
             };
-            // Only A queries are handled; others are forwarded upstream.
+            let intercepted = patterns.iter().any(|p| domain_matches(p, &name));
+            // Non-A queries for intercepted domains (e.g. AAAA) get an empty
+            // NOERROR answer: the client then falls back to the proxied A
+            // record instead of trusting a poisoned upstream AAAA.
             if qtype != 1 {
-                forward_upstream(&sock, &query, peer, &upstream);
+                if intercepted {
+                    if let Some(resp) = build_empty_response(&query) {
+                        let _ = sock.send_to(&resp, peer);
+                    }
+                } else {
+                    forward_upstream(&sock, &query, peer, &upstream);
+                }
                 continue;
             }
-            let intercepted = patterns.iter().any(|p| domain_matches(p, &name));
             if intercepted {
-                // Serve from cache when fresh; otherwise resolve via the exit,
-                // route the IPs, and answer with the real addresses.
+                // Serve from cache when fresh (a failed resolution is cached
+                // briefly too, so a dead server doesn't turn every query into a
+                // full 15 s RPC timeout). Otherwise resolve via the exit, route
+                // the IPs, and answer with the real addresses.
                 let addrs = match cache.get(&name) {
                     Some(e) if e.expires_at > Instant::now() => e.ips.clone(),
                     _ => {
@@ -72,15 +82,22 @@ pub fn spawn(
                                 resolved.push(ip);
                             }
                         }
-                        if !resolved.is_empty() {
-                            cache.insert(
-                                name.clone(),
-                                CacheEntry {
-                                    ips: resolved.clone(),
-                                    expires_at: Instant::now() + Duration::from_secs(60),
-                                },
-                            );
+                        // Cap the caches so a long-running session can't grow
+                        // them without bound.
+                        if cache.len() >= 1024 {
+                            cache.retain(|_, e| e.expires_at > Instant::now());
                         }
+                        if ip_map.lock().unwrap().len() >= 8192 {
+                            ip_map.lock().unwrap().clear();
+                        }
+                        let ttl = if resolved.is_empty() { 10 } else { 60 };
+                        cache.insert(
+                            name.clone(),
+                            CacheEntry {
+                                ips: resolved.clone(),
+                                expires_at: Instant::now() + Duration::from_secs(ttl),
+                            },
+                        );
                         resolved
                     }
                 };

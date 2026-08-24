@@ -51,17 +51,24 @@ final class DraggableTable: NSView {
 
     func setRows(_ rows: [[String]]) { table.setRows(rows) }
 
+    private var dragging = false
+
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         guard handle.frame.contains(p) else {
             super.mouseDown(with: event)
             return
         }
+        dragging = true
         startHeight = frame.height
         startY = event.locationInWindow.y
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard dragging else {
+            super.mouseDragged(with: event)
+            return
+        }
         let dy = event.locationInWindow.y - startY
         let newHeight = min(max(startHeight - dy, 60), 500)
         for c in constraints {
@@ -69,6 +76,14 @@ final class DraggableTable: NSView {
                 c.constant = newHeight
             }
         }
-        UserDefaults.standard.set(Double(newHeight), forKey: "table.height.\(id)")
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragging {
+            // Persist once at drag end, not on every frame.
+            UserDefaults.standard.set(Double(frame.height), forKey: "table.height.\(id)")
+            dragging = false
+        }
+        super.mouseUp(with: event)
     }
 }

@@ -271,6 +271,24 @@ pub fn build_a_response(query: &[u8], ips: &[Ipv4Addr]) -> Option<Vec<u8>> {
     Some(resp)
 }
 
+/// Build a NOERROR response with zero answers, echoing `query`'s question.
+/// Used for intercepted domains' non-A queries (e.g. AAAA): answering empty
+/// makes the client fall back to the (proxied, real-IP) A record instead of
+/// trusting a poisoned upstream AAAA.
+pub fn build_empty_response(query: &[u8]) -> Option<Vec<u8>> {
+    let (_domain, _qtype, pos) = parse_dns_query(query)?;
+    let id = u16::from_be_bytes([query[0], query[1]]);
+    let mut resp = Vec::with_capacity(pos + 4);
+    resp.extend_from_slice(&id.to_be_bytes());
+    resp.extend_from_slice(&[0x81, 0x80]); // response, RD+RA, no error
+    resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
+    resp.extend_from_slice(&[0x00, 0x00]); // ANCOUNT
+    resp.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
+    resp.extend_from_slice(&[0x00, 0x00]); // ARCOUNT
+    resp.extend_from_slice(&query[12..pos + 4]);
+    Some(resp)
+}
+
 /// Serve the fake-ip DNS responder on port 53 (UDP).
 /// Binds the tun gateway IP first (e.g. 198.18.0.1:53) so it does not conflict
 /// with systemd-resolved / other services on 0.0.0.0:53; falls back to
