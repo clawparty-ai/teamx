@@ -29,12 +29,14 @@ pub const DEFAULT_MAX_CONNS: usize = 64;
 pub struct TunPhy {
     pub tun: TunDevice,
     rx_buf: Vec<u8>,
+    /// Reused TX scratch buffer (avoids a heap allocation per emitted packet).
+    tx_buf: Vec<u8>,
 }
 
 impl TunPhy {
     pub fn new(tun: TunDevice) -> Self {
         let mtu = tun.mtu as usize;
-        TunPhy { tun, rx_buf: vec![0u8; mtu] }
+        TunPhy { tun, rx_buf: vec![0u8; mtu], tx_buf: vec![0u8; mtu] }
     }
 }
 
@@ -51,16 +53,17 @@ impl<'a> RxToken for Rx<'a> {
 /// Tx token that writes the emitted packet straight into the tun fd. This is
 /// the critical part: smoltcp hands us the bytes via `f` and we must actually
 /// send them back to the host stack, otherwise SYN-ACKs / DNS replies are
-/// silently dropped.
-pub struct Tx<'a>(&'a mut TunDevice);
+/// silently dropped. The scratch buffer is reused across packets.
+pub struct Tx<'a>(&'a mut Vec<u8>, &'a mut TunDevice);
 impl<'a> TxToken for Tx<'a> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = vec![0u8; len];
-        let result = f(&mut buffer);
-        let _ = self.0.write_packet(&buffer);
+        self.0.clear();
+        self.0.resize(len, 0);
+        let result = f(&mut self.0[..]);
+        let _ = self.1.write_packet(&self.0[..len]);
         result
     }
 }
@@ -84,11 +87,11 @@ impl phy::Device for TunPhy {
             }
         }
         // Return a slice of exactly n bytes (rx_buf keeps its full capacity).
-        Some((Rx(&self.rx_buf[..n]), Tx(&mut self.tun)))
+        Some((Rx(&self.rx_buf[..n]), Tx(&mut self.tx_buf, &mut self.tun)))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(Tx(&mut self.tun))
+        Some(Tx(&mut self.tx_buf, &mut self.tun))
     }
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
@@ -102,6 +105,7 @@ impl phy::Device for TunPhy {
         csum.ipv4 = smoltcp::phy::Checksum::Tx;
         csum.udp = smoltcp::phy::Checksum::Tx;
         csum.tcp = smoltcp::phy::Checksum::Tx;
+        csum.icmpv4 = smoltcp::phy::Checksum::Tx;
         caps.checksum = csum;
         caps
     }

@@ -798,11 +798,17 @@ async fn rpc(
             }
         };
         for tid in team_ids {
-            if let Some((_sid, rx)) = tunnels.resolve(&tid, &exit, &name) {
-                if let Ok(Ok(ips)) = tokio::time::timeout(Duration::from_secs(6), rx).await {
-                    return (StatusCode::OK, Json(json!({ "ok": true, "data": { "ips": ips } })));
+            if let Some((sid, rx)) = tunnels.resolve(&tid, &exit, &name) {
+                match tokio::time::timeout(Duration::from_secs(6), rx).await {
+                    Ok(Ok(ips)) => {
+                        return (StatusCode::OK, Json(json!({ "ok": true, "data": { "ips": ips } })));
+                    }
+                    // Exit never answered: drop the waiter so it does not leak.
+                    Ok(Err(_)) | Err(_) => {
+                        tunnels.complete_resolve(sid, Vec::new());
+                        break;
+                    }
                 }
-                break;
             }
         }
         return (StatusCode::OK, Json(json!({ "ok": true, "data": { "ips": [] } })));

@@ -381,37 +381,50 @@ final class ControlPanelController: NSViewController {
     }
 
     /// Server address + online status + member presence with metrics.
+    /// The network round-trips (mTLS curl, up to ~5-8 s each) run on a
+    /// background queue; only the UI updates hop back to the main thread.
     private func refreshConnection() {
         // Use the active local member's server + letter (if any).
         let member = TeamxCore.shared.currentMember
         let material = TeamxServer.currentMaterial(letterID: member?.letterID, serverURL: member?.serverURL)
-        let online = TeamxServer.serverOnline(material)
         if let info = TeamxServer.serverInfo(material) {
-            connLabel.stringValue = "\(info.host):\(info.port)  \(online ? "● 在线" : "○ 离线")"
+            connLabel.stringValue = "\(info.host):\(info.port)  …"
         } else {
             connLabel.stringValue = "未配置 server（无邀请函）"
+            connLabel.textColor = .secondaryLabelColor
         }
-        connLabel.textColor = online ? .systemGreen : .systemOrange
 
-        let members = TeamxServer.teamMembers(material)
-        let metrics = TeamxServer.memberMetrics(material)
-        if members.isEmpty {
-            memberTable.setRows([["（无成员信息）", "", "", "", "", "", ""]])
-        } else {
-            memberTable.setRows(members.map { m in
-                let isOnline = m.online || (metrics[m.id]?.online ?? false)
-                let icon = isOnline ? "● 在线" : "○ 离线"
-                let ip = m.ip ?? "-"
-                let met = metrics[m.id]
-                let ping = met?.pingMs.map { String(format: "%.0f", $0) } ?? "-"
-                let rx = met.map { formatBps($0.rxBps) } ?? "-"
-                let tx = met.map { formatBps($0.txBps) } ?? "-"
-                return [m.name, m.role, ip, icon, ping, rx, tx]
-            })
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let online = TeamxServer.serverOnline(material)
+            let members = TeamxServer.teamMembers(material)
+            let metrics = TeamxServer.memberMetrics(material)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let info = TeamxServer.serverInfo(material) {
+                    self.connLabel.stringValue = "\(info.host):\(info.port)  \(online ? "● 在线" : "○ 离线")"
+                } else {
+                    self.connLabel.stringValue = "未配置 server（无邀请函）"
+                }
+                self.connLabel.textColor = online ? .systemGreen : .systemOrange
+                if members.isEmpty {
+                    self.memberTable.setRows([["（无成员信息）", "", "", "", "", "", ""]])
+                } else {
+                    self.memberTable.setRows(members.map { m in
+                        let isOnline = m.online || (metrics[m.id]?.online ?? false)
+                        let icon = isOnline ? "● 在线" : "○ 离线"
+                        let ip = m.ip ?? "-"
+                        let met = metrics[m.id]
+                        let ping = met?.pingMs.map { String(format: "%.0f", $0) } ?? "-"
+                        let rx = met.map { Self.formatBps($0.rxBps) } ?? "-"
+                        let tx = met.map { Self.formatBps($0.txBps) } ?? "-"
+                        return [m.name, m.role, ip, icon, ping, rx, tx]
+                    })
+                }
+            }
         }
     }
 
-    private func formatBps(_ bps: Int) -> String {
+    private static func formatBps(_ bps: Int) -> String {
         if bps >= 1_048_576 { return String(format: "%.1f MB", Double(bps) / 1_048_576) }
         if bps >= 1024 { return String(format: "%.1f KB", Double(bps) / 1024) }
         return "\(bps) B"

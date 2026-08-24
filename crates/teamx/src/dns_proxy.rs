@@ -9,8 +9,15 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::tun_dns::{build_a_response, parse_dns_query};
+
+/// Cached resolution for one domain.
+struct CacheEntry {
+    ips: Vec<Ipv4Addr>,
+    expires_at: Instant,
+}
 
 /// Spawn the local DNS proxy on a dedicated blocking thread.
 ///
@@ -30,6 +37,9 @@ pub fn spawn(
 ) -> std::io::Result<()> {
     let sock = UdpSocket::bind("127.0.0.1:53")?;
     std::thread::spawn(move || {
+        // TTL cache so repeated queries for the same domain don't each pay the
+        // full server→exit round trip (~1 s).
+        let mut cache: HashMap<String, CacheEntry> = HashMap::new();
         let mut buf = [0u8; 4096];
         loop {
             let (n, peer) = match sock.recv_from(&mut buf) {
@@ -47,17 +57,33 @@ pub fn spawn(
             }
             let intercepted = patterns.iter().any(|p| domain_matches(p, &name));
             if intercepted {
-                // Resolve via the proxy exit (uncensored), route the IPs, and
-                // answer with the real addresses.
-                let ips = crate::tunnel_client::resolve_dns(&server_url, &exit, &name);
-                let mut addrs: Vec<Ipv4Addr> = Vec::new();
-                for s in &ips {
-                    if let Ok(ip) = s.parse::<Ipv4Addr>() {
-                        crate::tun_dev::add_ip_route(ip, &dev).ok();
-                        ip_map.lock().unwrap().insert(ip, name.clone());
-                        addrs.push(ip);
+                // Serve from cache when fresh; otherwise resolve via the exit,
+                // route the IPs, and answer with the real addresses.
+                let addrs = match cache.get(&name) {
+                    Some(e) if e.expires_at > Instant::now() => e.ips.clone(),
+                    _ => {
+                        cache.remove(&name);
+                        let ips = crate::tunnel_client::resolve_dns(&server_url, &exit, &name);
+                        let mut resolved: Vec<Ipv4Addr> = Vec::new();
+                        for s in &ips {
+                            if let Ok(ip) = s.parse::<Ipv4Addr>() {
+                                crate::tun_dev::add_ip_route(ip, &dev).ok();
+                                ip_map.lock().unwrap().insert(ip, name.clone());
+                                resolved.push(ip);
+                            }
+                        }
+                        if !resolved.is_empty() {
+                            cache.insert(
+                                name.clone(),
+                                CacheEntry {
+                                    ips: resolved.clone(),
+                                    expires_at: Instant::now() + Duration::from_secs(60),
+                                },
+                            );
+                        }
+                        resolved
                     }
-                }
+                };
                 if !addrs.is_empty() {
                     if let Some(resp) = build_a_response(&query, &addrs) {
                         let _ = sock.send_to(&resp, peer);

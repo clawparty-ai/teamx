@@ -161,14 +161,19 @@ final class TeamxCore {
         p.standardError = err
         do {
             try p.run()
+            // Read both pipes to EOF *before* waiting for exit: if the child
+            // fills the 64KB pipe buffer while we're in waitUntilExit, it would
+            // block forever (classic pipe deadlock).
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
+            let so = String(data: outData, encoding: .utf8) ?? ""
+            let se = String(data: errData, encoding: .utf8) ?? ""
+            return (p.terminationStatus, so, se)
         } catch {
             LogBuffer.shared.push("[core] \(error.localizedDescription)")
             return (-1, "", error.localizedDescription)
         }
-        let so = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let se = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (p.terminationStatus, so, se)
     }
 
     // MARK: - Proxy

@@ -109,6 +109,9 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                 .into_iter()
                 .map(|ip| std::net::SocketAddr::new(std::net::IpAddr::V4(ip), 53))
                 .collect();
+            if upstream.is_empty() {
+                eprintln!("tun: no upstream DNS found — non-intercepted domains will not resolve");
+            }
             match crate::dns_proxy::spawn(
                 opts.server_url.clone(),
                 opts.default_exit.clone(),
@@ -300,14 +303,12 @@ fn pump_active(stack: &mut TunStack, buf: &mut [u8]) -> Result<(), String> {
 /// minutes because CDN IPs rotate. Runs as a spawned task on the tun runtime.
 async fn ip_route_loop(
     domains: &[String],
-    cidrs: &[(Ipv4Addr, u8)],
+    _cidrs: &[(Ipv4Addr, u8)],
     dev: &str,
     ip_map: Arc<Mutex<HashMap<Ipv4Addr, String>>>,
 ) {
-    // Add explicit CIDR network routes once (static, covers large CDN ranges).
-    for (net, prefix) in cidrs {
-        crate::tun_dev::add_route(*net, *prefix, dev).ok();
-    }
+    // CIDR network routes were already added by the caller (idempotent, but
+    // avoid the duplicate "File exists" noise).
 
     let mut known: Vec<Ipv4Addr> = Vec::new();
     loop {
