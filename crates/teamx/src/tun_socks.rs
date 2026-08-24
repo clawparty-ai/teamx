@@ -118,7 +118,10 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                 upstream,
             ) {
                 Ok(()) => {
-                    if let Err(e) = crate::tun_dev::set_system_dns_single("127.0.0.1") {
+                    // Point system DNS at the local proxy, KEEPING the original
+                    // DNS as fallback (2nd server) so domains still resolve if
+                    // the tun/proxy ever stops answering.
+                    if let Err(e) = crate::tun_dev::set_system_dns("127.0.0.1") {
                         eprintln!("tun: set system DNS (127.0.0.1) failed: {e}");
                     } else {
                         println!("ok dns-proxy: 127.0.0.1:53 (exit={})", opts.default_exit);

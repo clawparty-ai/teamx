@@ -218,34 +218,9 @@ pub fn restore_system_dns() -> Result<(), String> {
     }
 }
 
-/// Set system DNS to a single server with no fallback. Used for the local DNS
-/// proxy (127.0.0.1): every query must hit the proxy so proxied domains resolve
-/// through the exit and non-proxied domains are forwarded to the system DNS
-/// from inside the proxy. The original DNS is saved so `restore_system_dns`
-/// can undo it. macOS only; no-op elsewhere.
-pub fn set_system_dns_single(ip: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut backup = DnsBackup {
-            fallback: Vec::new(),
-            services: std::collections::HashMap::new(),
-        };
-        let services = list_services_macos()?;
-        let single = [ip.to_string()];
-        for svc in &services {
-            let original = get_dns_macos(svc);
-            set_dns_macos(svc, &single)?;
-            backup.services.insert(svc.clone(), original);
-        }
-        save_backup(&backup)?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = ip;
-        Ok(())
-    }
-}
+/// Set system DNS to a single server with no fallback.
+/// NOTE: superseded by `set_system_dns` (keeps the original DNS as fallback).
+/// macOS only; no-op elsewhere.
 
 /// Per-service DNS snapshot saved across a tun0 session.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -325,6 +300,8 @@ fn set_dns_macos(svc: &str, list: &[String]) -> Result<(), String> {
 
 /// All currently-active DNS servers (from `scutil --dns`), deduplicated. This
 /// captures DHCP-assigned servers that `networksetup -getdnsservers` misses.
+/// Loopback / unspecified / fake-ip-gateway addresses are excluded so they are
+/// never picked up as fallback DNS.
 #[cfg(target_os = "macos")]
 fn current_dns_macos() -> Vec<String> {
     let mut out = Vec::new();
@@ -335,7 +312,13 @@ fn current_dns_macos() -> Vec<String> {
             if let Some(idx) = t.find("nameserver[") {
                 if let Some(colon) = t[idx..].find(':') {
                     let ip = t[idx + colon + 1..].trim().to_string();
-                    if !ip.is_empty() && !out.contains(&ip) {
+                    let skip = ip.is_empty()
+                        || ip == "127.0.0.1"
+                        || ip == "0.0.0.0"
+                        || ip == "::1"
+                        || ip.starts_with("198.18.") // tun fake-ip gateway range
+                        || out.contains(&ip);
+                    if !skip {
                         out.push(ip);
                     }
                 }
