@@ -146,7 +146,7 @@ teamx uses **mTLS (mutual TLS)** for network-mode authentication and encryption 
 - **Authorization model**: certificate = "can connect", owner approval = "can work". Pending members can connect but cannot publish or act until the owner approves.
 - **Cross-team isolation**: network RPC checks that a certificate holder belongs to the team being accessed; non-members cannot read other teams' invite tokens, members, roles, or events.
 
-Local (single-machine, CLI-only) mode relies on a self-reported `session_key`, which is acceptable only on a trusted machine. See [goal-v1.md](goal-v1.md) for the trust model.
+Local (single-machine, CLI-only) mode relies on a self-reported `session_key`, which is acceptable only on a trusted machine. See [goal-v1.md](docs/goal-v1.md) for the trust model.
 
 ## Tech Stack
 

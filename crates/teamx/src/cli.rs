@@ -118,6 +118,11 @@ pub enum Command {
     #[command(subcommand)]
     Loopx(LoopxCmd),
 
+    /// Local client config: manage local members (each may connect to a
+    /// different server) and local environment settings.
+    #[command(subcommand)]
+    Local(LocalCmd),
+
     /// PKI management (mTLS certificates)
     #[command(subcommand)]
     Cert(CertCmd),
@@ -138,6 +143,11 @@ pub enum Command {
     /// matching traffic through teamx proxy exits without configuring apps.
     #[command(subcommand)]
     Tun0(Tun0Cmd),
+
+    /// DNS utilities (network mode): list default DNS, or resolve a domain
+    /// through a proxy exit's uncensored resolver.
+    #[command(subcommand)]
+    Dns(DnsCmd),
 
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
@@ -164,11 +174,11 @@ pub enum Tun0Cmd {
         /// routing table JSON file (per-target domain/IP -> exit)
         #[arg(long, short = 'f', value_name = "PATH")]
         routes: Option<PathBuf>,
-        /// Clash config YAML (compat mode): maps rules (DOMAIN-SUFFIX/DOMAIN/
-        /// IP-CIDR/MATCH) onto the teamx route table. Takes precedence over
-        /// -f/--routes when both are given.
+        /// External rules config YAML (compat mode): maps rules
+        /// (DOMAIN-SUFFIX/DOMAIN/IP-CIDR/MATCH) onto the teamx route table.
+        /// Takes precedence over -f/--routes when both are given.
         #[arg(long, value_name = "PATH")]
-        clash_config: Option<PathBuf>,
+        rules_config: Option<PathBuf>,
         /// tun interface IP (gateway for the fake-ip net)
         #[arg(long, default_value = "198.18.0.1")]
         ip: std::net::Ipv4Addr,
@@ -181,6 +191,12 @@ pub enum Tun0Cmd {
         /// max concurrent TCP connections
         #[arg(long, default_value_t = 64)]
         max_conns: usize,
+        /// Enable fake-ip DNS hijacking (set system DNS to the tun gateway and
+        /// answer with fake IPs). Off by default: macOS mDNSResponder does not
+        /// reliably accept the 198.18.0.0/15 responses, so IP-based routing is
+        /// the default transparent-proxy strategy.
+        #[arg(long, default_value_t = false)]
+        fake_dns: bool,
     },
     /// Stop the tun0 device (removes the route + device). Requires root.
     Stop {
@@ -196,6 +212,22 @@ pub enum Tun0Cmd {
     },
     /// Show tun0 status (device exists?).
     Status,
+}
+
+/// `teamx dns` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum DnsCmd {
+    /// List the default system DNS servers.
+    List,
+    /// Resolve a domain through a proxy exit's uncensored resolver.
+    Resolve {
+        /// domain to resolve
+        #[arg(value_name = "DOMAIN")]
+        domain: String,
+        /// proxy exit name (default: the route table's default exit)
+        #[arg(long)]
+        exit: Option<String>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -481,6 +513,67 @@ pub enum LoopxCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+}
+
+/// Local client config commands (per-machine, not server-side).
+#[derive(Subcommand, Debug)]
+pub enum LocalCmd {
+    /// List local members.
+    MemberList,
+    /// Add a local member (each connects to a different server).
+    MemberAdd {
+        /// unique key (e.g. m1)
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// display name
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// server URL this member connects to
+        #[arg(long)]
+        server: String,
+        /// imported letter id (~/.teamx/letters/<id>) for mTLS
+        #[arg(long)]
+        letter: Option<String>,
+        /// local proxy port
+        #[arg(long, default_value_t = 1080)]
+        proxy_port: u16,
+        /// local fake-DNS port
+        #[arg(long, default_value_t = 53)]
+        dns_port: u16,
+    },
+    /// Update a local member's config.
+    MemberUpdate {
+        /// member key
+        #[arg(value_name = "KEY")]
+        key: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        letter: Option<String>,
+        #[arg(long)]
+        proxy_port: Option<u16>,
+        #[arg(long)]
+        dns_port: Option<u16>,
+    },
+    /// Remove a local member.
+    MemberRemove {
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+    /// Read a local setting value.
+    Get {
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+    /// Write a local setting value.
+    Set {
+        #[arg(value_name = "KEY")]
+        key: String,
+        #[arg(value_name = "VALUE")]
+        value: String,
     },
 }
 

@@ -14,16 +14,16 @@ use crate::tun_dns::FakeIpDns;
 /// Handle `teamx tun0 ...` (network-mode; needs root for start/stop).
 pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
     match cmd {
-        Tun0Cmd::Start { server, exit, routes, clash_config, ip, net_prefix, net, max_conns } => {
+        Tun0Cmd::Start { server, exit, routes, rules_config, ip, net_prefix, net, max_conns, fake_dns } => {
             crate::tun_dev::require_root()?;
             let server_url = resolve_server_url(server.as_deref())?;
 
             // Route table source priority:
-            //   1. --clash-config (Clash compat mode)
+            //   1. --rules-config (external rules compat mode)
             //   2. -f/--routes JSON file
             //   3. SQLite route table
-            let table = if let Some(path) = clash_config {
-                Some(crate::tun_clash::parse_clash_config(path, exit.as_deref().unwrap_or(""))?)
+            let table = if let Some(path) = rules_config {
+                Some(crate::rules_config::parse_rules_config(path, exit.as_deref().unwrap_or(""))?)
             } else {
                 match routes {
                     Some(path) => {
@@ -51,11 +51,21 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
                 (None, Some(e)) if !e.is_empty() => e.clone(),
                 _ => return Err(
                     "tun0 start: no exit configured — pass --exit <name>, -f <routes.json>, \
-                     --clash-config <clash.yaml>, or `teamx proxy routes set-default`".to_string(),
+                     --rules-config <rules.yaml>, or `teamx proxy routes set-default`".to_string(),
                 ),
             };
 
             let dns = FakeIpDns::new(*net, *net_prefix);
+            // Only fake-ip the domains the routing rules explicitly intercept;
+            // other domains resolve to real IPs via the client's fallback DNS.
+            // (When there are no explicit domain rules, keep intercepting
+            // everything — the pre-existing global-proxy behavior.)
+            if let Some(t) = &table {
+                let patterns = t.intercept_patterns();
+                if !patterns.is_empty() {
+                    dns.set_intercept_patterns(patterns);
+                }
+            }
             let opts = crate::tun_socks::TunOptions {
                 server_url,
                 tun_ip: *ip,
@@ -65,12 +75,14 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
                 default_exit,
                 routes: table,
                 dns,
+                fake_dns: *fake_dns,
             };
             // Long-lived: blocks forever.
             crate::tun_socks::tun_proxy(opts)
         }
         Tun0Cmd::Stop { net, net_prefix, dev } => {
             crate::tun_dev::require_root()?;
+            crate::tun_dev::restore_system_dns()?;
             crate::tun_dev::del_route(*net, *net_prefix, dev)?;
             Ok(serde_json::json!({ "ok": true, "note": format!("route removed; device {dev} freed when the start process exits") }))
         }

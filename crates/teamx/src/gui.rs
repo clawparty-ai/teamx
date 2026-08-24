@@ -216,10 +216,18 @@ pub fn run_tray() -> Result<(), String> {
                     *control_flow = ControlFlow::Exit;
                 }
             }
-            Event::UserEvent(UserEvent::Tray(_e)) => {
-                // Clicking the tray icon opens the native control panel.
-                open_control_panel();
-                // And refresh the status line.
+            Event::UserEvent(UserEvent::Tray(e)) => {
+                // Left-click (up) opens the control panel. Right-click is
+                // reserved for the context menu — do nothing so the menu can
+                // stay open (spawning a child here would close it).
+                if let tray_icon::TrayIconEvent::Click { button, button_state, .. } = e {
+                    if button == tray_icon::MouseButton::Left
+                        && button_state == tray_icon::MouseButtonState::Up
+                    {
+                        open_control_panel();
+                    }
+                }
+                // Refresh the status line regardless.
                 let s = format!(
                     "tun0: {}  proxy: {}",
                     if state.tun0.is_running() { "on" } else { "off" },

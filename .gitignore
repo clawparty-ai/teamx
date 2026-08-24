@@ -19,3 +19,10 @@ code-review-codex-0817.md
 
 # TEAM.md bootstrap work dirs contain invitation letters (private keys)
 .teamx/members/
+
+# local scratch / tooling (not source)
+.codegraph/
+tmp/
+create.json
+invite.json
+app/.build/

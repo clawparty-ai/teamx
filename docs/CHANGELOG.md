@@ -1,13 +1,50 @@
 # Changelog
 
+## 0.3.2 — 2026-08-24
+
+### 透明代理 DNS 方案（本地 DNS 代理 + 出口解析）+ 控制面板 card 改造
+
+**透明代理无感知 DNS**（替代放弃的 fake-ip DNS）：
+- macOS 的 `mDNSResponder` 不接受 `198.18.0.0/15` fake-ip 应答，且 fake-ip DNS
+  会劫持 tun0 自身到 server 的解析导致 bridge 超时 → 放弃 fake-dns（`--fake-dns`
+  改为显式参数，默认关闭）。
+- 公共 DNS（8.8.8.8 / 1.1.1.1 / DoH）在墙内均被污染或阻断；只有海外出口
+  （`egress2`，AWS 东京）能解析 Google 真实 IP 并直连。
+- 新方案：本地 DNS 代理监听 `127.0.0.1:53`，系统 DNS 指向它。命中路由规则的
+  域名经 teamx mTLS 通道让出口解析（真实 IP），并加入 tun 的主机路由后应答；
+  其余域名转发上游系统 DNS。应用无需任何配置即可访问被代理域名。
+- 新增 `dns_proxy.rs`（本地 DNS 服务器）；server 端 `team.resolve_dns` RPC +
+  tunnel registry `resolve`/`complete_resolve`；exit 端 `resolve` 指令；
+  `teamx dns list` / `teamx dns resolve <domain>` CLI。
+- 路由表显式 CIDR 段规则直接加网络路由（覆盖 Google 等大 CDN 段），域名规则
+  定期解析为单 IP 主机路由兜底。
+
+**控制面板 card 改造**（Swift App）：
+- 上下布局：底部 term 风格日志区；顶部 `NSSegmentedControl` 切换 8 个 card
+  （连接状态 / 虚拟网卡 / SOCKS5 代理 / 默认出口 / 隧道 / tun0 路由规则 /
+  路由表 / DNS）。
+- 新增「路由表」card：显示默认路由 + 对给定 IP/域名执行 `traceroute`。
+- 新增「DNS」card：显示默认 DNS + 对给定域名执行 `teamx dns resolve`（经出口，
+  无污染）。
+
+**其他修复**：
+- 点击托盘图标菜单导致键盘/UI 卡死：`menuNeedsUpdate` 同步执行 `tunnel list`
+  （server 往返）阻塞主线程 → 默认出口/出口列表改为读缓存，后台定时刷新。
+- tun0 核心修复：smoltcp Tx token 真正写回 tun fd；TUN fd 非阻塞 + rx_buf 不再
+  truncate；macOS utun 截断的 TCP SYN 补齐到 total_len；checksum 改为 TX 计算
+  /RX 忽略；仅在 `Established` 后接新连接；`open_tunnel_bridge` 的 stream_id
+  传递 bug（否则数据被缓存永不发送）；主循环改异步 sleep 避免饿死 spawn 任务。
+- 开机自启默认关闭（移除 LaunchAgent，打包不带 `--install-agent`）。
+
 ## 0.3.1 — 2026-08-23
 
-### Clash config compatibility + L1 desktop tray
+### External rule-config compatibility + L1 desktop tray
 
-**Clash 兼容模式**（`tun0 start --clash-config <path>`）：解析 Clash YAML，
-把 `rules` 映射到 teamx 路由表（DOMAIN-SUFFIX→通配、DOMAIN→精确、IP-CIDR→CIDR、
-MATCH→default）。`proxies`/`proxy-groups` 忽略（出口从 teamx 的 egress 集选择）；
-DIRECT/REJECT 规则 v1 跳过。`tun_clash.rs` + 8 个单元测试。
+**外部规则配置兼容模式**（`tun0 start --rules-config <path>`，导入其他代理
+客户端的 YAML 规则）：解析其 `rules`，映射到 teamx 路由表（DOMAIN-SUFFIX→
+通配、DOMAIN→精确、IP-CIDR→CIDR、MATCH→default）。`proxies`/`proxy-groups`
+忽略（出口从 teamx 的 egress 集选择）；DIRECT/REJECT 规则 v1 跳过。
+规则解析模块 + 8 个单元测试。
 
 **L1 桌面托盘**（`teamx gui`）：tray-icon + tao（纯 Rust，跨平台 macOS 菜单栏 /
 Linux appindicator）。菜单启停 tun0 / SOCKS5 proxy、状态显示、退出。子进程由
@@ -123,7 +160,7 @@ Members join via one-time invitation letters containing mTLS client certificates
 
 ### Code Review Fixes
 
-Fixed all high/medium priority findings (see `code-review-codex-0817.md`):
+Fixed all high/medium priority findings (see `docs/code-review-codex-0817.md`):
 
 - **Cross-team read bypass** (security): non-members can no longer read invite tokens, members, roles, or events of arbitrary teams.
 - **Pending members cannot publish** (authorization).
@@ -136,7 +173,7 @@ Fixed all high/medium priority findings (see `code-review-codex-0817.md`):
 
 ### Security Model
 
-V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `goal-v1.md` and `v1-spec.md`.
+V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `docs/goal-v1.md` and `v1-spec.md`.
 
 ### Testing
 

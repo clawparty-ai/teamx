@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS members (
   state         TEXT NOT NULL DEFAULT 'pending',
   loopx_project TEXT,
   last_seen_at  TEXT,
+  last_ip       TEXT,
   joined_at     TEXT NOT NULL,
   left_at       TEXT
 );
@@ -135,6 +136,20 @@ CREATE TABLE IF NOT EXISTS invitations (
   revoked_at    TEXT
 );
 
+-- Connection audit log: every authenticated member connection (long-lived
+-- WS/tunnel) records peer IP + timestamps for auditing.
+CREATE TABLE IF NOT EXISTS member_connections (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id        TEXT NOT NULL,
+  team_id          TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  ip               TEXT NOT NULL,
+  endpoint         TEXT NOT NULL,
+  connected_at     TEXT NOT NULL,
+  disconnected_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_conn_member ON member_connections(member_id, connected_at);
+CREATE INDEX IF NOT EXISTS idx_conn_team ON member_connections(team_id, connected_at);
+
 -- proxy exit routing table (local consumer config, see routes.rs).
 -- Holds the ordered per-target egress rules used by `teamx proxy start`
 -- when started without -f/--routes. `default` lives in proxy_settings.
@@ -148,6 +163,27 @@ CREATE TABLE IF NOT EXISTS proxy_routes (
 
 -- Small key/value settings for the proxy consumer (e.g. default exit).
 CREATE TABLE IF NOT EXISTS proxy_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Local client config: each local member connects to a different server.
+CREATE TABLE IF NOT EXISTS local_members (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_key   TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL,
+  server_url   TEXT NOT NULL,
+  letter_id    TEXT,
+  proxy_port   INTEGER NOT NULL DEFAULT 1080,
+  dns_port     INTEGER NOT NULL DEFAULT 53,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+
+-- Local environment state (e.g. whether this machine runs a server, which
+-- member is active in the GUI).
+CREATE TABLE IF NOT EXISTS local_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
@@ -218,7 +254,59 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE roles ADD COLUMN proposed_by TEXT;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 6)?;
+    // v7: connection audit — member_connections table (SCHEMA covers fresh
+    // DBs) + members.last_ip snapshot. Idempotent for existing DBs.
+    if version < 7 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS member_connections (
+               id               INTEGER PRIMARY KEY AUTOINCREMENT,
+               member_id        TEXT NOT NULL,
+               team_id          TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               ip               TEXT NOT NULL,
+               endpoint         TEXT NOT NULL,
+               connected_at     TEXT NOT NULL,
+               disconnected_at  TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_conn_member ON member_connections(member_id, connected_at);
+             CREATE INDEX IF NOT EXISTS idx_conn_team ON member_connections(team_id, connected_at);",
+        )?;
+        let mcols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(members)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        if !mcols.iter().any(|c| c == "last_ip") {
+            conn.execute_batch("ALTER TABLE members ADD COLUMN last_ip TEXT;")?;
+        }
+    }
+    // v8: local client config — local_members (per-member server/ports) +
+    // local_settings (local serve state, active member). SCHEMA covers fresh
+    // DBs; idempotent for existing ones.
+    if version < 8 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS local_members (
+               id           INTEGER PRIMARY KEY AUTOINCREMENT,
+               member_key   TEXT UNIQUE NOT NULL,
+               display_name TEXT NOT NULL,
+               server_url   TEXT NOT NULL,
+               letter_id    TEXT,
+               proxy_port   INTEGER NOT NULL DEFAULT 1080,
+               dns_port     INTEGER NOT NULL DEFAULT 53,
+               enabled      INTEGER NOT NULL DEFAULT 1,
+               created_at   TEXT NOT NULL,
+               updated_at   TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS local_settings (
+               key   TEXT PRIMARY KEY,
+               value TEXT NOT NULL
+             );",
+        )?;
+    }
+    conn.pragma_update(None, "user_version", 8)?;
     Ok(())
 }
 
@@ -234,6 +322,193 @@ pub const DEFAULT_ROLES: &[(&str, &str, &str)] = &[
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// Record a new authenticated member connection (audit).
+pub fn log_connection(
+    conn: &Connection,
+    member_id: &str,
+    team_id: &str,
+    ip: &str,
+    endpoint: &str,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO member_connections (member_id, team_id, ip, endpoint, connected_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![member_id, team_id, ip, endpoint, now()],
+    )?;
+    // Snapshot the last known IP on the member for quick display.
+    conn.execute("UPDATE members SET last_ip = ?1 WHERE id = ?2", rusqlite::params![ip, member_id])?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Mark the most recent open connection for a member/endpoint as disconnected.
+pub fn close_connection(conn: &Connection, member_id: &str, endpoint: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE member_connections SET disconnected_at = ?1
+         WHERE member_id = ?2 AND endpoint = ?3 AND disconnected_at IS NULL",
+        rusqlite::params![now(), member_id, endpoint],
+    )?;
+    Ok(())
+}
+
+/// The IP of the member's most recent *open* (undisconnected) connection,
+/// or their last known IP if none is currently open.
+pub fn member_ip(conn: &Connection, member_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT ip FROM member_connections
+         WHERE member_id = ?1 AND disconnected_at IS NULL
+         ORDER BY connected_at DESC LIMIT 1",
+        [member_id],
+        |r| r.get(0),
+    )
+    .ok()
+    .or_else(|| {
+        conn.query_row("SELECT last_ip FROM members WHERE id = ?1", [member_id], |r| r.get(0)).ok()
+    })
+}
+
+/// Whether the member currently has an open connection.
+pub fn member_online(conn: &Connection, member_id: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM member_connections
+         WHERE member_id = ?1 AND disconnected_at IS NULL",
+        [member_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Local client config: per-member server/ports + local environment settings.
+// ---------------------------------------------------------------------------
+
+/// One local member config (client-side; each may connect to a different
+/// teamx server).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalMember {
+    pub id: i64,
+    pub member_key: String,
+    pub display_name: String,
+    pub server_url: String,
+    pub letter_id: Option<String>,
+    pub proxy_port: i64,
+    pub dns_port: i64,
+    pub enabled: bool,
+}
+
+pub fn list_local_members(conn: &Connection) -> rusqlite::Result<Vec<LocalMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, member_key, display_name, server_url, letter_id, proxy_port, dns_port, enabled
+         FROM local_members ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(LocalMember {
+            id: r.get(0)?,
+            member_key: r.get(1)?,
+            display_name: r.get(2)?,
+            server_url: r.get(3)?,
+            letter_id: r.get(4)?,
+            proxy_port: r.get(5)?,
+            dns_port: r.get(6)?,
+            enabled: r.get::<_, i64>(7)? != 0,
+        })
+    })?;
+    rows.collect()
+}
+
+#[allow(dead_code)] // retained for future use (single-member lookup); list covers the CLI today
+pub fn get_local_member(conn: &Connection, key: &str) -> rusqlite::Result<Option<LocalMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, member_key, display_name, server_url, letter_id, proxy_port, dns_port, enabled
+         FROM local_members WHERE member_key = ?1",
+    )?;
+    let mut rows = stmt.query_map([key], |r| {
+        Ok(LocalMember {
+            id: r.get(0)?,
+            member_key: r.get(1)?,
+            display_name: r.get(2)?,
+            server_url: r.get(3)?,
+            letter_id: r.get(4)?,
+            proxy_port: r.get(5)?,
+            dns_port: r.get(6)?,
+            enabled: r.get::<_, i64>(7)? != 0,
+        })
+    })?;
+    rows.next().transpose()
+}
+
+/// Add a local member. Returns its member_key.
+pub fn add_local_member(
+    conn: &Connection,
+    key: &str,
+    name: &str,
+    server_url: &str,
+    letter_id: Option<&str>,
+    proxy_port: i64,
+    dns_port: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO local_members
+         (member_key, display_name, server_url, letter_id, proxy_port, dns_port, enabled, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
+        rusqlite::params![key, name, server_url, letter_id, proxy_port, dns_port, now()],
+    )?;
+    Ok(())
+}
+
+pub fn update_local_member(
+    conn: &Connection,
+    key: &str,
+    name: Option<&str>,
+    server_url: Option<&str>,
+    letter_id: Option<&str>,
+    proxy_port: Option<i64>,
+    dns_port: Option<i64>,
+) -> rusqlite::Result<()> {
+    if let Some(n) = name {
+        conn.execute("UPDATE local_members SET display_name = ?1 WHERE member_key = ?2", rusqlite::params![n, key])?;
+    }
+    if let Some(s) = server_url {
+        conn.execute("UPDATE local_members SET server_url = ?1 WHERE member_key = ?2", rusqlite::params![s, key])?;
+    }
+    if let Some(l) = letter_id {
+        conn.execute("UPDATE local_members SET letter_id = ?1 WHERE member_key = ?2", rusqlite::params![l, key])?;
+    }
+    if let Some(p) = proxy_port {
+        conn.execute("UPDATE local_members SET proxy_port = ?1 WHERE member_key = ?2", rusqlite::params![p, key])?;
+    }
+    if let Some(d) = dns_port {
+        conn.execute("UPDATE local_members SET dns_port = ?1 WHERE member_key = ?2", rusqlite::params![d, key])?;
+    }
+    conn.execute("UPDATE local_members SET updated_at = ?1 WHERE member_key = ?2", rusqlite::params![now(), key])?;
+    Ok(())
+}
+
+pub fn remove_local_member(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute("DELETE FROM local_members WHERE member_key = ?1", [key])?;
+    Ok(n > 0)
+}
+
+/// Read a local setting value.
+pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT value FROM local_settings WHERE key = ?1", [key], |r| r.get(0))
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+}
+
+/// Write a local setting value.
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO local_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
 }
 
 /// Wrap a write in a single-writer transaction with busy retry.

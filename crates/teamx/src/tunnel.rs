@@ -131,6 +131,8 @@ pub struct TunnelRegistry {
     /// Monotonic stream id allocator (shared across frp relays and local
     /// forward consumers so stream ids never collide). Starts at 1.
     next_stream_id: Arc<Mutex<u64>>,
+    /// `stream_id` → oneshot sender awaiting a `resolve_result` reply.
+    resolve_waiters: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Vec<String>>>>>,
 }
 
 impl Default for TunnelRegistry {
@@ -139,6 +141,7 @@ impl Default for TunnelRegistry {
             by_key: Arc::new(Mutex::new(HashMap::new())),
             ports: Arc::new(Mutex::new(Vec::new())),
             next_stream_id: Arc::new(Mutex::new(1)),
+            resolve_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -293,6 +296,38 @@ impl TunnelRegistry {
                 .to_string()
                 .into(),
         ));
+    }
+
+    /// Ask a proxy exit to resolve `name` with its (uncensored) resolver.
+    /// Returns the stream id and a receiver that resolves to the IPv4 list.
+    pub fn resolve(
+        &self,
+        team_id: &str,
+        name: &str,
+        target: &str,
+    ) -> Option<(u64, tokio::sync::oneshot::Receiver<Vec<String>>)> {
+        let tunnel = self.get(team_id, name)?;
+        let sid = {
+            let mut n = self.next_stream_id.lock().unwrap();
+            let id = *n;
+            *n += 1;
+            id
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.resolve_waiters.lock().unwrap().insert(sid, tx);
+        let msg = serde_json::json!({ "type": "resolve", "stream_id": sid, "name": target });
+        if tunnel.ws_tx.send(Message::Text(msg.to_string().into())).is_err() {
+            self.resolve_waiters.lock().unwrap().remove(&sid);
+            return None;
+        }
+        Some((sid, rx))
+    }
+
+    /// Deliver a `resolve_result` from a proxy exit to the awaiting consumer.
+    pub fn complete_resolve(&self, sid: u64, ips: Vec<String>) {
+        if let Some(tx) = self.resolve_waiters.lock().unwrap().remove(&sid) {
+            let _ = tx.send(ips);
+        }
     }
 
     /// Whether two socket addresses are on the same /24 subnet (used for

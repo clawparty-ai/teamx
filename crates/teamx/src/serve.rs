@@ -48,9 +48,10 @@ struct AppState {
     db: std::sync::Arc<Db>,
     hub: Hub,
     tunnels: crate::tunnel::TunnelRegistry,
+    metrics: crate::metrics::SharedMetrics,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct RpcRequest {
     method: String,
     #[serde(default)]
@@ -129,6 +130,7 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         db: std::sync::Arc::new(Mutex::new(conn)),
         hub: Hub::new(),
         tunnels: crate::tunnel::TunnelRegistry::new(),
+        metrics: std::sync::Arc::new(crate::metrics::MetricsRegistry::new()),
     };
 
     let app = Router::new()
@@ -230,9 +232,10 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
 async fn ws_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<PeerIdentity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state, identity))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, identity, Some(peer)))
 }
 
 /// Reverse-tunnel endpoint: a provider (member-b) opens a persistent WS here,
@@ -240,13 +243,14 @@ async fn ws_handler(
 async fn tunnel_ws_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<PeerIdentity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tunnel_ws(socket, state, identity))
+    ws.on_upgrade(move |socket| handle_tunnel_ws(socket, state, identity, Some(peer)))
 }
 
 /// Serve one tunnel connection from a provider member.
-async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity, peer: Option<SocketAddr>) {
     use futures_util::{SinkExt, StreamExt};
 
     let member_id = match pki::parse_member_cn(&identity.0) {
@@ -290,6 +294,17 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
         return;
     }
     let team_id = teams[0].clone();
+
+    // Audit: record the tunnel connection (provider side).
+    if let Some(ip) = peer.map(|p| p.ip().to_string()) {
+        let db = state.db.clone();
+        let mid = member_id.clone();
+        let tid = team_id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            let _ = crate::db::log_connection(&conn, &mid, &tid, &ip, "tunnel");
+        });
+    }
 
     let (mut sender, mut receiver) = socket.split();
     // Track every tunnel this WS registered so a disconnect frees them all
@@ -366,6 +381,14 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                     owned.remove(name);
                                 }
                             }
+                            "resolve_result" => {
+                                let sid = v.get("stream_id").and_then(Value::as_u64).unwrap_or(0);
+                                let ips = v.get("ips")
+                                    .and_then(Value::as_array)
+                                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                                    .unwrap_or_default();
+                                registry.complete_resolve(sid, ips);
+                            }
                             _ => {}
                         }
                     }
@@ -411,6 +434,15 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     for name in &owned {
         registry.remove(&team_id, name);
     }
+    // Audit: mark the tunnel connection closed.
+    {
+        let db = state.db.clone();
+        let mid = member_id;
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            let _ = crate::db::close_connection(&conn, &mid, "tunnel");
+        });
+    }
 }
 
 /// Consumer-side local forward endpoint (T2). A consumer opens a mTLS WS here
@@ -420,13 +452,14 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
 async fn tunnel_forward_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<PeerIdentity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tunnel_forward(socket, state, identity))
+    ws.on_upgrade(move |socket| handle_tunnel_forward(socket, state, identity, Some(peer)))
 }
 
 /// Serve one consumer forward connection.
-async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity: PeerIdentity, _peer: Option<SocketAddr>) {
     use futures_util::{SinkExt, StreamExt};
 
     let member_id = match pki::parse_member_cn(&identity.0) {
@@ -587,7 +620,7 @@ fn ws_heartbeat_secs() -> u64 {
 /// Serve one live WebSocket connection: register for the member's teams, push
 /// ledger events as they are written, and keep the connection alive with a
 /// 30s heartbeat. Best-effort — the ledger stays the source of truth.
-async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity) {
+async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity, peer: Option<SocketAddr>) {
     use futures_util::{SinkExt, StreamExt};
 
     let member_id = match pki::parse_member_cn(&identity.0) {
@@ -627,6 +660,18 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
     }
 
     let (mut rx, sub) = state.hub.subscribe(&member_id, &teams);
+    // Audit: record the connection (peer IP + endpoint).
+    if let Some(ip) = peer.map(|p| p.ip().to_string()) {
+        if let Some(tid) = teams.first() {
+            let db = state.db.clone();
+            let mid = member_id.clone();
+            let tid = tid.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap();
+                let _ = crate::db::log_connection(&conn, &mid, &tid, &ip, "ws");
+            });
+        }
+    }
     let registered = json!({
         "type": "registered",
         "member_id": &member_id,
@@ -641,6 +686,10 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(ws_heartbeat_secs()));
     heartbeat.tick().await; // consume the immediate first tick
+    // RTT measurement: timestamp of the last app-level ping we sent.
+    let mut last_ping: Option<std::time::Instant> = None;
+    let metrics = state.metrics.clone();
+    let rtt_member = member_id.clone();
 
     loop {
         tokio::select! {
@@ -661,8 +710,18 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(v) = serde_json::from_str::<Value>(text.as_str()) {
-                            if v.get("type").and_then(Value::as_str) == Some("ping") {
-                                let _ = sender.send(ws_text(r#"{"type":"pong"}"#)).await;
+                            match v.get("type").and_then(Value::as_str) {
+                                Some("ping") => {
+                                    let _ = sender.send(ws_text(r#"{"type":"pong"}"#)).await;
+                                }
+                                Some("pong") => {
+                                    // RTT = now - when we sent the ping.
+                                    if let Some(t) = last_ping.take() {
+                                        let ms = t.elapsed().as_secs_f64() * 1000.0;
+                                        metrics.record_rtt(&rtt_member, ms);
+                                    }
+                                }
+                                _ => {}
                             }
                             // `register`/`ack` are accepted but carry no authority:
                             // identity is fixed by the certificate.
@@ -673,6 +732,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
                 }
             }
             _ = heartbeat.tick() => {
+                last_ping = Some(std::time::Instant::now());
                 if sender.send(ws_text(r#"{"type":"ping"}"#)).await.is_err() {
                     break;
                 }
@@ -681,6 +741,15 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
     }
 
     state.hub.unsubscribe(&sub);
+    // Audit: mark the connection closed.
+    {
+        let db = state.db.clone();
+        let mid = member_id;
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            let _ = crate::db::close_connection(&conn, &mid, "ws");
+        });
+    }
 }
 
 async fn rpc(
@@ -693,6 +762,52 @@ async fn rpc(
     let hub = state.hub.clone();
     let tunnels = state.tunnels.clone();
     let method = req.method.clone();
+    // Metrics: count the request bytes (member -> server).
+    let member_for_metrics = pki::parse_member_cn(&cn).map(|(id, _)| id);
+    if let Some(mid) = &member_for_metrics {
+        let body_len = serde_json::to_vec(&req).map(|b| b.len() as u64).unwrap_or(64);
+        state.metrics.record_rx(mid, body_len);
+    }
+    let metrics_for_resp = state.metrics.clone();
+
+    // Live member network metrics (not a ledger command).
+    if method == "team.metrics" {
+        let snap = metrics_for_resp.snapshot_all();
+        return (StatusCode::OK, Json(json!({ "ok": true, "data": { "metrics": snap } })));
+    }
+
+    // DNS resolution via a proxy exit (uncensored resolver). Async: forwards a
+    // `resolve` frame to the named exit and waits for its `resolve_result`.
+    if method == "team.resolve_dns" {
+        let name = req.args.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let exit = req.args.get("exit").and_then(Value::as_str).unwrap_or("").to_string();
+        if name.is_empty() || exit.is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": "resolve_dns requires name and exit" })));
+        }
+        let mid = member_for_metrics.clone();
+        let tunnels = tunnels.clone();
+        let team_ids: Vec<String> = {
+            let db = state.db.clone();
+            let mid = mid.clone().unwrap_or_default();
+            match tokio::task::spawn_blocking(move || {
+                let conn = db.lock().unwrap();
+                commands::teams_for_member(&conn, &mid).unwrap_or_default()
+            }).await {
+                Ok(v) => v,
+                Err(_) => Vec::new(),
+            }
+        };
+        for tid in team_ids {
+            if let Some((_sid, rx)) = tunnels.resolve(&tid, &exit, &name) {
+                if let Ok(Ok(ips)) = tokio::time::timeout(Duration::from_secs(6), rx).await {
+                    return (StatusCode::OK, Json(json!({ "ok": true, "data": { "ips": ips } })));
+                }
+                break;
+            }
+        }
+        return (StatusCode::OK, Json(json!({ "ok": true, "data": { "ips": [] } })));
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
         let before = commands::max_event_id(&conn).unwrap_or(0);
@@ -715,6 +830,11 @@ async fn rpc(
                 if let Some(mid) = data.get("member_id").and_then(Value::as_str) {
                     hub.disconnect_member(mid);
                 }
+            }
+            // Metrics: count response bytes (server -> member).
+            if let Some(mid) = &member_for_metrics {
+                let resp_len = serde_json::to_vec(&data).map(|b| b.len() as u64).unwrap_or(64);
+                metrics_for_resp.record_tx(mid, resp_len);
             }
             (StatusCode::OK, Json(json!({ "ok": true, "data": data })))
         }

@@ -23,21 +23,45 @@ pub struct FakeIpDns {
     /// domain -> fake_ip
     by_domain: Mutex<HashMap<String, u32>>,
     next: AtomicU32,
+    /// Domain patterns to intercept (fake-ip). `None` = intercept everything.
+    /// `Some(patterns)` = only domains matching a pattern get a fake IP; all
+    /// other queries are dropped so the client falls back to its real DNS.
+    intercept: Mutex<Option<Vec<String>>>,
 }
 
 impl FakeIpDns {
     /// `base` is the network address (e.g. 198.18.0.0); `prefix` the CIDR
-    /// (e.g. 15). Host bits start at offset 1 (base itself is the gateway).
+    /// (e.g. 15). Host bits start at offset 2: `base` is the network address
+    /// and `base+1` is the tun gateway IP (tun_ip), so the first allocatable
+    /// fake IP is `base+2`.
     pub fn new(base: Ipv4Addr, prefix: u8) -> Arc<FakeIpDns> {
         let base_u32 = u32::from(base);
-        let start = base_u32 + 1; // skip the gateway (base)
+        let start = base_u32 + 2; // skip network addr + gateway
         Arc::new(FakeIpDns {
             net_base: base,
             prefix,
             by_ip: Mutex::new(HashMap::new()),
             by_domain: Mutex::new(HashMap::new()),
             next: AtomicU32::new(start),
+            intercept: Mutex::new(None),
         })
+    }
+
+    /// Restrict fake-ip allocation to the given domain patterns (exact domain
+    /// or `*.domain`). Queries for other domains are dropped.
+    pub fn set_intercept_patterns(&self, patterns: Vec<String>) {
+        *self.intercept.lock().unwrap() = Some(patterns);
+    }
+
+    /// Whether `domain` should receive a fake IP under the current intercept
+    /// rules (everything by default).
+    pub fn should_fake(&self, domain: &str) -> bool {
+        match &*self.intercept.lock().unwrap() {
+            None => true,
+            Some(patterns) => patterns
+                .iter()
+                .any(|p| domain_matches_pattern(p, domain)),
+        }
     }
 
     /// Return the fake IP for a domain, allocating one if needed.
@@ -130,6 +154,13 @@ impl FakeIpDns {
         if domain.is_empty() {
             return None;
         }
+        // Only fake-ip domains the routing rules explicitly intercept. Other
+        // domains are dropped here so the client falls back to its real DNS
+        // (kept as the 2nd server), keeping teamx infra + non-proxied sites
+        // resolving to real IPs.
+        if !self.should_fake(&domain) {
+            return None;
+        }
         let fake = self.alloc(&domain);
 
         // Build the response: header + question + answer.
@@ -154,10 +185,101 @@ impl FakeIpDns {
     }
 }
 
+/// Match a domain against an exact (`example.com`) or suffix (`*.domain`)
+/// pattern, case-insensitively. Used to decide whether a domain should be
+/// intercepted (fake-ip'd) per the routing rules.
+fn domain_matches_pattern(pattern: &str, domain: &str) -> bool {
+    let d = domain.to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        // "*.google.com" -> suffix ".google.com"
+        let suf = format!(".{}", suffix.to_ascii_lowercase());
+        d.len() > suf.len() && d.ends_with(&suf)
+    } else {
+        d == pattern.to_ascii_lowercase()
+    }
+}
+
+/// Parse a DNS query's QNAME + qtype + question-end offset.
+/// Returns `(domain, qtype, question_end)`.
+pub fn parse_dns_query(query: &[u8]) -> Option<(String, u16, usize)> {
+    if query.len() < 12 {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([query[4], query[5]]);
+    if qdcount == 0 {
+        return None;
+    }
+    let mut pos = 12usize;
+    let mut name = Vec::new();
+    loop {
+        if pos >= query.len() {
+            return None;
+        }
+        let len = query[pos] as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        if len & 0xC0 != 0 {
+            return None; // compression in question is unusual
+        }
+        if pos + 1 + len > query.len() {
+            return None;
+        }
+        if !name.is_empty() {
+            name.push(b'.');
+        }
+        name.extend_from_slice(&query[pos + 1..pos + 1 + len]);
+        pos += 1 + len;
+    }
+    if pos + 4 > query.len() {
+        return None;
+    }
+    let qtype = u16::from_be_bytes([query[pos], query[pos + 1]]);
+    let domain = String::from_utf8_lossy(&name).to_string();
+    if domain.is_empty() {
+        return None;
+    }
+    Some((domain, qtype, pos))
+}
+
+/// Build an A-record DNS response echoing `query`'s question with `ips` as the
+/// answer RDATA. Returns `None` if the query is not an A query.
+pub fn build_a_response(query: &[u8], ips: &[Ipv4Addr]) -> Option<Vec<u8>> {
+    let (_domain, qtype, pos) = parse_dns_query(query)?;
+    if qtype != 1 {
+        return None;
+    }
+    let id = u16::from_be_bytes([query[0], query[1]]);
+    let ancount = ips.len() as u16;
+    let mut resp = Vec::with_capacity(64 + ips.len() * 16);
+    resp.extend_from_slice(&id.to_be_bytes());
+    resp.extend_from_slice(&[0x81, 0x80]); // response, RD+RA, no error
+    resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
+    resp.extend_from_slice(&ancount.to_be_bytes()); // ANCOUNT
+    resp.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
+    resp.extend_from_slice(&[0x00, 0x00]); // ARCOUNT
+    resp.extend_from_slice(&query[12..pos + 4]); // echo question
+    for ip in ips {
+        resp.extend_from_slice(&[0xC0, 0x0C]); // name pointer to offset 12
+        resp.extend_from_slice(&qtype.to_be_bytes()); // type A
+        resp.extend_from_slice(&[0x00, 0x01]); // class IN
+        resp.extend_from_slice(&60u32.to_be_bytes()); // TTL (4 bytes)
+        resp.extend_from_slice(&[0x00, 0x04]); // RDLENGTH = 4
+        resp.extend_from_slice(&ip.octets());
+    }
+    Some(resp)
+}
+
 /// Serve the fake-ip DNS responder on port 53 (UDP).
-/// Binds the tun gateway IP first (e.g. 198.18.0.1:53) so it does not clash
+/// Binds the tun gateway IP first (e.g. 198.18.0.1:53) so it does not conflict
 /// with systemd-resolved / other services on 0.0.0.0:53; falls back to
 /// 0.0.0.0:53 if the specific IP bind fails.
+///
+/// Note: since the tun stack now answers DNS inside smoltcp (`TunStack::poll_udp_dns`),
+/// this host-side listener is only a fallback for setups where the OS delivers
+/// gateway-IP packets to the host stack (e.g. Linux).
+#[allow(dead_code)]
 pub async fn serve_udp(dns: Arc<FakeIpDns>, bind_ip: Ipv4Addr) -> Result<(), String> {
     use tokio::net::UdpSocket;
 
@@ -187,6 +309,31 @@ mod tests {
 
     fn dns() -> Arc<FakeIpDns> {
         FakeIpDns::new(Ipv4Addr::new(198, 18, 0, 0), 15)
+    }
+
+    #[test]
+    fn build_a_response_eight_ips_has_eight_answers() {
+        let mut q = Vec::new();
+        q.extend_from_slice(&[0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        q.extend_from_slice(&[3]); q.extend_from_slice(b"www");
+        q.extend_from_slice(&[6]); q.extend_from_slice(b"google");
+        q.extend_from_slice(&[3]); q.extend_from_slice(b"com");
+        q.extend_from_slice(&[0]);
+        q.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+        let ips = vec![
+            Ipv4Addr::new(142, 251, 150, 119),
+            Ipv4Addr::new(142, 251, 151, 119),
+            Ipv4Addr::new(142, 251, 154, 119),
+            Ipv4Addr::new(142, 251, 152, 119),
+            Ipv4Addr::new(142, 251, 156, 119),
+            Ipv4Addr::new(142, 251, 155, 119),
+            Ipv4Addr::new(142, 251, 153, 119),
+            Ipv4Addr::new(142, 251, 157, 119),
+        ];
+        let resp = build_a_response(&q, &ips).expect("should build");
+        assert_eq!(resp.len(), 12 + 20 + 8 * 16, "8 answers expected, got len {}", resp.len());
+        let ancount = u16::from_be_bytes([resp[6], resp[7]]);
+        assert_eq!(ancount, 8);
     }
 
     #[test]

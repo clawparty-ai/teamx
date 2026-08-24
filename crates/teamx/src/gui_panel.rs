@@ -106,6 +106,9 @@ pub struct PanelApp {
     log: LogBuf,
     show_log: bool,
     proxy_worker: Worker,
+    /// Set only when the user explicitly clicks 退出 — used to tell an
+    /// unexpected close (e.g. a system auth dialog) apart from a real quit.
+    wants_close: bool,
 }
 
 impl PanelApp {
@@ -121,6 +124,7 @@ impl PanelApp {
             log,
             show_log: false,
             proxy_worker,
+            wants_close: false,
         }
     }
 
@@ -148,31 +152,58 @@ impl PanelApp {
 
     fn start_tun0(&mut self, ctx: &egui::Context) {
         self.log.push("→ 启动 tun0（需要系统授权）...".to_string());
-        let log = self.log.clone();
-        let ctx = ctx.clone();
         let cmd = tun0_start_cmd();
-        std::thread::spawn(move || {
-            match run_privileged(&cmd, &log) {
-                Ok(()) => log.push("已请求以 root 启动 tun0".to_string()),
-                Err(e) => log.push(format!("✗ tun0 启动失败: {e}")),
-            }
-            ctx.request_repaint();
-        });
+        match run_privileged_detached(&cmd) {
+            Ok(()) => self.log.push("系统授权框已弹出，授权后 tun0 将启动".to_string()),
+            Err(e) => self.log.push(format!("✗ 无法弹出授权: {e}")),
+        }
+        ctx.request_repaint();
+        // let the status refresh pick up the launched process shortly
+        ctx.request_repaint_after(std::time::Duration::from_millis(1500));
     }
 
     fn stop_tun0(&mut self, ctx: &egui::Context) {
         self.log.push("→ 停止 tun0（需要系统授权）...".to_string());
-        let log = self.log.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null".to_string();
-            match run_privileged(&cmd, &log) {
-                Ok(()) => log.push("已请求停止 tun0".to_string()),
-                Err(e) => log.push(format!("✗ tun0 停止失败: {e}")),
-            }
-            ctx.request_repaint();
-        });
+        let cmd = "pkill -f 'teamx tun0 start' 2>/dev/null; pkill -f 'tun0 start' 2>/dev/null".to_string();
+        match run_privileged_detached(&cmd) {
+            Ok(()) => self.log.push("系统授权框已弹出，授权后 tun0 将停止".to_string()),
+            Err(e) => self.log.push(format!("✗ 无法弹出授权: {e}")),
+        }
+        ctx.request_repaint();
+        ctx.request_repaint_after(std::time::Duration::from_millis(1500));
     }
+}
+
+/// Launch the elevated command detached — the system auth dialog runs in a
+/// separate osascript process so the panel window stays fully responsive and
+/// is never closed or hidden by the auth prompt.
+#[cfg(target_os = "macos")]
+fn run_privileged_detached(cmd: &str) -> Result<(), String> {
+    let script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        cmd.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let _ = Command::new("osascript")
+        .args(["-e", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("osascript: {e}"))?;
+    Ok(())
+}
+
+/// Linux: pkexec detached.
+#[cfg(target_os = "linux")]
+fn run_privileged_detached(cmd: &str) -> Result<(), String> {
+    let _ = Command::new("pkexec")
+        .args(["sh", "-c", cmd])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    Ok(())
 }
 
 /// Build the elevated shell command that launches `teamx tun0 start` detached.
@@ -184,44 +215,12 @@ fn tun0_start_cmd() -> String {
             env_prefix.push_str(&format!("export {}='{}'; ", k, v.replace('\'', "'\\''")));
         }
     }
+    // `do shell script` has no tty, so `nohup` fails ("can't detach from
+    // console"). A plain background `&` with stdio redirected detaches fine.
     format!(
-        "{}nohup '{}' tun0 start > /tmp/teamx-tun0.log 2>&1 &",
+        "{}'{}' tun0 start > /tmp/teamx-tun0.log 2>&1 </dev/null &",
         env_prefix, teamx
     )
-}
-
-/// Run a shell command with elevated privileges, pumping its output to the log.
-#[cfg(target_os = "macos")]
-fn run_privileged(cmd: &str, log: &LogBuf) -> Result<(), String> {
-    let script = format!(
-        "do shell script \"{}\" with administrator privileges",
-        cmd.replace('\\', "\\\\").replace('"', "\\\"")
-    );
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| format!("osascript: {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("授权失败或被取消: {err}"));
-    }
-    log.push(format!("(sudo) {cmd}"));
-    Ok(())
-}
-
-/// Linux: use pkexec to run the command as root.
-#[cfg(target_os = "linux")]
-fn run_privileged(cmd: &str, log: &LogBuf) -> Result<(), String> {
-    let output = Command::new("pkexec")
-        .args(["sh", "-c", cmd])
-        .output()
-        .map_err(|e| format!("pkexec: {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!("授权失败或被取消: {err}"));
-    }
-    log.push(format!("(sudo) {cmd}"));
-    Ok(())
 }
 
 /// Whether a tun0 worker process is currently running (detected by pgrep,
@@ -238,6 +237,16 @@ impl eframe::App for PanelApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.refresh_status();
         apply_style(ctx);
+
+        // Guard: a system auth dialog (osascript 'with administrator
+        // privileges') can make winit deliver a spurious CloseRequested to
+        // the main viewport. Only let the window close when the user clicked
+        // 退出 (wants_close), otherwise cancel the close so the panel stays
+        // up while the password dialog is shown.
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested && !self.wants_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(style_bg()).inner_margin(16.0))
@@ -339,6 +348,7 @@ impl eframe::App for PanelApp {
                     .clicked()
                 {
                     self.proxy_worker.kill();
+                    self.wants_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });

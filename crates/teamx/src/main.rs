@@ -2,12 +2,14 @@ mod broadcast;
 mod cli;
 mod commands;
 mod db;
+mod dns_proxy;
 mod events;
 #[cfg(feature = "gui")]
 mod gui;
 #[cfg(feature = "gui")]
 mod gui_panel;
 mod loopx;
+mod metrics;
 mod pki;
 mod routes;
 mod serve;
@@ -16,7 +18,7 @@ mod state;
 mod teamfile;
 mod tunnel;
 mod tunnel_client;
-mod tun_clash;
+mod rules_config;
 mod tun_cli;
 mod tun_dev;
 mod tun_dns;
