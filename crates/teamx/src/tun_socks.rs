@@ -154,6 +154,23 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
 
     let mut buf = [0u8; 65536];
 
+    // Event-driven readiness on the tun fd: the loop now wakes only when the
+    // device has packets (or the 2ms maintenance tick fires) instead of
+    // busy-polling every 2 ms. The fd is already non-blocking.
+    // dup() the raw fd so AsyncFd owns its own descriptor: closing it on drop
+    // must not touch the original, which TunDevice still owns (double-close of
+    // a reused fd number would be a nasty bug).
+    let tun_fd = unsafe {
+        use std::os::fd::FromRawFd;
+        let duped = libc::dup(stack.phy.tun.as_raw_fd());
+        if duped < 0 {
+            return Err(format!("dup(tun fd): {}", std::io::Error::last_os_error()));
+        }
+        std::fs::File::from_raw_fd(duped)
+    };
+    let tun_ready = tokio::io::unix::AsyncFd::new(tun_fd)
+        .map_err(|e| format!("asyncfd: {e}"))?;
+
     // Async bridge setup: results come back from spawned tasks over this
     // channel and are attached to their slots by the main loop (which owns the
     // non-Send stack). Generation guards against a slot being reset/reused
@@ -196,6 +213,13 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                     let _ = crate::tun_dev::restore_system_dns();
                 }
                 return Ok(());
+            }
+            ready = tun_ready.readable() => {
+                // Data (or edge) available: clear and let stack.poll() drain.
+                match ready {
+                    Ok(mut r) => { r.clear_ready(); }
+                    Err(e) => return Err(format!("tun fd poll: {e}")),
+                }
             }
             _ = tokio::time::sleep(Duration::from_millis(2)) => {}
         }
