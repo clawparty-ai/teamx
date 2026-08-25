@@ -132,6 +132,9 @@ pub enum BridgeState {
 pub struct SocketSlot {
     pub handle: SocketHandle,
     pub state: BridgeState,
+    /// Bumped every time the slot is (re)used or reset; lets async bridge
+    /// setups detect that their slot moved on while they were in flight.
+    pub generation: u64,
     pub remote: Option<IpEndpoint>,
     /// Sender half to the bridge task (bytes tun->egress). None while idle.
     pub tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -202,6 +205,7 @@ impl TunStack {
             slots.push(SocketSlot {
                 handle: h,
                 state: BridgeState::Idle,
+                generation: 0,
                 remote: None,
                 tx: None,
                 rx: None,
@@ -274,7 +278,7 @@ impl TunStack {
     /// is still untracked. Returns its handle + the *destination* endpoint (the
     /// fake-ip the client dialed, from `local_endpoint`), which the caller uses
     /// to map back to the original domain.
-    pub fn take_new_connection(&mut self) -> Option<(SocketHandle, IpEndpoint)> {
+    pub fn take_new_connection(&mut self) -> Option<(SocketHandle, IpEndpoint, u64)> {
         let mut found = None;
         for i in 0..self.slots.len() {
             let handle = self.slots[i].handle;
@@ -294,8 +298,10 @@ impl TunStack {
         if let Some((h, r)) = found {
             let i = self.slots.iter().position(|s| s.handle == h).unwrap();
             self.slots[i].state = BridgeState::Connecting;
+            self.slots[i].generation += 1;
+            let gen = self.slots[i].generation;
             self.slots[i].remote = Some(r);
-            Some((h, r))
+            Some((h, r, gen))
         } else {
             None
         }
@@ -342,6 +348,7 @@ impl TunStack {
         s.abort();
         s.listen(0).ok();
         let i = self.slots.iter().position(|x| x.handle == handle).unwrap();
+        self.slots[i].generation += 1;
         self.slots[i].state = BridgeState::Idle;
         self.slots[i].remote = None;
         self.slots[i].tx = None;

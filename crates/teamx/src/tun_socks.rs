@@ -154,6 +154,20 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
 
     let mut buf = [0u8; 65536];
 
+    // Async bridge setup: results come back from spawned tasks over this
+    // channel and are attached to their slots by the main loop (which owns the
+    // non-Send stack). Generation guards against a slot being reset/reused
+    // while its bridge was still connecting.
+    type BridgeResult = (
+        SocketHandle,
+        u64,
+        Result<crate::tunnel_client::TunnelBridge, String>,
+        String,   // exit (for logging)
+        String,   // target_str (for logging)
+    );
+    let (bridge_tx, mut bridge_rx) =
+        tokio::sync::mpsc::unbounded_channel::<BridgeResult>();
+
     // Graceful shutdown on SIGTERM/SIGINT: restore system DNS before exiting
     // (kill -9 cannot be caught — see the heal-on-start logic in tun_cli).
     let mut sigterm =
@@ -188,31 +202,62 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
 
         stack.poll();
 
-        // 1. New connections -> open a bridge per connection.
-        while let Some((handle, remote)) = stack.take_new_connection() {
+        // 1a. Attach bridges whose setup completed in spawned tasks.
+        while let Ok((handle, gen, res, exit, target_str)) = bridge_rx.try_recv() {
+            let Some(idx) = stack.slots.iter().position(|s| s.handle == handle) else {
+                continue;
+            };
+            // Slot was reset/reused while we were connecting — discard.
+            if stack.slots[idx].generation != gen {
+                if let Ok(b) = res {
+                    let _ = b.close.send(());
+                }
+                continue;
+            }
+            match res {
+                Ok(bridge) => {
+                    stack.slots[idx].state = BridgeState::Active;
+                    stack.slots[idx].tx = Some(bridge.tx.clone());
+                    stack.slots[idx].rx = Some(bridge.rx);
+                    stack.slots[idx].eof = Some(bridge.eof);
+                    stack.slots[idx].close = Some(bridge.close);
+                    println!("tun: bridge up exit={exit} target={target_str}");
+                }
+                Err(e) => {
+                    eprintln!("tun: bridge to exit `{exit}` ({target_str}) failed: {e}");
+                    stack.reset_socket(handle);
+                }
+            }
+        }
+
+        // Count in-flight setups for the concurrency cap.
+        let in_flight = stack
+            .slots
+            .iter()
+            .filter(|s| matches!(s.state, BridgeState::Connecting))
+            .count();
+
+        // 1b. New connections -> spawn a bridge setup per connection (never
+        // blocking the pump loop).
+        while let Some((handle, remote, generation)) = stack.take_new_connection() {
+            if in_flight >= 8 {
+                // Too many setups in flight — leave this slot Connecting; it
+                // will be picked up again on a later loop iteration.
+                break;
+            }
             let target = resolve_target(&remote, &opts.dns, ip_map_ref.as_ref());
             let exit = match &opts.routes {
                 Some(t) => t.resolve(&target.host).to_string(),
                 None => opts.default_exit.clone(),
             };
             let target_str = format!("{}:{}", target.host, target.port);
-            let bridge = match crate::tunnel_client::open_tunnel_bridge(&opts.server_url, &exit, &target_str).await {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("tun: bridge to exit `{exit}` ({target_str}) failed: {e}");
-                    stack.reset_socket(handle);
-                    continue;
-                }
-            };
-            let slot_idx = stack.slots.iter().position(|s| s.handle == handle).unwrap();
-            stack.slots[slot_idx].state = BridgeState::Active;
-            stack.slots[slot_idx].tx = Some(bridge.tx.clone());
-            // Store the rx side for pumping in the main loop.
-            stack.slots[slot_idx].rx = Some(bridge.rx);
-            stack.slots[slot_idx].eof = Some(bridge.eof);
-            // Remember the close sender for teardown.
-            stack.slots[slot_idx].close = Some(bridge.close);
-            println!("tun: bridge up exit={exit} target={target_str}");
+            let server_url = opts.server_url.clone();
+            let btx = bridge_tx.clone();
+            tokio::spawn(async move {
+                let res = crate::tunnel_client::open_tunnel_bridge(&server_url, &exit, &target_str)
+                    .await;
+                let _ = btx.send((handle, generation, res, exit, target_str));
+            });
         }
 
         // 2. Pump bytes for active sockets.
