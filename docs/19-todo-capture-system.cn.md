@@ -9,6 +9,24 @@
 底座，按 P1 → P2 → P3 分期落地。本文是实施级细节（数据模型、模块边界、
 关键算法、验收标准），确认后可直接开工。
 
+> **⚠️ 跨平台范围说明（TODO）**：本文当前细节以 **macOS** 为目标平台
+> （tap 点在 TunPhy/utun、CA 信任走 `security add-trusted-cert`、
+> keylog 引导用 `open -a`）。Linux 与 Windows 的对应方案需要单独设计：
+>
+> - **Linux**：tun 设备同样经 tun crate 创建（TUN fd 语义一致，T1/T2 tap
+>   直接可用）；CA 信任走 `update-ca-certificates`（Debian 系）/
+>   `trust anchor`（freedesktop）；keylog 引导用 `env SSLKEYLOGFILE=…
+>   google-chrome`；DNS 设置改用 resolvectl/networkd 或直接写
+>   `/etc/resolv.conf`；watchdog 守护用 systemd-run --user。
+> - **Windows**：抓包需换数据面 —— tun crate 的 Windows 支持依赖
+>   wintun 驱动（需要安装/签名），或改用 npcap/WinPcap 做 L2 抓取；
+>   CA 信任走 `certutil -addstore Root`；keylog 同 env 机制可用；
+>   DNS 设置走 netsh/PowerShell（Set-DnsClientServerAddress）；
+>   watchdog 用 Windows 服务或计划任务。MITM 的 pinning 降级逻辑跨平台
+>   一致，但 TLS 栈差异（SChannel 行为）需要单独验证。
+>
+> 每个平台的差异点将在实施 P1 时拆分为独立的平台附录文档。
+
 ---
 
 ## 总架构
