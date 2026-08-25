@@ -1,6 +1,8 @@
 mod activity;
 mod broadcast;
 mod cli;
+mod capture;
+mod capture_cli;
 mod commands;
 mod db;
 mod dns_proxy;
@@ -25,6 +27,7 @@ mod tun_cli;
 mod tun_dev;
 mod tun_dns;
 mod tun_socks;
+mod tls_parse;
 mod tun_stack;
 
 use clap::Parser;

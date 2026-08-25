@@ -28,6 +28,8 @@ pub struct TunOptions {
     pub dns: Arc<FakeIpDns>,
     /// Enable fake-ip DNS hijacking (system DNS -> tun gateway). Default off.
     pub fake_dns: bool,
+    /// Optional traffic capture tap (flows/streams into capture.db).
+    pub capture: Option<crate::capture::CaptureTap>,
 }
 
 /// Blocking entrypoint (mirrors `tunnel_client::socks5_proxy`): builds a
@@ -275,6 +277,13 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                 None => opts.default_exit.clone(),
             };
             let target_str = format!("{}:{}", target.host, target.port);
+            // Capture: assign a flow id for this connection (tap events flow
+            // through the same channel; the writer resolves metadata later).
+            let cap_flow_id: Option<u64> = opts.capture.as_ref().map(|_| {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_FLOW: AtomicU64 = AtomicU64::new(1);
+                NEXT_FLOW.fetch_add(1, Ordering::Relaxed)
+            });
             let server_url = opts.server_url.clone();
             let btx = bridge_tx.clone();
             tokio::spawn(async move {

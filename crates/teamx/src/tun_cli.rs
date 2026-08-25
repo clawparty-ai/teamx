@@ -14,7 +14,7 @@ use crate::tun_dns::FakeIpDns;
 /// Handle `teamx tun0 ...` (network-mode; needs root for start/stop).
 pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
     match cmd {
-        Tun0Cmd::Start { server, exit, routes, rules_config, ip, net_prefix, net, max_conns, fake_dns } => {
+        Tun0Cmd::Start { server, exit, routes, rules_config, ip, net_prefix, net, max_conns, fake_dns, capture } => {
             crate::tun_dev::require_root()?;
 
             // Watchdog heal-on-start: if a previous tun0 session died without
@@ -81,6 +81,21 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
                     dns.set_intercept_patterns(patterns);
                 }
             }
+            // Optional capture tap (same wiring as proxy start).
+            let cap_tap = if *capture {
+                let db = crate::capture_cli::capture_home();
+                let mut store = crate::capture::CaptureStore::open(&db)?;
+                let (tx, rx) = std::sync::mpsc::channel();
+                crate::capture::spawn_writer(store, rx);
+                println!("ok capture: {} (writer running)", db.display());
+                Some(crate::capture::CaptureTap {
+                    tx,
+                    dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    enabled: true,
+                })
+            } else {
+                None
+            };
             let opts = crate::tun_socks::TunOptions {
                 server_url,
                 tun_ip: *ip,
@@ -91,6 +106,7 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
                 routes: table,
                 dns,
                 fake_dns: *fake_dns,
+                capture: cap_tap,
             };
             // Long-lived: blocks forever.
             crate::tun_socks::tun_proxy(opts)

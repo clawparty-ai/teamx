@@ -156,6 +156,10 @@ pub enum Command {
     #[command(subcommand)]
     Dns(DnsCmd),
 
+    /// Traffic capture (enterprise): record flows/streams into capture.db.
+    #[command(subcommand)]
+    Capture(CaptureCmd),
+
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
     Gui,
@@ -204,6 +208,9 @@ pub enum Tun0Cmd {
         /// the default transparent-proxy strategy.
         #[arg(long, default_value_t = false)]
         fake_dns: bool,
+        /// Record flows/streams into capture.db.
+        #[arg(long)]
+        capture: bool,
     },
     /// Stop the tun0 device (removes the route + device). Requires root.
     Stop {
@@ -763,6 +770,9 @@ pub enum ProxyCmd {
         /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
         #[arg(long)]
         server: Option<String>,
+        /// Record flows/streams into capture.db.
+        #[arg(long)]
+        capture: bool,
     },
     /// Manage the SQLite-backed proxy routing table (per-target domain/IP ->
     /// exit) used by `proxy start` when no -f/--routes file is given.
@@ -807,4 +817,45 @@ pub enum RoutesCmd {
     },
     /// Clear all rules (keeps the default exit).
     Clear,
+}
+
+/// `teamx capture` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum CaptureCmd {
+    /// Start the capture daemon (foreground; Ctrl-C to stop).
+    Start {
+        /// output database path (default ~/.teamx/capture.db)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// comma-separated sources to tap (tun0,socks5,forward; default all)
+        #[arg(long)]
+        sources: Option<String>,
+    },
+    /// Stop hint (the daemon is stopped via Ctrl-C; kept for symmetry).
+    Stop,
+    /// Show the capture database path and state.
+    Status,
+    /// List captured flows.
+    List {
+        /// filter by SNI glob (e.g. '*.google.com')
+        #[arg(long)]
+        sni: Option<String>,
+        /// max rows (default 50)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prune old flows to keep the DB under a size cap.
+    Prune {
+        /// size cap, e.g. 512MB (default 512MB)
+        #[arg(long)]
+        max_size: Option<String>,
+    },
+    /// Import an SSLKEYLOGFILE-format key log.
+    ImportKeylog {
+        /// path to the keylog file
+        #[arg(long)]
+        path: PathBuf,
+    },
 }

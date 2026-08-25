@@ -193,9 +193,10 @@ pub fn socks5_proxy(
     exit_name: &str,
     local_port: u16,
     routes: Option<crate::routes::RouteTable>,
+    capture: Option<crate::capture::CaptureTap>,
 ) -> Result<serde_json::Value, String> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("runtime: {e}"))?;
-    rt.block_on(run_socks5_proxy(server_url, exit_name, local_port, routes))?;
+    rt.block_on(run_socks5_proxy(server_url, exit_name, local_port, routes, capture))?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -723,6 +724,7 @@ pub async fn run_socks5_proxy(
     exit_name: &str,
     local_port: u16,
     routes: Option<crate::routes::RouteTable>,
+    capture: Option<crate::capture::CaptureTap>,
 ) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -737,7 +739,12 @@ pub async fn run_socks5_proxy(
         let server_url = server_url.to_string();
         let exit_name = exit_name.to_string();
         let routes = routes.clone();
+        let capture = capture.clone();
         tokio::spawn(async move {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT_FLOW: AtomicU64 = AtomicU64::new(1);
+            let cap_flow: Option<(u64, crate::capture::CaptureTap)> =
+                capture.as_ref().map(|t| (NEXT_FLOW.fetch_add(1, Ordering::Relaxed), t.clone()));
             let (mut c_read, mut c_write) = client.into_split();
 
             // 1. SOCKS5 greeting: VER NMETHODS METHODS... -> reply 05 00.
@@ -792,6 +799,24 @@ pub async fn run_socks5_proxy(
                     Err(_) => return,
                 }
             };
+
+            // Capture: open a flow with the CONNECT target as metadata and
+            // the leading SOCKS5 bytes (which include the request) for
+            // protocol fingerprinting. The up-stream first bytes after the
+            // greeting are what we keep.
+            if let Some((fid, tap)) = cap_flow.as_ref() {
+                let first = rused.min(64);
+                tap.flow_open(
+                    *fid,
+                    "socks5",
+                    "127.0.0.1",
+                    &format!("{}:{}", target.host, target.port),
+                    &rbuf[..first],
+                );
+                if rused > 0 {
+                    tap.chunk(*fid, crate::capture::Dir::Up, 0, &rbuf[..rused]);
+                }
+            }
 
             // 3. Resolve the exit for this target (routes) or use the fixed
             //    `--exit` name, then open a tunnel stream to that exit.
@@ -869,6 +894,12 @@ pub async fn run_socks5_proxy(
                         }
                         Some(Ok(Message::Binary(f))) => {
                             if f.len() >= 4 && sid.is_some() {
+                                if let Some((fid, tap)) = cap_flow.as_ref() {
+                                    static SEQ_D: std::sync::atomic::AtomicU32 =
+                                        std::sync::atomic::AtomicU32::new(1);
+                                    let seq = SEQ_D.fetch_add(1, Ordering::Relaxed);
+                                    tap.chunk(*fid, crate::capture::Dir::Down, seq, &f[4..]);
+                                }
                                 let _ = c_write.write_all(&f[4..]).await;
                             }
                         }

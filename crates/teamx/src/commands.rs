@@ -594,7 +594,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 ProxyCmd::Routes(rc) => {
                     return proxy_routes_cmd(conn, rc);
                 }
-                ProxyCmd::Start { port, exit, routes, server } => {
+                ProxyCmd::Start { port, exit, routes, server,
+                            capture} => {
                     let url = resolve_server_url(server.as_deref())?;
                     // Route resolution priority:
                     //   1. -f / --routes JSON file (explicit, ephemeral)
@@ -624,7 +625,24 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                             ))
                         }
                     };
-                    let result = crate::tunnel_client::socks5_proxy(&url, &exit_name, *port, table);
+                    // Optional traffic capture: open store + tap + writer.
+                    let cap_tap = if *capture {
+                        let db = crate::capture_cli::capture_home();
+                        let mut store = crate::capture::CaptureStore::open(&db)
+                            .map_err(AppError)?;
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        crate::capture::spawn_writer(store, rx);
+                        println!("ok capture: {} (writer running)", db.display());
+                        Some(crate::capture::CaptureTap {
+                            tx,
+                            dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                            enabled: true,
+                        })
+                    } else {
+                        None
+                    };
+                    let result =
+                        crate::tunnel_client::socks5_proxy(&url, &exit_name, *port, table, cap_tap);
                     return result.map_err(AppError);
                 }
             }
@@ -635,6 +653,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         }
         Command::Dns(cmd) => {
             return cmd_dns(conn, cmd);
+        }
+        Command::Capture(cmd) => {
+            return crate::capture_cli::handle_capture(cmd).map_err(AppError);
         }
         // `teamx gui` is handled in main() before the DB opens; unreachable here.
         Command::Gui => {
