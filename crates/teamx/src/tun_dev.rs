@@ -247,6 +247,19 @@ fn load_backup() -> Option<DnsBackup> {
     serde_json::from_slice(&data).ok()
 }
 
+/// True when a DNS backup file exists — i.e. a previous tun0 session pointed
+/// system DNS at the local proxy but never restored it (abnormal death).
+pub fn dns_backup_pending() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        dns_backup_path().exists()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// List enabled network services (skip header + disabled `*` entries).
 #[cfg(target_os = "macos")]
 fn list_services_macos() -> Result<Vec<String>, String> {

@@ -77,9 +77,14 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
     // explicitly enabled via --fake-dns. Requires root, which `teamx tun0 start`
     // already enforces.
     let mut ip_map_ref: Option<Arc<Mutex<HashMap<Ipv4Addr, String>>>> = None;
+    // Whether WE changed system DNS this run (so signals should restore it).
+    let mut dns_was_set = false;
     if opts.fake_dns {
         match crate::tun_dev::set_system_dns(&opts.tun_ip.to_string()) {
-            Ok(()) => println!("ok system dns: -> {}", opts.tun_ip),
+            Ok(()) => {
+                dns_was_set = true;
+                println!("ok system dns: -> {}", opts.tun_ip);
+            }
             Err(e) => eprintln!("tun: set system DNS failed: {e}"),
         }
     } else if let Some(table) = &opts.routes {
@@ -127,6 +132,7 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                     if let Err(e) = crate::tun_dev::set_system_dns("127.0.0.1") {
                         eprintln!("tun: set system DNS (127.0.0.1) failed: {e}");
                     } else {
+                        dns_was_set = true;
                         println!("ok dns-proxy: 127.0.0.1:53 (exit={})", opts.default_exit);
                     }
                 }
@@ -148,43 +154,141 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
 
     let mut buf = [0u8; 65536];
 
+    // Event-driven readiness on the tun fd: the loop now wakes only when the
+    // device has packets (or the 2ms maintenance tick fires) instead of
+    // busy-polling every 2 ms. The fd is already non-blocking.
+    // dup() the raw fd so AsyncFd owns its own descriptor: closing it on drop
+    // must not touch the original, which TunDevice still owns (double-close of
+    // a reused fd number would be a nasty bug).
+    let tun_fd = unsafe {
+        use std::os::fd::FromRawFd;
+        let duped = libc::dup(stack.phy.tun.as_raw_fd());
+        if duped < 0 {
+            return Err(format!("dup(tun fd): {}", std::io::Error::last_os_error()));
+        }
+        std::fs::File::from_raw_fd(duped)
+    };
+    let tun_ready = tokio::io::unix::AsyncFd::new(tun_fd)
+        .map_err(|e| format!("asyncfd: {e}"))?;
+
+    // Async bridge setup: results come back from spawned tasks over this
+    // channel and are attached to their slots by the main loop (which owns the
+    // non-Send stack). Generation guards against a slot being reset/reused
+    // while its bridge was still connecting.
+    type BridgeResult = (
+        SocketHandle,
+        u64,
+        Result<crate::tunnel_client::TunnelBridge, String>,
+        String,   // exit (for logging)
+        String,   // target_str (for logging)
+    );
+    let (bridge_tx, mut bridge_rx) =
+        tokio::sync::mpsc::unbounded_channel::<BridgeResult>();
+
+    // Graceful shutdown on SIGTERM/SIGINT: restore system DNS before exiting
+    // (kill -9 cannot be caught — see the heal-on-start logic in tun_cli).
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    let mut sigint =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
+
     loop {
+        tokio::select! {
+            _ = async {
+                if let Some(s) = sigterm.as_mut() { s.recv().await; }
+                else { std::future::pending::<()>().await; }
+            } => {
+                println!("tun0: SIGTERM — restoring system DNS and exiting");
+                if opts.fake_dns || dns_was_set {
+                    let _ = crate::tun_dev::restore_system_dns();
+                }
+                return Ok(());
+            }
+            _ = async {
+                if let Some(s) = sigint.as_mut() { s.recv().await; }
+                else { std::future::pending::<()>().await; }
+            } => {
+                println!("tun0: SIGINT — restoring system DNS and exiting");
+                if opts.fake_dns || dns_was_set {
+                    let _ = crate::tun_dev::restore_system_dns();
+                }
+                return Ok(());
+            }
+            ready = tun_ready.readable() => {
+                // Data (or edge) available: clear and let stack.poll() drain.
+                match ready {
+                    Ok(mut r) => { r.clear_ready(); }
+                    Err(e) => return Err(format!("tun fd poll: {e}")),
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(2)) => {}
+        }
+
         stack.poll();
 
-        // 1. New connections -> open a bridge per connection.
-        while let Some((handle, remote)) = stack.take_new_connection() {
+        // 1a. Attach bridges whose setup completed in spawned tasks.
+        while let Ok((handle, gen, res, exit, target_str)) = bridge_rx.try_recv() {
+            let Some(idx) = stack.slots.iter().position(|s| s.handle == handle) else {
+                continue;
+            };
+            // Slot was reset/reused while we were connecting — discard.
+            if stack.slots[idx].generation != gen {
+                if let Ok(b) = res {
+                    let _ = b.close.send(());
+                }
+                continue;
+            }
+            match res {
+                Ok(bridge) => {
+                    stack.slots[idx].state = BridgeState::Active;
+                    stack.slots[idx].tx = Some(bridge.tx.clone());
+                    stack.slots[idx].rx = Some(bridge.rx);
+                    stack.slots[idx].eof = Some(bridge.eof);
+                    stack.slots[idx].close = Some(bridge.close);
+                    println!("tun: bridge up exit={exit} target={target_str}");
+                }
+                Err(e) => {
+                    eprintln!("tun: bridge to exit `{exit}` ({target_str}) failed: {e}");
+                    stack.reset_socket(handle);
+                }
+            }
+        }
+
+        // Count in-flight setups for the concurrency cap.
+        let in_flight = stack
+            .slots
+            .iter()
+            .filter(|s| matches!(s.state, BridgeState::Connecting))
+            .count();
+
+        // 1b. New connections -> spawn a bridge setup per connection (never
+        // blocking the pump loop).
+        while let Some((handle, remote, generation)) = stack.take_new_connection() {
+            if in_flight >= 8 {
+                // Too many setups in flight — leave this slot Connecting; it
+                // will be picked up again on a later loop iteration.
+                break;
+            }
             let target = resolve_target(&remote, &opts.dns, ip_map_ref.as_ref());
             let exit = match &opts.routes {
                 Some(t) => t.resolve(&target.host).to_string(),
                 None => opts.default_exit.clone(),
             };
             let target_str = format!("{}:{}", target.host, target.port);
-            let bridge = match crate::tunnel_client::open_tunnel_bridge(&opts.server_url, &exit, &target_str).await {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("tun: bridge to exit `{exit}` ({target_str}) failed: {e}");
-                    stack.reset_socket(handle);
-                    continue;
-                }
-            };
-            let slot_idx = stack.slots.iter().position(|s| s.handle == handle).unwrap();
-            stack.slots[slot_idx].state = BridgeState::Active;
-            stack.slots[slot_idx].tx = Some(bridge.tx.clone());
-            // Store the rx side for pumping in the main loop.
-            stack.slots[slot_idx].rx = Some(bridge.rx);
-            stack.slots[slot_idx].eof = Some(bridge.eof);
-            // Remember the close sender for teardown.
-            stack.slots[slot_idx].close = Some(bridge.close);
-            println!("tun: bridge up exit={exit} target={target_str}");
+            let server_url = opts.server_url.clone();
+            let btx = bridge_tx.clone();
+            tokio::spawn(async move {
+                let res = crate::tunnel_client::open_tunnel_bridge(&server_url, &exit, &target_str)
+                    .await;
+                let _ = btx.send((handle, generation, res, exit, target_str));
+            });
         }
 
         // 2. Pump bytes for active sockets.
         pump_active(&mut stack, &mut buf)?;
 
-        // 3. Yield so spawned tasks (bridge pumps) get scheduled. NOTE: must be
-        // an async await — a synchronous blocking wait here would starve the
-        // current_thread runtime and the bridge tasks would never run.
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        // 3. Yield is handled by the select! above (2ms tick keeps bridge
+        // spawn tasks scheduled on the current-thread runtime).
     }
 }
 

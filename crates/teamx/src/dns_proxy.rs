@@ -40,6 +40,11 @@ pub fn spawn(
         // TTL cache so repeated queries for the same domain don't each pay the
         // full server→exit round trip (~1 s).
         let mut cache: HashMap<String, CacheEntry> = HashMap::new();
+        // Self-destruct guard: if the upstream (server→exit) resolution fails
+        // this many times in a row, system DNS is pointing at a dead proxy —
+        // restore it and abort so the OS falls back to the original DNS.
+        const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+        let mut consecutive_failures: u32 = 0;
         let mut buf = [0u8; 4096];
         loop {
             let (n, peer) = match sock.recv_from(&mut buf) {
@@ -91,6 +96,22 @@ pub fn spawn(
                             ip_map.lock().unwrap().clear();
                         }
                         let ttl = if resolved.is_empty() { 10 } else { 60 };
+                        if resolved.is_empty() {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            eprintln!(
+                                "dns-proxy: resolve '{name}' failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+                            );
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                eprintln!(
+                                    "dns-proxy: {MAX_CONSECUTIVE_FAILURES} consecutive failures — \
+                                     restoring system DNS and aborting"
+                                );
+                                let _ = crate::tun_dev::restore_system_dns();
+                                std::process::exit(1);
+                            }
+                        } else {
+                            consecutive_failures = 0;
+                        }
                         cache.insert(
                             name.clone(),
                             CacheEntry {
