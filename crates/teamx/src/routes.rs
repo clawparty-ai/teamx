@@ -22,7 +22,7 @@
 //! }
 //! ```
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 
 /// Key in `proxy_settings` for the default exit.
@@ -143,6 +143,38 @@ impl RouteTable {
             }
         }
         &self.default
+    }
+
+    /// Domain patterns (exact / `*.suffix`) that the rules explicitly
+    /// intercept. Used by the fake-ip DNS to only fake-ip these domains; all
+    /// other queries are dropped so the client falls back to its real DNS.
+    pub fn intercept_patterns(&self) -> Vec<String> {
+        self.rules
+            .iter()
+            .filter(|r| {
+                matches!(r.match_type, MatchType::ExactDomain | MatchType::SuffixDomain)
+            })
+            .map(|r| r.pattern.clone())
+            .collect()
+    }
+
+    /// IPv4 CIDR networks (or bare /32 IPs) the rules explicitly intercept.
+    /// Used by IP-routing mode to add network routes through the tun.
+    pub fn intercept_cidrs(&self) -> Vec<(Ipv4Addr, u8)> {
+        let mut out = Vec::new();
+        for r in &self.rules {
+            if r.match_type != MatchType::Cidr {
+                continue;
+            }
+            if let Some((net, prefix)) = r.pattern.split_once('/') {
+                if let (Ok(ip), Ok(p)) = (net.parse::<Ipv4Addr>(), prefix.parse::<u8>()) {
+                    out.push((ip, p));
+                }
+            } else if let Ok(ip) = r.pattern.parse::<Ipv4Addr>() {
+                out.push((ip, 32));
+            }
+        }
+        out
     }
 }
 

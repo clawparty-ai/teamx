@@ -1,18 +1,64 @@
 # Changelog
 
+## 0.3.2 — 2026-08-24
+
+### Transparent-proxy DNS approach (local DNS proxy + egress-side resolution) + control panel card rework
+
+**Seamless DNS for the transparent proxy** (replacing the abandoned fake-ip DNS):
+- macOS `mDNSResponder` does not accept `198.18.0.0/15` fake-ip answers, and fake-ip DNS
+  hijacks tun0's own resolution of the server, causing bridge timeouts → fake-dns was
+  dropped (`--fake-dns` becomes an explicit flag, off by default).
+- Public DNS (8.8.8.8 / 1.1.1.1 / DoH) is all poisoned or blocked behind the GFW; only the
+  overseas egress (`egress2`, AWS Tokyo) can resolve Google's real IPs and connect directly.
+- New scheme: a local DNS proxy listens on `127.0.0.1:53` with the system DNS pointing at
+  it. Domains matching route rules are resolved through the teamx mTLS channel by the
+  egress (real IP), added as host routes on the tun interface, then answered; other
+  domains are forwarded upstream to the system DNS. Apps access proxied domains with no
+  configuration whatsoever.
+- Added `dns_proxy.rs` (local DNS server); server-side `team.resolve_dns` RPC +
+  tunnel registry `resolve`/`complete_resolve`; exit-side `resolve` command;
+  `teamx dns list` / `teamx dns resolve <domain>` CLI.
+- Explicit CIDR-block rules in the route table directly add network routes (covering large
+  CDN ranges like Google); domain rules are periodically resolved into single-IP host
+  routes as fallback.
+
+**Control panel card rework** (Swift App):
+- Vertical layout: term-style log area at the bottom; an `NSSegmentedControl` at the top
+  switching between 8 cards (connection status / virtual NIC / SOCKS5 proxy / default
+  egress / tunnels / tun0 route rules / route table / DNS).
+- New "Route Table" card: shows the default route + runs `traceroute` to a given IP/domain.
+- New "DNS" card: shows default DNS + runs `teamx dns resolve` for a given domain
+  (via the egress, unpolluted).
+
+**Other fixes**:
+- Clicking the tray icon menu froze keyboard/UI: `menuNeedsUpdate` synchronously ran
+  `tunnel list` (a server round trip) blocking the main thread → default egress/egress list
+  now read from cache, refreshed periodically in the background.
+- tun0 core fixes: smoltcp Tx token now actually writes back to the tun fd; TUN fd set
+  non-blocking + rx_buf no longer truncated; truncated TCP SYN from macOS utun padded out
+  to total_len; checksums computed on TX / ignored on RX; new connections accepted only in
+  `Established`; fixed stream_id passing bug in `open_tunnel_bridge` (otherwise data sat in
+  a buffer forever, never sent); main loop switched to async sleep to avoid starving
+  spawned tasks.
+- Launch-at-login now defaults to off (LaunchAgent removed; package ships without
+  `--install-agent`).
+
 ## 0.3.1 — 2026-08-23
 
-### Clash config compatibility + L1 desktop tray
+### External rule-config compatibility + L1 desktop tray
 
-**Clash 兼容模式**（`tun0 start --clash-config <path>`）：解析 Clash YAML，
-把 `rules` 映射到 teamx 路由表（DOMAIN-SUFFIX→通配、DOMAIN→精确、IP-CIDR→CIDR、
-MATCH→default）。`proxies`/`proxy-groups` 忽略（出口从 teamx 的 egress 集选择）；
-DIRECT/REJECT 规则 v1 跳过。`tun_clash.rs` + 8 个单元测试。
+**External rule-config compatibility mode** (`tun0 start --rules-config <path>`, importing
+other proxy clients' YAML rules): parses their `rules`, mapping them onto the teamx route
+table (DOMAIN-SUFFIX→wildcard, DOMAIN→exact, IP-CIDR→CIDR, MATCH→default).
+`proxies`/`proxy-groups` are ignored (exits are chosen from teamx's egress set);
+DIRECT/REJECT rules are skipped in v1.
+Rule-parsing module + 8 unit tests.
 
-**L1 桌面托盘**（`teamx gui`）：tray-icon + tao（纯 Rust，跨平台 macOS 菜单栏 /
-Linux appindicator）。菜单启停 tun0 / SOCKS5 proxy、状态显示、退出。子进程由
-`teamx gui` 管理（spawn `teamx tun0 start` / `teamx proxy start`）。L2/L3
-（设置窗口、规则可视化、Tauri 完整 GUI）列入 enterprise 分支 TODO。
+**L1 desktop tray** (`teamx gui`): tray-icon + tao (pure Rust, cross-platform macOS menu
+bar / Linux appindicator). Menu starts/stops tun0 / SOCKS5 proxy, shows status, quits.
+Subprocesses are managed by `teamx gui` (spawning `teamx tun0 start` /
+`teamx proxy start`). L2/L3 (settings window, rule visualization, full Tauri GUI) are on
+the enterprise branch TODO.
 
 ## 0.3.0 — 2026-08-23
 
@@ -123,7 +169,7 @@ Members join via one-time invitation letters containing mTLS client certificates
 
 ### Code Review Fixes
 
-Fixed all high/medium priority findings (see `code-review-codex-0817.md`):
+Fixed all high/medium priority findings (see `docs/code-review-codex-0817.md`):
 
 - **Cross-team read bypass** (security): non-members can no longer read invite tokens, members, roles, or events of arbitrary teams.
 - **Pending members cannot publish** (authorization).
@@ -136,7 +182,7 @@ Fixed all high/medium priority findings (see `code-review-codex-0817.md`):
 
 ### Security Model
 
-V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `goal-v1.md` and `v1-spec.md`.
+V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `docs/goal-v1.md` and `v1-spec.md`.
 
 ### Testing
 

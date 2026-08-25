@@ -1,9 +1,9 @@
-//! tun_clash.rs — Clash configuration compatibility for the tun0 proxy.
+//! rules_config.rs — external rule-config compatibility for the tun0 proxy.
 //!
-//! `teamx tun0 start --clash-config <path>` reads a Clash YAML config and maps
-//! its routing intent onto teamx's route table:
+//! `teamx tun0 start --rules-config <path>` reads an external proxy-client
+//! YAML rule config and maps its routing intent onto teamx's route table:
 //!
-//!   Clash rule                     -> teamx route
+//!   rule                        -> teamx route
 //!   DOMAIN-SUFFIX,example.com,..   -> *.example.com
 //!   DOMAIN,example.com,..          -> example.com (exact)
 //!   IP-CIDR,10.0.0.0/8,..          -> 10.0.0.0/8
@@ -17,19 +17,19 @@
 
 use crate::routes::{MatchType, RouteRule, RouteTable};
 
-/// Parse a Clash config file and extract a route table.
+/// Parse an external rules config file and extract a route table.
 /// Returns the table (default exit = MATCH target if present, else a fallback
 /// passed by the caller).
-pub fn parse_clash_config(path: &std::path::Path, fallback_default: &str) -> Result<RouteTable, String> {
+pub fn parse_rules_config(path: &std::path::Path, fallback_default: &str) -> Result<RouteTable, String> {
     let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("clash config {}: {e}", path.display()))?;
-    parse_clash_yaml(&text, fallback_default)
+        .map_err(|e| format!("rules config {}: {e}", path.display()))?;
+    parse_rules_yaml(&text, fallback_default)
 }
 
-/// Parse Clash YAML text into a teamx RouteTable.
-pub fn parse_clash_yaml(text: &str, fallback_default: &str) -> Result<RouteTable, String> {
+/// Parse external rules YAML text into a teamx RouteTable.
+pub fn parse_rules_yaml(text: &str, fallback_default: &str) -> Result<RouteTable, String> {
     let v: serde_yaml::Value = serde_yaml::from_str(text)
-        .map_err(|e| format!("clash config: invalid YAML: {e}"))?;
+        .map_err(|e| format!("rules config: invalid YAML: {e}"))?;
 
     let mut rules: Vec<RouteRule> = Vec::new();
     let mut default: Option<String> = None;
@@ -40,7 +40,7 @@ pub fn parse_clash_yaml(text: &str, fallback_default: &str) -> Result<RouteTable
             if line.is_empty() {
                 continue;
             }
-            // Clash rule format: "TYPE,ARG,ACTION" (or with no-paren "TYPE,ARG")
+            // External rule format: "TYPE,ARG,ACTION" (or no-paren "TYPE,ARG")
             let parts: Vec<&str> = line.split(',').collect();
 
             let rule_type = parts[0].to_uppercase();
@@ -115,7 +115,7 @@ mod tests {
     use super::*;
 
     fn y(text: &str) -> RouteTable {
-        parse_clash_yaml(text, "egress").expect("parse")
+        parse_rules_yaml(text, "egress").expect("parse")
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn first_match_wins_like_clash() {
+    fn first_match_wins_like_rules() {
         let t = y("rules:\n  - DOMAIN-SUFFIX,example.com,exitA\n  - DOMAIN-SUFFIX,example.com,exitB\n");
         assert_eq!(t.resolve("www.example.com"), "exitA");
     }

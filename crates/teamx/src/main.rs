@@ -3,10 +3,14 @@ mod broadcast;
 mod cli;
 mod commands;
 mod db;
+mod dns_proxy;
 mod events;
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(feature = "gui")]
+mod gui_panel;
 mod loopx;
+mod metrics;
 mod pki;
 mod routes;
 mod serve;
@@ -15,8 +19,8 @@ mod state;
 mod teamfile;
 mod tunnel;
 mod tunnel_client;
+mod rules_config;
 mod ui;
-mod tun_clash;
 mod tun_cli;
 mod tun_dev;
 mod tun_dns;
@@ -66,6 +70,23 @@ fn main() {
     #[cfg(not(feature = "gui"))]
     if let Command::Gui = &cli.command {
         eprintln!("teamx error: `gui` requires the `gui` feature — rebuild with --features gui");
+        std::process::exit(1);
+    }
+    // `teamx gui-panel` is the native control-panel window (L1).
+    #[cfg(feature = "gui")]
+    if let Command::GuiPanel = &cli.command {
+        match gui_panel::run_panel() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    #[cfg(not(feature = "gui"))]
+    if let Command::GuiPanel = &cli.command {
+        eprintln!("teamx error: `gui-panel` requires the `gui` feature — rebuild with --features gui");
         std::process::exit(1);
     }
     let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);

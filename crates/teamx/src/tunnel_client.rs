@@ -212,6 +212,25 @@ pub fn rpc(server_url: &str, method: &str, args: serde_json::Value) -> Result<se
     run_rpc(server_url, method, args)
 }
 
+/// Resolve a domain through a proxy exit (uncensored resolver) via the server.
+/// Returns the resolved IPv4 addresses (empty on failure).
+pub fn resolve_dns(server_url: &str, exit: &str, name: &str) -> Vec<String> {
+    let args = serde_json::json!({ "name": name, "exit": exit });
+    match run_rpc(server_url, "team.resolve_dns", args) {
+        Ok(v) => v
+            .get("data")
+            .and_then(|d| d.get("ips"))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI entrypoints: expose (provider) and forward (consumer).
 // ---------------------------------------------------------------------------
@@ -278,13 +297,20 @@ pub async fn open_tunnel_bridge(
 
     // Wait for stream_open so the caller knows the exit accepted.
     let mut stream_open = false;
+    let mut initial_sid: Option<u64> = None;
     while !stream_open {
         match ws.next().await {
             Some(Ok(Message::Text(t))) => {
                 let v: serde_json::Value =
                     serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
                 match v["type"].as_str() {
-                    Some("stream_open") => stream_open = true,
+                    Some("stream_open") => {
+                        stream_open = true;
+                        // Save the stream id here: the spawn task below starts
+                        // reading *after* this message has already been consumed,
+                        // so it would never see stream_open again.
+                        initial_sid = v["stream_id"].as_u64();
+                    }
                     Some("error") => {
                         return Err(format!(
                             "bridge error: {}",
@@ -315,7 +341,7 @@ pub async fn open_tunnel_bridge(
         use futures_util::{SinkExt, StreamExt};
         // pump outbound (caller->exit) into the WS
         let mut ws_out = ws;
-        let mut sid: Option<u64> = None;
+        let mut sid: Option<u64> = initial_sid;
         let mut pending: Vec<Vec<u8>> = Vec::new();
 
         loop {
@@ -468,6 +494,27 @@ async fn expose_once(server_url: &str, name: &str, port: u16, mode: &str, lan_ip
                             // Application-level heartbeat: reply so the server
                             // knows we are alive and the WS is not half-open.
                             let _ = ws.send(Message::Text(serde_json::json!({"type":"pong"}).to_string())).await;
+                        }
+                        Some("resolve") => {
+                            // DNS resolution request from the server: resolve the
+                            // name with this exit's (uncensored) resolver and
+                            // reply with the resulting IPv4 addresses.
+                            let name = v["name"].as_str().unwrap_or("").to_string();
+                            let sid = v["stream_id"].as_u64().unwrap_or(0);
+                            let tx2 = to_server_tx.clone();
+                            tokio::spawn(async move {
+                                let mut ips: Vec<String> = Vec::new();
+                                if let Ok(addrs) = tokio::net::lookup_host((name.as_str(), 53)).await {
+                                    for a in addrs {
+                                        if let std::net::IpAddr::V4(v4) = a.ip() {
+                                            ips.push(v4.to_string());
+                                        }
+                                    }
+                                }
+                                let _ = tx2.send(Message::Text(
+                                    serde_json::json!({ "type": "resolve_result", "stream_id": sid, "ips": ips }).to_string(),
+                                ));
+                            });
                         }
                         _ => {
                             if v["type"] == "open_stream" {

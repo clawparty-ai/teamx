@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -471,6 +471,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 cmd_loopx_report(conn, project, session, team.as_deref())?
             }
         },
+        // Local client config (per-machine).
+        Command::Local(lc) => cmd_local(conn, lc)?,
         // `teamx serve` never reaches here (handled in main); this arm exists
         // only so the match stays exhaustive.
         Command::Serve(_) => {
@@ -631,9 +633,16 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Tun0(cmd) => {
             return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
         }
+        Command::Dns(cmd) => {
+            return cmd_dns(conn, cmd);
+        }
         // `teamx gui` is handled in main() before the DB opens; unreachable here.
         Command::Gui => {
             return Err(AppError("gui must be launched via `teamx gui`".to_string()));
+        }
+        // `teamx gui-panel` is handled in main() before the DB opens.
+        Command::GuiPanel => {
+            return Err(AppError("gui-panel must be launched via `teamx gui-panel`".to_string()));
         }
     };
     Ok(out)
@@ -644,6 +653,43 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Handle `teamx dns <subcommand>`.
+fn cmd_dns(conn: &mut Connection, cmd: &crate::cli::DnsCmd) -> Result<Value> {
+    use crate::cli::DnsCmd;
+    match cmd {
+        DnsCmd::List => {
+            let servers = crate::tun_dev::system_dns_servers();
+            let s = servers
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(serde_json::json!({ "ok": true, "dns": if s.is_empty() { "-".to_string() } else { s } }))
+        }
+        DnsCmd::Resolve { domain, exit } => {
+            let url = resolve_server_url(None)?;
+            let exit_name = match exit {
+                Some(e) if !e.is_empty() => e.clone(),
+                _ => match crate::routes::load_from_db(conn) {
+                    Ok(Some(t)) if !t.default.is_empty() => t.default.clone(),
+                    _ => {
+                        return Err(AppError(
+                            "no exit configured — run `teamx proxy routes set-default <exit>`".to_string(),
+                        ))
+                    }
+                },
+            };
+            let ips = crate::tunnel_client::resolve_dns(&url, &exit_name, domain);
+            let s = if ips.is_empty() {
+                "（无结果）".to_string()
+            } else {
+                ips.join("\n")
+            };
+            Ok(serde_json::json!({ "ok": true, "domain": domain, "exit": exit_name, "ips": s }))
+        }
+    }
 }
 
 /// Handle `teamx proxy routes <subcommand>` — manage the SQLite route table.
@@ -687,6 +733,43 @@ fn proxy_routes_cmd(conn: &mut Connection, cmd: &RoutesCmd) -> Result<Value> {
         RoutesCmd::Clear => {
             routes::clear_rules(conn).map_err(AppError)?;
             serde_json::json!({ "ok": true, "cleared": true })
+        }
+    })
+}
+
+/// Handle `teamx local ...` — local client config (members + settings).
+fn cmd_local(conn: &mut Connection, cmd: &LocalCmd) -> Result<Value> {
+    use crate::db;
+    Ok(match cmd {
+        LocalCmd::MemberList => {
+            let members = db::list_local_members(conn).map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "members": members })
+        }
+        LocalCmd::MemberAdd { key, name, server, letter, proxy_port, dns_port } => {
+            db::add_local_member(conn, key, name, server, letter.as_deref(), *proxy_port as i64, *dns_port as i64)
+                .map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "member_key": key })
+        }
+        LocalCmd::MemberUpdate { key, name, server, letter, proxy_port, dns_port } => {
+            db::update_local_member(
+                conn, key,
+                name.as_deref(), server.as_deref(), letter.as_deref(),
+                proxy_port.map(|p| p as i64), dns_port.map(|d| d as i64),
+            )
+            .map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "member_key": key })
+        }
+        LocalCmd::MemberRemove { key } => {
+            let removed = db::remove_local_member(conn, key).map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "removed": removed, "member_key": key })
+        }
+        LocalCmd::Get { key } => {
+            let v = db::get_setting(conn, key).map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "key": key, "value": v })
+        }
+        LocalCmd::Set { key, value } => {
+            db::set_setting(conn, key, value).map_err(|e| AppError(e.to_string()))?;
+            serde_json::json!({ "ok": true, "key": key, "value": value })
         }
     })
 }
@@ -1111,7 +1194,7 @@ fn team_status_json(conn: &Connection, team: &TeamRow) -> Result<Value> {
             "owner_member_id": team.owner_member_id,
         },
         "goal": goal.map(|g| json!({ "id": g.id, "title": g.title, "body": g.body, "state": g.state })),
-        "members": members.iter().map(member_json).collect::<Vec<_>>(),
+        "members": members.iter().map(|m| member_json(conn, m)).collect::<Vec<_>>(),
         "questions": questions.iter().map(question_json).collect::<Vec<_>>(),
         "roles": roles,
         "recent_events": recent,
@@ -2561,7 +2644,9 @@ pub fn is_team_owner(conn: &Connection, member_id: &str, team_id: &str) -> rusql
     Ok(n > 0)
 }
 
-fn member_json(m: &MemberRow) -> Value {
+fn member_json(conn: &Connection, m: &MemberRow) -> Value {
+    let ip = crate::db::member_ip(conn, &m.id);
+    let online = crate::db::member_online(conn, &m.id);
     json!({
         "id": m.id,
         "display_name": m.display_name,
@@ -2569,6 +2654,8 @@ fn member_json(m: &MemberRow) -> Value {
         "state": m.state,
         "loopx_project": m.loopx_project,
         "joined_at": m.joined_at,
+        "ip": ip,
+        "online": online,
     })
 }
 
