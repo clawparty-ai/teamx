@@ -77,9 +77,14 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
     // explicitly enabled via --fake-dns. Requires root, which `teamx tun0 start`
     // already enforces.
     let mut ip_map_ref: Option<Arc<Mutex<HashMap<Ipv4Addr, String>>>> = None;
+    // Whether WE changed system DNS this run (so signals should restore it).
+    let mut dns_was_set = false;
     if opts.fake_dns {
         match crate::tun_dev::set_system_dns(&opts.tun_ip.to_string()) {
-            Ok(()) => println!("ok system dns: -> {}", opts.tun_ip),
+            Ok(()) => {
+                dns_was_set = true;
+                println!("ok system dns: -> {}", opts.tun_ip);
+            }
             Err(e) => eprintln!("tun: set system DNS failed: {e}"),
         }
     } else if let Some(table) = &opts.routes {
@@ -127,6 +132,7 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                     if let Err(e) = crate::tun_dev::set_system_dns("127.0.0.1") {
                         eprintln!("tun: set system DNS (127.0.0.1) failed: {e}");
                     } else {
+                        dns_was_set = true;
                         println!("ok dns-proxy: 127.0.0.1:53 (exit={})", opts.default_exit);
                     }
                 }
@@ -148,7 +154,38 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
 
     let mut buf = [0u8; 65536];
 
+    // Graceful shutdown on SIGTERM/SIGINT: restore system DNS before exiting
+    // (kill -9 cannot be caught — see the heal-on-start logic in tun_cli).
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    let mut sigint =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
+
     loop {
+        tokio::select! {
+            _ = async {
+                if let Some(s) = sigterm.as_mut() { s.recv().await; }
+                else { std::future::pending::<()>().await; }
+            } => {
+                println!("tun0: SIGTERM — restoring system DNS and exiting");
+                if opts.fake_dns || dns_was_set {
+                    let _ = crate::tun_dev::restore_system_dns();
+                }
+                return Ok(());
+            }
+            _ = async {
+                if let Some(s) = sigint.as_mut() { s.recv().await; }
+                else { std::future::pending::<()>().await; }
+            } => {
+                println!("tun0: SIGINT — restoring system DNS and exiting");
+                if opts.fake_dns || dns_was_set {
+                    let _ = crate::tun_dev::restore_system_dns();
+                }
+                return Ok(());
+            }
+            _ = tokio::time::sleep(Duration::from_millis(2)) => {}
+        }
+
         stack.poll();
 
         // 1. New connections -> open a bridge per connection.
@@ -181,10 +218,8 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
         // 2. Pump bytes for active sockets.
         pump_active(&mut stack, &mut buf)?;
 
-        // 3. Yield so spawned tasks (bridge pumps) get scheduled. NOTE: must be
-        // an async await — a synchronous blocking wait here would starve the
-        // current_thread runtime and the bridge tasks would never run.
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        // 3. Yield is handled by the select! above (2ms tick keeps bridge
+        // spawn tasks scheduled on the current-thread runtime).
     }
 }
 

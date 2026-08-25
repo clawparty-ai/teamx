@@ -16,6 +16,21 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
     match cmd {
         Tun0Cmd::Start { server, exit, routes, rules_config, ip, net_prefix, net, max_conns, fake_dns } => {
             crate::tun_dev::require_root()?;
+
+            // Watchdog heal-on-start: if a previous tun0 session died without
+            // restoring system DNS (backup file left behind, no live process),
+            // restore it first so we never stack stale 127.0.0.1 entries.
+            if crate::tun_dev::dns_backup_pending()
+                && std::process::Command::new("pgrep")
+                    .args(["-f", "teamx tun0 start"])
+                    .output()
+                    .map(|o| o.stdout.is_empty())
+                    .unwrap_or(true)
+            {
+                println!("ok watchdog: restoring leftover DNS backup from a dead session");
+                let _ = crate::tun_dev::restore_system_dns();
+            }
+
             let server_url = resolve_server_url(server.as_deref())?;
 
             // Route table source priority:
