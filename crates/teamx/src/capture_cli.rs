@@ -15,6 +15,12 @@ use std::path::PathBuf;
 use crate::capture::{self, CaptureStore};
 
 pub fn capture_home() -> PathBuf {
+    // Allow tests/scripts to redirect the capture DB to a temp path.
+    if let Ok(p) = std::env::var("TEAMX_CAPTURE_DB") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     crate::db::teamx_home().join("capture.db")
 }
 
