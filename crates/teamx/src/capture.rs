@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 
-pub const CHUNK_SIZE: usize = 16 * 1024;
 
 /// Direction of a stream chunk relative to the connection initiator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +44,7 @@ pub enum TapEvent {
     /// Flow closed.
     FlowClose { flow_id: u64, reason: String, ts: f64 },
     /// Raw IP packet (tun0 only, optional).
+    #[allow(dead_code)] // raw L3 capture surface; wired with tun0 packet taps
     Packet { iface: String, data: Vec<u8>, ts: f64 },
 }
 
@@ -57,6 +57,7 @@ pub struct CaptureTap {
 }
 
 impl CaptureTap {
+    #[allow(dead_code)] // drop-counter API; wired when capture governance lands
     pub fn disabled() -> Self {
         Self {
             tx: std_mpsc::channel().0,
@@ -65,10 +66,12 @@ impl CaptureTap {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    #[allow(dead_code)]
     pub fn total_dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -120,6 +123,7 @@ impl CaptureTap {
         });
     }
 
+    #[allow(dead_code)]
     pub fn packet(&self, iface: &str, data: &[u8]) {
         self.send(TapEvent::Packet {
             iface: iface.to_string(),
@@ -340,11 +344,12 @@ CREATE TABLE IF NOT EXISTS packets (
 CREATE INDEX IF NOT EXISTS idx_packets_ts ON packets(ts);
 
 CREATE TABLE IF NOT EXISTS tls_keys (
-  client_random BLOB PRIMARY KEY,
+  client_random BLOB NOT NULL,
   label         TEXT NOT NULL,
   secret        BLOB NOT NULL,
   cipher        TEXT,
-  added_at      REAL NOT NULL
+  added_at      REAL NOT NULL,
+  PRIMARY KEY (client_random, label)
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -357,7 +362,7 @@ CREATE TABLE IF NOT EXISTS meta (
 /// Returns the writer thread handle; drop the JoinHandle to detach.
 pub fn spawn_writer(
     store: CaptureStore,
-    mut rx: std_mpsc::Receiver<TapEvent>,
+    rx: std_mpsc::Receiver<TapEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut store = store;
@@ -386,16 +391,6 @@ pub fn spawn_writer(
         }
     })
 }
-
-/// Open a second (query-only) connection to the capture DB for CLI reads.
-pub fn open_query(path: &PathBuf) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| format!("open {}: {e}", path.display()))?;
-    Ok(conn)
-    }
 
 /// Export one flow as a synthetic pcap file (Ethernet/IPv4/TCP), replaying the
 /// captured chunks in order with simple relative sequence numbers. Useful for

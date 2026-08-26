@@ -2,6 +2,7 @@ mod activity;
 mod broadcast;
 mod cli;
 mod capture;
+mod analyze;
 mod capture_cli;
 mod commands;
 mod db;

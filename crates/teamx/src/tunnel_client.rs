@@ -907,14 +907,28 @@ pub async fn run_socks5_proxy(
                         Some(Err(_)) | None => return,
                     },
                     n = c_read.read(&mut buf) => match n {
-                        Ok(0) | Err(_) => return,
+                        Ok(0) | Err(_) => {
+                            if let Some((fid, tap)) = cap_flow.as_ref() {
+                                tap.flow_close(*fid, "eof");
+                            }
+                            return;
+                        }
                         Ok(n) => {
                             match sid {
                                 Some(s) => {
+                                    if let Some((fid, tap)) = cap_flow.as_ref() {
+                                        static SEQ_U: std::sync::atomic::AtomicU32 =
+                                            std::sync::atomic::AtomicU32::new(1);
+                                        let seq = SEQ_U.fetch_add(1, Ordering::Relaxed);
+                                        tap.chunk(*fid, crate::capture::Dir::Up, seq, &buf[..n]);
+                                    }
                                     let mut frame = Vec::with_capacity(4 + n);
                                     frame.extend_from_slice(&(s as u32).to_be_bytes());
                                     frame.extend_from_slice(&buf[..n]);
                                     if ws.send(Message::Binary(frame)).await.is_err() {
+                                        if let Some((fid, tap)) = cap_flow.as_ref() {
+                                            tap.flow_close(*fid, "ws-error");
+                                        }
                                         return;
                                     }
                                 }

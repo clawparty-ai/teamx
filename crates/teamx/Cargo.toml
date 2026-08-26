@@ -26,6 +26,7 @@ rustls-pemfile = "2"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-native-roots", "connect"] }
 time = { version = "0.3", features = ["formatting"] }
 ring = "0.17"
+aes-gcm = "0.10"
 x509-parser = "0.16"
 base64 = "0.22"
 tun = "0.8.14"

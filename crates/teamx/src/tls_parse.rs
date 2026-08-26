@@ -8,6 +8,7 @@
 pub const P_TLS: &str = "tls";
 pub const P_HTTP11: &str = "http/1.1";
 pub const P_H2: &str = "h2";
+#[allow(dead_code)]
 pub const P_WS: &str = "ws";
 pub const P_DNS: &str = "dns";
 pub const P_OTHER: &str = "other";
@@ -46,13 +47,6 @@ fn starts_with_method(b: &[u8]) -> bool {
         }
     }
     false
-}
-
-/// Metadata extracted from a TLS ClientHello.
-#[derive(Debug, Default, Clone)]
-pub struct ClientHelloMeta {
-    pub sni: Option<String>,
-    pub client_random: Option<Vec<u8>>,
 }
 
 /// Parse the first bytes of a TLS connection and extract SNI + client_random.

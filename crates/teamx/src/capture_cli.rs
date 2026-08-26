@@ -18,10 +18,6 @@ pub fn capture_home() -> PathBuf {
     crate::db::teamx_home().join("capture.db")
 }
 
-fn keylog_path() -> PathBuf {
-    crate::db::teamx_home().join("sslkeys.log")
-}
-
 pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value, String> {
     use crate::cli::CaptureCmd;
     match cmd {

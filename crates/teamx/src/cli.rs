@@ -160,6 +160,10 @@ pub enum Command {
     #[command(subcommand)]
     Capture(CaptureCmd),
 
+    /// Traffic analysis (enterprise): stats, HTTP reconstruction, TLS decrypt.
+    #[command(subcommand)]
+    Analyze(AnalyzeCmd),
+
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
     Gui,
@@ -869,5 +873,33 @@ pub enum CaptureCmd {
         /// output path for the SSLKEYLOGFILE
         #[arg(long)]
         keylog: Option<PathBuf>,
+    },
+}
+
+/// `teamx analyze` subcommands (built on capture.db).
+#[derive(Subcommand, Debug)]
+pub enum AnalyzeCmd {
+    /// Aggregate protocol / SNI / byte statistics.
+    Stats,
+    /// List captured flows.
+    List {
+        /// filter by SNI glob
+        #[arg(long)]
+        sni: Option<String>,
+        /// max rows
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Reconstruct HTTP request/response headers for a flow.
+    Http {
+        /// flow id
+        #[arg(long)]
+        flow: i64,
+    },
+    /// Decrypt a TLS flow using imported traffic secrets.
+    Decrypt {
+        /// flow id
+        #[arg(long)]
+        flow: i64,
     },
 }
