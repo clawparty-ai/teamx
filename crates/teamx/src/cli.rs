@@ -858,4 +858,16 @@ pub enum CaptureCmd {
         #[arg(long)]
         path: PathBuf,
     },
+    /// Export a flow as pcap or all TLS secrets as an SSLKEYLOGFILE.
+    Export {
+        /// flow id to export as pcap (required with --pcap)
+        #[arg(long)]
+        flow: Option<i64>,
+        /// output path for the pcap file
+        #[arg(long)]
+        pcap: Option<PathBuf>,
+        /// output path for the SSLKEYLOGFILE
+        #[arg(long)]
+        keylog: Option<PathBuf>,
+    },
 }

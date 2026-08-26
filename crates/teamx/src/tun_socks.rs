@@ -277,13 +277,6 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
                 None => opts.default_exit.clone(),
             };
             let target_str = format!("{}:{}", target.host, target.port);
-            // Capture: assign a flow id for this connection (tap events flow
-            // through the same channel; the writer resolves metadata later).
-            let cap_flow_id: Option<u64> = opts.capture.as_ref().map(|_| {
-                use std::sync::atomic::{AtomicU64, Ordering};
-                static NEXT_FLOW: AtomicU64 = AtomicU64::new(1);
-                NEXT_FLOW.fetch_add(1, Ordering::Relaxed)
-            });
             let server_url = opts.server_url.clone();
             let btx = bridge_tx.clone();
             tokio::spawn(async move {
@@ -294,7 +287,7 @@ pub async fn run_tun_proxy(opts: TunOptions) -> Result<(), String> {
         }
 
         // 2. Pump bytes for active sockets.
-        pump_active(&mut stack, &mut buf)?;
+        pump_active(&mut stack, &mut buf, &opts.capture)?;
 
         // 3. Yield is handled by the select! above (2ms tick keeps bridge
         // spawn tasks scheduled on the current-thread runtime).
@@ -333,7 +326,12 @@ fn resolve_target(
 /// Direction A (tun->egress): read from the smoltcp socket, push to bridge.tx.
 /// Direction B (egress->tun): drain bridge.rx into the smoltcp socket.
 /// EOF on either side closes the socket / bridge accordingly.
-fn pump_active(stack: &mut TunStack, buf: &mut [u8]) -> Result<(), String> {
+fn pump_active(
+    stack: &mut TunStack,
+    buf: &mut [u8],
+    capture: &Option<crate::capture::CaptureTap>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
     let handles: Vec<SocketHandle> = stack
         .slots
@@ -344,6 +342,22 @@ fn pump_active(stack: &mut TunStack, buf: &mut [u8]) -> Result<(), String> {
 
     for h in handles {
         let idx = stack.slots.iter().position(|s| s.handle == h).unwrap();
+        // Capture: lazily open a flow for this slot on first sight.
+        let mut cap_flow: Option<(u64, crate::capture::CaptureTap)> = None;
+        if capture.is_some() {
+            if let Some(fid) = stack.slots[idx].capture_flow {
+                cap_flow = capture.as_ref().map(|t| (fid, t.clone()));
+            } else if let Some(remote) = stack.slots[idx].remote {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_FLOW: AtomicU64 = AtomicU64::new(1);
+                let fid = NEXT_FLOW.fetch_add(1, Ordering::Relaxed);
+                stack.slots[idx].capture_flow = Some(fid);
+                let tap = capture.as_ref().unwrap();
+                let remote_str = format!("{}:{}", remote.addr, remote.port);
+                tap.flow_open(fid, "tun0", "0.0.0.0", &remote_str, &[]);
+                cap_flow = Some((fid, tap.clone()));
+            }
+        }
         // Direction B first: drain what the exit sent us.
         {
             // Pull all queued bytes out of rx first (release the borrow), then
@@ -363,6 +377,11 @@ fn pump_active(stack: &mut TunStack, buf: &mut [u8]) -> Result<(), String> {
                 }
             }
             for bytes in &drained {
+                if let Some((fid, tap)) = cap_flow.as_ref() {
+                    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+                    tap.chunk(*fid, crate::capture::Dir::Down, seq, bytes);
+                }
                 let mut off = 0;
                 while off < bytes.len() {
                     if !stack.can_send(h) {
@@ -388,6 +407,12 @@ fn pump_active(stack: &mut TunStack, buf: &mut [u8]) -> Result<(), String> {
                     let slot = &stack.slots[idx];
                     if let Some(tx) = &slot.tx {
                         let _ = tx.send(buf[..n].to_vec());
+                    }
+                    if let Some((fid, tap)) = cap_flow.as_ref() {
+                        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+                        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+                        // First up bytes may carry a ClientHello for SNI/TLS detection.
+                        tap.chunk(*fid, crate::capture::Dir::Up, seq, &buf[..n]);
                     }
                     if n < buf.len() {
                         break;

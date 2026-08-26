@@ -147,7 +147,6 @@ impl CaptureStore {
             std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
         }
         let conn = Connection::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-        conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.execute_batch(SCHEMA)
             .map_err(|e| format!("capture schema: {e}"))?;
         Ok(CaptureStore { conn })
@@ -156,11 +155,7 @@ impl CaptureStore {
     /// Drain one batch of events; returns the number applied.
     pub fn apply_batch(&mut self, events: Vec<TapEvent>) -> Result<usize, String> {
         let n = events.len();
-        let tx = self
-            .conn
-            .transaction()
-            .map_err(|e| format!("tx: {e}"))
-            .map_err(|e| e.to_string())?;
+        let tx = &mut self.conn;
         for ev in &events {
             match ev {
                 TapEvent::FlowOpen { flow_id, source, local, remote_addr, ts, first_bytes } => {
@@ -193,15 +188,15 @@ impl CaptureStore {
                 }
                 TapEvent::Chunk { flow_id, dir, seq, ts, data } => {
                     let d = match dir {
-                        Dir::Up => 0,
-                        Dir::Down => 1,
+                        Dir::Up => "up",
+                        Dir::Down => "down",
                     };
                     tx.execute(
                         "INSERT INTO stream_chunks (flow_id, dir, seq, ts, data) VALUES (?1,?2,?3,?4,?5)",
                         rusqlite::params![*flow_id as i64, d, *seq as i64, ts, data],
                     )
                     .map_err(|e| e.to_string())?;
-                    let col = if d == 0 { "bytes_up" } else { "bytes_down" };
+                    let col = if d == "up" { "bytes_up" } else { "bytes_down" };
                     tx.execute(
                         &format!("UPDATE flows SET {col} = {col} + ?1 WHERE id = ?2"),
                         rusqlite::params![data.len() as i64, *flow_id as i64],
@@ -224,7 +219,6 @@ impl CaptureStore {
                 }
             }
         }
-        tx.commit().map_err(|e| format!("commit: {e}"))?;
         Ok(n)
     }
 
@@ -401,4 +395,283 @@ pub fn open_query(path: &PathBuf) -> Result<Connection, String> {
     )
     .map_err(|e| format!("open {}: {e}", path.display()))?;
     Ok(conn)
+    }
+
+/// Export one flow as a synthetic pcap file (Ethernet/IPv4/TCP), replaying the
+/// captured chunks in order with simple relative sequence numbers. Useful for
+/// offline analysis in Wireshark or `tcpreplay` round-trips.
+pub fn export_pcap(
+    store: &mut CaptureStore,
+    flow_id: i64,
+    dst: &std::path::Path,
+) -> Result<usize, String> {
+    let mut stmt = store
+        .conn()
+        .prepare(
+            "SELECT dir, seq, ts, data FROM stream_chunks \
+             WHERE flow_id = ?1 ORDER BY seq ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, i64, f64, Vec<u8>)> = stmt
+        .query_map(rusqlite::params![flow_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&0xa1b2c3d4u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&65535u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    let mut up_seq: u32 = 1;
+    let mut down_seq: u32 = 1;
+    let base_ts = rows.first().map(|r| r.2).unwrap_or(0.0);
+    for (dir, _seq, ts, data) in &rows {
+        let d = if dir == "up" { crate::capture::Dir::Up } else { crate::capture::Dir::Down };
+        let (sport, dport) = (49152u16, 443u16);
+        let (src_ip, dst_ip) = if matches!(d, crate::capture::Dir::Up) {
+            ([10u8, 0, 0, 2], [93u8, 184, 216, 34])
+        } else {
+            ([93u8, 184, 216, 34], [10u8, 0, 0, 2])
+        };
+        let seq = if matches!(d, crate::capture::Dir::Up) {
+            up_seq
+        } else {
+            down_seq
+        };
+        let pkt = build_tcp_packet(sport, dport, src_ip, dst_ip, seq, data);
+        let ts_rel = (*ts - base_ts) * 1_000_000.0;
+        let ts_sec = (ts_rel / 1_000_000.0) as u32;
+        let ts_usec = (ts_rel % 1_000_000.0) as u32;
+        out.extend_from_slice(&ts_sec.to_le_bytes());
+        out.extend_from_slice(&ts_usec.to_le_bytes());
+        out.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
+        out.extend_from_slice(&pkt);
+        if matches!(d, crate::capture::Dir::Up) {
+            up_seq = up_seq.wrapping_add(data.len() as u32);
+        } else {
+            down_seq = down_seq.wrapping_add(data.len() as u32);
+        }
+    }
+    std::fs::write(dst, &out).map_err(|e| format!("write {}: {e}", dst.display()))?;
+    Ok(rows.len())
+}
+
+/// Export all captured TLS secrets as an SSLKEYLOGFILE for offline decrypt.
+pub fn export_keylog(store: &mut CaptureStore, dst: &std::path::Path) -> Result<usize, String> {
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT line FROM tls_keys ORDER BY id ASC")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    let text = rows.join("\n");
+    std::fs::write(dst, text).map_err(|e| format!("write {}: {e}", dst.display()))?;
+    Ok(rows.len())
+}
+
+/// Build a minimal Ethernet(14)+IPv4(20)+TCP(20) packet carrying `payload`.
+pub fn build_tcp_packet(
+    sport: u16,
+    dport: u16,
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    seq: u32,
+    payload: &[u8],
+) -> Vec<u8> {
+    let total = 20 + 20 + payload.len();
+    let mut pkt = Vec::with_capacity(14 + total);
+    pkt.extend_from_slice(&[0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2, 0x08, 0x00]);
+    let ihl = 5u8;
+    pkt.push((4u8 << 4) | ihl);
+    pkt.push(0);
+    pkt.extend_from_slice(&(total as u16).to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.push(64);
+    pkt.push(6);
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&src_ip);
+    pkt.extend_from_slice(&dst_ip);
+    pkt.extend_from_slice(&sport.to_be_bytes());
+    pkt.extend_from_slice(&dport.to_be_bytes());
+    pkt.extend_from_slice(&seq.to_be_bytes());
+    pkt.extend_from_slice(&0u32.to_be_bytes());
+    let data_off = 5u8 << 4;
+    pkt.push(data_off);
+    pkt.push(0x10);
+    pkt.extend_from_slice(&65535u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes());
+    pkt.extend_from_slice(payload);
+    pkt
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
+
+    fn tmp_db(name: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("teamx-cap-test-{}-{}.db", std::process::id(), name));
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&p.with_extension("db-wal"));
+        let _ = std::fs::remove_file(&p.with_extension("db-shm"));
+        p
+    }
+
+    // Realistic path: a writer process/thread owns `store`, and readers (the
+    // CLI) open their own connection. We mirror that by re-opening for reads.
+    #[test]
+    fn store_apply_batch_roundtrip() {
+        let db = tmp_db("store");
+        let mut store = CaptureStore::open(&db).unwrap();
+        store
+            .apply_batch(vec![
+                TapEvent::FlowOpen {
+                    flow_id: 1,
+                    source: "socks5",
+                    local: "127.0.0.1".into(),
+                    remote_addr: "93.184.216.34:443".into(),
+                    ts: 1.0,
+                    first_bytes: vec![22, 3, 1, 0, 0],
+                },
+                TapEvent::Chunk {
+                    flow_id: 1,
+                    dir: Dir::Up,
+                    seq: 1,
+                    ts: 1.1,
+                    data: b"GET / HTTP/1.1\r\n".to_vec(),
+                },
+                TapEvent::FlowClose {
+                    flow_id: 1,
+                    reason: "eof".into(),
+                    ts: 1.2,
+                },
+            ])
+            .unwrap();
+        drop(store);
+        // reader opens a fresh connection
+        let rc = Connection::open(&db).unwrap();
+        let fc: i64 = rc.query_row("SELECT COUNT(*) FROM flows", [], |r| r.get(0)).unwrap();
+        assert_eq!(fc, 1);
+        let cc: i64 = rc
+            .query_row("SELECT COUNT(*) FROM stream_chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cc, 2); // first_bytes chunk + the explicit Chunk
+    }
+
+    #[test]
+    fn tap_channel_drains_to_store() {
+        let db = tmp_db("tap");
+        let mut store = CaptureStore::open(&db).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let handle = spawn_writer(store, rx);
+        let tap = CaptureTap {
+            tx,
+            dropped: Arc::new(AtomicU64::new(0)),
+            enabled: true,
+        };
+        tap.flow_open(7, "tun0", "10.0.0.2", "1.1.1.1:443", &[]);
+        tap.chunk(7, Dir::Up, 1, b"hello");
+        tap.chunk(7, Dir::Down, 1, b"world");
+        tap.flow_close(7, "eof");
+        drop(tap);
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = handle.join();
+
+        let rc = Connection::open(&db).unwrap();
+        let cc: i64 = rc
+            .query_row("SELECT COUNT(*) FROM stream_chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cc, 2);
+    }
+
+    #[test]
+    fn pcap_export_produces_magic() {
+        let db = tmp_db("pcap");
+        let mut store = CaptureStore::open(&db).unwrap();
+        store
+            .apply_batch(vec![
+                TapEvent::FlowOpen {
+                    flow_id: 1,
+                    source: "socks5",
+                    local: "10.0.0.2".into(),
+                    remote_addr: "93.184.216.34:443".into(),
+                    ts: 1.0,
+                    first_bytes: vec![],
+                },
+                TapEvent::Chunk {
+                    flow_id: 1,
+                    dir: Dir::Up,
+                    seq: 1,
+                    ts: 1.1,
+                    data: b"abc".to_vec(),
+                },
+                TapEvent::Chunk {
+                    flow_id: 1,
+                    dir: Dir::Down,
+                    seq: 1,
+                    ts: 1.5,
+                    data: b"xyz".to_vec(),
+                },
+            ])
+            .unwrap();
+        drop(store);
+        let mut reader = CaptureStore::open(&db).unwrap();
+        let pcap = db.with_extension("pcap");
+        export_pcap(&mut reader, 1, &pcap).unwrap();
+        let bytes = std::fs::read(&pcap).unwrap();
+        assert!(bytes.len() > 24);
+        assert_eq!(&bytes[0..4], &0xa1b2c3d4u32.to_le_bytes());
+        let _ = std::fs::remove_file(&pcap);
+    }
+
+    #[test]
+    fn keylog_import_and_prune() {
+        let db = tmp_db("keylog");
+        let mut store = CaptureStore::open(&db).unwrap();
+        store
+            .apply_batch(vec![TapEvent::FlowOpen {
+                flow_id: 1,
+                source: "socks5",
+                local: "10.0.0.2".into(),
+                remote_addr: "93.184.216.34:443".into(),
+                ts: 1.0,
+                first_bytes: vec![],
+            }])
+            .unwrap();
+        let n = store
+            .import_keylog(
+                "CLIENT_HANDSHAKE_TRAFFIC_SECRET 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        drop(store);
+        let rc = Connection::open(&db).unwrap();
+        let kc: i64 = rc
+            .query_row("SELECT COUNT(*) FROM tls_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kc, 1);
+        let mut reader = CaptureStore::open(&db).unwrap();
+        let (removed, _size) = reader.prune_max_size(1).unwrap();
+        assert!(removed >= 1);
+    }
 }

@@ -628,7 +628,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     // Optional traffic capture: open store + tap + writer.
                     let cap_tap = if *capture {
                         let db = crate::capture_cli::capture_home();
-                        let mut store = crate::capture::CaptureStore::open(&db)
+                        let store = crate::capture::CaptureStore::open(&db)
                             .map_err(AppError)?;
                         let (tx, rx) = std::sync::mpsc::channel();
                         crate::capture::spawn_writer(store, rx);

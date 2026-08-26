@@ -76,6 +76,21 @@ pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value,
             let n = store.import_keylog(&text)?;
             Ok(serde_json::json!({ "ok": true, "imported": n }))
         }
+        CaptureCmd::Export { flow, pcap, keylog } => {
+            let db = capture_home();
+            let mut store = CaptureStore::open(&db)?;
+            if let Some(kpath) = keylog {
+                let n = crate::capture::export_keylog(&mut store, &kpath)
+                    .map_err(|e| e.to_string())?;
+                return Ok(serde_json::json!({ "ok": true, "exported": n, "path": kpath.display().to_string() }));
+            }
+            if let (Some(fid), Some(ppath)) = (flow, pcap) {
+                let n = crate::capture::export_pcap(&mut store, *fid, &ppath)
+                    .map_err(|e| e.to_string())?;
+                return Ok(serde_json::json!({ "ok": true, "packets": n, "path": ppath.display().to_string() }));
+            }
+            Err("export requires --keylog <path> or --flow <id> --pcap <path>".to_string())
+        }
     }
 }
 

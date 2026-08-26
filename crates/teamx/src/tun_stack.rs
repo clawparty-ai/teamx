@@ -144,6 +144,8 @@ pub struct SocketSlot {
     pub eof: Option<tokio::sync::watch::Receiver<bool>>,
     /// Close handle to abort the bridge.
     pub close: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Capture flow id assigned when this slot becomes Active (None = no tap).
+    pub capture_flow: Option<u64>,
 }
 
 /// The running user-space TCP/IP stack.
@@ -211,6 +213,7 @@ impl TunStack {
                 rx: None,
                 eof: None,
                 close: None,
+                capture_flow: None,
             });
         }
 

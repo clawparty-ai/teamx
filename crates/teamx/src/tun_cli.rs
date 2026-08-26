@@ -84,7 +84,7 @@ pub fn handle_tun0(cmd: &Tun0Cmd) -> Result<serde_json::Value, String> {
             // Optional capture tap (same wiring as proxy start).
             let cap_tap = if *capture {
                 let db = crate::capture_cli::capture_home();
-                let mut store = crate::capture::CaptureStore::open(&db)?;
+                let store = crate::capture::CaptureStore::open(&db)?;
                 let (tx, rx) = std::sync::mpsc::channel();
                 crate::capture::spawn_writer(store, rx);
                 println!("ok capture: {} (writer running)", db.display());
