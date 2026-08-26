@@ -43,6 +43,9 @@ pub enum TapEvent {
     },
     /// Flow closed.
     FlowClose { flow_id: u64, reason: String, ts: f64 },
+    /// Late protocol metadata: set proto/sni/client_random once the first real
+    /// application bytes are seen (post-handshake for SOCKS5).
+    Meta { flow_id: u64, first_bytes: Vec<u8> },
     /// Raw IP packet (tun0 only, optional).
     #[allow(dead_code)] // raw L3 capture surface; wired with tun0 packet taps
     Packet { iface: String, data: Vec<u8>, ts: f64 },
@@ -120,6 +123,15 @@ impl CaptureTap {
             flow_id,
             reason: reason.to_string(),
             ts: now(),
+        });
+    }
+
+    /// Set protocol metadata for a flow once the first application bytes are
+    /// available (e.g. the TLS ClientHello after a SOCKS5 handshake).
+    pub fn meta(&self, flow_id: u64, first_bytes: &[u8]) {
+        self.send(TapEvent::Meta {
+            flow_id,
+            first_bytes: first_bytes.to_vec(),
         });
     }
 
@@ -211,6 +223,17 @@ impl CaptureStore {
                     tx.execute(
                         "UPDATE flows SET ended_at = ?1, close_reason = ?2 WHERE id = ?3",
                         rusqlite::params![ts, reason, *flow_id as i64],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                TapEvent::Meta { flow_id, first_bytes } => {
+                    let (sni, random) = crate::tls_parse::client_hello_meta(first_bytes);
+                    let proto = crate::tls_parse::detect_protocol(first_bytes);
+                    tx.execute(
+                        "UPDATE flows SET proto = ?1, sni = COALESCE(?2, sni), \
+                         client_random = COALESCE(?3, client_random) \
+                         WHERE id = ?4 AND (proto IS NULL OR proto = 'other')",
+                        rusqlite::params![proto, sni, random, *flow_id as i64],
                     )
                     .map_err(|e| e.to_string())?;
                 }

@@ -942,6 +942,9 @@ pub enum ReplayTcpCmd {
         /// override target host:port
         #[arg(long)]
         to: Option<String>,
+        /// proxy exit to tunnel through (default: routes default)
+        #[arg(long)]
+        exit: Option<String>,
         /// include a recorded-vs-replayed diff
         #[arg(long)]
         diff: bool,

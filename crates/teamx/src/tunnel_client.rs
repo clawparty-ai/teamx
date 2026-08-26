@@ -745,6 +745,7 @@ pub async fn run_socks5_proxy(
             static NEXT_FLOW: AtomicU64 = AtomicU64::new(1);
             let cap_flow: Option<(u64, crate::capture::CaptureTap)> =
                 capture.as_ref().map(|t| (NEXT_FLOW.fetch_add(1, Ordering::Relaxed), t.clone()));
+            let mut meta_sent = false;
             let (mut c_read, mut c_write) = client.into_split();
 
             // 1. SOCKS5 greeting: VER NMETHODS METHODS... -> reply 05 00.
@@ -800,22 +801,18 @@ pub async fn run_socks5_proxy(
                 }
             };
 
-            // Capture: open a flow with the CONNECT target as metadata and
-            // the leading SOCKS5 bytes (which include the request) for
-            // protocol fingerprinting. The up-stream first bytes after the
-            // greeting are what we keep.
+            // Capture: open a flow with the CONNECT target as metadata. The
+            // first application bytes (TLS ClientHello etc.) arrive only after
+            // the SOCKS5 handshake, so protocol detection happens later via a
+            // `meta` tap on the first up-direction chunk.
             if let Some((fid, tap)) = cap_flow.as_ref() {
-                let first = rused.min(64);
                 tap.flow_open(
                     *fid,
                     "socks5",
                     "127.0.0.1",
                     &format!("{}:{}", target.host, target.port),
-                    &rbuf[..first],
+                    &[],
                 );
-                if rused > 0 {
-                    tap.chunk(*fid, crate::capture::Dir::Up, 0, &rbuf[..rused]);
-                }
             }
 
             // 3. Resolve the exit for this target (routes) or use the fixed
@@ -917,6 +914,12 @@ pub async fn run_socks5_proxy(
                             match sid {
                                 Some(s) => {
                                     if let Some((fid, tap)) = cap_flow.as_ref() {
+                                        // First application bytes: classify protocol
+                                        // (TLS ClientHello SNI/client_random etc).
+                                        if !meta_sent {
+                                            meta_sent = true;
+                                            tap.meta(*fid, &buf[..n]);
+                                        }
                                         static SEQ_U: std::sync::atomic::AtomicU32 =
                                             std::sync::atomic::AtomicU32::new(1);
                                         let seq = SEQ_U.fetch_add(1, Ordering::Relaxed);

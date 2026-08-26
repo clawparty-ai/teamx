@@ -22,14 +22,22 @@ pub fn handle(cmd: &ReplayCmd) -> Result<serde_json::Value, String> {
 }
 
 fn handle_tcp(cmd: &ReplayTcpCmd) -> Result<serde_json::Value, String> {
-    let ReplayTcpCmd::Start { flow, to, diff, out } = cmd;
+    let ReplayTcpCmd::Start { flow, to, diff, out, exit } = cmd;
     let db = crate::capture_cli::capture_home();
     let mut store = crate::capture::CaptureStore::open(&db)?;
+    let server_url = crate::commands::resolve_server_url(None).map_err(|e| e.to_string())?;
+    let exit_name = exit.clone().unwrap_or_else(|| "egress2".to_string());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
-    let mut result = rt.block_on(replay::tcp_replay(&mut store, *flow, to.as_deref()))?;
+    let mut result = rt.block_on(replay::tcp_replay(
+        &mut store,
+        *flow,
+        to.as_deref(),
+        &server_url,
+        &exit_name,
+    ))?;
     if *diff {
         result["diff_requested"] = serde_json::Value::Bool(true);
     }

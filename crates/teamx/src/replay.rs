@@ -83,13 +83,16 @@ pub async fn serve_flow(store: &mut CaptureStore, flow_id: i64, port: u16) -> Re
 // Mode A — client replay
 // ---------------------------------------------------------------------------
 
-/// Replay a flow's up-stream to a target (default: the recorded remote).
+/// Replay a flow's up-stream to a target (default: the recorded remote),
+/// tunnelled through a teamx proxy exit so censored targets stay reachable.
 /// Returns a summary JSON object (bytes sent/received, diff ratio vs recorded
 /// down-stream).
 pub async fn tcp_replay(
     store: &mut CaptureStore,
     flow_id: i64,
     to: Option<&str>,
+    server_url: &str,
+    exit: &str,
 ) -> Result<serde_json::Value, String> {
     let (up, down) = flow_streams(store, flow_id)?;
     let target = match to {
@@ -100,30 +103,29 @@ pub async fn tcp_replay(
         return Err("flow has no up-stream bytes to replay".into());
     }
     let start = std::time::Instant::now();
-    let mut sock = tokio::net::TcpStream::connect(&target)
+    let mut bridge = crate::tunnel_client::open_tunnel_bridge(server_url, exit, &target)
         .await
-        .map_err(|e| format!("connect {target}: {e}"))?;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    sock.write_all(&up)
-        .await
-        .map_err(|e| format!("send to {target}: {e}"))?;
-    let _ = sock.shutdown().await;
+        .map_err(|e| format!("bridge to {exit}/{target}: {e}"))?;
+    bridge
+        .tx
+        .send(up.clone())
+        .map_err(|_| "bridge send closed".to_string())?;
     // read the response until EOF or idle
     let mut resp = Vec::new();
-    let mut buf = [0u8; 8192];
     loop {
-        match tokio::time::timeout(std::time::Duration::from_secs(3), sock.read(&mut buf)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(n)) => resp.extend_from_slice(&buf[..n]),
-            Ok(Err(_)) => break,
+        match tokio::time::timeout(std::time::Duration::from_secs(3), bridge.rx.recv()).await {
+            Ok(Some(bytes)) => resp.extend_from_slice(&bytes),
+            Ok(None) => break,
             Err(_) => break, // idle timeout
         }
     }
+    let _ = bridge.close.send(());
     let elapsed_ms = start.elapsed().as_millis() as i64;
     let diff = prefix_match_ratio(&down, &resp);
     Ok(serde_json::json!({
         "status": if diff == 1.0 { "ok" } else { "diff" },
         "target": target,
+        "exit": exit,
         "bytes_sent": up.len(),
         "bytes_received": resp.len(),
         "match_ratio": diff,
@@ -557,34 +559,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_replay_against_local_echo() {
-        // local echo server
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let echo = tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let (mut s, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = s.read(&mut buf).await.unwrap();
-                if n == 0 { break; }
-                s.write_all(&buf[..n]).await.unwrap();
-            }
-        });
-
+    async fn tcp_replay_reports_connect_failure() {
+        // tcp_replay now tunnels through a teamx server exit; with no server
+        // reachable it must classify a connection error rather than panic.
         let db = tmp_db("tcp");
         let mut store = CaptureStore::open(&db).unwrap();
-        seed_flow(
-            &mut store,
-            b"ping",
-            b"ping", // echo returns exactly the up bytes
-            &addr.to_string(),
-        );
+        seed_flow(&mut store, b"ping", b"pong", "www.google.com:443");
         let mut r = CaptureStore::open(&db).unwrap();
-        let result = tcp_replay(&mut r, 1, Some(&addr.to_string())).await.unwrap();
-        assert_eq!(result["status"], "ok");
-        assert_eq!(result["bytes_received"], 4);
-        assert_eq!(result["match_ratio"], 1.0);
-        echo.abort();
+        let result = tcp_replay(&mut r, 1, None, "https://127.0.0.1:1", "egress2").await;
+        assert!(result.is_err(), "expected connect error, got {result:?}");
     }
 }

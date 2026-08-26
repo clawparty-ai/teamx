@@ -27,8 +27,13 @@ have() { command -v "$1" >/dev/null 2>&1; }
 sql() { have sqlite3 && sqlite3 "$CAPDB" "$1" 2>/dev/null; }
 
 # hub/network reachability gate
+export TEAMX_SERVER_URL="${TEAMX_SERVER_URL:-https://81.70.41.108:8888}"
 hub_online() {
-  curl -s -o /dev/null --max-time 6 "https://www.google.com/generate_204" 2>/dev/null
+  local host port
+  host=$(echo "$TEAMX_SERVER_URL" | sed -E 's#https?://([^:/]+)(:([0-9]+))?.*#\1#')
+  port=$(echo "$TEAMX_SERVER_URL" | sed -E 's#https?://[^:/]+:?([0-9]+)?.*#\1#')
+  port="${port:-443}"
+  nc -z -G 6 "$host" "$port" 2>/dev/null
   return $?
 }
 
@@ -86,7 +91,7 @@ if hub_online; then
   if [ -n "$FID" ]; then
     PCAP=/tmp/teamx-test-$$.pcap
     $TEAMX --json capture export --flow "$FID" --pcap "$PCAP" >/dev/null 2>&1
-    head -c4 "$PCAP" 2>/dev/null | xxd -p 2>/dev/null | grep -qi a1b2c3d4
+    head -c4 "$PCAP" 2>/dev/null | xxd -p 2>/dev/null | grep -qiE 'd4c3b2a1|a1b2c3d4'
     check "pcap magic present (flow $FID)" $?
     rm -f "$PCAP"
   else

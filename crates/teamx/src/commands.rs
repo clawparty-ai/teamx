@@ -803,7 +803,7 @@ fn cmd_local(conn: &mut Connection, cmd: &LocalCmd) -> Result<Value> {
 
 /// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`
 /// env > auto-discovered from an imported letter > default localhost.
-fn resolve_server_url(explicit: Option<&str>) -> Result<String> {
+pub fn resolve_server_url(explicit: Option<&str>) -> Result<String> {
     if let Some(u) = explicit {
         return Ok(u.to_string());
     }

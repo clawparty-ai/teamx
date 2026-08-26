@@ -409,9 +409,12 @@ fn pump_active(
                         let _ = tx.send(buf[..n].to_vec());
                     }
                     if let Some((fid, tap)) = cap_flow.as_ref() {
+                        // First up bytes may carry a ClientHello for SNI/TLS
+                        // detection; Meta is idempotent (only applies while
+                        // proto is still 'other').
+                        tap.meta(*fid, &buf[..n]);
                         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
                         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-                        // First up bytes may carry a ClientHello for SNI/TLS detection.
                         tap.chunk(*fid, crate::capture::Dir::Up, seq, &buf[..n]);
                     }
                     if n < buf.len() {
