@@ -660,6 +660,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Analyze(cmd) => {
             return crate::analyze::handle(cmd).map_err(AppError);
         }
+        Command::Replay(cmd) => {
+            return crate::replay_cli::handle(cmd).map_err(AppError);
+        }
         // `teamx gui` is handled in main() before the DB opens; unreachable here.
         Command::Gui => {
             return Err(AppError("gui must be launched via `teamx gui`".to_string()));

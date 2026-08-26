@@ -5,6 +5,8 @@ mod capture;
 mod analyze;
 mod capture_cli;
 mod commands;
+mod replay;
+mod replay_cli;
 mod db;
 mod dns_proxy;
 mod events;

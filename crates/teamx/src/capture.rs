@@ -133,7 +133,7 @@ impl CaptureTap {
     }
 }
 
-fn now() -> f64 {
+pub fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -350,6 +350,41 @@ CREATE TABLE IF NOT EXISTS tls_keys (
   cipher        TEXT,
   added_at      REAL NOT NULL,
   PRIMARY KEY (client_random, label)
+);
+
+CREATE TABLE IF NOT EXISTS http_exchanges (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  flow_id          INTEGER,
+  session_id       INTEGER,
+  method           TEXT,
+  url              TEXT,
+  host             TEXT,
+  request_headers  TEXT,
+  request_body     BLOB,
+  status           INTEGER,
+  response_headers TEXT,
+  response_body    BLOB,
+  started_at       REAL
+);
+
+CREATE TABLE IF NOT EXISTS replay_runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode       TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  target     TEXT,
+  speed      REAL NOT NULL DEFAULT 1.0,
+  started_at REAL NOT NULL,
+  ended_at   REAL,
+  result     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS replay_flow_results (
+  run_id      INTEGER NOT NULL REFERENCES replay_runs(id) ON DELETE CASCADE,
+  flow_id     INTEGER NOT NULL,
+  status      TEXT NOT NULL,
+  match_ratio REAL,
+  error       TEXT,
+  duration_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS meta (

@@ -164,6 +164,10 @@ pub enum Command {
     #[command(subcommand)]
     Analyze(AnalyzeCmd),
 
+    /// Traffic replay (enterprise): TCP client/mock replay + HTTP exchange.
+    #[command(subcommand)]
+    Replay(ReplayCmd),
+
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
     Gui,
@@ -901,5 +905,85 @@ pub enum AnalyzeCmd {
         /// flow id
         #[arg(long)]
         flow: i64,
+    },
+}
+
+/// `teamx replay` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum ReplayCmd {
+    /// Mock server: serve a flow's recorded down-stream on a local port.
+    Serve {
+        /// flow id
+        #[arg(long)]
+        flow: i64,
+        /// local port (default 18080)
+        #[arg(long, default_value_t = 18080)]
+        port: u16,
+    },
+    /// TCP client replay + response diff.
+    Tcp {
+        #[command(subcommand)]
+        cmd: ReplayTcpCmd,
+    },
+    /// HTTP exchange utilities (HAR export, to-curl, single send).
+    Http {
+        #[command(subcommand)]
+        cmd: ReplayHttpCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReplayTcpCmd {
+    /// Replay a flow's up-stream to a target and report the response diff.
+    Start {
+        /// flow id
+        #[arg(long)]
+        flow: i64,
+        /// override target host:port
+        #[arg(long)]
+        to: Option<String>,
+        /// include a recorded-vs-replayed diff
+        #[arg(long)]
+        diff: bool,
+        /// JSON result output path
+        #[arg(long, short = 'o')]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReplayHttpCmd {
+    /// Extract a plain-HTTP exchange from a captured flow into http_exchanges.
+    Extract {
+        /// flow id
+        #[arg(long)]
+        flow: i64,
+    },
+    /// Export all exchanges as a HAR 1.2 document.
+    ExportHar {
+        /// output path
+        #[arg(long, short = 'o')]
+        out: PathBuf,
+    },
+    /// Print an equivalent curl command for an exchange.
+    ToCurl {
+        /// exchange id
+        #[arg(long)]
+        exchange: i64,
+    },
+    /// Re-send an exchange's request and report the response.
+    Send {
+        /// exchange id
+        #[arg(long)]
+        exchange: i64,
+        /// variable substitution k=v (repeatable)
+        #[arg(long = "var")]
+        vars: Vec<String>,
+        /// target rewrite from=to (repeatable)
+        #[arg(long = "map")]
+        maps: Vec<String>,
+        /// JSON result output path
+        #[arg(long, short = 'o')]
+        out: Option<PathBuf>,
     },
 }
