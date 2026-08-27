@@ -363,6 +363,10 @@ impl TunStack {
         self.slots[i].rx = None;
         self.slots[i].eof = None;
         self.slots[i].close = None;
+        // Reset capture state so a reused slot starts a fresh flow.
+        self.slots[i].capture_flow = None;
+        self.slots[i].seq_up = 0;
+        self.slots[i].seq_down = 0;
     }
 
     /// Sleep until the stack has work to do (or at most `max` ms).

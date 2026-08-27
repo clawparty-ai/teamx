@@ -422,6 +422,9 @@ fn pump_active(
                 }
                 Err(()) => {
                     // tun side EOF: mark closing, tell exit.
+                    if let Some((fid, tap)) = cap_flow.as_ref() {
+                        tap.flow_close(*fid, "tun-eof");
+                    }
                     stack.reset_socket(h);
                     break;
                 }
