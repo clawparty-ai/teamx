@@ -46,6 +46,62 @@ pub struct MemberProfile {
     pub outputs: Vec<String>,
 }
 
+/// A document lifecycle reaction: on a doc event, notify a role + action.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocReaction {
+    /// Trigger event name (`created` / `updated` / `reviewed` / ...).
+    pub on: String,
+    /// Optional target role ("通知 <角色>"); None = broadcast / agent decides.
+    pub to_role: Option<String>,
+    /// Human-readable action description (executed by the agent).
+    pub action: String,
+}
+
+/// A document type declared in the `## 文档` section of TEAM.md.
+///
+/// This is a *declarative contract*: the state machine (`states`) is dynamic —
+/// it comes from TEAM.md, not from `state.rs`. Different teams can define
+/// different documents and flows without code changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocSpec {
+    /// The `### key` — unique document identifier (referenced by events).
+    pub key: String,
+    /// Display title (`标题` / `title`); falls back to `key`.
+    pub title: String,
+    /// Purpose (`用途` / `purpose`).
+    pub purpose: Option<String>,
+    /// Required sections (`模板` / `template`); empty = no template, free-form.
+    pub template: Vec<String>,
+    /// Roles allowed to create this document (`创建者` / `creators`); empty = anyone.
+    pub creators: Vec<String>,
+    /// Owning role (`所有者` / `owner`) — default receiver of changes.
+    pub owner: String,
+    /// Roles that may advance state (`审批者` / `approvers`); empty = owner only.
+    pub approvers: Vec<String>,
+    /// Declared state chain (`状态流` / `states`), e.g. `draft -> review -> approved -> done`.
+    pub states: Vec<String>,
+    /// Reactions to lifecycle events (`变更响应` / `reactions`).
+    pub reactions: Vec<DocReaction>,
+}
+
+impl DocSpec {
+    fn from_key(key: &str) -> Self {
+        DocSpec {
+            key: key.to_string(),
+            title: key.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Whether the doc is missing mandatory fields (`owner`, `states`).
+    /// Such docs are parsed but skipped at bootstrap instantiation.
+    /// (Used by the T2 bootstrap integration; tests exercise it today.)
+    #[allow(dead_code)]
+    pub fn is_incomplete(&self) -> bool {
+        self.owner.is_empty() || self.states.is_empty()
+    }
+}
+
 /// The parsed `.teamx/TEAM.md`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TeamFile {
@@ -53,6 +109,8 @@ pub struct TeamFile {
     pub background: Option<String>,
     pub goals: Vec<String>,
     pub members: Vec<MemberProfile>,
+    /// Document contracts declared in the `## 文档` section.
+    pub docs: Vec<DocSpec>,
 }
 
 impl MemberProfile {
@@ -93,10 +151,67 @@ fn field_name(trimmed: &str) -> Option<(&'static str, &str)> {
 }
 
 fn split_list(v: &str) -> Vec<String> {
-    v.split([',', '，', '、', ';', '；'])
+    v.split([',', '，', '、', ';', '；', '|'])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Doc-section field aliases (Chinese + English keys). English aliases are
+/// matched case-insensitively (`Title:` / `title:` / `TITLE:` all work).
+fn doc_field_name(trimmed: &str) -> Option<(&'static str, &str)> {
+    for (canon, aliases) in [
+        ("title", &["标题", "title"][..]),
+        ("purpose", &["用途", "purpose", "目的"][..]),
+        ("template", &["模板", "template"][..]),
+        ("creators", &["创建者", "creators", "创建"][..]),
+        ("owner", &["所有者", "owner", "负责人"][..]),
+        ("approvers", &["审批者", "approvers", "审批"][..]),
+        ("states", &["状态流", "states", "状态"][..]),
+        ("reactions", &["变更响应", "reactions", "响应"][..]),
+    ] {
+        for a in aliases {
+            // English aliases: case-insensitive prefix; Chinese: exact prefix.
+            let matched = if a.is_ascii() {
+                trimmed.get(..a.len()).map(|p| p.eq_ignore_ascii_case(a)).unwrap_or(false)
+            } else {
+                trimmed.starts_with(a)
+            };
+            if matched {
+                let rest = trimmed[a.len()..].trim();
+                if let Some(v) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('：')) {
+                    let v = v.trim();
+                    if v.is_empty() {
+                        return Some((canon, ""));
+                    }
+                    return Some((canon, v));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Split a doc state chain `draft -> review -> approved -> done` into states.
+/// Accepts `->`, `→`, or list separators.
+fn split_states(v: &str) -> Vec<String> {
+    v.split("->")
+        .flat_map(|s| s.split('→'))
+        .flat_map(|s| s.split([',', '，']))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Strip surrounding `[` / `]` from a role list element (e.g. `[pm]`).
+fn strip_brackets(s: &str) -> String {
+    s.trim().trim_start_matches('[').trim_end_matches(']').trim().to_string()
+}
+
+/// Normalize a doc list field (template/creators/approvers): split + strip
+/// brackets from each element.
+fn doc_list(value: &str) -> Vec<String> {
+    split_list(value).into_iter().map(|s| strip_brackets(&s)).collect()
 }
 
 /// A member key doubles as a directory name under `.teamx/members/`, so it
@@ -119,14 +234,25 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
         return Err("TEAM.md is empty".to_string());
     }
     let mut tf = TeamFile::default();
-    // Current section: "root" | "background" | "goals" | "members"
+    // Current section: "root" | "background" | "goals" | "members" | "docs"
     let mut section = "root".to_string();
     let mut member: Option<MemberProfile> = None;
+    let mut doc: Option<DocSpec> = None;
+    // Whether the previous line opened a `- 变更响应:` block (nested `on ...`
+    // sub-items are reactions). Reset on any non-nested field line.
+    let mut reactions_open = false;
 
     let flush_member = |tf: &mut TeamFile, m: &Option<MemberProfile>| {
         if let Some(m) = m {
             if !m.key.is_empty() {
                 tf.members.push(m.clone());
+            }
+        }
+    };
+    let flush_doc = |tf: &mut TeamFile, d: &Option<DocSpec>| {
+        if let Some(d) = d {
+            if !d.key.is_empty() {
+                tf.docs.push(d.clone());
             }
         }
     };
@@ -137,7 +263,8 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
         if trimmed.is_empty() {
             continue;
         }
-        // Member subsection header: `### key`
+        // Subsection header: `### key` — a member (under `## 成员`) or a
+        // document spec (under `## 文档`).
         if let Some(key) = trimmed.strip_prefix("### ") {
             let key = key.trim();
             if !is_safe_member_key(key) {
@@ -146,18 +273,28 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
                      leading dot (the key becomes a directory name)"
                 ));
             }
-            flush_member(&mut tf, &member);
-            member = Some(MemberProfile::from_key(key));
+            if section == "docs" {
+                flush_doc(&mut tf, &doc);
+                doc = Some(DocSpec::from_key(key));
+                reactions_open = false;
+            } else {
+                flush_member(&mut tf, &member);
+                member = Some(MemberProfile::from_key(key));
+            }
             continue;
         }
         // Section header: `## name`
         if let Some(name) = trimmed.strip_prefix("## ") {
             flush_member(&mut tf, &member);
             member = None;
+            flush_doc(&mut tf, &doc);
+            doc = None;
+            reactions_open = false;
             section = match name.trim() {
                 "背景" | "Background" | "背景信息" => "background".to_string(),
                 "目标" | "目标与范围" | "Goals" | "Goal" => "goals".to_string(),
                 "成员" | "团队成员" | "Members" | "Team" => "members".to_string(),
+                "文档" | "Docs" | "Documents" | "Document" => "docs".to_string(),
                 _ => "root".to_string(),
             };
             continue;
@@ -213,11 +350,90 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
                     }
                 }
             }
+            "docs" => {
+                if let Some(d) = doc.as_mut() {
+                    // A nested reaction sub-item: `- on <event>: <action>`.
+                    // Recognized when the reactions block is open AND the line
+                    // is indented (or already starts with `on`).
+                    let indented = line.starts_with(' ') || line.starts_with('\t');
+                    let fld = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
+                    if reactions_open && (indented || fld.starts_with("on ")) {
+                        if let Some(rest) = fld.strip_prefix("on ") {
+                            if let Some((ev, act)) = rest.split_once(':') {
+                                let ev = ev.trim();
+                                let act = act.trim();
+                                if !ev.is_empty() {
+                                    let (to_role, action) = parse_reaction(act);
+                                    d.reactions.push(DocReaction {
+                                        on: ev.to_string(),
+                                        to_role,
+                                        action,
+                                    });
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let fld = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
+                    if let Some((canon, value)) = doc_field_name(fld) {
+                        match canon {
+                            "title" => {
+                                if !value.is_empty() {
+                                    d.title = value.to_string();
+                                }
+                            }
+                            "purpose" => {
+                                if !value.is_empty() {
+                                    d.purpose = Some(value.to_string());
+                                }
+                            }
+                            "template" => d.template = doc_list(value),
+                            "creators" => d.creators = doc_list(value),
+                            "owner" => {
+                                if !value.is_empty() {
+                                    d.owner = value.to_string();
+                                }
+                            }
+                            "approvers" => d.approvers = doc_list(value),
+                            "states" => d.states = split_states(value),
+                            "reactions" => {
+                                // `- 变更响应:` (possibly with empty value):
+                                // following nested `on ...` items are reactions.
+                                reactions_open = true;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        reactions_open = false;
+                    }
+                }
+            }
             _ => {}
         }
     }
     flush_member(&mut tf, &member);
+    flush_doc(&mut tf, &doc);
     Ok(tf)
+}
+
+/// Parse a reaction action string into (optional target role, action).
+/// Supports `通知 <角色> <动作>` / `notify <role> <action>` prefixes.
+fn parse_reaction(act: &str) -> (Option<String>, String) {
+    for prefix in ["通知", "notify"] {
+        if let Some(rest) = act.strip_prefix(prefix) {
+            let rest = rest.trim();
+            if let Some(space) = rest.find(char::is_whitespace) {
+                let role = rest[..space].trim();
+                let action = rest[space..].trim();
+                if !role.is_empty() {
+                    return (Some(role.to_string()), action.to_string());
+                }
+            } else if !rest.is_empty() {
+                return (Some(rest.to_string()), String::new());
+            }
+        }
+    }
+    (None, act.to_string())
 }
 
 /// Read and parse `.teamx/TEAM.md` under the project root. Returns Ok(None)
@@ -355,5 +571,148 @@ mod tests {
         let tf = parse_team_file_text("# T\n## 目标\n- a\n- b\n- c\n## 成员\n### x\n技能: a、b，c; d；e\n").unwrap();
         assert_eq!(tf.goals, vec!["a", "b", "c"]);
         assert_eq!(tf.members[0].skills, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    // ------------------------------------------------------------------
+    // `## 文档` (Document) section
+    // ------------------------------------------------------------------
+
+    const DOCS: &str = r#"# 企业数字化平台
+
+## 文档
+
+### requirements
+- 标题: 需求文档
+- 用途: 定义产品需求与验收标准
+- 模板: 背景 | 目标 | 用户故事 | 验收标准
+- 创建者: [pm]
+- 所有者: pm
+- 审批者: [reviewer, owner]
+- 状态流: draft -> review -> approved -> done
+- 变更响应:
+    - on created: 通知 pm 细化需求
+    - on updated: 通知 reviewer 复审
+    - on approved: 通知 ui-dev 与 java-dev 开始设计
+
+### issue
+- 标题: 缺陷 / 改进请求
+- 所有者: team-lead
+- 状态流: opened -> triaged -> assigned -> fixing -> verified -> closed
+- 变更响应:
+    - on created: team-lead 分析并分诊（triage）
+    - on verified: 通知 owner 关闭并记录 release-note
+"#;
+
+    #[test]
+    fn parse_docs_section() {
+        let tf = parse_team_file_text(DOCS).unwrap();
+        assert_eq!(tf.docs.len(), 2);
+
+        // requirements — full spec
+        let req = &tf.docs[0];
+        assert_eq!(req.key, "requirements");
+        assert_eq!(req.title, "需求文档");
+        assert_eq!(req.purpose.as_deref(), Some("定义产品需求与验收标准"));
+        assert_eq!(req.template, vec!["背景", "目标", "用户故事", "验收标准"]);
+        assert_eq!(req.creators, vec!["pm"]);
+        assert_eq!(req.owner, "pm");
+        assert_eq!(req.approvers, vec!["reviewer", "owner"]);
+        assert_eq!(req.states, vec!["draft", "review", "approved", "done"]);
+        assert!(!req.is_incomplete());
+        assert_eq!(req.reactions.len(), 3);
+        assert_eq!(req.reactions[0].on, "created");
+        assert_eq!(req.reactions[0].to_role.as_deref(), Some("pm"));
+        assert_eq!(req.reactions[0].action, "细化需求");
+        assert_eq!(req.reactions[1].to_role.as_deref(), Some("reviewer"));
+        assert_eq!(req.reactions[2].to_role.as_deref(), Some("ui-dev"));
+        assert_eq!(req.reactions[2].action, "与 java-dev 开始设计");
+
+        // issue — minimal fields
+        let iss = &tf.docs[1];
+        assert_eq!(iss.key, "issue");
+        assert_eq!(iss.title, "缺陷 / 改进请求");
+        assert!(iss.template.is_empty()); // no template -> free-form
+        assert!(iss.creators.is_empty()); // empty -> anyone
+        assert_eq!(iss.owner, "team-lead");
+        assert_eq!(iss.states, vec!["opened", "triaged", "assigned", "fixing", "verified", "closed"]);
+        assert_eq!(iss.reactions.len(), 2);
+        // no `通知` prefix -> to_role None
+        assert_eq!(iss.reactions[0].to_role, None);
+        assert_eq!(iss.reactions[0].action, "team-lead 分析并分诊（triage）");
+        assert_eq!(iss.reactions[1].to_role.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn docs_english_aliases_and_separators() {
+        let tf = parse_team_file_text(
+            "# T\n## Docs\n### pr\nTitle: 代码合并请求\nPurpose: 评审与合并\n\
+             Template: 变更描述, 关联 issue\nCreators: contributor, developer\n\
+             Owner: 提交者\nApprovers: reviewer\nStates: opened -> reviewing -> approved -> merged\n\
+             Reactions:\n    - on created: notify reviewer 评审\n",
+        )
+        .unwrap();
+        assert_eq!(tf.docs.len(), 1);
+        let pr = &tf.docs[0];
+        assert_eq!(pr.title, "代码合并请求");
+        assert_eq!(pr.template, vec!["变更描述", "关联 issue"]);
+        assert_eq!(pr.creators, vec!["contributor", "developer"]);
+        assert_eq!(pr.states, vec!["opened", "reviewing", "approved", "merged"]);
+        assert_eq!(pr.reactions.len(), 1);
+        assert_eq!(pr.reactions[0].on, "created");
+        assert_eq!(pr.reactions[0].to_role.as_deref(), Some("reviewer"));
+        assert_eq!(pr.reactions[0].action, "评审");
+    }
+
+    #[test]
+    fn docs_fullwidth_colon_and_arrow() {
+        let tf = parse_team_file_text(
+            "# T\n## 文档\n### design\n标题：概要设计\n所有者：架构师\n状态流：draft → review → approved\n",
+        )
+        .unwrap();
+        let d = &tf.docs[0];
+        assert_eq!(d.title, "概要设计");
+        assert_eq!(d.owner, "架构师");
+        assert_eq!(d.states, vec!["draft", "review", "approved"]);
+    }
+
+    #[test]
+    fn docs_incomplete_missing_owner_or_states() {
+        // missing owner + states -> incomplete (parses but flagged)
+        let tf = parse_team_file_text("# T\n## 文档\n### x\n标题: X\n").unwrap();
+        assert_eq!(tf.docs.len(), 1);
+        assert!(tf.docs[0].is_incomplete());
+        // missing states only
+        let tf = parse_team_file_text("# T\n## 文档\n### y\n所有者: pm\n").unwrap();
+        assert!(tf.docs[0].is_incomplete());
+        // complete
+        let tf = parse_team_file_text("# T\n## 文档\n### z\n所有者: pm\n状态流: a -> b\n").unwrap();
+        assert!(!tf.docs[0].is_incomplete());
+    }
+
+    #[test]
+    fn docs_no_reactions_block_ok() {
+        let tf = parse_team_file_text("# T\n## 文档\n### a\n所有者: pm\n状态流: a -> b\n").unwrap();
+        assert!(tf.docs[0].reactions.is_empty());
+    }
+
+    #[test]
+    fn docs_and_members_coexist() {
+        let tf = parse_team_file_text(
+            "# T\n## 成员\n### 小明\n角色: contributor\n## 文档\n### issue\n所有者: lead\n状态流: a -> b\n",
+        )
+        .unwrap();
+        assert_eq!(tf.members.len(), 1);
+        assert_eq!(tf.docs.len(), 1);
+        assert_eq!(tf.members[0].key, "小明");
+        assert_eq!(tf.docs[0].key, "issue");
+    }
+
+    #[test]
+    fn docs_key_traversal_rejected() {
+        for key in ["../../evil", "..", ".hidden", "a/b", "a\\b"] {
+            let text = format!("# T\n## 文档\n### {key}\n所有者: pm\n");
+            let err = parse_team_file_text(&text).unwrap_err();
+            assert!(err.contains("unsafe TEAM.md member key"), "{key}: {err}");
+        }
     }
 }
