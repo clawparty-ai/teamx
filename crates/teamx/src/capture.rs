@@ -31,7 +31,10 @@ pub enum TapEvent {
         local: String,
         remote_addr: String,
         ts: f64,
-        first_bytes: Vec<u8>, // up-direction leading bytes (ClientHello etc.)
+        /// Optional protocol-detection bytes (ClientHello etc.); used only for
+        /// proto/SNI/client_random extraction — callers must emit a separate
+        /// `Chunk` event if these bytes should appear in `stream_chunks`.
+        first_bytes: Vec<u8>,
     },
     /// Bytes observed on a flow.
     Chunk {
@@ -145,11 +148,17 @@ impl CaptureTap {
     }
 }
 
+/// Best-effort current timestamp (seconds since UNIX epoch).
+/// Returns 0.0 only if the system clock is before the epoch (shouldn't happen
+/// in practice, but avoids panicking on weird platforms).
 pub fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+        .unwrap_or_else(|e| {
+            eprintln!("capture: clock error: {e}");
+            0.0
+        })
 }
 
 /// The capture writer: drains tap events into SQLite in batches.
@@ -188,19 +197,9 @@ impl CaptureStore {
                         ],
                     )
                     .map_err(|e| e.to_string())?;
-                    if !first_bytes.is_empty() {
-                        tx.execute(
-                            "INSERT INTO stream_chunks (flow_id, dir, seq, ts, data)
-                             VALUES (?1, 0, 0, ?2, ?3)",
-                            rusqlite::params![*flow_id as i64, ts, first_bytes],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        tx.execute(
-                            "UPDATE flows SET bytes_up = bytes_up + ?1 WHERE id = ?2",
-                            rusqlite::params![first_bytes.len() as i64, *flow_id as i64],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
+                    // NOTE: `first_bytes` is used only for protocol detection.
+                    // Callers emit a separate `Chunk` event if these bytes should
+                    // appear in `stream_chunks`. This avoids double-counting.
                 }
                 TapEvent::Chunk { flow_id, dir, seq, ts, data } => {
                     let d = match dir {
@@ -308,6 +307,20 @@ impl CaptureStore {
         }
     }
 
+    /// Remove orphaned tls_keys whose client_random no longer appears in any
+    /// flow. Should be called after pruning.
+    pub fn cleanup_orphaned_keys(&mut self) -> Result<usize, String> {
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM tls_keys WHERE client_random NOT IN \
+                 (SELECT client_random FROM flows WHERE client_random IS NOT NULL)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n)
+    }
+
     pub fn conn(&mut self) -> &mut Connection {
         &mut self.conn
     }
@@ -326,6 +339,11 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
         .collect()
+}
+
+/// Hex-encode a byte slice to a lowercase hex string.
+fn hex_encode(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 const SCHEMA: &str = "
@@ -351,7 +369,7 @@ CREATE INDEX IF NOT EXISTS idx_flows_sni ON flows(sni);
 
 CREATE TABLE IF NOT EXISTS stream_chunks (
   flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
-  dir     INTEGER NOT NULL,
+  dir     TEXT NOT NULL CHECK(dir IN ('up', 'down')),
   seq     INTEGER NOT NULL,
   ts      REAL NOT NULL,
   data    BLOB NOT NULL,
@@ -450,6 +468,23 @@ pub fn spawn_writer(
     })
 }
 
+/// Parse a `host:port` or `host` string into (`[u8;4]`, `u16`).
+/// Returns `(default_ip, default_port)` when parsing fails (e.g. domain name).
+fn parse_addr(addr: &str, default_ip: [u8; 4], default_port: u16) -> ([u8; 4], u16) {
+    let (host_str, port) = if let Some((h, p)) = addr.rsplit_once(':') {
+        let p: u16 = p.parse().unwrap_or(default_port);
+        (h, p)
+    } else {
+        (addr, default_port)
+    };
+    // Try parsing as IPv4 dotted-decimal.
+    if let Ok(octets) = host_str.parse::<std::net::Ipv4Addr>() {
+        return (octets.octets(), port);
+    }
+    // Domain name — fall back to defaults (synthetic pcap).
+    (default_ip, port)
+}
+
 /// Export one flow as a synthetic pcap file (Ethernet/IPv4/TCP), replaying the
 /// captured chunks in order with simple relative sequence numbers. Useful for
 /// offline analysis in Wireshark or `tcpreplay` round-trips.
@@ -458,6 +493,24 @@ pub fn export_pcap(
     flow_id: i64,
     dst: &std::path::Path,
 ) -> Result<usize, String> {
+    // Fetch flow metadata for IP/port extraction.
+    let remote_addr: String = store
+        .conn()
+        .query_row(
+            "SELECT remote_addr FROM flows WHERE id = ?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("flow {flow_id}: {e}"))?;
+    let local_addr: String = store
+        .conn()
+        .query_row(
+            "SELECT local_addr FROM flows WHERE id = ?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("flow {flow_id}: {e}"))?;
+
     let mut stmt = store
         .conn()
         .prepare(
@@ -487,14 +540,16 @@ pub fn export_pcap(
     let mut down_seq: u32 = 1;
     let base_ts = rows.first().map(|r| r.2).unwrap_or(0.0);
     for (dir, _seq, ts, data) in &rows {
-        let d = if dir == "up" { crate::capture::Dir::Up } else { crate::capture::Dir::Down };
-        let (sport, dport) = (49152u16, 443u16);
-        let (src_ip, dst_ip) = if matches!(d, crate::capture::Dir::Up) {
-            ([10u8, 0, 0, 2], [93u8, 184, 216, 34])
+        let d = if dir == "up" { Dir::Up } else { Dir::Down };
+        // Parse IPs and ports from the flow's recorded addresses.
+        let (src_ip, sport) = parse_addr(&local_addr, [10, 0, 0, 2], 49152);
+        let (dst_ip, dport) = parse_addr(&remote_addr, [93, 184, 216, 34], 443);
+        let (src_ip, dst_ip, sport, dport) = if matches!(d, Dir::Up) {
+            (src_ip, dst_ip, sport, dport)
         } else {
-            ([93u8, 184, 216, 34], [10u8, 0, 0, 2])
+            (dst_ip, src_ip, dport, sport)
         };
-        let seq = if matches!(d, crate::capture::Dir::Up) {
+        let seq = if matches!(d, Dir::Up) {
             up_seq
         } else {
             down_seq
@@ -508,7 +563,7 @@ pub fn export_pcap(
         out.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
         out.extend_from_slice(&(pkt.len() as u32).to_le_bytes());
         out.extend_from_slice(&pkt);
-        if matches!(d, crate::capture::Dir::Up) {
+        if matches!(d, Dir::Up) {
             up_seq = up_seq.wrapping_add(data.len() as u32);
         } else {
             down_seq = down_seq.wrapping_add(data.len() as u32);
@@ -519,13 +574,19 @@ pub fn export_pcap(
 }
 
 /// Export all captured TLS secrets as an SSLKEYLOGFILE for offline decrypt.
+/// Each line is formatted as `<label> <client_random_hex> <secret_hex>`.
 pub fn export_keylog(store: &mut CaptureStore, dst: &std::path::Path) -> Result<usize, String> {
     let mut stmt = store
         .conn()
-        .prepare("SELECT line FROM tls_keys ORDER BY id ASC")
+        .prepare("SELECT label, client_random, secret FROM tls_keys ORDER BY added_at ASC")
         .map_err(|e| e.to_string())?;
     let rows: Vec<String> = stmt
-        .query_map([], |r| r.get(0))
+        .query_map([], |r| {
+            let label: String = r.get(0)?;
+            let cr: Vec<u8> = r.get(1)?;
+            let secret: Vec<u8> = r.get(2)?;
+            Ok(format!("{} {} {}", label, hex_encode(&cr), hex_encode(&secret)))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -609,6 +670,13 @@ mod tests {
                 TapEvent::Chunk {
                     flow_id: 1,
                     dir: Dir::Up,
+                    seq: 0,
+                    ts: 1.05,
+                    data: vec![22, 3, 1, 0, 0],
+                },
+                TapEvent::Chunk {
+                    flow_id: 1,
+                    dir: Dir::Up,
                     seq: 1,
                     ts: 1.1,
                     data: b"GET / HTTP/1.1\r\n".to_vec(),
@@ -628,13 +696,13 @@ mod tests {
         let cc: i64 = rc
             .query_row("SELECT COUNT(*) FROM stream_chunks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(cc, 2); // first_bytes chunk + the explicit Chunk
+        assert_eq!(cc, 2); // two explicit Chunk events (first_bytes no longer auto-inserted)
     }
 
     #[test]
     fn tap_channel_drains_to_store() {
         let db = tmp_db("tap");
-        let mut store = CaptureStore::open(&db).unwrap();
+        let store = CaptureStore::open(&db).unwrap();
         let (tx, rx) = mpsc::channel();
         let handle = spawn_writer(store, rx);
         let tap = CaptureTap {
@@ -726,5 +794,42 @@ mod tests {
         let mut reader = CaptureStore::open(&db).unwrap();
         let (removed, _size) = reader.prune_max_size(1).unwrap();
         assert!(removed >= 1);
+        // After pruning the flow, orphaned keys should be cleaned up.
+        let orphans = reader.cleanup_orphaned_keys().unwrap();
+        assert_eq!(orphans, 1);
+    }
+
+    #[test]
+    fn export_keylog_writes_correct_format() {
+        let db = tmp_db("exportkeylog");
+        let mut store = CaptureStore::open(&db).unwrap();
+        store
+            .import_keylog(
+                "CLIENT_TRAFFIC_SECRET_0 aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233 0102030405060708091011121314151617181920212223242526272829303132\n",
+            )
+            .unwrap();
+        let path = db.with_extension("keylog");
+        let n = export_keylog(&mut store, &path).unwrap();
+        assert_eq!(n, 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("CLIENT_TRAFFIC_SECRET_0 "));
+        assert!(text.contains("aabbccdd00112233"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_addr_works() {
+        // IP literal
+        let (ip, port) = parse_addr("10.0.0.1:443", [0, 0, 0, 0], 80);
+        assert_eq!(ip, [10, 0, 0, 1]);
+        assert_eq!(port, 443);
+        // Domain: port parsed from string, IP falls back to default
+        let (ip, port) = parse_addr("example.com:80", [1, 2, 3, 4], 9999);
+        assert_eq!(ip, [1, 2, 3, 4]);
+        assert_eq!(port, 80); // port from string, not default
+        // No port: uses default
+        let (ip, port) = parse_addr("example.com", [1, 2, 3, 4], 9999);
+        assert_eq!(ip, [1, 2, 3, 4]);
+        assert_eq!(port, 9999);
     }
 }

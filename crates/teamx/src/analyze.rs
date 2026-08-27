@@ -150,16 +150,22 @@ pub fn http_reconstruct(store: &mut CaptureStore, flow_id: i64) -> Result<serde_
     }))
 }
 
-/// Return just the HTTP header section (up to the blank line), lossy UTF-8.
+/// Return just the HTTP header section (up to the blank line).
+/// Uses raw byte scanning to avoid lossy UTF-8 conversion on binary data.
 fn head_only(buf: &[u8]) -> String {
-    let s = String::from_utf8_lossy(buf);
-    if let Some(pos) = s.find("\r\n\r\n") {
-        s[..pos + 4].to_string()
-    } else if let Some(pos) = s.find("\n\n") {
-        s[..pos + 2].to_string()
+    // Find \r\n\r\n or \n\n in raw bytes.
+    if let Some(pos) = find_subsequence(buf, b"\r\n\r\n") {
+        String::from_utf8_lossy(&buf[..pos + 4]).to_string()
+    } else if let Some(pos) = find_subsequence(buf, b"\n\n") {
+        String::from_utf8_lossy(&buf[..pos + 2]).to_string()
     } else {
-        s.to_string()
+        String::from_utf8_lossy(buf).to_string()
     }
+}
+
+/// Find the first occurrence of `needle` in `haystack`.
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,20 +178,18 @@ pub fn load_traffic_secrets(
     store: &mut CaptureStore,
     client_random: &[u8],
 ) -> Option<(Vec<u8>, Vec<u8>)> {
-    let cr_hex = hex_encode(client_random);
-    // match client_random stored as BLOB (raw bytes)
-    let mut rows: Vec<(Vec<u8>, String, Vec<u8>)> = Vec::new();
+    // Query directly by client_random (indexed via PRIMARY KEY).
+    let mut rows: Vec<(String, Vec<u8>)> = Vec::new();
     {
         let mut stmt = store
             .conn()
-            .prepare("SELECT client_random, label, secret FROM tls_keys")
+            .prepare("SELECT label, secret FROM tls_keys WHERE client_random = ?1")
             .ok()?;
         let iter = stmt
-            .query_map([], |r| {
+            .query_map([client_random], |r| {
                 Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
                 ))
             })
             .ok()?;
@@ -197,13 +201,7 @@ pub fn load_traffic_secrets(
     }
     let mut client = None;
     let mut server = None;
-    for (cr, label, secret) in rows {
-        if cr != client_random {
-            // also try hex-string match if stored differently
-            if hex_encode(&cr) != cr_hex {
-                continue;
-            }
-        }
+    for (label, secret) in rows {
         match label.as_str() {
             "CLIENT_TRAFFIC_SECRET_0" => client = Some(secret),
             "SERVER_TRAFFIC_SECRET_0" => server = Some(secret),
@@ -297,6 +295,7 @@ pub fn decrypt_tls13_record(
     Ok(plaintext)
 }
 
+#[allow(dead_code)]
 fn hex_encode(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -364,8 +363,8 @@ pub fn decrypt_flow(store: &mut CaptureStore, flow_id: i64) -> Result<usize, Str
 
     // 5. decrypt each direction's application_data records
     let mut total = 0usize;
-    let (up_recs, _) = crate::tls_parse::split_records(&up);
-    let (down_recs, _) = crate::tls_parse::split_records(&down);
+    let (up_recs, _) = crate::tls_parse::split_records(&up, 0);
+    let (down_recs, _) = crate::tls_parse::split_records(&down, 0);
     for (i, (ct, payload)) in up_recs.iter().enumerate() {
         if *ct != 23 {
             continue;
@@ -424,7 +423,6 @@ mod tests {
     use crate::tls_parse::split_records;
     use aes_gcm::aead::{Aead, Payload};
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-    use ring::hkdf::{Salt, HKDF_SHA256};
     use std::path::PathBuf;
 
     fn tmp_db(name: &str) -> PathBuf {
@@ -509,10 +507,10 @@ mod tests {
         assert!(n > 0, "decrypted {n} bytes");
 
         // verify the reconstructed plaintext matches by re-deriving
-        let (up_recs, _) = split_records(&up_rec);
+        let (up_recs, _) = split_records(&up_rec, 0);
         let (pt,) = (decrypt_tls13_record(&ckey, &civ, 0, &up_recs[0].1).unwrap(),);
         assert_eq!(&pt, b"GET /secret HTTP/1.1\r\nHost: x\r\n\r\n");
-        let (down_recs, _) = split_records(&down_rec);
+        let (down_recs, _) = split_records(&down_rec, 0);
         let pt2 = decrypt_tls13_record(&skey, &siv, 0, &down_recs[0].1).unwrap();
         assert_eq!(&pt2, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
     }

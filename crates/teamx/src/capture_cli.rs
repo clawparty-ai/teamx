@@ -30,12 +30,13 @@ pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value,
         CaptureCmd::Start { out, sources } => {
             let db = out.clone().unwrap_or_else(capture_home);
             let store = CaptureStore::open(&db)?;
-            // Keep a writer alive for the daemon lifetime: the channel is the
-            // daemon's own heartbeat; producers have their own in-process taps.
+            // The daemon mode keeps a writer alive so the store is initialized
+            // and the schema is created. Producers have their own in-process
+            // taps that write to the same DB file via separate connections.
             let (_tx, rx) = std::sync::mpsc::channel();
             let _writer = capture::spawn_writer(store, rx);
             println!(
-                "ok capture: started db={} sources={}",
+                "ok capture: started db={} sources={} (daemon, Ctrl-C to stop)",
                 db.display(),
                 sources.as_deref().unwrap_or("all")
             );
@@ -45,7 +46,7 @@ pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value,
             let _ = std::io::stdin().read_line(&mut line);
             Ok(serde_json::json!({ "ok": true, "note": "capture stopped" }))
         }
-        CaptureCmd::Stop => Ok(serde_json::json!({ "ok": true })),
+        CaptureCmd::Stop => Ok(serde_json::json!({ "ok": true, "note": "use Ctrl-C to stop a running capture daemon" })),
         CaptureCmd::Status => {
             let db = capture_home();
             let exists = db.exists();
@@ -65,8 +66,10 @@ pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value,
             let mut store = CaptureStore::open(&db)?;
             let max = parse_size(max_size.as_deref().unwrap_or("512MB"))?;
             let (removed, size) = store.prune_max_size(max)?;
+            let orphans = store.cleanup_orphaned_keys()?;
             Ok(serde_json::json!({
                 "ok": true, "removed_flows": removed,
+                "cleaned_keys": orphans,
                 "db_bytes": size,
             }))
         }
@@ -103,21 +106,15 @@ fn list_flows(
     json: bool,
 ) -> Result<serde_json::Value, String> {
     let sql = if sni.is_some() {
-        format!(
-            "SELECT id, started_at, source, proto, remote_addr, sni,
-                    bytes_up, bytes_down, decrypted
-             FROM flows WHERE sni LIKE ?1 ORDER BY started_at DESC LIMIT {}",
-            limit
-        )
+        "SELECT id, started_at, source, proto, remote_addr, sni, \
+              bytes_up, bytes_down, decrypted \
+         FROM flows WHERE sni LIKE ?1 ORDER BY started_at DESC LIMIT ?2"
     } else {
-        format!(
-            "SELECT id, started_at, source, proto, remote_addr, sni,
-                    bytes_up, bytes_down, decrypted
-             FROM flows ORDER BY started_at DESC LIMIT {}",
-            limit
-        )
+        "SELECT id, started_at, source, proto, remote_addr, sni, \
+              bytes_up, bytes_down, decrypted \
+         FROM flows ORDER BY started_at DESC LIMIT ?1"
     };
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let pattern = sni.map(|s| s.replace('*', "%")).unwrap_or_default();
     let q = |r: &rusqlite::Row| -> rusqlite::Result<(i64, f64, String, String, String, Option<String>, i64, i64, i64)> {
         Ok((
@@ -125,13 +122,14 @@ fn list_flows(
             r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?
         ))
     };
+    let limit_i64 = limit as i64;
     let rows: Vec<_> = if sni.is_some() {
-        stmt.query_map(rusqlite::params![pattern], q)
+        stmt.query_map(rusqlite::params![pattern, limit_i64], q)
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect()
     } else {
-        stmt.query_map([], q)
+        stmt.query_map(rusqlite::params![limit_i64], q)
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect()

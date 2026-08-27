@@ -331,7 +331,6 @@ fn pump_active(
     buf: &mut [u8],
     capture: &Option<crate::capture::CaptureTap>,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
     let handles: Vec<SocketHandle> = stack
         .slots
@@ -378,8 +377,8 @@ fn pump_active(
             }
             for bytes in &drained {
                 if let Some((fid, tap)) = cap_flow.as_ref() {
-                    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-                    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+                    let seq = stack.slots[idx].seq_down;
+                    stack.slots[idx].seq_down = seq.wrapping_add(1);
                     tap.chunk(*fid, crate::capture::Dir::Down, seq, bytes);
                 }
                 let mut off = 0;
@@ -413,8 +412,8 @@ fn pump_active(
                         // detection; Meta is idempotent (only applies while
                         // proto is still 'other').
                         tap.meta(*fid, &buf[..n]);
-                        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-                        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+                        let seq = stack.slots[idx].seq_up;
+                        stack.slots[idx].seq_up = seq.wrapping_add(1);
                         tap.chunk(*fid, crate::capture::Dir::Up, seq, &buf[..n]);
                     }
                     if n < buf.len() {

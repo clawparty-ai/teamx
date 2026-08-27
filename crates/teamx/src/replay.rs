@@ -70,9 +70,13 @@ pub async fn serve_flow(store: &mut CaptureStore, flow_id: i64, port: u16) -> Re
         let down = down.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            // Read whatever the client sends (discard), then serve the script.
-            let mut buf = [0u8; 4096];
-            let _ = sock.read(&mut buf).await;
+            // Read everything the client sends (may be partial / incomplete),
+            // then serve the recorded down-stream. A v1 mock — no matching.
+            let mut client_data = Vec::new();
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                sock.read_to_end(&mut client_data),
+            ).await;
             let _ = sock.write_all(&down).await;
             let _ = sock.shutdown().await;
         });
@@ -194,7 +198,9 @@ fn parse_request(buf: &[u8]) -> Option<(String, String, String, String, usize)> 
             host = rest.trim().to_string();
         }
     }
-    Some((method, url, host, headers, head_end + 4))
+    // Compute body offset dynamically based on the separator used.
+    let sep_len = if text[head_end..].starts_with("\r\n\r\n") { 4 } else { 2 };
+    Some((method, url, host, headers, head_end + sep_len))
 }
 
 /// Parse a plain HTTP response head (status + headers) from bytes.
@@ -214,7 +220,9 @@ fn parse_response(buf: &[u8]) -> Option<(i64, String, usize)> {
         headers.push_str(line);
         headers.push_str("\r\n");
     }
-    Some((status, headers, head_end + 4))
+    // Compute body offset dynamically based on the separator used.
+    let sep_len = if text[head_end..].starts_with("\r\n\r\n") { 4 } else { 2 };
+    Some((status, headers, head_end + sep_len))
 }
 
 /// Extract a plain-HTTP exchange from a flow's streams (best-effort). Only
@@ -322,7 +330,7 @@ pub fn export_har(store: &mut CaptureStore) -> Result<serde_json::Value, String>
     let mut entries = Vec::new();
     for (id, _flow, method, url, _host, req_headers, status, resp_headers, started) in rows {
         entries.push(serde_json::json!({
-            "startedDateTime": started,
+            "startedDateTime": timestamp_to_iso(started),
             "request": {
                 "method": method,
                 "url": url,
@@ -363,19 +371,58 @@ fn parse_header_list(raw: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Convert a Unix timestamp (f64 seconds) to ISO 8601 UTC string.
+fn timestamp_to_iso(ts: f64) -> String {
+    let secs = ts as i64;
+    let millis = ((ts - secs as f64) * 1000.0) as u32;
+    // Simple calendar math (no timezone library dependency).
+    // Days since 1970-01-01.
+    let days = secs / 86400;
+    let day_secs = (secs % 86400) as u32;
+    let hours = day_secs / 3600;
+    let mins = (day_secs % 3600) / 60;
+    let secs_rem = day_secs % 60;
+    // Compute year/month/day from days since epoch.
+    let (year, month, day) = days_to_ymd(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs_rem:02}.{millis:03}Z"
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Civil calendar from Howard Hinnant's algorithm.
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 /// Emit an equivalent `curl` command for an exchange.
 pub fn to_curl(e: &HttpExchange) -> String {
     let mut cmd = format!("curl -X {} '{}'", e.method, e.url);
     for line in e.request_headers.lines() {
-        let line = line.trim();
+        let line = line.trim_end_matches('\r').trim();
         if line.is_empty() {
             continue;
         }
         // skip Host (curl sets it) and auto-length headers
-        if line.starts_with("Host:") || line.starts_with("Content-Length:") {
+        if line.starts_with("Host:") {
             continue;
         }
-        cmd.push_str(&format!(" -H '{}'", line.trim_end_matches('\r')));
+        // Only skip Content-Length when there IS a body (curl computes it).
+        if line.starts_with("Content-Length:") && !e.request_body.is_empty() {
+            continue;
+        }
+        // Use shell-safe quoting: single-quote the header, escape embedded quotes.
+        cmd.push_str(&format!(" -H '{}'", line.replace('\'', "'\\''")));
     }
     if !e.request_body.is_empty() {
         let body = String::from_utf8_lossy(&e.request_body);
@@ -417,7 +464,15 @@ pub async fn http_send(
     let path = url.strip_prefix("http://").unwrap_or(&url).splitn(2, '/').nth(1).map(|p| format!("/{p}")).unwrap_or_else(|| "/".into());
     let mut req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", e.method, path, host);
     req.push_str(&e.request_headers);
-    req.push_str("\r\n");
+    // Ensure the header section is terminated by a single blank line.
+    // request_headers may or may not end with \r\n; normalize to exactly one.
+    if !req.ends_with("\r\n\r\n") {
+        if req.ends_with("\r\n") {
+            req.push_str("\r\n"); // one more \r\n to form the blank line
+        } else {
+            req.push_str("\r\n\r\n");
+        }
+    }
     sock.write_all(req.as_bytes()).await.map_err(|e| format!("send: {e}"))?;
     if !e.request_body.is_empty() {
         sock.write_all(&e.request_body).await.map_err(|e| format!("body: {e}"))?;

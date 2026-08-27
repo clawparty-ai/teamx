@@ -145,7 +145,9 @@ fn parse_client_hello(buf: &[u8]) -> Option<ClientHelloRaw> {
 
 /// Split a byte stream into TLS records. Returns (content_type, payload)
 /// tuples; trailing partial record is left in the remainder (not returned).
-pub fn split_records(stream: &[u8]) -> (Vec<(u8, Vec<u8>)>, usize) {
+/// `max_records` caps the number of records returned (0 = unlimited); use
+/// this to bound memory on very large streams.
+pub fn split_records(stream: &[u8], max_records: usize) -> (Vec<(u8, Vec<u8>)>, usize) {
     let mut out = Vec::new();
     let mut p = 0usize;
     while p + 5 <= stream.len() {
@@ -159,7 +161,7 @@ pub fn split_records(stream: &[u8]) -> (Vec<(u8, Vec<u8>)>, usize) {
         }
         out.push((ct, stream[p + 5..p + 5 + len].to_vec()));
         p += 5 + len;
-        if out.len() >= 4096 {
+        if max_records > 0 && out.len() >= max_records {
             break;
         }
     }

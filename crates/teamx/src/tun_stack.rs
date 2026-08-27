@@ -146,6 +146,9 @@ pub struct SocketSlot {
     pub close: Option<tokio::sync::oneshot::Sender<()>>,
     /// Capture flow id assigned when this slot becomes Active (None = no tap).
     pub capture_flow: Option<u64>,
+    /// Per-flow capture sequence counters (replaces global static atomics).
+    pub seq_up: u32,
+    pub seq_down: u32,
 }
 
 /// The running user-space TCP/IP stack.
@@ -214,6 +217,8 @@ impl TunStack {
                 eof: None,
                 close: None,
                 capture_flow: None,
+                seq_up: 0,
+                seq_down: 0,
             });
         }
 

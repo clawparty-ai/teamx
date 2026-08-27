@@ -746,6 +746,8 @@ pub async fn run_socks5_proxy(
             let cap_flow: Option<(u64, crate::capture::CaptureTap)> =
                 capture.as_ref().map(|t| (NEXT_FLOW.fetch_add(1, Ordering::Relaxed), t.clone()));
             let mut meta_sent = false;
+            let mut seq_up: u32 = 1;
+            let mut seq_down: u32 = 1;
             let (mut c_read, mut c_write) = client.into_split();
 
             // 1. SOCKS5 greeting: VER NMETHODS METHODS... -> reply 05 00.
@@ -892,9 +894,8 @@ pub async fn run_socks5_proxy(
                         Some(Ok(Message::Binary(f))) => {
                             if f.len() >= 4 && sid.is_some() {
                                 if let Some((fid, tap)) = cap_flow.as_ref() {
-                                    static SEQ_D: std::sync::atomic::AtomicU32 =
-                                        std::sync::atomic::AtomicU32::new(1);
-                                    let seq = SEQ_D.fetch_add(1, Ordering::Relaxed);
+                                    let seq = seq_down;
+                                    seq_down = seq_down.wrapping_add(1);
                                     tap.chunk(*fid, crate::capture::Dir::Down, seq, &f[4..]);
                                 }
                                 let _ = c_write.write_all(&f[4..]).await;
@@ -920,9 +921,8 @@ pub async fn run_socks5_proxy(
                                             meta_sent = true;
                                             tap.meta(*fid, &buf[..n]);
                                         }
-                                        static SEQ_U: std::sync::atomic::AtomicU32 =
-                                            std::sync::atomic::AtomicU32::new(1);
-                                        let seq = SEQ_U.fetch_add(1, Ordering::Relaxed);
+                                        let seq = seq_up;
+                                        seq_up = seq_up.wrapping_add(1);
                                         tap.chunk(*fid, crate::capture::Dir::Up, seq, &buf[..n]);
                                     }
                                     let mut frame = Vec::with_capacity(4 + n);
