@@ -44,3 +44,51 @@
 - 分工: 基于原型图和需求文档输出 E2E 测试方案、编写 E2E 测试脚本；执行测试并形成测试报告
 - 技能: E2E 测试（Playwright/Cypress）、测试用例设计、缺陷管理、测试报告
 - 输出: E2E 测试方案、E2E 测试脚本、测试报告
+
+## 文档
+
+### requirements
+- 标题: 需求文档
+- 用途: 定义产品需求与验收标准，是设计/开发/测试的依据
+- 模板: 背景 | 目标 | 用户故事 | 验收标准 | 范围 | 变更记录
+- 创建者: [PM]
+- 所有者: PM
+- 审批者: [team-lead, owner]
+- 状态流: draft -> review -> approved -> done
+- 变更响应:
+    - on created: 通知 PM 细化需求
+    - on approved: 通知 UI-Dev 与 Java-Dev 开始设计
+
+### issue
+- 标题: 缺陷 / 改进请求
+- 用途: 记录缺陷与改进请求，驱动修复流程
+- 模板: 描述 | 复现步骤 | 预期行为 | 实际行为 | 影响范围 | 优先级
+- 创建者: [PM, UI-Dev, Java-Dev, Tester, contributor]
+- 所有者: team-lead
+- 状态流: opened -> triaged -> assigned -> fixing -> verified -> closed
+- 变更响应:
+    - on created: 通知 team-lead 分析并分诊
+    - on verified: 通知 owner 关闭并记录到 release-note
+
+### pr
+- 标题: 代码合并请求（PR/MR）
+- 用途: 代码变更的评审与合并
+- 模板: 变更描述 | 关联 issue | 测试说明 | 回滚方案
+- 创建者: [UI-Dev, Java-Dev, contributor]
+- 所有者: 提交者
+- 审批者: [reviewer]
+- 状态流: opened -> reviewing -> approved -> merged
+- 变更响应:
+    - on created: 通知 reviewer 评审
+    - on approved: 合并并关闭关联 issue
+    - on merged: 更新 release-note
+
+### release-note
+- 标题: 发布说明
+- 用途: 汇总每次发布的功能、修复与已知问题
+- 模板: 版本 | 日期 | 新功能 | 修复 | 已知问题
+- 创建者: [owner]
+- 所有者: owner
+- 状态流: draft -> review -> released
+- 变更响应:
+    - on released: 广播给全体成员
