@@ -47,7 +47,7 @@ pub struct MemberProfile {
 }
 
 /// A document lifecycle reaction: on a doc event, notify a role + action.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocReaction {
     /// Trigger event name (`created` / `updated` / `reviewed` / ...).
     pub on: String,
@@ -62,7 +62,7 @@ pub struct DocReaction {
 /// This is a *declarative contract*: the state machine (`states`) is dynamic —
 /// it comes from TEAM.md, not from `state.rs`. Different teams can define
 /// different documents and flows without code changes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocSpec {
     /// The `### key` — unique document identifier (referenced by events).
     pub key: String,
@@ -207,9 +207,13 @@ fn strip_brackets(s: &str) -> String {
 }
 
 /// Normalize a doc list field (template/creators/approvers): split + strip
-/// brackets from each element.
+/// brackets from each element, dropping empties (`[]` yields an empty list).
 fn doc_list(value: &str) -> Vec<String> {
-    split_list(value).into_iter().map(|s| strip_brackets(&s)).collect()
+    split_list(value)
+        .into_iter()
+        .map(|s| strip_brackets(&s))
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// A member key doubles as a directory name under `.teamx/members/`, so it

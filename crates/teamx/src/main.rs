@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod db;
 mod dns_proxy;
+mod doc_flow;
 mod events;
 #[cfg(feature = "gui")]
 mod gui;
