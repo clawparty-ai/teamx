@@ -2415,6 +2415,12 @@ fn cmd_publish_doc(
     // Locate the project root: TEAM.md bootstrap uses the CWD.
     let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
     let docs_root = cwd.join(".teamx").join("docs");
+    let spec_path = docs_root.join("_spec").join(format!("{doc_key}.json"));
+    if !spec_path.exists() {
+        return err(&format!(
+            "doc type `{doc_key}` is not recognized (no contract in TEAM.md ## 文档)"
+        ));
+    }
     let spec = crate::doc_flow::load_spec(&docs_root, &doc_key)
         .map_err(|e| AppError(format!("doc spec `{doc_key}`: {e}")))?;
 

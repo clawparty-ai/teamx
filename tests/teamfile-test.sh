@@ -243,8 +243,8 @@ cat > "$WORK/.teamx/TEAM.md" << 'EOF'
 ### requirements
 - 标题: 需求文档
 - 创建者: [owner, team-lead]
-- 所有者: team-lead
-- 审批者: [reviewer]
+- 所有者: owner
+- 审批者: [team-lead, reviewer]
 - 状态流: draft -> review -> approved -> done
 - 变更响应:
     - on approved: 通知 reviewer 复核设计
@@ -325,6 +325,105 @@ pass "unknown state rejected"
 NOKEY=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"id":"x"}' --session s:lead5 --json 2>&1 || true )
 echo "$NOKEY" | grep -q "requires a \`doc\` key" || fail "missing doc key should be rejected"
 pass "missing doc key rejected"
+
+step "TF-203: unregistered doc type rejected"
+UNREG=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"unknown-type","id":"x"}' --session s:lead5 --json 2>&1 || true )
+echo "$UNREG" | grep -q "not recognized" || fail "unregistered doc type should be rejected: $UNREG"
+pass "unregistered doc type rejected"
+
+step "TF-204: full lifecycle — issue through all states to closed"
+# Create a fresh issue to avoid state contamination
+FULL=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"099-full-lifecycle","note":"full lifecycle test"}' --session s:lead5 --json )
+echo "$FULL" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='opened', d
+" || fail "TF-204 issue created"
+pass "full lifecycle: opened"
+
+# opened -> triaged
+S2=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"099-full-lifecycle","to":"triaged"}' --session s:lead5 --json )
+echo "$S2" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='triaged', d
+" || fail "TF-204 triaged"
+pass "full lifecycle: triaged"
+
+# triaged -> assigned
+S3=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"099-full-lifecycle","to":"assigned"}' --session s:lead5 --json )
+echo "$S3" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='assigned', d
+" || fail "TF-204 assigned"
+pass "full lifecycle: assigned"
+
+# assigned -> fixing
+S4=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"099-full-lifecycle","to":"fixing"}' --session s:lead5 --json )
+echo "$S4" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='fixing', d
+" || fail "TF-204 fixing"
+pass "full lifecycle: fixing"
+
+# fixing -> verified
+S5=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"099-full-lifecycle","to":"verified"}' --session s:lead5 --json )
+echo "$S5" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='verified', d
+" || fail "TF-204 verified"
+pass "full lifecycle: verified"
+
+# verified -> closed
+S6=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"099-full-lifecycle","to":"closed"}' --session s:lead5 --json )
+echo "$S6" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='closed', d
+" || fail "TF-204 closed"
+pass "full lifecycle: closed"
+
+# meta shows full 6-step history
+python3 -c "
+import json
+m=json.load(open('$WORK/.teamx/docs/issue/099-full-lifecycle.meta.json'))
+assert m['state']=='closed', m
+assert len(m['history'])==6, 'expected 6 history steps, got %d' % len(m['history'])
+print('full lifecycle meta:', m['state'], 'history:', len(m['history']), 'steps')
+" || fail "TF-204 meta invalid"
+pass "full lifecycle meta: closed + 6 history steps"
+
+step "TF-205: multi-doc-type independence — issue + requirements coexist"
+# Create a requirements doc (separate doc type, separate instance)
+REQ=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"requirements","id":"req-v1","note":"v1 需求"}' --session s:lead5 --json )
+echo "$REQ" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='draft', d
+" || fail "TF-205 requirements created"
+pass "multi-doc: requirements created (state=draft)"
+
+# Issue and requirements have independent states
+ISSUE_STATE=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"099-full-lifecycle"}' --session s:lead5 --json 2>&1 || true )
+echo "$ISSUE_STATE" | grep -q "already exists" || fail "issue should still exist"
+pass "multi-doc: issue state independent (still exists)"
+
+# Advance requirements: draft -> review
+REQ_ADV=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"requirements","id":"req-v1","to":"review"}' --session s:lead5 --json )
+echo "$REQ_ADV" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is True and d['state']=='review', d
+" || fail "TF-205 requirements advanced"
+pass "multi-doc: requirements advanced draft->review"
+
+# Both meta files exist independently
+[ -f "$WORK/.teamx/docs/issue/099-full-lifecycle.meta.json" ] || fail "issue meta missing"
+[ -f "$WORK/.teamx/docs/requirements/req-v1.meta.json" ] || fail "requirements meta missing"
+python3 -c "
+import json
+issue_meta=json.load(open('$WORK/.teamx/docs/issue/099-full-lifecycle.meta.json'))
+req_meta=json.load(open('$WORK/.teamx/docs/requirements/req-v1.meta.json'))
+assert issue_meta['state']=='closed', issue_meta
+assert req_meta['state']=='review', req_meta
+" || fail "multi-doc meta independence broken"
+pass "multi-doc: independent meta files"
 
 echo
 echo "ALL PASS"
