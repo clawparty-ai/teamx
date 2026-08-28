@@ -2408,7 +2408,39 @@ fn cmd_publish_doc(
         Some(d) => d.to_string(),
         None => return err("doc.* event requires a `doc` key in payload (the TEAM.md document key)"),
     };
+    // S1 (CR-022): reject unsafe doc keys to prevent path traversal (CWE-22).
+    if !crate::teamfile::is_safe_key_segment(&doc_key) {
+        return err(format!(
+            "doc key `{doc_key}` is not a safe identifier (no `/`, `..`, or control chars)"
+        ));
+    }
     let doc_id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    if !crate::teamfile::is_safe_key_segment(&doc_id) {
+        return err(format!(
+            "doc id `{doc_id}` is not a safe identifier (no `/`, `..`, or control chars)"
+        ));
+    }
+    // S2 (CR-022): `doc.reaction` is a system-generated notification emitted by
+    // this handler; it is NOT a lifecycle transition and must not be published
+    // back as one (auto-execute would otherwise fail on the missing `to`).
+    if publish_type == "doc.reaction" {
+        return err("`doc.reaction` is a system notification, not a lifecycle event; it cannot be published directly");
+    }
+    // S4 (CR-022): whitelist known lifecycle events instead of failing open.
+    const KNOWN_DOC_EVENTS: &[&str] = &[
+        "doc.created",
+        "doc.updated",
+        "doc.reviewed",
+        "doc.approved",
+        "doc.rejected",
+        "doc.reopened",
+        "doc.closed",
+    ];
+    if !KNOWN_DOC_EVENTS.contains(&publish_type) {
+        return err(format!(
+            "unknown doc event `{publish_type}` (known: created/updated/reviewed/approved/rejected/reopened/closed)"
+        ));
+    }
     let to_state = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
     let note = payload.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
@@ -2417,7 +2449,7 @@ fn cmd_publish_doc(
     let docs_root = cwd.join(".teamx").join("docs");
     let spec_path = docs_root.join("_spec").join(format!("{doc_key}.json"));
     if !spec_path.exists() {
-        return err(&format!(
+        return err(format!(
             "doc type `{doc_key}` is not recognized (no contract in TEAM.md ## 文档)"
         ));
     }
@@ -2459,9 +2491,19 @@ fn cmd_publish_doc(
     });
 
     // Validate + compute the next meta (pure — no side effects). A failed
-    // check returns before any write.
-    let next = crate::doc_flow::apply_event(&spec, &meta, actor_role, publish_type, to_state.as_deref(), 0)
-        .map_err(AppError)?;
+    // check returns before any write. The audit label records the member's
+    // display name + role so two members sharing a role stay distinguishable.
+    let actor_label = format!("{} ({})", actor.display_name, actor_role);
+    let next = crate::doc_flow::apply_event(
+        &spec,
+        &meta,
+        actor_role,
+        &actor_label,
+        publish_type,
+        to_state.as_deref(),
+        0,
+    )
+    .map_err(AppError)?;
 
     let seq = db::with_write(conn, |tx| {
         payload["doc"] = json!(doc_key);
@@ -2505,7 +2547,7 @@ fn cmd_publish_doc(
                 Some(role) => members_for_team(conn, &team.id)
                     .map_err(|e| AppError(format!("members: {e}")))?
                     .into_iter()
-                    .filter(|m| m.state != "left" && m.state != "denied")
+                    .filter(|m| m.state != "left" && m.state != "denied" && m.state != "pending")
                     .filter(|m| m.role.as_deref() == Some(role.as_str()))
                     .collect::<Vec<_>>(),
                 None => Vec::new(),

@@ -67,3 +67,25 @@
 2. **S2 / M1 / M2（Med）** 下一轮修：reactions 回灌失败、文档根与团队坐标解耦、meta 原子写。
 3. **G1（Med）** 明确模板语义（实现或文档化）。
 4. 其余 Low 随维护清理。
+
+## 修复记录（CR-022-fix，未 push）
+
+| ID | 修复 | 落点 |
+|---|---|---|
+| S1 | `doc_key`/`doc_id` 经 `teamfile::is_safe_key_segment` 校验，拒绝 `/ \ ..` 与控制字符；新增 pub 校验函数复用 `is_safe_member_key` 逻辑 | `teamfile.rs` (pub fn)、`commands.rs:cmd_publish_doc` |
+| S2 | `cmd_publish_doc` 入口拒绝 `doc.reaction` 作为生命周期事件（明确错误："system notification"） | `commands.rs` |
+| S3 | reactions 目标过滤新增排除 `pending`（仅 active/idle/waiting 接收） | `commands.rs` |
+| S4 | `cmd_publish_doc` 白名单已知 `doc.*` 事件，未知名直接拒绝（不再 fail-open） | `commands.rs` |
+| G2 | 修正 `doc_flow.rs` 模块注释中不存在的 `save_spec` 死引用 | `doc_flow.rs` |
+| G3 | `split_states` 仅按 `->`/`→` 切分，逗号不再作分隔符 | `teamfile.rs` |
+| G4 | `apply_event` 单次取 `db_now()` 贯穿 `updated_at` 与 `MetaStep.at` | `doc_flow.rs` |
+| L1 | `apply_event` 新增 `actor_label` 参数，审计 `by` 记"成员显示名 (角色)"而非裸角色 | `doc_flow.rs` + `commands.rs` 调用处 |
+| M2 | `DocMeta::save` 改为临时文件 + `rename` 原子替换，避免崩溃留半写文件 | `doc_flow.rs` |
+
+**暂缓（需更大改动 / 设计决策）**：
+- **M1**：文档根取 CWD 与团队 DB 坐标解耦 —— 需把项目根写入 teams 表并在 `cmd_publish_doc` 改用团队项目根；本轮未做（涉及 DB 迁移 + bootstrap 改动）。
+- **M3**：`validate_transition` 允许向前跳步 —— 设计取舍，已在测试注释中明确；如需强制相邻转移再收紧。
+- **G1**：`模板` 字段仍仅作元数据，未实现"按模板生成骨架"；本轮仅记录为已知缺口，待定实现或文档化。
+
+**验证**：`cargo test` 89 全绿；`teamfile-test.sh` TF-201~208 全绿（新增 TF-206 路径穿越、TF-207 doc.reaction 拒绝、TF-208 未知事件拒绝）；clippy 回到基线 21（无新增）；smoke/cli/concurrency 全绿。
+

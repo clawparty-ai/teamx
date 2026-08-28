@@ -194,11 +194,12 @@ fn doc_field_name(trimmed: &str) -> Option<(&'static str, &str)> {
 }
 
 /// Split a doc state chain `draft -> review -> approved -> done` into states.
-/// Accepts `->`, `→`, or list separators.
+/// Only arrow separators (`->` / `→`) are recognized; commas are NOT separators
+/// (a state name must not contain a comma, and a `状态流` written with commas
+/// would otherwise be silently mis-parsed as four sequential states).
 fn split_states(v: &str) -> Vec<String> {
     v.split("->")
         .flat_map(|s| s.split('→'))
-        .flat_map(|s| s.split([',', '，']))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -222,7 +223,16 @@ fn doc_list(value: &str) -> Vec<String> {
 /// A member key doubles as a directory name under `.teamx/members/`, so it
 /// must never be empty/hidden or contain path separators / control characters.
 /// Non-ASCII keys (e.g. `小明`) are fine and remain allowed.
-fn is_safe_member_key(key: &str) -> bool {
+pub fn is_safe_member_key(key: &str) -> bool {
+    is_safe_key_segment(key)
+}
+
+/// Validate a path-segment used to build on-disk paths (member dir names,
+/// doc-type keys, doc instance ids). Rejects empty, dotfile, and any string
+/// containing a path separator or control character — this prevents path
+/// traversal (CWE-22) when the segment comes from untrusted input such as a
+/// `publish` payload's `doc`/`id` fields.
+pub fn is_safe_key_segment(key: &str) -> bool {
     !key.is_empty()
         && !key.starts_with('.')
         && !key

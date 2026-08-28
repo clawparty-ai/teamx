@@ -266,10 +266,16 @@ echo "  team=$TID members=$LEAD_ID"
 
 # Import the team-lead + reviewer letters so reactions can match their roles.
 LEAD_LETTER=$( cat "$WORK/.teamx/members/lead/invitation.letter" )
-( cd "$WORK" && "$TEAMX" team import "$LEAD_LETTER" --name 组长 --session s:leadm --json ) >/dev/null 2>&1 || fail "import lead letter"
+LEAD_IMP=$( cd "$WORK" && "$TEAMX" team import "$LEAD_LETTER" --name 组长 --session s:leadm --json )
+LEAD_MID=$( echo "$LEAD_IMP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('member_id',''))" )
 REV_LETTER=$( cat "$WORK/.teamx/members/reviewer1/invitation.letter" )
-( cd "$WORK" && "$TEAMX" team import "$REV_LETTER" --name 评审甲 --session s:reviewerm --json ) >/dev/null 2>&1 || fail "import reviewer letter"
-pass "team-lead + reviewer imported (reaction targets available)"
+REV_IMP=$( cd "$WORK" && "$TEAMX" team import "$REV_LETTER" --name 评审甲 --session s:reviewerm --json )
+REV_MID=$( echo "$REV_IMP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('member_id',''))" )
+# Approve them (owner session s:lead5) so they become active and can receive
+# directed reaction notifications (pending members are intentionally excluded).
+( cd "$WORK" && "$TEAMX" team approve "$LEAD_MID" --session s:lead5 --json ) >/dev/null 2>&1 || fail "approve lead"
+( cd "$WORK" && "$TEAMX" team approve "$REV_MID" --session s:lead5 --json ) >/dev/null 2>&1 || fail "approve reviewer"
+pass "team-lead + reviewer imported + approved (reaction targets available)"
 
 # 1. create an issue (doc.created) by lead
 ISSUE=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"042-slow","note":"上传慢"}' --session s:lead5 --json )
@@ -424,6 +430,26 @@ assert issue_meta['state']=='closed', issue_meta
 assert req_meta['state']=='review', req_meta
 " || fail "multi-doc meta independence broken"
 pass "multi-doc: independent meta files"
+
+step "TF-206: path-traversal ids/keys rejected (CR-022 S1)"
+# malicious doc id with path separators / traversal
+TRAV_ID=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"../../etc/evil"}' --session s:lead5 --json 2>&1 || true )
+echo "$TRAV_ID" | grep -q "not a safe identifier" || fail "traversal doc id should be rejected: $TRAV_ID"
+pass "doc id path traversal rejected"
+# malicious doc key
+TRAV_KEY=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"../escaped","id":"x"}' --session s:lead5 --json 2>&1 || true )
+echo "$TRAV_KEY" | grep -q "not a safe identifier" || fail "traversal doc key should be rejected: $TRAV_KEY"
+pass "doc key path traversal rejected"
+
+step "TF-207: doc.reaction cannot be published as lifecycle event (CR-022 S2)"
+REACT=$( cd "$WORK" && "$TEAMX" publish doc.reaction --data '{"doc":"issue","id":"042-slow","on":"created"}' --session s:lead5 --json 2>&1 || true )
+echo "$REACT" | grep -q "system notification" || fail "doc.reaction must be rejected as lifecycle event: $REACT"
+pass "doc.reaction rejected as lifecycle event"
+
+step "TF-208: unknown doc event rejected (CR-022 S4)"
+UNKNOWN=$( cd "$WORK" && "$TEAMX" publish doc.foobar --data '{"doc":"issue","id":"042-slow","to":"triaged"}' --session s:lead5 --json 2>&1 || true )
+echo "$UNKNOWN" | grep -q "unknown doc event" || fail "unknown doc event should be rejected: $UNKNOWN"
+pass "unknown doc event rejected"
 
 echo
 echo "ALL PASS"

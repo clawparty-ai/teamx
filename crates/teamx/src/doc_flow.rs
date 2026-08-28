@@ -8,8 +8,9 @@
 //!     `创建者` / `审批者` / `所有者` roles;
 //!   * `validate_transition` — the *dynamic state machine*: a `from -> to`
 //!     move must follow the declared `状态流` chain (unless backward/reopen);
-//!   * `load_spec` / `save_spec` — read/write the `.teamx/docs/_spec/<key>.json`
-//!     contract snapshots produced by bootstrap (T2).
+//!   * `load_spec` — read the `.teamx/docs/_spec/<key>.json` contract snapshots
+//!     produced by bootstrap (T2); the snapshots themselves are written by
+//!     `bootstrap_from_teamfile` in `commands.rs`.
 //!
 //! All checks are pure functions over `DocSpec`: a failed check means the
 //! caller must NOT write an event or mutate `.meta.json` (design §6.4).
@@ -71,7 +72,11 @@ impl DocMeta {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
         }
-        std::fs::write(path, &text).map_err(|e| format!("write {}: {e}", path.display()))
+        // Atomic replace (CR-022 M2): write a temp file next to the target,
+        // then rename, so a crash mid-write cannot leave a half-written `.meta.json`.
+        let tmp = path.with_extension("meta.json.tmp");
+        std::fs::write(&tmp, &text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
     }
 }
 
@@ -169,15 +174,24 @@ pub fn classify_event(event: &str) -> DocEventKind {
 /// caller persists the returned meta and writes the event (so a failed check
 /// has zero side effects, per design §6.4).
 ///
+/// * `actor_role` — used for the permission checks (`can_create`/`can_advance`).
+/// * `actor_label` — human-readable identity recorded in the audit trail
+///   (`MetaStep.by`); prefer a member display name / id over the bare role so
+///   that two members sharing a role remain distinguishable (CR-022 L1).
+///
 /// Returns the updated `DocMeta` on success.
 pub fn apply_event(
     spec: &DocSpec,
     meta: &DocMeta,
     actor_role: &str,
+    actor_label: &str,
     event: &str,
     to: Option<&str>,
     seq: i64,
 ) -> Result<DocMeta, String> {
+    // Single timestamp for the whole event so `updated_at` and the step's `at`
+    // agree (CR-022 G4).
+    let now = crate::events::db_now();
     let kind = classify_event(event);
     match kind {
         DocEventKind::Created => {
@@ -199,14 +213,13 @@ pub fn apply_event(
                     spec.states
                 ));
             }
-            let now = crate::events::db_now();
             let mut next = meta.clone();
             next.state = state.clone();
             next.owner = spec.owner.clone();
             next.updated_at = now.clone();
             next.history.push(MetaStep {
                 state,
-                by: actor_role.to_string(),
+                by: actor_label.to_string(),
                 at: now,
                 event_seq: seq,
             });
@@ -215,11 +228,11 @@ pub fn apply_event(
         DocEventKind::Updated => {
             // Content change: any member may update; state unchanged.
             let mut next = meta.clone();
-            next.updated_at = crate::events::db_now();
+            next.updated_at = now.clone();
             next.history.push(MetaStep {
                 state: meta.state.clone(),
-                by: actor_role.to_string(),
-                at: crate::events::db_now(),
+                by: actor_label.to_string(),
+                at: now,
                 event_seq: seq,
             });
             Ok(next)
@@ -233,13 +246,12 @@ pub fn apply_event(
             }
             let to = to.ok_or_else(|| "forward event requires target state".to_string())?;
             validate_transition(spec, &meta.state, to, false)?;
-            let now = crate::events::db_now();
             let mut next = meta.clone();
             next.state = to.to_string();
             next.updated_at = now.clone();
             next.history.push(MetaStep {
                 state: to.to_string(),
-                by: actor_role.to_string(),
+                by: actor_label.to_string(),
                 at: now,
                 event_seq: seq,
             });
@@ -254,13 +266,12 @@ pub fn apply_event(
             }
             let to = to.ok_or_else(|| "backward event requires target state".to_string())?;
             validate_transition(spec, &meta.state, to, true)?;
-            let now = crate::events::db_now();
             let mut next = meta.clone();
             next.state = to.to_string();
             next.updated_at = now.clone();
             next.history.push(MetaStep {
                 state: to.to_string(),
-                by: actor_role.to_string(),
+                by: actor_label.to_string(),
                 at: now,
                 event_seq: seq,
             });
@@ -347,21 +358,21 @@ mod tests {
             ..Default::default()
         };
         // allowed creator
-        let next = apply_event(&spec, &meta, "pm", "doc.created", None, 1).unwrap();
+        let next = apply_event(&spec, &meta, "pm", "pm", "doc.created", None, 1).unwrap();
         assert_eq!(next.state, "draft"); // starts at first declared state
         assert_eq!(next.owner, "pm");
         assert_eq!(next.history.len(), 1);
         assert_eq!(next.history[0].by, "pm");
         assert_eq!(next.history[0].event_seq, 1);
         // disallowed creator
-        let err = apply_event(&spec, &meta, "ui-dev", "doc.created", None, 2).unwrap_err();
+        let err = apply_event(&spec, &meta, "ui-dev", "ui-dev", "doc.created", None, 2).unwrap_err();
         assert!(err.contains("may not create"), "{err}");
         // explicit initial state
         let spec2 = spec_for(TEAM, "requirements");
-        let next = apply_event(&spec2, &meta, "pm", "doc.created", Some("review"), 3).unwrap();
+        let next = apply_event(&spec2, &meta, "pm", "pm", "doc.created", Some("review"), 3).unwrap();
         assert_eq!(next.state, "review");
         // state not in flow
-        let err = apply_event(&spec, &meta, "pm", "doc.created", Some("bogus"), 4).unwrap_err();
+        let err = apply_event(&spec, &meta, "pm", "pm", "doc.created", Some("bogus"), 4).unwrap_err();
         assert!(err.contains("not in declared flow"), "{err}");
     }
 
@@ -376,17 +387,17 @@ mod tests {
             ..Default::default()
         };
         // reviewer (approver) can move forward
-        let next = apply_event(&spec, &meta, "reviewer", "doc.reviewed", Some("review"), 10).unwrap();
+        let next = apply_event(&spec, &meta, "reviewer", "reviewer", "doc.reviewed", Some("review"), 10).unwrap();
         assert_eq!(next.state, "review");
         // ui-dev (not approver) cannot
-        let err = apply_event(&spec, &meta, "ui-dev", "doc.reviewed", Some("review"), 11).unwrap_err();
+        let err = apply_event(&spec, &meta, "ui-dev", "ui-dev", "doc.reviewed", Some("review"), 11).unwrap_err();
         assert!(err.contains("may not advance"), "{err}");
         // backward move with forward event rejected
         let meta_approved = DocMeta {
             state: "approved".into(),
             ..meta.clone()
         };
-        let err = apply_event(&spec, &meta_approved, "pm", "doc.approved", Some("draft"), 12).unwrap_err();
+        let err = apply_event(&spec, &meta_approved, "pm", "pm", "doc.approved", Some("draft"), 12).unwrap_err();
         assert!(err.contains("illegal transition"), "{err}");
     }
 
@@ -400,7 +411,7 @@ mod tests {
             owner: "pm".into(),
             ..Default::default()
         };
-        let next = apply_event(&spec, &meta, "reviewer", "doc.rejected", Some("draft"), 20).unwrap();
+        let next = apply_event(&spec, &meta, "reviewer", "reviewer", "doc.rejected", Some("draft"), 20).unwrap();
         assert_eq!(next.state, "draft");
         assert_eq!(next.history.len(), 1);
         // reopen from done back to review
@@ -408,7 +419,7 @@ mod tests {
             state: "done".into(),
             ..meta.clone()
         };
-        let next2 = apply_event(&spec, &meta2, "pm", "doc.reopened", Some("review"), 21).unwrap();
+        let next2 = apply_event(&spec, &meta2, "pm", "pm", "doc.reopened", Some("review"), 21).unwrap();
         assert_eq!(next2.state, "review");
     }
 
@@ -422,7 +433,7 @@ mod tests {
             owner: "pm".into(),
             ..Default::default()
         };
-        let next = apply_event(&spec, &meta, "anyone", "doc.updated", None, 30).unwrap();
+        let next = apply_event(&spec, &meta, "anyone", "anyone", "doc.updated", None, 30).unwrap();
         assert_eq!(next.state, "draft"); // unchanged
         assert_eq!(next.history.len(), 1);
         assert_eq!(next.history[0].by, "anyone");
