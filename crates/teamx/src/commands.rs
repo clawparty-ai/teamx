@@ -816,6 +816,7 @@ fn cmd_team_create(
                     "team_name": tf.team_name,
                     "goals": tf.goals,
                     "members": boot.members,
+                    "docs": boot.docs,
                     "note": "TEAM.md detected; team bootstrapped",
                 }));
             }
@@ -846,6 +847,8 @@ fn cmd_team_create(
 struct BootstrapOutcome {
     goal_id: Option<String>,
     members: Vec<serde_json::Value>,
+    /// Document contract snapshots written to `.teamx/docs/_spec/`.
+    docs: Vec<serde_json::Value>,
 }
 
 /// Parse TEAM.md and auto-initialize the team: goal (if none set), per-member
@@ -931,7 +934,51 @@ fn bootstrap_from_teamfile(
         }));
     }
 
-    Ok(BootstrapOutcome { goal_id, members })
+    // 3. Document contract snapshots -> `.teamx/docs/_spec/<key>.json`.
+    // These are the executable source of truth for doc lifecycle (T3/T4) —
+    // an agent/member can load them without re-parsing TEAM.md. Incomplete
+    // docs (missing owner/states) are skipped but surfaced in the output.
+    let docs_dir = teamx_dir.join("docs").join("_spec");
+    let mut docs_out = Vec::new();
+    for d in &tf.docs {
+        let spec = json!({
+            "doc": d.key,
+            "title": d.title,
+            "purpose": d.purpose,
+            "template": d.template,
+            "creators": d.creators,
+            "owner": d.owner,
+            "approvers": d.approvers,
+            "states": d.states,
+            "reactions": d.reactions.iter().map(|r| json!({
+                "on": r.on,
+                "to_role": r.to_role,
+                "action": r.action,
+            })).collect::<Vec<_>>(),
+            "incomplete": d.is_incomplete(),
+        });
+        if !d.is_incomplete() {
+            std::fs::create_dir_all(&docs_dir).map_err(|e| AppError(format!("mkdir {docs_dir:?}: {e}")))?;
+            let sp = docs_dir.join(format!("{}.json", d.key));
+            let text = serde_json::to_string_pretty(&spec)
+                .map_err(|e| AppError(format!("serialize doc spec: {e}")))?;
+            std::fs::write(&sp, &text).map_err(|e| AppError(format!("write doc spec {sp:?}: {e}")))?;
+            docs_out.push(json!({
+                "key": d.key,
+                "spec_file": sp.display().to_string(),
+                "states": d.states,
+            }));
+        } else {
+            docs_out.push(json!({
+                "key": d.key,
+                "spec_file": serde_json::Value::Null,
+                "incomplete": true,
+                "reason": "missing owner or states",
+            }));
+        }
+    }
+
+    Ok(BootstrapOutcome { goal_id, members, docs: docs_out })
 }
 
 /// Build a member-specific AGENTS.md by merging the project-root AGENTS.md

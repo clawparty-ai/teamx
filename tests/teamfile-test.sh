@@ -134,5 +134,78 @@ OUT3=$( cd "$WORK" && "$TEAMX" team create "Broken" --session s:owner3 --json )
 echo "$OUT3" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') is True, d; assert 'error' in d.get('teamfile',{}), d" || fail "create should succeed with warning"
 pass "invalid TEAM.md -> create ok + warning"
 
+step "TF-108: TEAM.md ## 文档 -> _spec contract snapshots"
+mkdir -p "$WORK/.teamx"
+cat > "$WORK/.teamx/TEAM.md" << 'EOF'
+# 文档驱动项目
+
+## 文档
+
+### requirements
+- 标题: 需求文档
+- 用途: 定义产品需求与验收标准
+- 模板: 背景 | 目标 | 用户故事 | 验收标准
+- 创建者: [pm]
+- 所有者: pm
+- 审批者: [reviewer, owner]
+- 状态流: draft -> review -> approved -> done
+- 变更响应:
+    - on created: 通知 pm 细化需求
+    - on approved: 通知 developer 开始设计
+
+### issue
+- 标题: 缺陷 / 改进请求
+- 所有者: team-lead
+- 状态流: opened -> triaged -> assigned -> fixing -> verified -> closed
+
+### incomplete-doc
+- 标题: 缺失字段的文档
+EOF
+OUT4=$( cd "$WORK" && "$TEAMX" team create "文档驱动项目" --session s:owner4 --json )
+
+# create must succeed and output docs info
+echo "$OUT4" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('ok') is True, d
+docs=d.get('teamfile',{}).get('docs')
+assert docs is not None, 'docs info missing in output'
+keys=[x['key'] for x in docs]
+assert 'requirements' in keys and 'issue' in keys, keys
+assert 'incomplete-doc' in keys, keys
+# complete docs have spec_file; incomplete doc is flagged
+for x in docs:
+    if x['key'] in ('requirements','issue'):
+        assert x['spec_file'], x
+    if x['key']=='incomplete-doc':
+        assert x['incomplete'] is True, x
+print('docs:', [(x['key'], x.get('incomplete', False)) for x in docs])
+" || fail "docs bootstrap output invalid"
+
+# spec snapshot files written to .teamx/docs/_spec/
+[ -f "$WORK/.teamx/docs/_spec/requirements.json" ] || fail "requirements.json missing"
+[ -f "$WORK/.teamx/docs/_spec/issue.json" ] || fail "issue.json missing"
+[ ! -f "$WORK/.teamx/docs/_spec/incomplete-doc.json" ] || fail "incomplete doc should not be snapshotted"
+python3 -c "
+import json
+s=json.load(open('$WORK/.teamx/docs/_spec/requirements.json'))
+assert s['doc']=='requirements'
+assert s['states']==['draft','review','approved','done'], s['states']
+assert s['owner']=='pm'
+assert len(s['reactions'])==2, s['reactions']
+assert s['reactions'][0]['on']=='created'
+assert s['reactions'][0]['to_role']=='pm'
+print('requirements spec:', s['states'], s['reactions'])
+" || fail "requirements.json content invalid"
+python3 -c "
+import json
+s=json.load(open('$WORK/.teamx/docs/_spec/issue.json'))
+assert s['doc']=='issue'
+assert s['states'][-1]=='closed', s['states']
+assert s['template']==[], s['template']
+print('issue spec states:', s['states'])
+" || fail "issue.json content invalid"
+pass "doc contract snapshots written to .teamx/docs/_spec/"
+
 echo
 echo "ALL PASS"

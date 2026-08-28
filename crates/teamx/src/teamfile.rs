@@ -95,8 +95,6 @@ impl DocSpec {
 
     /// Whether the doc is missing mandatory fields (`owner`, `states`).
     /// Such docs are parsed but skipped at bootstrap instantiation.
-    /// (Used by the T2 bootstrap integration; tests exercise it today.)
-    #[allow(dead_code)]
     pub fn is_incomplete(&self) -> bool {
         self.owner.is_empty() || self.states.is_empty()
     }
