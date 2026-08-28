@@ -65,6 +65,9 @@ pub struct DocReaction {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocSpec {
     /// The `### key` — unique document identifier (referenced by events).
+    /// JSON snapshots (T2 `_spec`) historically used `doc` as the field name;
+    /// accept it as an alias when loading.
+    #[serde(alias = "doc")]
     pub key: String,
     /// Display title (`标题` / `title`); falls back to `key`.
     pub title: String,

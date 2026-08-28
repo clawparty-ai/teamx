@@ -207,5 +207,124 @@ print('issue spec states:', s['states'])
 " || fail "issue.json content invalid"
 pass "doc contract snapshots written to .teamx/docs/_spec/"
 
+step "TF-201: doc lifecycle — issue created (doc.created) then advanced (doc.reviewed)"
+mkdir -p "$WORK/.teamx"
+cat > "$WORK/.teamx/TEAM.md" << 'EOF'
+# 文档驱动项目
+
+## 成员
+### owner
+- 姓名: 项目负责人
+- 角色: owner
+- 分工: 目标定义与总体把关
+
+### lead
+- 姓名: 组长
+- 角色: team-lead
+- 分工: 分诊并指派 issue
+
+### reviewer1
+- 姓名: 评审甲
+- 角色: reviewer
+- 分工: 代码评审
+
+## 文档
+
+### issue
+- 标题: 缺陷 / 改进请求
+- 创建者: [owner, team-lead, reviewer, contributor]
+- 所有者: owner
+- 审批者: [team-lead, reviewer]
+- 状态流: opened -> triaged -> assigned -> fixing -> verified -> closed
+- 变更响应:
+    - on created: 通知 team-lead 分析并分诊
+    - on reviewed: 通知 reviewer 复核
+
+### requirements
+- 标题: 需求文档
+- 创建者: [owner, team-lead]
+- 所有者: team-lead
+- 审批者: [reviewer]
+- 状态流: draft -> review -> approved -> done
+- 变更响应:
+    - on approved: 通知 reviewer 复核设计
+EOF
+OUT5=$( cd "$WORK" && "$TEAMX" team create "文档驱动项目" --session s:lead5 --json )
+LEAD_ID=$( echo "$OUT5" | python3 -c "import json,sys; d=json.load(sys.stdin); print([m['key'] for m in d['teamfile']['members']])" )
+echo "$OUT5" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+tf=d['teamfile']
+keys=[m['key'] for m in tf['members']]
+assert 'lead' in keys and 'reviewer1' in keys, keys
+" || fail "TF-201 team with members failed"
+
+# find the team id + lead member id
+TID=$( echo "$OUT5" | python3 -c "import json,sys; print(json.load(sys.stdin)['team']['id'])" )
+LEAD_MID=$( echo "$OUT5" | python3 -c "import json,sys; d=json.load(sys.stdin); print([m['member_id'] if 'member_id' in m else '' for m in d['teamfile']['members']])" )
+echo "  team=$TID members=$LEAD_ID"
+
+# Import the team-lead + reviewer letters so reactions can match their roles.
+LEAD_LETTER=$( cat "$WORK/.teamx/members/lead/invitation.letter" )
+( cd "$WORK" && "$TEAMX" team import "$LEAD_LETTER" --name 组长 --session s:leadm --json ) >/dev/null 2>&1 || fail "import lead letter"
+REV_LETTER=$( cat "$WORK/.teamx/members/reviewer1/invitation.letter" )
+( cd "$WORK" && "$TEAMX" team import "$REV_LETTER" --name 评审甲 --session s:reviewerm --json ) >/dev/null 2>&1 || fail "import reviewer letter"
+pass "team-lead + reviewer imported (reaction targets available)"
+
+# 1. create an issue (doc.created) by lead
+ISSUE=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"042-slow","note":"上传慢"}' --session s:lead5 --json )
+echo "$ISSUE" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('ok') is True, d
+assert d['doc']=='issue' and d['state']=='opened', d
+" || fail "TF-201 issue created"
+pass "issue doc.created -> opened"
+
+# 2. lead advances opened -> triaged (owner can advance)
+ADV=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"042-slow","to":"triaged","note":"已分诊"}' --session s:lead5 --json )
+echo "$ADV" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('ok') is True, d
+assert d['state']=='triaged', d
+assert d['from_state']=='opened', d
+# reaction to reviewer should have been emitted (on triaged -> reviewer)
+notified=[n for n in d.get('notified',[]) if n.get('to_role')=='reviewer']
+assert len(notified)>=1, d
+" || fail "TF-201 issue advanced"
+pass "issue doc.reviewed opened->triaged + reviewer notified"
+
+# 3. meta file persisted
+[ -f "$WORK/.teamx/docs/issue/042-slow.meta.json" ] || fail "issue meta missing"
+python3 -c "
+import json
+m=json.load(open('$WORK/.teamx/docs/issue/042-slow.meta.json'))
+assert m['state']=='triaged', m
+assert len(m['history'])==2, m['history']
+" || fail "issue meta state/history invalid"
+pass "issue meta.json persisted (state=triaged, 2 history steps)"
+
+step "TF-202: doc validation — duplicate create + illegal transition rejected"
+# duplicate create must fail (instance already exists)
+DUP=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"doc":"issue","id":"042-slow"}' --session s:lead5 --json 2>&1 || true )
+echo "$DUP" | grep -q "already exists" || fail "duplicate doc.create should be rejected"
+pass "duplicate doc.created rejected"
+
+# illegal: move backward (verified -> opened) with a forward event
+BAD=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"042-slow","to":"opened"}' --session s:lead5 --json 2>&1 || true )
+echo "$BAD" | grep -q "illegal transition" || fail "backward move should be rejected: $BAD"
+pass "illegal backward transition rejected"
+
+# unknown state rejected
+BADSTATE=$( cd "$WORK" && "$TEAMX" publish doc.reviewed --data '{"doc":"issue","id":"042-slow","to":"bogus"}' --session s:lead5 --json 2>&1 || true )
+echo "$BADSTATE" | grep -q "not in declared flow" || fail "unknown state should be rejected: $BADSTATE"
+pass "unknown state rejected"
+
+# missing doc key in payload rejected
+NOKEY=$( cd "$WORK" && "$TEAMX" publish doc.created --data '{"id":"x"}' --session s:lead5 --json 2>&1 || true )
+echo "$NOKEY" | grep -q "requires a \`doc\` key" || fail "missing doc key should be rejected"
+pass "missing doc key rejected"
+
 echo
 echo "ALL PASS"

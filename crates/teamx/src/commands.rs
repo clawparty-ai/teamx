@@ -2263,6 +2263,14 @@ fn cmd_publish(
     session: &str,
     team_opt: Option<&str>,
 ) -> Result<Value> {
+    // `doc.*` lifecycle events are handled by the declarative doc engine
+    // (T4): permission + transition checks from the TEAM.md contract, then
+    // the event is written to the ledger and the .meta.json is updated.
+    // Reactions from the spec are turned into directed notifications.
+    if publish_type.starts_with("doc.") {
+        return cmd_publish_doc(conn, publish_type, data, assignee_opt, session, team_opt);
+    }
+
     let (action, event_type, affects_goal, affects_team) = publish_plan(publish_type)?;
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
 
@@ -2358,6 +2366,186 @@ fn cmd_publish(
         "assignee": assignee.map(|(id, _)| id),
         "goal_state": goal_transition.map(|(_, t)| t),
         "team_state": team_transition.map(|(_, t)| t),
+    }))
+}
+
+/// Handle a `doc.*` lifecycle event via the declarative doc engine (T4).
+///
+/// Flow (design §6.3 + §7.1):
+///   1. Parse `{ doc, id, to, note }` from the payload;
+///   2. Load the contract from `.teamx/docs/_spec/<doc>.json` (T2 snapshot);
+///   3. Load the instance's `.meta.json` (or start fresh for `doc.created`);
+///   4. Validate with `doc_flow::apply_event` (permission + state flow) —
+///      a failed check returns an error and writes NOTHING (§6.4);
+///   5. On success: write the ledger event, persist the new `.meta.json`;
+///   6. Match the spec's reactions for this event and emit a directed
+///      notification to the target role's members (publish --assignee).
+fn cmd_publish_doc(
+    conn: &mut Connection,
+    publish_type: &str,
+    data: Option<&str>,
+    assignee_opt: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    if actor.state == "pending" {
+        return err(format!(
+            "member {} is pending; wait for owner approval before publishing",
+            actor.display_name
+        ));
+    }
+    let actor_role = actor.role.as_deref().unwrap_or("contributor");
+
+    let mut payload: Value = match data {
+        Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({ "message": s })),
+        None => json!({}),
+    };
+    if !payload.is_object() {
+        payload = json!({ "message": payload });
+    }
+    let doc_key = match payload.get("doc").and_then(|v| v.as_str()) {
+        Some(d) => d.to_string(),
+        None => return err("doc.* event requires a `doc` key in payload (the TEAM.md document key)"),
+    };
+    let doc_id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    let to_state = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let note = payload.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Locate the project root: TEAM.md bootstrap uses the CWD.
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let spec = crate::doc_flow::load_spec(&docs_root, &doc_key)
+        .map_err(|e| AppError(format!("doc spec `{doc_key}`: {e}")))?;
+
+    // Load the instance meta (absent = fresh instance, only valid for created).
+    let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, &doc_key, &doc_id);
+    let existing = if meta_path.exists() {
+        Some(crate::doc_flow::DocMeta::load(&meta_path).map_err(AppError)?)
+    } else {
+        None
+    };
+    let is_created = publish_type == "doc.created";
+
+    // `doc.created` on an existing instance is an error; a non-created event on
+    // a missing instance is also an error.
+    if let Some(ex) = existing.as_ref() {
+        if is_created {
+            return err(format!(
+                "doc `{doc_key}`/{doc_id} already exists (state: {}); use a doc.* event to advance",
+                ex.state
+            ));
+        }
+    } else if !is_created {
+        return err(format!(
+            "doc `{doc_key}`/{doc_id} does not exist; create it first with doc.created"
+        ));
+    }
+
+    let meta = existing.clone().unwrap_or_else(|| crate::doc_flow::DocMeta {
+        doc: doc_key.clone(),
+        id: doc_id.to_string(),
+        state: String::new(), // set by apply_event on created
+        owner: spec.owner.clone(),
+        created_at: crate::events::db_now(),
+        updated_at: crate::events::db_now(),
+        history: Vec::new(),
+    });
+
+    // Validate + compute the next meta (pure — no side effects). A failed
+    // check returns before any write.
+    let next = crate::doc_flow::apply_event(&spec, &meta, actor_role, publish_type, to_state.as_deref(), 0)
+        .map_err(AppError)?;
+
+    let seq = db::with_write(conn, |tx| {
+        payload["doc"] = json!(doc_key);
+        payload["id"] = json!(doc_id);
+        payload["state"] = json!(next.state);
+        if let Some(f) = existing.as_ref() {
+            payload["from"] = json!(f.state);
+        }
+        payload["by"] = json!(actor_role);
+        if !note.is_empty() {
+            payload["note"] = json!(note);
+        }
+        // Tag the directed assignee if one was given explicitly.
+        if let Some(aid) = assignee_opt {
+            payload["assignee_member_id"] = json!(aid);
+        }
+        emit_json(tx, &team.id, Some(&actor.id), publish_type, payload.clone())
+    })
+    .map_err(|e| AppError(format!("doc publish failed: {e}")))?;
+
+    // Persist the meta with the real event seq.
+    let mut persisted = next.clone();
+    if let Some(last) = persisted.history.last_mut() {
+        last.event_seq = seq;
+    }
+    if let Some(m) = existing.as_ref() {
+        persisted.created_at = m.created_at.clone();
+    }
+    persisted
+        .save(&meta_path)
+        .map_err(|e| AppError(format!("doc meta save: {e}")))?;
+    touch(conn, &actor.id).ok();
+
+    // Reactions: find spec reactions triggered by this event and notify the
+    // target role's members (directed events = auto-execute on them).
+    let mut notified: Vec<serde_json::Value> = Vec::new();
+    for r in &spec.reactions {
+        let reaction_event = publish_type.strip_prefix("doc.").unwrap_or(publish_type);
+        if r.on == reaction_event || r.on == publish_type {
+            let targets = match &r.to_role {
+                Some(role) => members_for_team(conn, &team.id)
+                    .map_err(|e| AppError(format!("members: {e}")))?
+                    .into_iter()
+                    .filter(|m| m.state != "left" && m.state != "denied")
+                    .filter(|m| m.role.as_deref() == Some(role.as_str()))
+                    .collect::<Vec<_>>(),
+                None => Vec::new(),
+            };
+            let to_role_label = r.to_role.clone().unwrap_or_default();
+            for t in &targets {
+                let nseq = db::with_write(conn, |tx| {
+                    emit_json(
+                        tx,
+                        &team.id,
+                        Some(&actor.id),
+                        "doc.reaction",
+                        json!({
+                            "doc": doc_key,
+                            "id": doc_id,
+                            "on": r.on,
+                            "action": r.action,
+                            "assignee_member_id": t.id,
+                            "assignee_name": t.display_name,
+                        }),
+                    )
+                })
+                .map_err(|e| AppError(format!("reaction event: {e}")))?;
+                notified.push(json!({
+                    "to_role": to_role_label,
+                    "assignee": t.id,
+                    "assignee_name": t.display_name,
+                    "action": r.action,
+                    "seq": nseq,
+                }));
+            }
+        }
+    }
+
+    let from_state = existing.as_ref().map(|m| m.state.clone());
+    Ok(json!({
+        "ok": true,
+        "seq": seq,
+        "event": publish_type,
+        "doc": doc_key,
+        "id": doc_id,
+        "state": next.state,
+        "from_state": from_state,
+        "by_role": actor_role,
+        "meta_file": meta_path.display().to_string(),
+        "notified": notified,
     }))
 }
 
