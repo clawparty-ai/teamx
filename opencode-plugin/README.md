@@ -141,6 +141,8 @@ This key is the session's identity across all teamx operations. Multiple opencod
 | `/team-tunnel-forward` | Forward teammate's tunnel |
 | `/team-help` | Show available commands |
 
+For starting, resuming, delegating fact gathering, and completing a design session, see the [Grill with Docs usage guide](../docs/23-manual-grill-with-docs-usage.md).
+
 ## Digest injection
 
 The plugin injects a live team digest into the system prompt via `experimental.chat.system.transform`. The digest includes:
