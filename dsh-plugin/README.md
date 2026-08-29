@@ -7,6 +7,7 @@ teamx plugin for [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepsee
 - **28 `teamx_*` tools** registered via `ctx.tools.register(defineTool(...))` for team management, goal tracking, member approval, role assignment, and real-time collaboration
 - **21 `/team-*` flat slash commands** registered via `ctx.commands.register`
 - **Runtime `teamx` skill** registered via `ctx.skills.register(...)` — provides the collaboration protocol / usage guide so agents know how to use teamx_* tools (Per-Turn Protocol, State Machine, Workflow Guidance)
+- **Runtime `teamx-grill-with-docs` skill** — runs explicit owner-led design sessions and preserves decisions in repository artifacts
 - **Per-agent digest injection** via `ctx.systemPrompt.variable` — each agent sees live team state in its system prompt
 - **Auto-execute**: directed tasks wake the target agent via `agent.followup()`
 - **Real-time push**: WebSocket + poll-based digest refresh (configurable via `pollIntervalMs`)
@@ -22,6 +23,7 @@ dsh-plugin/
 │   ├── tools.ts          # teamx_* tools → ctx.tools.register(defineTool(...))
 │   ├── commands.ts       # /team-* flat slash commands → ctx.commands.register
 │   ├── skill.ts          # Runtime teamx skill (collaboration protocol) → ctx.skills.register()
+│   ├── grill-with-docs.generated.ts # Generated owner-led design-session skill
 │   ├── ws.ts             # WebSocket push client (Node ws package, mTLS, reconnect)
 │   ├── digest.ts         # Per-agent digest cache + sync refresh + formatting
 │   ├── auto-execute.ts   # Directed task detection → agent.followup()
@@ -150,9 +152,9 @@ The plugin injects a live team digest into each agent's system prompt via `ctx.s
 
 Each agent gets its own isolated digest (via `agent.ctx.systemPrompt`). Refreshed every `pollIntervalMs` ms (default 15s) via poller or WebSocket push.
 
-## Skill (collaboration protocol)
+## Skills
 
-The plugin registers a runtime `teamx` skill via `ctx.skills.register(...)` during startup. This skill provides the **collaboration protocol** that teaches agents how to use teamx_* tools effectively:
+The plugin registers two runtime skills via `ctx.skills.register(...)` during startup. The `teamx` skill provides the **collaboration protocol** that teaches agents how to use teamx_* tools effectively:
 
 - **Available Commands** — flat slash commands and corresponding tools
 - **Per-Turn Protocol** — sync before acting, report progress, owner summarizes
@@ -161,6 +163,10 @@ The plugin registers a runtime `teamx` skill via `ctx.skills.register(...)` duri
 - **Auto-execute** — directed task handling rules
 
 The skill appears in the agent's `<available_skills>` catalog (via dsh's `dsh-tool-skill` consumer, present in standard/code/cordis presets). Agents can also load it on demand via the `skill` tool. The digest (above) provides live state; the skill provides static protocol — they complement each other.
+
+The `teamx-grill-with-docs` skill is selected when the human owner explicitly asks to grill or stress-test a design and preserve the decisions. It is generated from the same host-neutral protocol as OpenCode's `/team-grill` command; DSH does not add a separate slash command in this version.
+
+See the [Grill with Docs usage guide](../docs/23-manual-grill-with-docs-usage.md) for natural-language invocation examples, recovery, artifacts, and the explicit completion gate.
 
 ## Auto-execute
 
@@ -266,7 +272,11 @@ Session key format `${teamxInstance}:${agentSessionID}` is shared with opencode-
 cd dsh-plugin
 npm install        # installs dsh packages via file: references
 npx tsc --noEmit   # type-check (noCheck: true for unbuilt dsh packages)
+npm run build      # regenerates protocol adapters and builds lib/index.js
+npm run check:protocols  # verifies generated adapters are current
 ```
+
+Edit `../protocols/grill-with-docs.md` and run `npm run generate:protocols` when the deliberation protocol changes. Do not edit `src/grill-with-docs.generated.ts` directly.
 
 The dsh packages must be built first for full type checking:
 ```bash

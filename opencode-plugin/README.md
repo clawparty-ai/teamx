@@ -6,6 +6,7 @@ teamx plugin for [opencode](https://github.com/opencode-ai/opencode) — shared-
 
 - **37+ `teamx_*` tools** for team management, goal tracking, member approval, role assignment, tunneling, and real-time collaboration
 - **20+ `/team-*` slash commands** for quick access without leaving the chat
+- **`/team-grill` design sessions** for owner-led questions, evidence gathering, and durable decision records
 - **Per-session digest injection** via `experimental.chat.system.transform` — the model sees live team state
 - **Auto-execute**: directed tasks wake the target session and start working automatically
 - **Real-time push**: WebSocket + poll-based digest refresh (configurable via `TEAMX_POLL_INTERVAL`)
@@ -145,6 +146,7 @@ This key is the session's identity across all teamx operations. Multiple opencod
 | `/team-state <idle\|active>` | Set working state |
 | `/team-ask <member> <msg>` | Ask a question |
 | `/team-respond <id> <msg>` | Answer a question |
+| `/team-grill <topic>` | Start an owner-led design session (`--doc` and `--resume` supported) |
 | `/team-serve-start` | Start network server |
 | `/team-serve-stop` | Stop network server |
 | `/team-tunnel-expose` | Expose local port |
@@ -160,6 +162,8 @@ This key is the session's identity across all teamx operations. Multiple opencod
 | `/team-git-grant <name> <member>` | Grant repository access |
 | `/team-git-permissions <name>` | Show repository permissions |
 | `/team-help` | Show available commands |
+
+For starting, resuming, delegating fact gathering, and completing a design session, see the [Grill with Docs usage guide](../docs/23-manual-grill-with-docs-usage.md).
 
 ## Digest injection
 
@@ -202,4 +206,7 @@ cd opencode-plugin
 bun install
 bun run build    # builds to dist/teamx.js
 bun run typecheck
+bun run check:protocols  # verifies generated design-session adapters are current
 ```
+
+`/team-grill` is generated from the repository's host-neutral `protocols/grill-with-docs.md`. Edit that source and run `bun run generate:protocols`; do not edit the generated command assets directly.
