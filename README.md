@@ -62,6 +62,20 @@ See the worked example: [`templates/01-product-dev-team.TEAM.md`](templates/01-p
 /team goal close
 ```
 
+## Team Design Sessions
+
+The team owner can start an explicit, multi-round design interview before implementation:
+
+```text
+/team-grill Design the order cancellation flow
+/team-grill Design the order cancellation flow --doc docs/design/order-cancellation.md
+/team-grill --resume docs/design/order-cancellation.md
+```
+
+Each round presents the currently unblocked design questions with recommendations. Team members may be assigned evidence-gathering requests, while the human owner remains the final decision authority. The session finishes only after the design tree is exhausted, repository artifacts agree, and the owner explicitly confirms Shared Understanding.
+
+See the [Grill with Docs usage guide](docs/23-manual-grill-with-docs-usage.md) for OpenCode and DSH examples, generated artifacts, recovery, and completion rules.
+
 ## Network Mode
 
 `teamx serve` is a self-hosted mTLS server. Because every member authenticates with a client certificate (mTLS) and all traffic is encrypted, it works both on a LAN and on the **public internet** — e.g. a VPS or a home server behind a forwarded port.
@@ -128,6 +142,7 @@ Manual test runbooks:
 - [Three-person workflow](docs/demo-3p.md)
 - [Network mode](docs/manual-test-network.md)
 - [Grill with Docs](docs/22-manual-grill-with-docs.md)
+- [Grill with Docs usage guide](docs/23-manual-grill-with-docs-usage.md)
 
 ## Security Model
 

@@ -166,6 +166,8 @@ The skill appears in the agent's `<available_skills>` catalog (via dsh's `dsh-to
 
 The `teamx-grill-with-docs` skill is selected when the human owner explicitly asks to grill or stress-test a design and preserve the decisions. It is generated from the same host-neutral protocol as OpenCode's `/team-grill` command; DSH does not add a separate slash command in this version.
 
+See the [Grill with Docs usage guide](../docs/23-manual-grill-with-docs-usage.md) for natural-language invocation examples, recovery, artifacts, and the explicit completion gate.
+
 ## Auto-execute
 
 When a task is published with `--assignee <member>`, the plugin detects it and calls `agent.followup(message)` to wake the target agent. The agent receives a structured message with the task details and digest, then starts working automatically.
