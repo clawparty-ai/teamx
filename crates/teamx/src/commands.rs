@@ -838,6 +838,41 @@ fn cmd_team_create(
         "owner_member_id": member_id,
         "goal_id": goal_id,
     });
+
+    // Auto-create a git repo on the teamx server from the current project
+    // directory (name = sanitized team name; contents = cwd, minus noise).
+    let mut git_info = None;
+    if let Ok(cwd) = std::env::current_dir() {
+        let repo_name = crate::git_service::repo_name_from_team(&team.name);
+        let repo = crate::git_service::create_repo(conn, &team_id, &repo_name, Some("auto-created with team"), &member_id);
+        match repo {
+            Ok(r) => {
+                match crate::git_service::seed_repo_from_dir(&team_id, &repo_name, &cwd) {
+                    Ok(n) => {
+                        git_info = Some(json!({
+                            "repo": r.name,
+                            "repo_id": r.id,
+                            "path": r.path,
+                            "files_seeded": n,
+                            "note": format!("team git repo `{}` created and seeded from the current directory", r.name),
+                        }));
+                    }
+                    Err(e) => {
+                        git_info = Some(json!({ "repo": r.name, "error": e, "note": "repo created but seeding failed" }));
+                    }
+                }
+            }
+            Err(e) => {
+                git_info = Some(json!({ "error": e, "note": "git repo auto-creation skipped" }));
+            }
+        }
+    }
+    if let Some(info) = git_info {
+        if let Some(o) = out.as_object_mut() {
+            o.insert("git".to_string(), info);
+        }
+    }
+
     if let Some(info) = teamfile_info {
         if let Some(o) = out.as_object_mut() {
             o.insert("teamfile".to_string(), info);
@@ -1123,8 +1158,31 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
         Ok(())
     })
     .map_err(|e| AppError(format!("decision failed: {e}")))?;
+
+    // Auto-grant read access to all team git repos on approval, so the member
+    // can immediately `git clone` (feature: import → approve → clone).
+    let mut granted_repos: Vec<String> = Vec::new();
+    if approve {
+        if let Ok(repos) = crate::git_service::list_repos(conn, &team.id) {
+            for r in repos {
+                let _ = crate::git_service::grant_permission(conn, &r.id, &target.id, crate::git_service::PERM_READ, &actor.id);
+                granted_repos.push(r.name);
+            }
+        }
+    }
+
     touch(conn, &actor.id).ok();
-    Ok(json!({ "ok": true, "action": if approve { "approved" } else { "denied" }, "member_id": target.id, "state": to_s, "from": from_s }))
+    let mut out = json!({
+        "ok": true,
+        "action": if approve { "approved" } else { "denied" },
+        "member_id": target.id,
+        "state": to_s,
+        "from": from_s,
+    });
+    if !granted_repos.is_empty() {
+        out["git_access"] = json!(granted_repos);
+    }
+    Ok(out)
 }
 
 fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
@@ -1655,14 +1713,31 @@ fn claim_invitation(
     .map_err(|e| AppError(format!("import failed: {e}")))?;
 
     let team = team_by_id(conn, &team_id)?;
-    Ok(json!({
+    // After approval the owner auto-grants read on all team repos, so surface
+    // the team's git repos + server URL here so the member/plugin can clone.
+    let git_repos = crate::git_service::list_repos(conn, &team_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.name)
+        .collect::<Vec<_>>();
+    let server_url = inv["server"]["url"].as_str().unwrap_or("").to_string();
+    let mut out = json!({
         "ok": true,
         "status": "pending",
         "member_id": member_id,
         "role": role_key,
         "team": { "id": team.id, "name": team.name, "state": team.state },
         "note": "invitation imported; waiting for owner approval",
-    }))
+    });
+    if !git_repos.is_empty() {
+        out["git_repos"] = json!(git_repos);
+        out["server_url"] = json!(server_url);
+        out["clone_hint"] = json!(format!(
+            "after approval, clone with: git clone {}/git/{}/<repo> (or teamx git clone)",
+            server_url, team_id
+        ));
+    }
+    Ok(out)
 }
 
 /// Decode a letter from `teamx-inv:v1:<base64>`, a file path, or raw JSON.

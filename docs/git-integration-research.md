@@ -394,3 +394,45 @@ teamx git commit-push -m <msg>       # commit + push 一步完成
 - **bundle 大小**：JSON base64 有 ~33% 膨胀，超大仓库不建议
 - **并发 push**：两个成员同时 push 时，后到者若基于旧 commit 会被拒绝（符合 git 语义）
 
+### 9.6 标准 Git Smart HTTP over mTLS（推荐连接方式）
+
+> 2026-08-29 更新：改为标准 git 协议，用户可用原生 `git` 客户端。
+
+**Server 端**（`git_service.rs` + `serve.rs`）实现 Git Smart HTTP 端点，复用系统 git plumbing：
+
+| 端点 | 用途 | 权限 |
+|------|------|------|
+| `GET /git/<team>/<repo>/info/refs?service=git-upload-pack` | clone/fetch advertisement | read |
+| `GET /git/<team>/<repo>/info/refs?service=git-receive-pack` | push advertisement | write |
+| `POST /git/<team>/<repo>/git-upload-pack` | clone/fetch/pull | read |
+| `POST /git/<team>/<repo>/git-receive-pack` | push | write |
+
+认证仍复用 mTLS：客户端证书 CN → member_id → 查 `git_repo_permissions`。实现了 `# service=<name>` pkt-line advertisement 前缀。
+
+**Client 端**（`teamx git setup`）：
+
+```bash
+# 一次性配置：从 invitation letter 私有目录读证书写入 ~/.gitconfig
+teamx git setup --server https://server
+# 之后就是普通 git（自动 mTLS，零证书参数）
+git clone https://server/git/<team_id>/<repo>
+git pull && git push
+```
+
+写入的 per-URL 配置：`http.<server>/.sslCert/.sslKey/.sslCAInfo`（注意 key 需用 `/.` 前缀，`git config` CLI 不接受含 `/` 的 key，需 `--file ~/.gitconfig`）。
+
+### 9.7 团队自动化（create → repo，import → clone）
+
+> 2026-08-30 更新：三个自动化点。
+
+1. **team create 自动建 repo**：owner 在项目目录执行 `teamx team create` 时，自动用当前目录内容创建团队 git repo（repo 名 = sanitized team 名），初始 commit `initial import (teamx team create)`。自动跳过 `.git/.teamx/target/node_modules/vendor/dist/.build`。
+2. **approve 自动授权**：owner approve 新成员时，自动给该成员授予团队所有 git repo 的 `read` 权限，之后即可 clone/pull。
+3. **import 自动 clone 指引**：`teamx team import` 返回 `git_repos` + `server_url` + `clone_hint`；opencode 插件的 `teamx_team_import` 成功后自动执行 `teamx git setup`，用户批准后即可 `git clone`。
+
+**验证**（`TEAMX_HOME=/tmp/teamx-f1` 独立环境）：
+- ✅ `team create "My Project"` → 自动生成 `my-project.git`（含 main.rs/src/lib.rs/.gitignore + initial commit）
+- ✅ import 返回 `git_repos: ['my-project']`
+- ✅ approve dev2 → 自动获得 `read` 权限（permissions 可查）
+- ✅ dev2 `git clone`（自动 mTLS）成功拿到代码
+
+
