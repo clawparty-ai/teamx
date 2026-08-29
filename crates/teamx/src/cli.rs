@@ -299,6 +299,10 @@ pub struct UiCmd {
     /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
     #[arg(long)]
     pub db: Option<PathBuf>,
+    /// teamx server URL (default: TEAMX_SERVER_URL or discovered letter) —
+    /// required to reach member tunnels (live sessions / web terminal).
+    #[arg(long)]
+    pub server_url: Option<String>,
 }
 
 /// `teamx dns` subcommands.

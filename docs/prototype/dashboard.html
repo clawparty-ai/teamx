@@ -86,6 +86,11 @@
   .tp-quick.sel { color: var(--primary); font-weight: 600; background: var(--primary-light); }
   .tp-pane label { display: flex; flex-direction: column; font-size: 12px; font-weight: 500; color: var(--muted-fg); gap: 4px; margin-bottom: 10px; }
   .filters label { display: flex; flex-direction: column; font-size: 12px; font-weight: 500; color: var(--muted-fg); gap: 4px; }
+  /* ---------- timeline view toggle (segmented control) ---------- */
+  .view-toggle { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  .view-toggle button { background: none; border: none; color: var(--muted-fg); font-size: 13px; font-weight: 500; padding: 6px 12px; cursor: pointer; transition: color var(--transition), background var(--transition); }
+  .view-toggle button:hover { color: var(--primary); }
+  .view-toggle button.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
   select, input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); transition: border-color var(--transition); }
   select:hover, input:hover { border-color: var(--primary); }
   select:focus, input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(74,144,229,0.15); }
@@ -196,6 +201,33 @@
   .gantt-bar:hover .gantt-tip, .gantt-point:hover .gantt-tip, .gantt-bar:focus .gantt-tip, .gantt-point:focus .gantt-tip { display: block; }
   .gantt-axis { position: relative; height: 22px; margin-left: 150px; font-size: 10.5px; color: var(--muted-fg); font-family: var(--font-mono); margin-bottom: 4px; }
   .gantt-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  /* ---------- fishbone timeline (vertical) ---------- */
+  .fishbone { background: var(--card); border-radius: var(--radius); padding: 18px 14px 8px; }
+  .fb-wrap { position: relative; }
+  .fb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-1px); }
+  .fb-day { text-align: center; padding: 14px 0 8px; font-size: 11.5px; font-weight: 600; color: var(--muted-fg); font-family: var(--font-mono); letter-spacing: 0.05em; }
+  .fb-day:first-child { padding-top: 0; }
+  .fb-day::before { content: "— "; color: var(--border); }
+  .fb-day::after { content: " —"; color: var(--border); }
+  .fb-row { position: relative; display: flex; align-items: center; min-height: 34px; padding: 3px 0; }
+  .fb-side { flex: 1; min-width: 0; position: relative; display: flex; }
+  .fb-center { flex: 0 0 30px; position: relative; display: flex; align-items: center; justify-content: center; }
+  .fb-row.left .fb-side:first-child { justify-content: flex-end; }
+  .fb-card { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-shadow: var(--shadow); max-width: 430px; transition: box-shadow var(--transition), border-color var(--transition); }
+  .fb-card:hover { box-shadow: var(--shadow-hover); border-color: var(--primary); }
+  .fb-row.left .fb-card { margin-right: 10px; }
+  .fb-row.right .fb-card { margin-left: 10px; }
+  /* fishbone connector: from card inner edge toward the spine dot */
+  .fb-row.left .fb-card::after { content: ""; position: absolute; left: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-row.right .fb-card::after { content: ""; position: absolute; right: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted-fg); border: 2px solid var(--card); box-shadow: 0 0 0 2px var(--border); z-index: 2; }
+  .fb-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
+  .fb-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .fb-who { font-size: 12px; font-weight: 600; color: var(--fg); }
+  .fb-kind { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 10.5px; font-weight: 600; color: #fff; line-height: 1.6; }
+  .fb-text { font-size: 13px; color: var(--fg); line-height: 1.45; word-break: break-word; }
+  .fb-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); margin-top: 3px; }
+  .fb-meta .human { color: #1a7f37; font-weight: 600; }
   .lifecycle { position: relative; background: var(--card); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
   .lc-track { display: flex; align-items: flex-start; position: relative; }
   .lc-step { flex: 1; text-align: center; position: relative; min-width: 90px; z-index: 1; }
@@ -304,13 +336,16 @@
     </div>
   </div>
 </header>
-<div style="position:fixed;top:70px;right:16px;z-index:999;background:#FDF0E0;border:1px solid #E6A23C;color:#8a5a00;padding:6px 12px;border-radius:6px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1)">原型 · mock 数据</div>
 <div class="toolbar">
   <div class="toolbar-left">
     <label>Team <select id="team"></select></label>
     <label>Goal <select id="goal"><option value="">All</option></select></label>
   </div>
   <div class="toolbar-right">
+    <div class="view-toggle" id="tlViewToggle" style="display:none" aria-label="切换 Timeline 视图">
+      <button type="button" data-tlmode="gantt" class="active">甘特图</button>
+      <button type="button" data-tlmode="fishbone">时间轴</button>
+    </div>
     <div class="timepicker">
       <button class="btn time-btn" id="timeBtn" title="Select time range">
         <span class="tp-icon">◷</span>
@@ -383,9 +418,10 @@
     </div>
   </div>
 
-  <!-- ============ Timeline view (Gantt) ============ -->
+  <!-- ============ Timeline view (Gantt / fishbone toggle) ============ -->
   <div class="view" id="view-timeline">
     <div class="gantt" id="gantt"></div>
+    <div class="fishbone" id="fishbone" style="display:none"></div>
   </div>
 
   <!-- ============ Members view ============ -->
@@ -620,10 +656,21 @@ const MOCK = {
     ],
   },
   timeline: { items: [
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "work_session", started_at: "2026-08-27T14:00:00Z", ended_at: "2026-08-27T15:00:00Z", duration_ms: 3600000, has_human: 0, detail: { task: "调研 web terminal 方案" } },
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "tool_call", started_at: "2026-08-27T14:10:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { tool: "read", file: "docs/ENT-01.md" } },
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "file_edit", started_at: "2026-08-27T14:32:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { file: "docs/ENT-01.md", action: "append 调研结论" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "work_session", started_at: "2026-08-27T16:00:00Z", ended_at: "2026-08-27T17:00:00Z", duration_ms: 3600000, has_human: 0, detail: { task: "review doc-flow 变更" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "step_finish", started_at: "2026-08-27T16:40:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { step: "doc-flow diff 审阅完成" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "work_session", started_at: "2026-08-28T08:00:00Z", ended_at: "2026-08-28T08:40:00Z", duration_ms: 2400000, has_human: 0, detail: { task: "调研 web terminal 方案" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "tool_call", started_at: "2026-08-28T08:15:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { tool: "webfetch", url: "https://xtermjs.org" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "human_approval", started_at: "2026-08-28T09:00:00Z", ended_at: null, duration_ms: null, has_human: 1, detail: { text: "approve PR #41（web terminal 基础架构）" } },
     { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "work_session", started_at: "2026-08-28T09:00:00Z", ended_at: "2026-08-28T10:30:00Z", duration_ms: 5400000, has_human: 1, detail: { task: "实现登录页表单校验" } },
     { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "work_session", started_at: "2026-08-28T09:15:00Z", ended_at: "2026-08-28T11:00:00Z", duration_ms: 6300000, has_human: 1, detail: { task: "Code review #42" } },
-    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "tool_call", started_at: "2026-08-28T10:45:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { tool: "edit" } },
-    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "work_session", started_at: "2026-08-27T14:00:00Z", ended_at: "2026-08-27T15:00:00Z", duration_ms: 3600000, has_human: 0, detail: { task: "调研 web terminal 方案" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "human_command", started_at: "2026-08-28T09:45:00Z", ended_at: null, duration_ms: null, has_human: 1, detail: { text: "评论：LGTM，合并后记得补单测" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "file_edit", started_at: "2026-08-28T10:00:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { file: "src/auth/login.tsx", action: "edit" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "step_finish", started_at: "2026-08-28T10:20:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { step: "表单校验用例通过" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "tool_call", started_at: "2026-08-28T10:45:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { tool: "edit", file: "src/auth/login.tsx" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "tool_call", started_at: "2026-08-28T10:50:00Z", ended_at: null, duration_ms: null, has_human: 0, detail: { tool: "gh", args: "pr review #42" } },
   ]},
   overview: { overview: { duration_ms: 54000000, tokens_input: 1250000, tokens_output: 380000, tokens_reasoning: 420000, cost: 12.3456, active_members: 3, active_nodes: 3 }, human: { count: 42 }, ai: { count: 386 }, overall: { count: 428 } },
   by_member: [
@@ -678,10 +725,14 @@ function tableRows(rows, cols) {
 }
 
 // ---- navigation ----
+let tlMode = "gantt"
+let lastTimelineItems = []
 function showView(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
   $(".container").classList.toggle("full-width", name === "timeline")
+  const toggle = document.getElementById("tlViewToggle")
+  if (toggle) toggle.style.display = name === "timeline" ? "inline-flex" : "none"
   if (name === "timeline") renderTimeline()
   if (name === "cost") renderCost()
   if (name === "kanban") renderKanban()
@@ -1023,12 +1074,97 @@ function drawGroupedBars(selId, data, nameA, nameB) {
     ${bars}</svg>`
 }
 
-// ---- Timeline (Gantt) view ----
+// ---- Timeline view (Gantt + fishbone) ----
 async function renderTimeline() {
   const q = qs()
   const [teams, tl] = await Promise.all([jget("/api/teams"), jget("/api/timeline?" + q)])
   fillTeamSelect(teams)
-  drawGantt(tl.items ?? [])
+  lastTimelineItems = tl.items ?? []
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+
+function setTimelineMode(mode) {
+  tlMode = mode
+  $$("#tlViewToggle button").forEach((b) => b.classList.toggle("active", b.dataset.tlmode === mode))
+  $("#gantt").style.display = mode === "gantt" ? "" : "none"
+  $("#fishbone").style.display = mode === "fishbone" ? "" : "none"
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+document.querySelectorAll("#tlViewToggle button").forEach((b) =>
+  b.addEventListener("click", () => setTimelineMode(b.dataset.tlmode)))
+
+// ---- Fishbone timeline (vertical, all events by time) ----
+const FB_KIND_LABEL = {
+  work_session: "work", tool_call: "tool", command: "tool", step_finish: "step",
+  file_edit: "file", human_input: "human", human_approval: "human", human_command: "human",
+}
+const FB_KIND_COLOR = {
+  work_session: "#0969da", tool_call: "#8250df", command: "#8250df", step_finish: "#bf8700",
+  file_edit: "#cf222e", human_input: "#1a7f37", human_approval: "#1a7f37", human_command: "#1a7f37",
+}
+function fishKindLabel(kind) { return FB_KIND_LABEL[kind] || kind || "event" }
+function fishKindColor(kind) { return FB_KIND_COLOR[kind] || "#909399" }
+
+function fishDetailText(it) {
+  let d = null
+  try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+  if (!d) return it.detail ? String(it.detail) : ""
+  if (it.kind === "work_session") return d.task ?? d.description ?? d.title ?? ""
+  if (it.kind === "tool_call") return d.tool ? "调用工具 " + d.tool + (d.file ? " · " + d.file : "") : ""
+  if (it.kind === "file_edit") return d.file ? "编辑 " + d.file : ""
+  if (it.kind === "step_finish") return d.step ? "完成步骤 " + d.step : ""
+  if (it.kind && it.kind.startsWith("human")) return d.text ?? d.name ?? d.response ?? d.title ?? ""
+  return d.text ?? d.tool ?? d.file ?? d.task ?? JSON.stringify(d)
+}
+
+function fishboneRow(it, side) {
+  const t = new Date(it.started_at)
+  const time = t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const who = memberLabel(it.member_id)
+  const kind = it.kind || "event"
+  const label = fishKindLabel(kind)
+  const color = fishKindColor(kind)
+  const text = fishDetailText(it)
+  const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+  const node = it.node_name ? `<span>${esc(it.node_name)}</span>` : ""
+  const human = it.has_human ? `<span class="human">● human-in-loop</span>` : ""
+  const meta = [dur, node, human].filter(Boolean).join("") || ""
+  const card = `
+    <div class="fb-card">
+      <div class="fb-top">
+        <span class="fb-time">${esc(time)}</span>
+        <span class="fb-who">${esc(who)}</span>
+        <span class="fb-kind" style="background:${color}">${esc(label)}</span>
+      </div>
+      <div class="fb-text">${esc(text || "(no detail)")}</div>
+      ${meta ? `<div class="fb-meta">${meta}</div>` : ""}
+    </div>`
+  return `<div class="fb-row ${side}">
+    <div class="fb-side">${side === "left" ? card : ""}</div>
+    <div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div>
+    <div class="fb-side">${side === "right" ? card : ""}</div>
+  </div>`
+}
+
+function renderFishbone(items) {
+  const el = $("#fishbone")
+  const valid = (items || []).filter((it) => Number.isFinite(Date.parse(it.started_at)))
+  if (valid.length === 0) { el.innerHTML = '<div class="muted" style="padding:20px">no activity in this range</div>'; return }
+  valid.sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+  const rows = []
+  let prevDay = null
+  valid.forEach((it, i) => {
+    const d = new Date(it.started_at)
+    const day = d.toDateString()
+    if (prevDay !== day) {
+      rows.push(`<div class="fb-day">${esc(d.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" }))}</div>`)
+      prevDay = day
+    }
+    rows.push(fishboneRow(it, i % 2 === 0 ? "left" : "right"))
+  })
+  el.innerHTML = `<div class="fb-wrap"><div class="fb-spine"></div>${rows.join("")}</div>`
 }
 
 function drawGantt(items, opts) {

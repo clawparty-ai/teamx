@@ -290,11 +290,17 @@ pub async fn open_tunnel_bridge(
     use futures_util::{SinkExt, StreamExt};
 
     let mut ws = connect_tunnel_ws(server_url, "/tunnel/forward").await?;
-    ws.send(Message::Text(
-        serde_json::json!({ "type": "connect", "name": exit, "target": target }).to_string(),
-    ))
-    .await
-    .map_err(|e| format!("bridge connect: {e}"))?;
+    // For local-forward tunnels the provider dials its fixed target port, so an
+    // empty `target` omits the field entirely (a blank target would otherwise
+    // be dialed as an empty address).
+    let connect_msg = if target.is_empty() {
+        serde_json::json!({ "type": "connect", "name": exit }).to_string()
+    } else {
+        serde_json::json!({ "type": "connect", "name": exit, "target": target }).to_string()
+    };
+    ws.send(Message::Text(connect_msg))
+        .await
+        .map_err(|e| format!("bridge connect: {e}"))?;
 
     // Wait for stream_open so the caller knows the exit accepted.
     let mut stream_open = false;
@@ -1041,4 +1047,102 @@ async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<Clien
         return Err(format!("http {status}: {}", body_part.trim().chars().take(200).collect::<String>()));
     }
     Ok(body_part.trim().to_string())
+}
+
+/// A `TunnelBridge` exposed as a `tokio::io::AsyncRead + AsyncWrite` stream.
+///
+/// Lets higher-level clients (e.g. the `teamx ui` member proxy) treat a tunnel
+/// connection to a member's local service like a plain TCP socket: write bytes
+/// (outbound to the member) and read bytes (relayed back).
+pub struct TunnelStream {
+    pub bridge: TunnelBridge,
+    pending: std::collections::VecDeque<Vec<u8>>,
+    eof: bool,
+}
+
+impl TunnelStream {
+    /// Wrap a bridge into a byte stream.
+    pub fn new(bridge: TunnelBridge) -> Self {
+        Self { bridge, pending: std::collections::VecDeque::new(), eof: false }
+    }
+}
+
+impl tokio::io::AsyncRead for TunnelStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        // Drain buffered chunks first.
+        while let Some(chunk) = self.pending.pop_front() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let n = chunk.len().min(buf.remaining());
+            buf.put_slice(&chunk[..n]);
+            if n < chunk.len() {
+                self.pending.push_front(chunk[n..].to_vec());
+            }
+            return Poll::Ready(Ok(()));
+        }
+        if self.eof {
+            return Poll::Ready(Ok(()));
+        }
+        // Pull the next relayed chunk from the bridge's rx.
+        match self.bridge.rx.poll_recv(cx) {
+            Poll::Ready(Some(chunk)) => {
+                if chunk.is_empty() {
+                    // loop to get a non-empty chunk
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                let n = chunk.len().min(buf.remaining());
+                buf.put_slice(&chunk[..n]);
+                if n < chunk.len() {
+                    self.pending.push_front(chunk[n..].to_vec());
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(None) => {
+                self.eof = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => {
+                // Also surface EOF if the watch signals the exit closed.
+                if *self.bridge.eof.borrow() {
+                    self.eof = true;
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for TunnelStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use std::task::Poll;
+        let _ = self.bridge.tx.send(buf.to_vec());
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 }

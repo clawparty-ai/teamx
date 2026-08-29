@@ -20,10 +20,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
     http::{header, StatusCode},
     response::{Html, IntoResponse, Redirect},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -33,6 +36,10 @@ use serde_json::json;
 
 use crate::cli::UiCmd;
 use crate::pki;
+
+/// xterm.js vendored for the web terminal (no external CDN dependency).
+static XTERM_JS: &str = include_str!("assets/xterm.min.js");
+static XTERM_CSS: &str = include_str!("assets/xterm.css");
 
 /// Launch the dashboard. Blocks until the server stops (Ctrl+C / kill).
 pub fn ui(cmd: &UiCmd) -> Result<(), String> {
@@ -83,14 +90,28 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         .with_single_cert(cert_chain, key_der)
         .map_err(|e| format!("tls config: {e}"))?;
 
+    // Resolve the teamx server URL (for member tunnel proxying / web terminal).
+    let server_url = match &cmd.server_url {
+        Some(u) if !u.is_empty() => Some(u.clone()),
+        _ => std::env::var("TEAMX_SERVER_URL").ok().filter(|u| !u.is_empty()),
+    };
+    if server_url.is_some() {
+        eprintln!("teamx ui: live member view enabled (server_url={})", server_url.as_deref().unwrap_or(""));
+    } else {
+        eprintln!("teamx ui: live member view disabled (no server_url; pass --server-url or set TEAMX_SERVER_URL)");
+    }
+
     let state = Arc::new(AppState {
         conn,
         token: token.clone(),
+        server_url,
     });
 
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
+        .route("/xterm.js", get(xterm_js))
+        .route("/xterm.css", get(xterm_css))
         .route("/api/teams", get(api_teams))
         .route("/api/goal", get(api_goal))
         .route("/api/members", get(api_members))
@@ -103,6 +124,12 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         .route("/api/files", get(api_files))
         .route("/api/rows", get(api_rows))
         .route("/api/human", get(api_human))
+        // Live member view (ENT-01): proxy to member's opencode via tunnel.
+        .route("/api/members/{member_id}/sessions", get(api_member_sessions))
+        .route("/api/members/{member_id}/session/{sid}/message", get(api_member_messages))
+        .route("/api/members/{member_id}/shell", get(api_member_shells))
+        .route("/api/members/{member_id}/pty", post(api_member_pty))
+        .route("/ws/members/{member_id}/pty/{pty_id}", get(ws_member_pty))
         .fallback(not_found)
         .with_state(state);
 
@@ -137,6 +164,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
 struct AppState {
     conn: Arc<std::sync::Mutex<Connection>>,
     token: String,
+    /// teamx server URL for member tunnel proxying (empty = live features off).
+    server_url: Option<String>,
 }
 
 type S = Arc<AppState>;
@@ -371,6 +400,69 @@ fn page_html() -> String {
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
   }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.online { background: var(--secondary); }
+  .status-dot.busy { background: var(--accent); }
+  .status-dot.offline { background: #C0C4CC; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .tag.blue { background: var(--primary-light); color: var(--primary); }
+  .tag.green { background: #E8F8E8; color: var(--secondary); }
+  .tag.orange { background: #FDF0E0; color: var(--accent); }
+  .tag.red { background: #FDE8E8; color: var(--danger); }
+  .tag.gray { background: var(--muted); color: var(--muted-fg); }
+  .mono { font-family: var(--font-mono); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  /* ---------- member list ---------- */
+  .member-item { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .member-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .member-item.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: var(--shadow-hover); }
+  .member-item .mi-avatar { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); font-weight: 600; }
+  .member-item.selected .mi-avatar { background: var(--primary); color: white; }
+  .member-item .mi-main { flex: 1; min-width: 0; }
+  .member-item .mi-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .member-item .mi-sub { font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+  .member-item .mi-live { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+  .live-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: var(--danger); color: white; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* ---------- session list ---------- */
+  .session-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .session-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .session-item.active { border-color: var(--primary); background: var(--primary-light); }
+  .session-item .si-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); }
+  .session-item.active .si-icon { background: var(--primary); color: white; }
+  .session-item .si-main { flex: 1; min-width: 0; }
+  .session-item .si-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-item .si-sub { font-size: 12px; color: var(--muted-fg); display: flex; gap: 8px; margin-top: 2px; }
+  .session-item .si-time { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); flex-shrink: 0; }
+  /* ---------- detail pane ---------- */
+  .detail-pane { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .detail-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .detail-header .dh-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
+  .detail-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+  .detail-tabs button { background: none; border: none; padding: 10px 16px; font-size: 13px; color: var(--muted-fg); border-bottom: 2px solid transparent; cursor: pointer; font-weight: 500; }
+  .detail-tabs button.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .detail-body { padding: 16px; min-height: 400px; max-height: 600px; overflow-y: auto; }
+  /* ---------- live event stream ---------- */
+  .live-line { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .live-line .ll-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); flex-shrink: 0; width: 60px; }
+  .live-line .ll-icon { flex-shrink: 0; width: 20px; text-align: center; }
+  .live-line .ll-text { flex: 1; min-width: 0; word-break: break-all; }
+  .live-line .ll-text .tool-name { color: var(--primary); font-weight: 600; }
+  .live-line .ll-text .file { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+  /* ---------- terminal placeholder ---------- */
+  .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
+  .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; white-space: pre-wrap; }
+  .term-body .cmd { color: #9CDCFE; }
+  .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .mlive-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .mlive-layout { grid-template-columns: 1fr; } }
+  .hint { font-size: 12px; color: var(--muted-fg); padding: 0 4px 8px; }
+
 </style>
 </head>
 <body>
@@ -477,9 +569,44 @@ fn page_html() -> String {
     <div class="gantt" id="gantt"></div>
   </div>
 
-  <!-- ============ Members view ============ -->
+  <!-- ============ Members view (live member sessions, ENT-01) ============ -->
   <div class="view" id="view-members">
-    <section class="panel"><h2>Members</h2><table id="membersTable"><tbody></tbody></table></section>
+    <div class="cards" id="mliveCards"></div>
+    <div class="mlive-layout">
+      <div>
+        <section class="panel"><h2>Members <span class="count" id="mliveMemberCount">0</span></h2>
+          <div class="hint">点击成员查看其实时会话</div>
+          <div id="mliveMemberList"></div>
+        </section>
+      </div>
+      <div class="detail-pane">
+        <div id="mliveEmpty">
+          <div class="empty"><div class="big">👈</div>
+            <div>选择左侧成员，查看其 opencode 会话与实时活动</div>
+            <div class="muted mt16" style="font-size:12px">实时查看成员正在做什么：会话列表、工具调用、消息流、终端</div>
+          </div>
+        </div>
+        <div id="mliveDetail" style="display:none">
+          <div class="detail-header">
+            <div class="member-chip" id="mliveMemberName" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;background:var(--muted)"></div>
+            <div class="dh-title" id="mliveSessionTitle">—</div>
+            <button class="btn btn-primary btn-sm" style="margin-left:auto" id="mliveTermBtn">⌨ 打开终端</button>
+          </div>
+          <div class="detail-tabs">
+            <button class="active" data-mtab="live">实时活动</button>
+            <button data-mtab="sessions">会话</button>
+            <button data-mtab="terminal">终端</button>
+          </div>
+          <div class="detail-body">
+            <div id="mtab-live"></div>
+            <div id="mtab-sessions" style="display:none"></div>
+            <div id="mtab-terminal" style="display:none">
+              <div id="mliveTerm" class="muted">点击右上角"打开终端"或选择下方终端标签</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <script>
@@ -1072,24 +1199,195 @@ function drawGantt(items, opts) {
 
 // ---- Members view ----
 async function renderMembers() {
+  // Live member view: members come from the local activity API; sessions come
+  // from each member's opencode (proxied via teamx ui /api/members/{id}/...).
   const q = qs()
   const data = await jget("/api/members?" + q)
   const members = data.members ?? []
-  $("#membersTable tbody").innerHTML = members.map((m) => {
-    const a = m.activity ?? {}
-    return `<tr>
-      <td>${esc(m.display_name)}</td>
-      <td>${m.role ? badge(m.role) : "—"}</td>
-      <td>${badge(m.state)}</td>
-      <td>${fmtDate(m.joined_at)}</td>
-      <td>${fmtDate(m.last_seen_at)}</td>
-      <td>${fmtMs(a.duration_ms)}</td>
-      <td>${fmtNum(a.tokens_input)}</td>
-      <td>${fmtCost(a.cost)}</td>
-      <td>${fmtNum(a.count)}</td>
-    </tr>`
-  }).join("")
+  $("#mliveMemberCount").textContent = String(members.length)
+  // Overview cards
+  const online = members.filter((m) => m.state === "active").length
+  $("#mliveCards").innerHTML = [
+    ["Members", members.length, "👥", "blue"],
+    ["在线", online, "●", "green"],
+    ["活动行", fmtNum((data.members ?? []).reduce((s,m)=>s+(m.activity?.count||0),0)), "📊", "orange"],
+  ].map(([l, v, icon, color]) => `<div class="card"><div class="card-icon ${color}">${icon}</div><div class="card-body"><div class="label">${l}</div><div class="value">${v}</div></div></div>`).join("")
+  // Member list
+  $("#mliveMemberList").innerHTML = members.map((m) => `
+    <div class="member-item" data-mlive="${esc(m.id)}">
+      <div class="mi-avatar">${esc((m.display_name || "?").slice(0,1).toUpperCase())}</div>
+      <div class="mi-main">
+        <div class="mi-name">${esc(m.display_name)} ${m.role ? badge(m.role) : ""}</div>
+        <div class="mi-sub"><span class="status-dot ${m.state === "active" ? "online" : m.state === "idle" ? "busy" : "offline"}"></span>${esc(m.state)} · ${fmtMs(m.activity?.duration_ms)} 活动</div>
+      </div>
+      ${m.state === "active" ? '<div class="mi-live"><span class="live-badge">LIVE</span></div>' : ""}
+    </div>`).join("")
+  // Click a member to load their opencode sessions
+  $$(".member-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      $$(".member-item").forEach((x) => x.classList.remove("selected"))
+      el.classList.add("selected")
+      const mid = el.dataset.mlive
+      loadMemberLive(mid, el.querySelector(".mi-name")?.textContent || mid)
+    })
+  })
 }
+
+// ---- live member session view (ENT-01) ----
+let liveMemberId = null
+let liveTimer = null
+
+async function loadMemberLive(memberId, displayName) {
+  liveMemberId = memberId
+  $("#mliveEmpty").style.display = "none"
+  $("#mliveDetail").style.display = ""
+  $("#mliveMemberName").innerHTML = `<span class="status-dot online"></span> ${esc(displayName)}`
+  // Fetch the member's opencode sessions through the ui proxy.
+  try {
+    const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/sessions`)
+    const data = await resp.json()
+    const sessions = (data.data ?? data.sessions ?? []).map((s, i) => ({
+      id: s.id ?? "ses_" + i,
+      title: s.title || ("session " + (i + 1)),
+      agent: s.agent ?? s.agentID ?? "main",
+      model: s.model?.id ?? s.model ?? "",
+      tokens: s.tokens ? (s.tokens.input ?? 0) + (s.tokens.output ?? 0) : 0,
+      time: s.time?.updated ? new Date(s.time.updated) : new Date(),
+    }))
+    renderSessions(sessions)
+    startLivePolling(memberId, sessions)
+  } catch (e) {
+    $("#mliveSessionTitle").textContent = "无法连接该成员的 opencode（未注册隧道？）"
+    $("#mtab-live").innerHTML = `<div class="muted">${esc(String(e))}</div>`
+  }
+}
+
+function renderSessions(sessions) {
+  const host = $("#mtab-sessions")
+  if (!sessions.length) { host.innerHTML = '<div class="muted">no sessions</div>'; return }
+  host.innerHTML = sessions.map((s) => `
+    <div class="session-item" data-sid="${esc(s.id)}">
+      <div class="si-icon">💬</div>
+      <div class="si-main"><div class="si-title">${esc(s.title)}</div>
+        <div class="si-sub">@${esc(s.agent)} ${s.model ? "· " + esc(s.model) : ""} · ${fmtNum(s.tokens)} tokens</div></div>
+      <div class="si-time">${s.time.toLocaleTimeString()}</div>
+    </div>`).join("")
+  const first = sessions[0]
+  if (first) {
+    $("#mliveSessionTitle").textContent = first.title
+    $("#mtab-live").innerHTML = `<div class="live-line"><span class="ll-time">—</span><span class="ll-icon">🤖</span><span class="ll-text"><b>${esc(first.agent)}</b> · ${esc(first.title)} · ${fmtNum(first.tokens)} tokens</span></div><div class="muted mt16">会话消息/实时活动通过成员 opencode 事件流持续刷新…</div>`
+  }
+}
+
+// Poll the member's messages for the first session every few seconds.
+function startLivePolling(memberId, sessions) {
+  if (liveTimer) clearInterval(liveTimer)
+  if (!sessions.length) return
+  const sid = sessions[0].id
+  const poll = async () => {
+    if (document.hidden) return
+    try {
+      const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/session/${encodeURIComponent(sid)}/message`)
+      const data = await resp.json()
+      const msgs = data.data ?? data.messages ?? data
+      if (Array.isArray(msgs) && msgs.length) {
+        const last = msgs[msgs.length - 1]
+        const role = last.role ?? last.type ?? "event"
+        const text = (last.parts ?? []).map((p) => typeof p === "string" ? p : (p.text ?? "")).join(" ").slice(0, 180) || JSON.stringify(last).slice(0, 180)
+        const host = $("#mtab-live")
+        const line = document.createElement("div")
+        line.className = "live-line"
+        line.innerHTML = `<span class="ll-time">${new Date().toLocaleTimeString()}</span><span class="ll-icon">${role === "user" ? "💬" : "🤖"}</span><span class="ll-text">${esc(text)}</span>`
+        host.prepend(line)
+        while (host.children.length > 50) host.lastChild?.remove()
+      }
+    } catch { /* member offline or not tunneled */ }
+  }
+  poll()
+  liveTimer = setInterval(poll, 5000)
+}
+
+
+// ---- web terminal (ENT-01 P2): xterm.js over the ui WS proxy ----
+function ensureXterm() {
+  return new Promise((resolve, reject) => {
+    if (window.Terminal) { resolve(); return }
+    const css = document.createElement("link")
+    css.rel = "stylesheet"
+    css.href = "/xterm.css"
+    document.head.appendChild(css)
+    const js = document.createElement("script")
+    js.src = "/xterm.js"
+    js.onload = () => resolve()
+    js.onerror = () => reject(new Error("xterm.js failed to load"))
+    document.head.appendChild(js)
+  })
+}
+
+let term = null
+let termWs = null
+let termActiveMember = null
+
+ async function openMemberTerminal(memberId) {
+   // Avoid reopening when the terminal for this member is already connected.
+   if (termWs && termWs.readyState === WebSocket.OPEN && term && termActiveMember === memberId) {
+     term.focus()
+     return
+   }
+   try {
+     await ensureXterm()
+   } catch (e) {
+     $("#mliveTerm").innerHTML = `<div class="muted">无法加载终端库（需要网络）：${esc(String(e))}</div>`
+     return
+   }
+   // Create a PTY on the member via ui proxy.
+   let ptyId = null
+   try {
+     const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/pty`, {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ command: "zsh", cwd: undefined }),
+     })
+     const data = await resp.json()
+     ptyId = data.id ?? data.ptyID ?? data
+   } catch (e) {
+     $("#mliveTerm").innerHTML = `<div class="muted">无法创建终端：${esc(String(e))}</div>`
+     return
+   }
+   if (!ptyId || typeof ptyId === "object") {
+     $("#mliveTerm").innerHTML = `<div class="muted">成员未返回 pty id：${esc(JSON.stringify(ptyId))}</div>`
+     return
+   }
+   const host = $("#mliveTerm")
+   host.innerHTML = `<div class="term-window"><div class="term-titlebar">
+     <span class="term-dot" style="background:#ff5f56"></span><span class="term-dot" style="background:#ffbd2e"></span><span class="term-dot" style="background:#27c93f"></span>
+     <span style="margin-left:8px" id="termTitle">member shell</span><span style="margin-left:auto;font-size:11px">pty</span></div>
+     <div class="term-body" id="termMount"></div></div>
+     <div class="mt16 muted" style="font-size:12px">该终端运行在成员的机器，通过 mTLS 隧道实时连接。输入会发送到对方 shell（owner 操作，请谨慎）。</div>`
+   const mount = $("#termMount")
+   term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: "#1e1e1e" } })
+   term.open(mount)
+   termActiveMember = memberId
+   term.write("\r\n\x1b[90mconnecting to member terminal...\x1b[0m\r\n")
+   // WS proxy path
+   const wsProto = location.protocol === "https:" ? "wss" : "ws"
+   const wsUrl = `${wsProto}://${location.host}/ws/members/${encodeURIComponent(memberId)}/pty/${encodeURIComponent(ptyId)}`
+   termWs = new WebSocket(wsUrl)
+   termWs.onopen = () => { term.write("\r\n\x1b[92mconnected\x1b[0m\r\n"); term.focus() }
+   termWs.onmessage = (e) => { try { term.write(String(e.data)) } catch {} }
+   termWs.onclose = () => { try { term.write("\r\n\x1b[91mdisconnected\x1b[0m\r\n") } catch {} }
+   term.onData((d) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(d) })
+ }
+
+// Terminal tab activation: if a member is selected, offer to open the terminal.
+function switchMemberTab(name) {
+  ;["live", "sessions", "terminal"].forEach((x) => {
+    const el = document.getElementById("mtab-" + x)
+    if (el) el.style.display = x === name ? "" : "none"
+  })
+  $$(".detail-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.mtab === name))
+}
+
 
 // ---- shared ----
 // member_id -> display_name (loaded once from /api/members)
@@ -1173,6 +1471,18 @@ document.getElementById("absApply")?.addEventListener("click", () => {
   closeTimepicker()
   refresh()
 })
+// Live member tabs + terminal button wiring (ENT-01).
+$$(".detail-tabs button").forEach((b) => {
+  b.addEventListener("click", () => {
+    switchMemberTab(b.dataset.mtab)
+    if (b.dataset.mtab === "terminal" && liveMemberId) openMemberTerminal(liveMemberId)
+  })
+})
+document.getElementById("mliveTermBtn")?.addEventListener("click", () => {
+  switchMemberTab("terminal")
+  if (liveMemberId) openMemberTerminal(liveMemberId)
+})
+
 async function boot() {
   try {
     const teams = await jget("/api/teams")
@@ -1400,6 +1710,24 @@ async fn login_page() -> impl IntoResponse {
     Html(login_html())
 }
 
+/// Serve the vendored xterm.js (web terminal rendering, no CDN needed).
+async fn xterm_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/javascript")],
+        XTERM_JS,
+    )
+}
+
+/// Serve the vendored xterm.css.
+async fn xterm_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/css")],
+        XTERM_CSS,
+    )
+}
+
 async fn not_found() -> impl IntoResponse {
     (StatusCode::NOT_FOUND, Html(not_found_html()))
 }
@@ -1445,6 +1773,310 @@ fn extract_filters(params: &HashMap0) -> (Option<&str>, Option<&str>, Option<&st
 
 fn lock(conn: &S) -> std::sync::MutexGuard<'_, Connection> {
     conn.conn.lock().unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Live member view (ENT-01): proxy to a member's opencode serve over the
+// teamx tunnel. The member machine exposes `opencode serve` and registers a
+// tunnel named `opencode-<member_id>`; ui connects as a tunnel consumer and
+// forwards HTTP requests / WS bytes.
+// ---------------------------------------------------------------------------
+
+/// Tunnel name a member registers for their opencode serve.
+fn member_tunnel(member_id: &str) -> String {
+    format!("opencode-{member_id}")
+}
+
+/// Open a byte stream to the member's opencode serve (via tunnel).
+async fn member_stream(state: &S, member_id: &str) -> Result<crate::tunnel_client::TunnelStream, String> {
+    let server_url = state.server_url.as_deref().ok_or_else(|| "live member view disabled (no server_url)".to_string())?;
+    let bridge = crate::tunnel_client::open_tunnel_bridge(server_url, &member_tunnel(member_id), "")
+        .await
+        .map_err(|e| format!("open tunnel to {member_id}: {e}"))?;
+    Ok(crate::tunnel_client::TunnelStream::new(bridge))
+}
+
+/// Perform a GET against the member's opencode API and return the raw body.
+/// Reads until the response's Content-Length (or Connection: close EOF).
+async fn member_get(state: &S, member_id: &str, path: &str) -> Result<(u16, Vec<u8>), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = member_stream(state, member_id).await?;
+    let host = "127.0.0.1";
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+
+    // Read header (until CRLFCRLF), then the body up to Content-Length.
+    let mut head_buf = Vec::new();
+    let mut byte = [0u8; 1];
+    // Read until we've seen \r\n\r\n (at most 32KiB of headers).
+    for _ in 0..(32 * 1024) {
+        let n = stream.read(&mut byte).await.map_err(|e| format!("read head: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        head_buf.push(byte[0]);
+        if head_buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&head_buf);
+    let (head, _) = match text.split_once("\r\n\r\n") {
+        Some((h, _)) => (h, ()),
+        None => (text.as_ref(), ()),
+    };
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    // Content-Length determines how much body to read (Connection: close is a
+    // fallback but avoid waiting forever on keep-alive servers).
+    let clen: usize = head
+        .lines()
+        .find_map(|l| {
+            let mut it = l.splitn(2, ':');
+            if it.next().map(|k| k.eq_ignore_ascii_case("content-length")).unwrap_or(false) {
+                it.next().and_then(|v| v.trim().parse().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    let mut body = Vec::with_capacity(clen);
+    if clen > 0 {
+        let mut take = stream.take(clen as u64);
+        let _ = take.read_to_end(&mut body).await.map_err(|e| format!("read body: {e}"))?;
+    }
+    Ok((status, body))
+}
+
+/// GET /api/members/{member_id}/sessions — proxy opencode /api/session.
+async fn api_member_sessions(
+    State(state): State<S>,
+    Path(member_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    match member_get(&state, &member_id, "/api/session").await {
+        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
+        },
+        Ok((status, body)) => {
+            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+/// GET /api/members/{member_id}/session/{sid}/message — proxy opencode messages.
+async fn api_member_messages(
+    State(state): State<S>,
+    Path((member_id, sid)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let path = format!("/api/session/{sid}/message");
+    match member_get(&state, &member_id, &path).await {
+        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
+        },
+        Ok((status, body)) => {
+            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+/// GET /api/members/{member_id}/shell — proxy opencode /pty/shells.
+async fn api_member_shells(
+    State(state): State<S>,
+    Path(member_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    match member_get(&state, &member_id, "/pty/shells").await {
+        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
+        },
+        Ok((status, body)) => {
+            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+/// POST /api/members/{member_id}/pty — proxy opencode POST /pty (create a shell).
+async fn api_member_pty(
+    State(state): State<S>,
+    Path(member_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = match member_stream(&state, &member_id).await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let body_len = body.len();
+    let req = format!(
+        "POST /pty HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n{body}"
+    );
+    let _ = stream.write_all(req.as_bytes()).await;
+
+    // Read headers up to CRLFCRLF.
+    let mut head_buf = Vec::new();
+    let mut byte = [0u8; 1];
+    for _ in 0..(32 * 1024) {
+        let n = match stream.read(&mut byte).await {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break;
+        }
+        head_buf.push(byte[0]);
+        if head_buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&head_buf);
+    let (head, _) = match text.split_once("\r\n\r\n") {
+        Some((h, _)) => (h, ()),
+        None => (text.as_ref(), ()),
+    };
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let clen: usize = head
+        .lines()
+        .find_map(|l| {
+            let mut it = l.splitn(2, ':');
+            if it.next().map(|k| k.eq_ignore_ascii_case("content-length")).unwrap_or(false) {
+                it.next().and_then(|v| v.trim().parse().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    let mut resp_body = Vec::with_capacity(clen);
+    if clen > 0 {
+        let mut take = stream.take(clen as u64);
+        let _ = take.read_to_end(&mut resp_body).await;
+    }
+    if status == 200 {
+        match serde_json::from_slice::<serde_json::Value>(&resp_body) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
+        }
+    } else {
+        (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&resp_body).chars().take(200).collect::<String>())).into_response()
+    }
+}
+
+/// WebSocket endpoint that bridges the browser's xterm.js to the member's
+/// opencode PTY (`/api/pty/{ptyID}/connect`) over the teamx tunnel.
+/// Browser bytes → ui → TunnelStream → member opencode WS → member shell.
+async fn ws_member_pty(
+    State(state): State<S>,
+    Path((member_id, pty_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
+    // Authorize with the ui token (cookie or ?token=).
+    if !authorized(&state, headers.get(header::COOKIE).and_then(|v| v.to_str().ok())) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let server_url = match state.server_url.as_deref() {
+        Some(u) => u.to_string(),
+        None => return (StatusCode::BAD_GATEWAY, "live member view disabled (no server_url)").into_response(),
+    };
+    ws.on_upgrade(move |socket| {
+        bridge_pty(socket, server_url, member_id, pty_id)
+    })
+}
+
+/// Bridge the browser WS and the member's opencode PTY WS, relaying bytes.
+async fn bridge_pty(
+    browser: WebSocket,
+    server_url: String,
+    member_id: String,
+    pty_id: String,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    // 1. Open a byte stream to the member's opencode (via tunnel).
+    let bridge = match crate::tunnel_client::open_tunnel_bridge(&server_url, &member_tunnel(&member_id), "").await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let stream = crate::tunnel_client::TunnelStream::new(bridge);
+
+    // 2. Upgrade it to a WS toward opencode's PTY connect endpoint.
+    let url = format!("ws://127.0.0.1/api/pty/{pty_id}/connect");
+    let mut req = match url.into_client_request() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    req.headers_mut().insert("Host", "127.0.0.1".parse().unwrap());
+    let (mut member_ws, _) = match tokio_tungstenite::client_async(req, stream).await {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    // 3. Relay bytes both ways.
+    let (mut b_sink, mut b_stream) = browser.split();
+    let (mut m_sink, mut m_stream) = member_ws.split();
+
+    let to_member = async {
+        while let Some(Ok(msg)) = b_stream.next().await {
+            match msg {
+                WsMessage::Text(t) => {
+                    if m_sink.send(TMessage::Text(t.to_string().into())).await.is_err() { break; }
+                }
+                WsMessage::Binary(b) => {
+                    if m_sink.send(TMessage::Binary(b.to_vec().into())).await.is_err() { break; }
+                }
+                WsMessage::Close(_) => break,
+                _ => {}
+            }
+        }
+        let _ = m_sink.close().await;
+    };
+
+    let to_browser = async {
+        while let Some(Ok(msg)) = m_stream.next().await {
+            match msg {
+                TMessage::Text(t) => {
+                    if b_sink.send(WsMessage::Text(t.to_string().into())).await.is_err() { break; }
+                }
+                TMessage::Binary(b) => {
+                    if b_sink.send(WsMessage::Binary(b.to_vec().into())).await.is_err() { break; }
+                }
+                TMessage::Close(_) => break,
+                _ => {}
+            }
+        }
+    };
+
+    let _ = tokio::join!(to_member, to_browser);
 }
 
 async fn api_teams(State(state): State<S>, headers: axum::http::HeaderMap) -> axum::response::Response {
