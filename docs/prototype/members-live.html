@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f8f8f8">
+<title>Teamx Enterprise — Members 原型（含实时会话）</title>
+<style>
+  :root {
+    --primary: #4A90E5; --primary-hover: #357ABD; --primary-light: #EBF3FC; --on-primary: #FFFFFF;
+    --secondary: #67C23A; --accent: #E6A23C; --danger: #F56C6C;
+    --bg: #f8f8f8; --fg: #333333; --card: #FFFFFF; --card-fg: #333333;
+    --muted: #F2F6FC; --muted-fg: #909399; --border: #EBEEF5; --ring: #4A90E5;
+    --radius: 4px; --shadow: 0 2px 4px 0 rgba(214, 228, 241, 0.7); --shadow-hover: 0 4px 12px rgba(214, 228, 241, 0.9);
+    --font-sans: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --transition: 200ms ease;
+  }
+  .dark {
+    --primary: #5B9EF0; --primary-hover: #7BB3F5; --primary-light: #1A2A3A; --on-primary: #FFFFFF;
+    --secondary: #67C23A; --accent: #E6A23C; --danger: #F56C6C;
+    --bg: #1A1A2E; --fg: #E0E0E0; --card: #22223A; --card-fg: #E0E0E0;
+    --muted: #2A2A40; --muted-fg: #909399; --border: #333355; --ring: #5B9EF0;
+    --shadow: 0 2px 4px 0 rgba(0,0,0,0.3); --shadow-hover: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+  header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; height: 60px; padding: 0 20px; background: var(--card); border-bottom: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  header .logo { display: flex; align-items: center; gap: 10px; margin-right: 40px; flex-shrink: 0; }
+  header .logo .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #4A90E5, #357ABD); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  header .logo-text { font-size: 16px; font-weight: 600; color: var(--primary); letter-spacing: 0.02em; }
+  nav { display: flex; gap: 0; flex: 1; justify-content: center; }
+  nav button { background: none; border: none; font: inherit; font-size: 14px; font-weight: 500; color: var(--muted-fg); padding: 18px 20px; border-bottom: 2px solid transparent; cursor: pointer; transition: color var(--transition), border-color var(--transition); }
+  nav button:hover { color: var(--primary); }
+  nav button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .user-info { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #666; }
+  .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+  .theme-toggle { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .theme-toggle:hover { border-color: var(--primary); color: var(--primary); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .toolbar-left { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .toolbar-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .container { max-width: none; margin: 0; padding: 20px 24px; }
+  select, input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); }
+  button { font: inherit; }
+  .btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); font-weight: 500; cursor: pointer; }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  .btn-primary:hover { background: var(--primary-hover); color: var(--on-primary); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 1000px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card { background: var(--card); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); display: flex; align-items: center; gap: 16px; }
+  .card-icon { width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+  .card-icon.blue { background: #EBF5FF; color: #4A90E5; }
+  .card-icon.green { background: #E8F8E8; color: #67C23A; }
+  .card-icon.orange { background: #FDF0E0; color: #E6A23C; }
+  .card-icon.purple { background: #F0E8FF; color: #9B59B6; }
+  .card-icon.red { background: #FDE8E8; color: #F56C6C; }
+  .card-body { flex: 1; min-width: 0; }
+  .card .label { font-size: 13px; color: var(--muted-fg); margin-bottom: 4px; }
+  .card .value { font-size: 24px; font-weight: 600; color: var(--fg); line-height: 1.2; }
+  section.panel { background: var(--card); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--fg); }
+  h2 .count { font-family: var(--font-mono); font-weight: 500; color: var(--muted-fg); margin-left: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted-fg); font-weight: 500; font-size: 12px; background: var(--muted); }
+  tbody tr:hover { background: var(--muted); }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { background: var(--primary-light); }
+  tbody tr.selected { background: var(--primary-light); border-left: 3px solid var(--primary); }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.online { background: var(--secondary); }
+  .status-dot.busy { background: var(--accent); }
+  .status-dot.offline { background: #C0C4CC; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .tag.blue { background: var(--primary-light); color: var(--primary); }
+  .tag.green { background: #E8F8E8; color: var(--secondary); }
+  .tag.orange { background: #FDF0E0; color: var(--accent); }
+  .tag.red { background: #FDE8E8; color: var(--danger); }
+  .tag.gray { background: var(--muted); color: var(--muted-fg); }
+  .mono { font-family: var(--font-mono); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  /* ---------- member list ---------- */
+  .member-item { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .member-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .member-item.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: var(--shadow-hover); }
+  .member-item .mi-avatar { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); font-weight: 600; }
+  .member-item.selected .mi-avatar { background: var(--primary); color: white; }
+  .member-item .mi-main { flex: 1; min-width: 0; }
+  .member-item .mi-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .member-item .mi-sub { font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+  .member-item .mi-live { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+  .live-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: var(--danger); color: white; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* ---------- session list ---------- */
+  .session-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .session-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .session-item.active { border-color: var(--primary); background: var(--primary-light); }
+  .session-item .si-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); }
+  .session-item.active .si-icon { background: var(--primary); color: white; }
+  .session-item .si-main { flex: 1; min-width: 0; }
+  .session-item .si-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-item .si-sub { font-size: 12px; color: var(--muted-fg); display: flex; gap: 8px; margin-top: 2px; }
+  .session-item .si-time { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); flex-shrink: 0; }
+  /* ---------- detail pane ---------- */
+  .detail-pane { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .detail-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .detail-header .dh-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
+  .detail-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+  .detail-tabs button { background: none; border: none; padding: 10px 16px; font-size: 13px; color: var(--muted-fg); border-bottom: 2px solid transparent; cursor: pointer; font-weight: 500; }
+  .detail-tabs button.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .detail-body { padding: 16px; min-height: 400px; max-height: 600px; overflow-y: auto; }
+  /* ---------- live event stream ---------- */
+  .live-line { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .live-line .ll-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); flex-shrink: 0; width: 60px; }
+  .live-line .ll-icon { flex-shrink: 0; width: 20px; text-align: center; }
+  .live-line .ll-text { flex: 1; min-width: 0; word-break: break-all; }
+  .live-line .ll-text .tool-name { color: var(--primary); font-weight: 600; }
+  .live-line .ll-text .file { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+  /* ---------- terminal placeholder ---------- */
+  .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
+  .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; white-space: pre-wrap; }
+  .term-body .cmd { color: #9CDCFE; }
+  .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .empty { text-align: center; color: var(--muted-fg); padding: 60px 20px; }
+  .empty .big { font-size: 40px; margin-bottom: 12px; }
+  .muted { color: var(--muted-fg); }
+  .flex { display: flex; align-items: center; gap: 10px; }
+  .mt16 { margin-top: 16px; }
+  .hint { font-size: 12px; color: var(--muted-fg); padding: 0 4px 8px; }
+</style>
+</head>
+<body>
+
+<!-- ============ header（无 Sessions 菜单） ============ -->
+<header>
+  <div class="logo"><div class="logo-icon">T</div><span class="logo-text">Teamx Enterprise</span></div>
+  <nav>
+    <button data-view="kanban">KanBan</button>
+    <button data-view="goal">Goal</button>
+    <button data-view="cost">Cost</button>
+    <button data-view="timeline">Timeline</button>
+    <button data-view="members" class="active">Members</button>
+  </nav>
+  <div class="header-right">
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
+    <div class="user-info"><div class="user-avatar">O</div><span>Owner</span></div>
+  </div>
+</header>
+
+<!-- ============ toolbar ============ -->
+<div class="toolbar">
+  <div class="toolbar-left">
+    <label>Team <select>
+      <option>Product Dev Team</option>
+      <option>Ops Team</option>
+    </select></label>
+  </div>
+  <div class="toolbar-right">
+    <span class="muted mono">auto-refresh 5s <span class="live-badge">LIVE</span></span>
+    <button class="btn btn-sm" id="refreshBtn">↻ 刷新</button>
+  </div>
+</div>
+
+<!-- ============ content ============ -->
+<div class="container">
+
+  <!-- Members 概览卡片（可点某卡片快速定位） -->
+  <div class="cards">
+    <div class="card">
+      <div class="card-icon green">●</div>
+      <div class="card-body"><div class="label">在线成员</div><div class="value">2<span class="muted" style="font-size:13px;font-weight:400">/ 3</span></div></div>
+    </div>
+    <div class="card">
+      <div class="card-icon blue">💬</div>
+      <div class="card-body"><div class="label">活跃会话</div><div class="value">4</div></div>
+    </div>
+    <div class="card">
+      <div class="card-icon orange">⚡</div>
+      <div class="card-body"><div class="label">正在执行工具</div><div class="value">2</div></div>
+    </div>
+    <div class="card">
+      <div class="card-icon purple">⌨</div>
+      <div class="card-body"><div class="label">打开的终端</div><div class="value">3</div></div>
+    </div>
+  </div>
+
+  <!-- 主布局：左 member 列表，右 详情 -->
+  <div class="layout">
+    <!-- ============ 左：成员列表 ============ -->
+    <div>
+      <section class="panel">
+        <h2>Members <span class="count">3</span></h2>
+        <div class="hint">点击成员查看其实时会话</div>
+        <div id="memberList">
+          <div class="member-item" data-member="alice">
+            <div class="mi-avatar">A</div>
+            <div class="mi-main">
+              <div class="mi-name">Alice <span class="tag green">contributor</span></div>
+              <div class="mi-sub"><span class="status-dot online"></span>在线 · 2 会话 · node-01</div>
+            </div>
+            <div class="mi-live"><span class="live-badge">LIVE</span></div>
+          </div>
+          <div class="member-item" data-member="bob">
+            <div class="mi-avatar">B</div>
+            <div class="mi-main">
+              <div class="mi-name">Bob <span class="tag orange">reviewer</span></div>
+              <div class="mi-sub"><span class="status-dot busy"></span>执行中 · 2 会话 · node-02</div>
+            </div>
+            <div class="mi-live"><span class="live-badge">LIVE</span></div>
+          </div>
+          <div class="member-item" data-member="carol">
+            <div class="mi-avatar">C</div>
+            <div class="mi-main">
+              <div class="mi-name">Carol <span class="tag gray">observer</span></div>
+              <div class="mi-sub"><span class="status-dot offline"></span>离线 · 0 会话</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ 右：选中成员的会话详情 ============ -->
+    <div class="detail-pane">
+      <!-- 未选中任何 member 时 -->
+      <div id="emptyState">
+        <div class="empty">
+          <div class="big">👈</div>
+          <div>选择左侧成员，查看其 opencode 会话与实时活动</div>
+          <div class="muted mt16" style="font-size:12px">实时查看成员正在做什么：会话列表、工具调用、消息流、终端</div>
+        </div>
+      </div>
+
+      <!-- 选中 member 后（默认展示 Alice） -->
+      <div id="memberDetail" style="display:none">
+        <div class="detail-header">
+          <div class="member-chip" id="detailMemberName" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;background:var(--muted)"><span class="status-dot online"></span> Alice</div>
+          <div class="dh-title" id="detailSessionTitle">实现登录页 + 权限校验</div>
+          <span class="tag blue">running</span>
+          <button class="btn btn-sm" style="margin-left:auto">⏸ 中断</button>
+          <button class="btn btn-sm">📋 发送消息</button>
+          <button class="btn btn-primary btn-sm">⌨ 打开终端</button>
+        </div>
+        <div class="detail-tabs">
+          <button class="active" data-dtab="live">实时活动</button>
+          <button data-dtab="messages">消息</button>
+          <button data-dtab="terminal">终端</button>
+        </div>
+        <div class="detail-body">
+          <!-- ===== 实时活动 tab ===== -->
+          <div id="dtab-live">
+            <div class="live-line">
+              <span class="ll-time">12:04:12</span><span class="ll-icon">🔧</span>
+              <span class="ll-text"><span class="tool-name">edit</span> 修改 <span class="file">src/auth/login.tsx</span></span>
+            </div>
+            <div class="live-line">
+              <span class="ll-time">12:04:08</span><span class="ll-icon">👀</span>
+              <span class="ll-text"><span class="tool-name">read</span> <span class="file">src/auth/login.tsx</span> (1,240 bytes)</span>
+            </div>
+            <div class="live-line">
+              <span class="ll-time">12:04:01</span><span class="ll-icon">🤖</span>
+              <span class="ll-text">Assistant: 开始实现登录表单的客户端校验逻辑，先读取现有组件结构。</span>
+            </div>
+            <div class="live-line">
+              <span class="ll-time">12:03:55</span><span class="ll-icon">🔍</span>
+              <span class="ll-text"><span class="tool-name">glob</span> 匹配 <span class="file">src/auth/**/*.tsx</span> → 3 个文件</span>
+            </div>
+            <div class="live-line">
+              <span class="ll-time">12:03:40</span><span class="ll-icon">💬</span>
+              <span class="ll-text">User: 给登录页加上表单校验，错误提示要用中文</span>
+            </div>
+            <div class="live-line">
+              <span class="ll-time">12:03:38</span><span class="ll-icon">🔄</span>
+              <span class="ll-text">Session resumed by member</span>
+            </div>
+          </div>
+          <!-- ===== 消息 tab ===== -->
+          <div id="dtab-messages" style="display:none">
+            <div class="live-line"><span class="ll-time">12:03</span><span class="ll-icon">💬</span><span class="ll-text"><b>User</b>: 给登录页加上表单校验，错误提示要用中文</span></div>
+            <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">🤖</span><span class="ll-text"><b>Assistant</b>: 好的，我来实现。先读取现有组件…</span></div>
+            <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">🔧</span><span class="ll-text"><b>Tool</b> edit: src/auth/login.tsx</span></div>
+            <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">✅</span><span class="ll-text"><b>Tool result</b>: 文件已更新</span></div>
+          </div>
+          <!-- ===== 终端 tab ===== -->
+          <div id="dtab-terminal" style="display:none">
+            <div class="term-window">
+              <div class="term-titlebar">
+                <span class="term-dot" style="background:#ff5f56"></span>
+                <span class="term-dot" style="background:#ffbd2e"></span>
+                <span class="term-dot" style="background:#27c93f"></span>
+                <span style="margin-left:8px">alice@node-01: ~/product-dev-team</span>
+                <span style="margin-left:auto;font-size:11px">zsh</span>
+              </div>
+              <div class="term-body"><span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ git status
+<span class="muted">On branch main
+Changes not staged for commit:
+  modified:   src/auth/login.tsx</span>
+<span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ <span class="term-cursor"></span></div>
+            </div>
+            <div class="mt16 muted" style="font-size:12px">该终端运行在 <b>Alice 的机器</b>（node-01），通过 mTLS 隧道实时连接。输入会被发送到对方 shell。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- theme toggle (原型演示) ----
+const html = document.documentElement
+document.getElementById("themeToggle").addEventListener("click", () => {
+  html.classList.toggle("dark")
+  const b = document.getElementById("themeToggle")
+  b.textContent = html.classList.contains("dark") ? "🌙" : "☀️"
+})
+
+// ---- member 选择（原型演示）----
+const memberMeta = {
+  alice: { name: "Alice", role: "contributor", dot: "online", sessionTitle: "实现登录页 + 权限校验", node: "node-01" },
+  bob:   { name: "Bob",   role: "reviewer",   dot: "busy",   sessionTitle: "Code review #42",          node: "node-02" },
+  carol: { name: "Carol", role: "observer",   dot: "offline", sessionTitle: null,                      node: null },
+}
+document.querySelectorAll(".member-item").forEach((el) => {
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".member-item").forEach((x) => x.classList.remove("selected"))
+    el.classList.add("selected")
+    const m = memberMeta[el.dataset.member]
+    const detail = document.getElementById("memberDetail")
+    const empty = document.getElementById("emptyState")
+    if (m.sessionTitle) {
+      empty.style.display = "none"
+      detail.style.display = ""
+      document.getElementById("detailMemberName").innerHTML =
+        `<span class="status-dot ${m.dot}"></span> ${m.name}`
+      document.getElementById("detailSessionTitle").textContent = m.sessionTitle
+    } else {
+      // 离线成员：显示无会话
+      empty.querySelector(".big").textContent = "😴"
+      empty.querySelector("div:nth-child(2)").textContent = `${m.name} 当前离线，无会话`
+      empty.style.display = ""
+      detail.style.display = "none"
+    }
+  })
+})
+
+// ---- detail tab 切换（原型演示）----
+document.querySelectorAll(".detail-tabs button").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".detail-tabs button").forEach((x) => x.classList.remove("active"))
+    b.classList.add("active")
+    const t = b.dataset.dtab
+    ;["live", "messages", "terminal"].forEach((x) => {
+      document.getElementById("dtab-" + x).style.display = x === t ? "" : "none"
+    })
+  })
+})
+</script>
+</body>
+</html>

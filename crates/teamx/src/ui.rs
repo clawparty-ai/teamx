@@ -1192,7 +1192,7 @@ setInterval(() => refresh(), 30000)
     .to_string()
 }
 
-/// Render a styled 401 unauthorized page (OA五小 style).
+/// Render a styled 401 unauthorized page (OA-style).
 fn unauthorized_html() -> String {
     r##"<!doctype html>
 <html lang="en">

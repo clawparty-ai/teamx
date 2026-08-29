@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 - Not Found | Teamx Enterprise</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif; background: #f8f8f8; color: #333; min-height: 100vh; display: flex; flex-direction: column; }
+  header { height: 60px; background: #fff; border-bottom: 1px solid #EBEEF5; display: flex; align-items: center; padding: 0 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #4A90E5, #357ABD); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  .logo-text { font-size: 16px; font-weight: 600; color: #4A90E5; }
+  .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }
+  .card { background: #fff; border-radius: 4px; box-shadow: 0 2px 4px 0 rgba(214,228,241,0.7); padding: 48px 56px; text-align: center; max-width: 480px; width: 100%; }
+  .icon { width: 80px; height: 80px; margin: 0 auto 24px; background: #F2F6FC; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .icon svg { width: 40px; height: 40px; color: #909399; }
+  h1 { font-size: 20px; font-weight: 600; color: #333; margin-bottom: 8px; }
+  .code { font-size: 48px; font-weight: 700; color: #4A90E5; margin-bottom: 8px; font-family: "SF Mono", "Fira Code", monospace; }
+  .msg { font-size: 14px; color: #909399; line-height: 1.6; margin-bottom: 24px; }
+  .hint { font-size: 13px; color: #909399; }
+  .hint a { color: #4A90E5; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div class="logo-icon">Tx</div>
+    <span class="logo-text">Teamx Enterprise</span>
+  </div>
+</header>
+<div class="main">
+  <div class="card">
+    <div class="icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
+    </div>
+    <div class="code">404</div>
+    <h1>Page Not Found</h1>
+    <p class="msg">The page you requested does not exist.</p>
+    <p class="hint">Redirecting to login in <span id="cd">5</span>s... <a href="/login">Login now</a></p>
+  </div>
+</div>
+<script>let s=5;const e=document.getElementById("cd");const t=setInterval(()=>{s--;if(e)e.textContent=s;if(s<=0){clearInterval(t);location.href="/login"}},1000)</script>
+</body>
+</html>
