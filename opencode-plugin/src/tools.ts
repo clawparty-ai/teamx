@@ -398,7 +398,9 @@ export const tools = {
   teamx_team_import: tool({
     description:
       "Import an invitation letter (single-line `teamx-inv:v1:<base64>` or a path to a .json letter). " +
-      "Stores the mTLS material locally and, when the team DB is local, claims the pending member seat.",
+      "Stores the mTLS material locally and, when the team DB is local, claims the pending member seat. " +
+      "After import, stock `git` is configured for the teamx server (mTLS certs from the letter), " +
+      "so once the owner approves you can `git clone https://<server>/git/<team_id>/<repo>`.",
     args: {
       letter: tool.schema.string().describe("the invitation letter (base64 or file path)"),
       name: tool.schema.string().optional().describe("display name (defaults to the letter's name_hint)"),
@@ -406,7 +408,24 @@ export const tools = {
     async execute(args, context: ToolCtx) {
       const r = await txResult(context.sessionID, ["team", "import", args.letter, ...opt("--name", args.name)])
       if (r.ok) markMember(context.sessionID, true)
-      return renderResult(r)
+      const rendered = renderResult(r)
+      // After a successful import, configure stock git with the letter's mTLS
+      // certs so the user can `git clone` directly (Smart HTTP endpoint).
+      if (r.ok) {
+        const data = (r.data ?? {}) as Record<string, unknown>
+        const serverUrl = (data.server_url as string) || TEAMX_SERVER_URL
+        if (serverUrl) {
+          const setup = await txResult(context.sessionID, ["git", "setup", "--server", serverUrl])
+          if (setup.ok) {
+            return rendered + "\n\n[teamx] stock git configured for mTLS: `git clone https://" +
+              serverUrl.replace(/^https?:\/\//, "") + "/git/<team_id>/<repo>`" +
+              (Array.isArray(data.git_repos) && (data.git_repos as string[]).length > 0
+                ? ` (repos: ${(data.git_repos as string[]).join(", ")})`
+                : "")
+          }
+        }
+      }
+      return rendered
     },
   }),
 

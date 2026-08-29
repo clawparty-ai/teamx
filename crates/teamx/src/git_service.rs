@@ -371,6 +371,74 @@ pub fn list_permissions(
     Ok(perms)
 }
 
+/// Directories never copied when seeding a repo from the current project.
+const SKIP_DIRS: &[&str] = &[".git", ".teamx", "target", "node_modules", "vendor", "dist", ".build"];
+
+/// Initialize the team's git repo with the contents of `source_dir` (the
+/// project root the owner created the team from). Copies files into a temp
+/// working copy, commits them, and pushes via bundle into the bare repo.
+/// Returns the number of files seeded, or 0 if the source is empty.
+pub fn seed_repo_from_dir(team_id: &str, name: &str, source_dir: &Path) -> Result<usize, String> {
+    validate_name(name)?;
+    let dir = repo_dir(team_id, name);
+    if !dir.exists() {
+        init_bare_repo(team_id, name)?;
+    }
+
+    // Prepare a temp working copy with the source files (excluding noise dirs).
+    let work = std::env::temp_dir().join(format!("teamx-seed-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&work).map_err(|e| format!("mkdir {}: {e}", work.display()))?;
+    let copied = copy_tree(source_dir, &work, 0);
+    if copied == 0 {
+        let _ = std::fs::remove_dir_all(&work);
+        return Ok(0);
+    }
+
+    run_git(&["-C", work.to_str().unwrap_or_default(), "init", "-b", "main"])?;
+    run_git(&["-C", work.to_str().unwrap_or_default(), "add", "-A"])?;
+    // Best-effort identity; a commit needs user.name/email.
+    run_git(&["-C", work.to_str().unwrap_or_default(), "-c", "user.name=teamx", "-c", "user.email=teamx@local", "commit", "-m", "initial import (teamx team create)"])?;
+
+    let bundle = std::env::temp_dir().join(format!("teamx-seed-{}.bundle", Uuid::new_v4()));
+    run_git(&["-C", work.to_str().unwrap_or_default(), "bundle", "create", bundle.to_str().unwrap_or_default(), "--all"])?;
+    receive_bundle(team_id, name, &bundle)?;
+
+    let _ = std::fs::remove_file(&bundle);
+    let _ = std::fs::remove_dir_all(&work);
+    Ok(copied)
+}
+
+/// Recursively copy `src` → `dst`, skipping SKIP_DIRS; returns file count.
+fn copy_tree(src: &Path, dst: &Path, depth: usize) -> usize {
+    let mut count = 0usize;
+    let Ok(entries) = std::fs::read_dir(src) else { return 0 };
+    for e in entries.flatten() {
+        let from = e.path();
+        let fname = e.file_name().to_string_lossy().to_string();
+        if depth == 0 && SKIP_DIRS.contains(&fname.as_str()) {
+            continue;
+        }
+        let to = dst.join(&fname);
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if std::fs::create_dir_all(&to).is_ok() {
+                count += copy_tree(&from, &to, depth + 1);
+            }
+        } else if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            if std::fs::copy(&from, &to).is_ok() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Convenience: sanitize a team/project name into a valid repo name
+/// (lowercase, `-` for spaces, no path separators).
+pub fn repo_name_from_team(name: &str) -> String {
+    let s = name.trim().to_lowercase().replace(' ', "-");
+    validate_name(&s).ok().map(|_| s.clone()).unwrap_or_else(|| format!("team-{}", Uuid::new_v4().simple()))
+}
+
 // ---------------------------------------------------------------------------
 // Git Smart HTTP (standard git protocol over HTTPS/mTLS)
 // ---------------------------------------------------------------------------
