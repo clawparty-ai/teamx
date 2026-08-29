@@ -663,6 +663,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Replay(cmd) => {
             return crate::replay_cli::handle(cmd).map_err(AppError);
         }
+        Command::Git(cmd) => {
+            return cmd_git(conn, cmd);
+        }
         // `teamx gui` is handled in main() before the DB opens; unreachable here.
         Command::Gui => {
             return Err(AppError("gui must be launched via `teamx gui`".to_string()));
@@ -924,6 +927,7 @@ fn cmd_team_create(
                     "team_name": tf.team_name,
                     "goals": tf.goals,
                     "members": boot.members,
+                    "docs": boot.docs,
                     "note": "TEAM.md detected; team bootstrapped",
                 }));
             }
@@ -954,6 +958,8 @@ fn cmd_team_create(
 struct BootstrapOutcome {
     goal_id: Option<String>,
     members: Vec<serde_json::Value>,
+    /// Document contract snapshots written to `.teamx/docs/_spec/`.
+    docs: Vec<serde_json::Value>,
 }
 
 /// Parse TEAM.md and auto-initialize the team: goal (if none set), per-member
@@ -1039,7 +1045,51 @@ fn bootstrap_from_teamfile(
         }));
     }
 
-    Ok(BootstrapOutcome { goal_id, members })
+    // 3. Document contract snapshots -> `.teamx/docs/_spec/<key>.json`.
+    // These are the executable source of truth for doc lifecycle (T3/T4) —
+    // an agent/member can load them without re-parsing TEAM.md. Incomplete
+    // docs (missing owner/states) are skipped but surfaced in the output.
+    let docs_dir = teamx_dir.join("docs").join("_spec");
+    let mut docs_out = Vec::new();
+    for d in &tf.docs {
+        let spec = json!({
+            "doc": d.key,
+            "title": d.title,
+            "purpose": d.purpose,
+            "template": d.template,
+            "creators": d.creators,
+            "owner": d.owner,
+            "approvers": d.approvers,
+            "states": d.states,
+            "reactions": d.reactions.iter().map(|r| json!({
+                "on": r.on,
+                "to_role": r.to_role,
+                "action": r.action,
+            })).collect::<Vec<_>>(),
+            "incomplete": d.is_incomplete(),
+        });
+        if !d.is_incomplete() {
+            std::fs::create_dir_all(&docs_dir).map_err(|e| AppError(format!("mkdir {docs_dir:?}: {e}")))?;
+            let sp = docs_dir.join(format!("{}.json", d.key));
+            let text = serde_json::to_string_pretty(&spec)
+                .map_err(|e| AppError(format!("serialize doc spec: {e}")))?;
+            std::fs::write(&sp, &text).map_err(|e| AppError(format!("write doc spec {sp:?}: {e}")))?;
+            docs_out.push(json!({
+                "key": d.key,
+                "spec_file": sp.display().to_string(),
+                "states": d.states,
+            }));
+        } else {
+            docs_out.push(json!({
+                "key": d.key,
+                "spec_file": serde_json::Value::Null,
+                "incomplete": true,
+                "reason": "missing owner or states",
+            }));
+        }
+    }
+
+    Ok(BootstrapOutcome { goal_id, members, docs: docs_out })
 }
 
 /// Build a member-specific AGENTS.md by merging the project-root AGENTS.md
@@ -2335,6 +2385,14 @@ fn cmd_publish(
     session: &str,
     team_opt: Option<&str>,
 ) -> Result<Value> {
+    // `doc.*` lifecycle events are handled by the declarative doc engine
+    // (T4): permission + transition checks from the TEAM.md contract, then
+    // the event is written to the ledger and the .meta.json is updated.
+    // Reactions from the spec are turned into directed notifications.
+    if publish_type.starts_with("doc.") {
+        return cmd_publish_doc(conn, publish_type, data, assignee_opt, session, team_opt);
+    }
+
     let (action, event_type, affects_goal, affects_team) = publish_plan(publish_type)?;
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
 
@@ -2430,6 +2488,234 @@ fn cmd_publish(
         "assignee": assignee.map(|(id, _)| id),
         "goal_state": goal_transition.map(|(_, t)| t),
         "team_state": team_transition.map(|(_, t)| t),
+    }))
+}
+
+/// Handle a `doc.*` lifecycle event via the declarative doc engine (T4).
+///
+/// Flow (design §6.3 + §7.1):
+///   1. Parse `{ doc, id, to, note }` from the payload;
+///   2. Load the contract from `.teamx/docs/_spec/<doc>.json` (T2 snapshot);
+///   3. Load the instance's `.meta.json` (or start fresh for `doc.created`);
+///   4. Validate with `doc_flow::apply_event` (permission + state flow) —
+///      a failed check returns an error and writes NOTHING (§6.4);
+///   5. On success: write the ledger event, persist the new `.meta.json`;
+///   6. Match the spec's reactions for this event and emit a directed
+///      notification to the target role's members (publish --assignee).
+fn cmd_publish_doc(
+    conn: &mut Connection,
+    publish_type: &str,
+    data: Option<&str>,
+    assignee_opt: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    if actor.state == "pending" {
+        return err(format!(
+            "member {} is pending; wait for owner approval before publishing",
+            actor.display_name
+        ));
+    }
+    let actor_role = actor.role.as_deref().unwrap_or("contributor");
+
+    let mut payload: Value = match data {
+        Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({ "message": s })),
+        None => json!({}),
+    };
+    if !payload.is_object() {
+        payload = json!({ "message": payload });
+    }
+    let doc_key = match payload.get("doc").and_then(|v| v.as_str()) {
+        Some(d) => d.to_string(),
+        None => return err("doc.* event requires a `doc` key in payload (the TEAM.md document key)"),
+    };
+    // S1 (CR-022): reject unsafe doc keys to prevent path traversal (CWE-22).
+    if !crate::teamfile::is_safe_key_segment(&doc_key) {
+        return err(format!(
+            "doc key `{doc_key}` is not a safe identifier (no `/`, `..`, or control chars)"
+        ));
+    }
+    let doc_id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    if !crate::teamfile::is_safe_key_segment(&doc_id) {
+        return err(format!(
+            "doc id `{doc_id}` is not a safe identifier (no `/`, `..`, or control chars)"
+        ));
+    }
+    // S2 (CR-022): `doc.reaction` is a system-generated notification emitted by
+    // this handler; it is NOT a lifecycle transition and must not be published
+    // back as one (auto-execute would otherwise fail on the missing `to`).
+    if publish_type == "doc.reaction" {
+        return err("`doc.reaction` is a system notification, not a lifecycle event; it cannot be published directly");
+    }
+    // S4 (CR-022): whitelist known lifecycle events instead of failing open.
+    const KNOWN_DOC_EVENTS: &[&str] = &[
+        "doc.created",
+        "doc.updated",
+        "doc.reviewed",
+        "doc.approved",
+        "doc.rejected",
+        "doc.reopened",
+        "doc.closed",
+    ];
+    if !KNOWN_DOC_EVENTS.contains(&publish_type) {
+        return err(format!(
+            "unknown doc event `{publish_type}` (known: created/updated/reviewed/approved/rejected/reopened/closed)"
+        ));
+    }
+    let to_state = payload.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let note = payload.get("note").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Locate the project root: TEAM.md bootstrap uses the CWD.
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let spec_path = docs_root.join("_spec").join(format!("{doc_key}.json"));
+    if !spec_path.exists() {
+        return err(format!(
+            "doc type `{doc_key}` is not recognized (no contract in TEAM.md ## 文档)"
+        ));
+    }
+    let spec = crate::doc_flow::load_spec(&docs_root, &doc_key)
+        .map_err(|e| AppError(format!("doc spec `{doc_key}`: {e}")))?;
+
+    // Load the instance meta (absent = fresh instance, only valid for created).
+    let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, &doc_key, &doc_id);
+    let existing = if meta_path.exists() {
+        Some(crate::doc_flow::DocMeta::load(&meta_path).map_err(AppError)?)
+    } else {
+        None
+    };
+    let is_created = publish_type == "doc.created";
+
+    // `doc.created` on an existing instance is an error; a non-created event on
+    // a missing instance is also an error.
+    if let Some(ex) = existing.as_ref() {
+        if is_created {
+            return err(format!(
+                "doc `{doc_key}`/{doc_id} already exists (state: {}); use a doc.* event to advance",
+                ex.state
+            ));
+        }
+    } else if !is_created {
+        return err(format!(
+            "doc `{doc_key}`/{doc_id} does not exist; create it first with doc.created"
+        ));
+    }
+
+    let meta = existing.clone().unwrap_or_else(|| crate::doc_flow::DocMeta {
+        doc: doc_key.clone(),
+        id: doc_id.to_string(),
+        state: String::new(), // set by apply_event on created
+        owner: spec.owner.clone(),
+        created_at: crate::events::db_now(),
+        updated_at: crate::events::db_now(),
+        history: Vec::new(),
+    });
+
+    // Validate + compute the next meta (pure — no side effects). A failed
+    // check returns before any write. The audit label records the member's
+    // display name + role so two members sharing a role stay distinguishable.
+    let actor_label = format!("{} ({})", actor.display_name, actor_role);
+    let next = crate::doc_flow::apply_event(
+        &spec,
+        &meta,
+        actor_role,
+        &actor_label,
+        publish_type,
+        to_state.as_deref(),
+        0,
+    )
+    .map_err(AppError)?;
+
+    let seq = db::with_write(conn, |tx| {
+        payload["doc"] = json!(doc_key);
+        payload["id"] = json!(doc_id);
+        payload["state"] = json!(next.state);
+        if let Some(f) = existing.as_ref() {
+            payload["from"] = json!(f.state);
+        }
+        payload["by"] = json!(actor_role);
+        if !note.is_empty() {
+            payload["note"] = json!(note);
+        }
+        // Tag the directed assignee if one was given explicitly.
+        if let Some(aid) = assignee_opt {
+            payload["assignee_member_id"] = json!(aid);
+        }
+        emit_json(tx, &team.id, Some(&actor.id), publish_type, payload.clone())
+    })
+    .map_err(|e| AppError(format!("doc publish failed: {e}")))?;
+
+    // Persist the meta with the real event seq.
+    let mut persisted = next.clone();
+    if let Some(last) = persisted.history.last_mut() {
+        last.event_seq = seq;
+    }
+    if let Some(m) = existing.as_ref() {
+        persisted.created_at = m.created_at.clone();
+    }
+    persisted
+        .save(&meta_path)
+        .map_err(|e| AppError(format!("doc meta save: {e}")))?;
+    touch(conn, &actor.id).ok();
+
+    // Reactions: find spec reactions triggered by this event and notify the
+    // target role's members (directed events = auto-execute on them).
+    let mut notified: Vec<serde_json::Value> = Vec::new();
+    for r in &spec.reactions {
+        let reaction_event = publish_type.strip_prefix("doc.").unwrap_or(publish_type);
+        if r.on == reaction_event || r.on == publish_type {
+            let targets = match &r.to_role {
+                Some(role) => members_for_team(conn, &team.id)
+                    .map_err(|e| AppError(format!("members: {e}")))?
+                    .into_iter()
+                    .filter(|m| m.state != "left" && m.state != "denied" && m.state != "pending")
+                    .filter(|m| m.role.as_deref() == Some(role.as_str()))
+                    .collect::<Vec<_>>(),
+                None => Vec::new(),
+            };
+            let to_role_label = r.to_role.clone().unwrap_or_default();
+            for t in &targets {
+                let nseq = db::with_write(conn, |tx| {
+                    emit_json(
+                        tx,
+                        &team.id,
+                        Some(&actor.id),
+                        "doc.reaction",
+                        json!({
+                            "doc": doc_key,
+                            "id": doc_id,
+                            "on": r.on,
+                            "action": r.action,
+                            "assignee_member_id": t.id,
+                            "assignee_name": t.display_name,
+                        }),
+                    )
+                })
+                .map_err(|e| AppError(format!("reaction event: {e}")))?;
+                notified.push(json!({
+                    "to_role": to_role_label,
+                    "assignee": t.id,
+                    "assignee_name": t.display_name,
+                    "action": r.action,
+                    "seq": nseq,
+                }));
+            }
+        }
+    }
+
+    let from_state = existing.as_ref().map(|m| m.state.clone());
+    Ok(json!({
+        "ok": true,
+        "seq": seq,
+        "event": publish_type,
+        "doc": doc_key,
+        "id": doc_id,
+        "state": next.state,
+        "from_state": from_state,
+        "by_role": actor_role,
+        "meta_file": meta_path.display().to_string(),
+        "notified": notified,
     }))
 }
 
@@ -2804,4 +3090,73 @@ fn cmd_cert_ca() -> Result<Value> {
     let pk = pki::ensure_pki(&home).map_err(AppError)?;
     let ca_pem = std::fs::read_to_string(&pk.ca_cert).map_err(|e| AppError(format!("read ca: {e}")))?;
     Ok(json!({ "ok": true, "ca_pem": ca_pem, "path": pk.ca_cert.display().to_string() }))
+}
+
+// ---------------------------------------------------------------------------
+// Git operations (network mode)
+// ---------------------------------------------------------------------------
+
+/// Handle `teamx git <subcommand>`.
+fn cmd_git(_conn: &mut Connection, cmd: &crate::cli::GitCmd) -> Result<Value> {
+    use crate::cli::GitCmd;
+
+    // Local-only commands (commit) don't need a server.
+    if let GitCmd::Commit { message, dir } = cmd {
+        return crate::git_client::commit(message, dir.as_deref()).map_err(git_err);
+    }
+
+    let url = resolve_server_url(server_url_arg(cmd))?;
+    match cmd {
+        GitCmd::Clone { repo, directory, server: _, session: _, team } => {
+            crate::git_client::clone(&url, repo, directory.as_deref(), team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Pull { repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::pull(&url, repo, branch.as_deref(), team.as_deref(), dir.as_deref()).map_err(git_err)
+        }
+        GitCmd::Push { repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::push(&url, repo, branch.as_deref(), team.as_deref(), dir.as_deref()).map_err(git_err)
+        }
+        GitCmd::CommitPush { message, repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::commit_push(&url, message, repo.as_deref(), branch.as_deref(), team.as_deref(), dir.as_deref())
+                .map_err(git_err)
+        }
+        GitCmd::List { server: _, session: _, team } => {
+            crate::git_client::list(&url, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Create { name, description, server: _, session: _, team } => {
+            crate::git_client::create(&url, name, description.as_deref(), team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Delete { name, server: _, session: _, team } => {
+            crate::git_client::delete(&url, name, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Grant { name, member_id, permission, server: _, session: _, team } => {
+            crate::git_client::grant(&url, name, member_id, permission, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Permissions { name, server: _, session: _, team } => {
+            crate::git_client::permissions(&url, name, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Commit { .. } => unreachable!(),
+    }
+}
+
+/// Convert a git client error into the command error type.
+fn git_err(e: crate::git_client::GitError) -> AppError {
+    AppError(e.to_string())
+}
+
+/// Extract the `server` arg from any GitCmd variant (for URL resolution).
+fn server_url_arg(cmd: &crate::cli::GitCmd) -> Option<&str> {
+    use crate::cli::GitCmd;
+    match cmd {
+        GitCmd::Clone { server, .. } => server.as_deref(),
+        GitCmd::Pull { server, .. } => server.as_deref(),
+        GitCmd::Push { server, .. } => server.as_deref(),
+        GitCmd::CommitPush { server, .. } => server.as_deref(),
+        GitCmd::List { server, .. } => server.as_deref(),
+        GitCmd::Create { server, .. } => server.as_deref(),
+        GitCmd::Delete { server, .. } => server.as_deref(),
+        GitCmd::Grant { server, .. } => server.as_deref(),
+        GitCmd::Permissions { server, .. } => server.as_deref(),
+        GitCmd::Commit { .. } => None,
+    }
 }

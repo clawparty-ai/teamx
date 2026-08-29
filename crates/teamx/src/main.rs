@@ -9,7 +9,10 @@ mod replay;
 mod replay_cli;
 mod db;
 mod dns_proxy;
+mod doc_flow;
 mod events;
+mod git_client;
+mod git_service;
 #[cfg(feature = "gui")]
 mod gui;
 #[cfg(feature = "gui")]
@@ -120,6 +123,30 @@ fn run(cli: &Cli, db_path: &std::path::Path) -> Result<serde_json::Value, String
 }
 
 fn print_human(v: &serde_json::Value) {
+    // Git repository list (`teamx git list`) — render before the generic
+    // `ok` action branch so the array of repos is readable.
+    if let Some(repos) = v.get("repos").and_then(|r| r.as_array()) {
+        if repos.is_empty() {
+            println!("[git repos] none");
+        } else {
+            println!("[git repos]");
+            for r in repos {
+                let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("-");
+                let desc = r.get("description").and_then(|n| n.as_str()).unwrap_or("");
+                let path = r.get("path").and_then(|n| n.as_str()).unwrap_or("");
+                if desc.is_empty() {
+                    println!("  {name}");
+                } else {
+                    println!("  {name} - {desc}");
+                }
+                if !path.is_empty() {
+                    println!("      {path}");
+                }
+            }
+        }
+        return;
+    }
+
     if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
         // simple action result: print key fields except ok
         let mut fields: Vec<String> = Vec::new();
@@ -210,6 +237,7 @@ fn print_human(v: &serde_json::Value) {
         return;
     }
 
+    // Git repository list (`teamx git list`).
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into()));
 }
 
