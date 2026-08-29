@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools } from './tools.js'
 import { registerCommands } from './commands.js'
 import { TEAMX_SKILL } from './skill.js'
+import { TEAMX_GRILL_WITH_DOCS_SKILL } from './grill-with-docs.generated.js'
 import { refreshDigest, clearDigest, getDigest } from './digest.js'
 import { registerAgent, unregisterAgent, processEvents, agentSessionKey } from './auto-execute.js'
 import { createWsClient } from './ws.js'
@@ -65,7 +66,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerInteractionTools(ctx)
   registerCommands(ctx)
   ctx.effect(() => ctx.skills.register(TEAMX_SKILL))
-  console.log('[teamx-dsh] Plugin loaded, tools, commands and skill registered')
+  ctx.effect(() => ctx.skills.register(TEAMX_GRILL_WITH_DOCS_SKILL))
+  console.log('[teamx-dsh] Plugin loaded, tools, commands and skills registered')
 
   // -----------------------------------------------------------------------
   // Per-agent lifecycle: check membership, inject digest

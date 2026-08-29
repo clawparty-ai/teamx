@@ -39,8 +39,16 @@ echo "== 5/6 concurrency test (seq ordering) =="
 
 echo
 echo "== 6/6 plugin typecheck + bundle + unit tests =="
+node scripts/generate-grill-protocol.mjs --check
+node tests/protocol-assets.test.mjs
 if command -v bun >/dev/null 2>&1; then
-  (cd opencode-plugin && bun install >/dev/null 2>&1 && bunx tsc --noEmit && bun run build)
+  (cd opencode-plugin && bun install >/dev/null 2>&1 && bun run typecheck && bun run build)
+  if [ -d "$ROOT/../deepseek-harness" ]; then
+    (cd dsh-plugin && npm run typecheck)
+  else
+    echo "deepseek-harness sibling checkout not found; skipping dsh typecheck"
+  fi
+  (cd dsh-plugin && npm run build)
   echo "-- plugin unit tests --"
   TEAMX_AUTO_EXECUTE=1 bun "$ROOT/tests/plugin-unit/auto-execute.test.ts"
   bun "$ROOT/tests/plugin-unit/ws.test.ts"
