@@ -113,6 +113,18 @@ This key is the session's identity across all teamx operations. Multiple opencod
 - `teamx_serve_start` / `teamx_serve_status` / `teamx_serve_stop` — Server management
 - `teamx_serve_token` — Generate member connection token
 
+### Git repository management
+- `teamx_git_create` — Create a new git repository (owner/admin)
+- `teamx_git_delete` — Delete a git repository (owner/admin)
+- `teamx_git_list` — List accessible repositories
+- `teamx_git_clone` — Clone a repository to local machine
+- `teamx_git_pull` — Pull changes from remote repository
+- `teamx_git_push` — Push changes to remote repository
+- `teamx_git_commit` — Commit local changes (git add -A + commit)
+- `teamx_git_commit_push` — Commit local changes then push
+- `teamx_git_grant` — Grant a member repository access (read/write/admin)
+- `teamx_git_permissions` — Show repository access permissions
+
 ## Slash commands (20+)
 
 | Command | Description |
@@ -137,6 +149,16 @@ This key is the session's identity across all teamx operations. Multiple opencod
 | `/team-serve-stop` | Stop network server |
 | `/team-tunnel-expose` | Expose local port |
 | `/team-tunnel-forward` | Forward teammate's tunnel |
+| `/team-git-create <name>` | Create git repository |
+| `/team-git-delete <name>` | Delete git repository |
+| `/team-git-list` | List git repositories |
+| `/team-git-clone <repo>` | Clone repository |
+| `/team-git-pull <repo>` | Pull repository changes |
+| `/team-git-push <repo>` | Push repository changes |
+| `/team-git-commit -m <msg>` | Commit local changes |
+| `/team-git-commit-push -m <msg>` | Commit and push in one step |
+| `/team-git-grant <name> <member>` | Grant repository access |
+| `/team-git-permissions <name>` | Show repository permissions |
 | `/team-help` | Show available commands |
 
 ## Digest injection

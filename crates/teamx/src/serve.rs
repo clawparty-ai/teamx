@@ -41,6 +41,8 @@ use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, 
 use crate::commands;
 use crate::pki;
 
+use rusqlite::params;
+
 type Db = Mutex<rusqlite::Connection>;
 
 #[derive(Clone)]
@@ -139,6 +141,13 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .route("/ws", get(ws_handler))
         .route("/tunnel", get(tunnel_ws_handler))
         .route("/tunnel/forward", get(tunnel_forward_handler))
+        // Git routes
+        .route("/git/repos", get(git_list_repos).post(git_create_repo))
+        .route("/git/repos/{repo}", get(git_get_repo).delete(git_delete_repo))
+        .route("/git/repos/{repo}/permissions", get(git_list_permissions).post(git_grant_permission))
+        .route("/git/repos/{repo}/clone", post(git_clone_repo))
+        .route("/git/repos/{repo}/pull", post(git_pull_repo))
+        .route("/git/repos/{repo}/push", post(git_push_repo))
         .with_state(state);
 
     // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
@@ -938,6 +947,16 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             .map_err(|e| e.to_string());
     }
 
+    // Git repository operations (network mode). Repos are scoped per team; the
+    // caller must be a member of the repo's team. Authz:
+    //   - list/bundle       -> read  permission on the repo
+    //   - receive           -> write permission
+    //   - create            -> team owner only
+    //   - delete/grant      -> admin permission on the repo
+    if method.starts_with("git.") {
+        return git_dispatch(method, args, conn, &member_id);
+    }
+
     // Reject revoked members (I2): a revoked invitation's cert still passes the
     // mTLS handshake, but it must not be able to act on the ledger.
     if commands::is_revoked(conn, &member_id).map_err(|e| e.to_string())? {
@@ -1105,4 +1124,464 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
 
     let cli = make(cmd);
     commands::execute(&cli, conn).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Git HTTP handlers
+// ---------------------------------------------------------------------------
+
+/// RPC dispatch for `git.*` methods (network mode).
+///
+/// Repos are per-team; the caller must be a member of the repo's team. The
+/// `team` arg resolves like tunnels: omitted when the caller belongs to one
+/// team, required otherwise.
+fn git_dispatch(
+    method: &str,
+    args: &Value,
+    conn: &mut rusqlite::Connection,
+    member_id: &str,
+) -> Result<Value, String> {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+
+    let team_id = match s("team") {
+        Some(t) => t,
+        None => {
+            let teams = commands::teams_for_member(conn, member_id).map_err(|e| e.to_string())?;
+            if teams.len() == 1 {
+                teams[0].clone()
+            } else {
+                return Err(format!(
+                    "git requires `team` (member belongs to {} teams)",
+                    teams.len()
+                ));
+            }
+        }
+    };
+    if !commands::member_in_team(conn, member_id, &team_id).map_err(|e| e.to_string())? {
+        return Err(format!("member `{member_id}` is not a member of team {team_id}"));
+    }
+
+    match method {
+        "git.repos" => {
+            let repos = crate::git_service::list_accessible_repos(conn, &team_id, member_id)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "repos": repos }))
+        }
+        "git.create" => {
+            let name = s("name").ok_or_else(|| "git.create requires `name`".to_string())?;
+            let description = s("description");
+            // Owner only.
+            let is_owner = commands::is_team_owner(conn, &team_id, member_id).map_err(|e| e.to_string())?;
+            if !is_owner {
+                return Err("only the team owner can create repositories".to_string());
+            }
+            // Reject duplicates up-front (the DB unique index also guards).
+            if crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err(format!("repository `{name}` already exists"));
+            }
+            let repo = crate::git_service::create_repo(conn, &team_id, &name, description.as_deref(), member_id)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "repo": repo }))
+        }
+        "git.delete" => {
+            let name = s("name").ok_or_else(|| "git.delete requires `name`".to_string())?;
+            let repo = crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("repository `{name}` not found"))?;
+            let ok = crate::git_service::check_permission(conn, &repo.id, member_id, crate::git_service::PERM_ADMIN)
+                .map_err(|e| e.to_string())?;
+            if !ok {
+                return Err("admin permission required to delete a repository".to_string());
+            }
+            crate::git_service::delete_repo(conn, &team_id, &name).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "git.bundle" => {
+            let name = s("name").ok_or_else(|| "git.bundle requires `name`".to_string())?;
+            let repo = crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("repository `{name}` not found"))?;
+            let ok = crate::git_service::check_permission(conn, &repo.id, member_id, crate::git_service::PERM_READ)
+                .map_err(|e| e.to_string())?;
+            if !ok {
+                return Err("read permission required".to_string());
+            }
+            let (bundle, branch) =
+                crate::git_service::create_bundle(&team_id, &name).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "bundle": bundle, "branch": branch, "empty": bundle.is_empty() }))
+        }
+        "git.receive" => {
+            let name = s("name").ok_or_else(|| "git.receive requires `name`".to_string())?;
+            let bundle_b64 = s("bundle").ok_or_else(|| "git.receive requires `bundle`".to_string())?;
+            let repo = crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("repository `{name}` not found"))?;
+            let ok = crate::git_service::check_permission(conn, &repo.id, member_id, crate::git_service::PERM_WRITE)
+                .map_err(|e| e.to_string())?;
+            if !ok {
+                return Err("write permission required to push".to_string());
+            }
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &bundle_b64,
+            )
+            .map_err(|e| format!("bad bundle payload: {e}"))?;
+            let tmp = std::env::temp_dir().join(format!("teamx-push-{}.bundle", uuid::Uuid::new_v4()));
+            std::fs::write(&tmp, &bytes).map_err(|e| format!("write bundle: {e}"))?;
+            let res = crate::git_service::receive_bundle(&team_id, &name, &tmp);
+            let _ = std::fs::remove_file(&tmp);
+            res.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "git.grant" => {
+            let name = s("name").ok_or_else(|| "git.grant requires `name`".to_string())?;
+            let target = s("member_id").ok_or_else(|| "git.grant requires `member_id`".to_string())?;
+            let perm = s("permission").unwrap_or_else(|| crate::git_service::PERM_READ.to_string());
+            let repo = crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("repository `{name}` not found"))?;
+            let ok = crate::git_service::check_permission(conn, &repo.id, member_id, crate::git_service::PERM_ADMIN)
+                .map_err(|e| e.to_string())?;
+            if !ok {
+                return Err("admin permission required to grant access".to_string());
+            }
+            if !commands::member_in_team(conn, &target, &team_id).map_err(|e| e.to_string())? {
+                return Err(format!("member `{target}` is not in team {team_id}"));
+            }
+            crate::git_service::grant_permission(conn, &repo.id, &target, &perm, member_id)
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "git.permissions" => {
+            let name = s("name").ok_or_else(|| "git.permissions requires `name`".to_string())?;
+            let repo = crate::git_service::get_repo(conn, &team_id, &name)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("repository `{name}` not found"))?;
+            let ok = crate::git_service::check_permission(conn, &repo.id, member_id, crate::git_service::PERM_ADMIN)
+                .map_err(|e| e.to_string())?;
+            if !ok {
+                return Err("admin permission required".to_string());
+            }
+            let perms = crate::git_service::list_permissions(conn, &repo.id).map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true, "permissions": perms }))
+        }
+        other => Err(format!("unknown git method `{other}`")),
+    }
+}
+
+/// Extract member ID from peer certificate
+fn extract_member_id(peer: &PeerIdentity) -> String {
+    // CN format: member:<id>:<role>
+    let parts: Vec<&str> = peer.0.split(':').collect();
+    if parts.len() >= 2 && parts[0] == "member" {
+        parts[1].to_string()
+    } else {
+        peer.0.clone()
+    }
+}
+
+/// Extract team ID from query parameters or member's teams
+fn extract_team_id(args: &serde_json::Value) -> Option<String> {
+    args.get("team").and_then(|t| t.as_str()).map(|s| s.to_string())
+}
+
+/// GET /git/repos - List repositories
+async fn git_list_repos(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Query(args): axum::extract::Query<serde_json::Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = extract_team_id(&args).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check if member belongs to the team
+    let is_member: bool = db
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM members WHERE team_id = ?1 AND session_key = ?2",
+            params![team_id, member_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !is_member {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    let repos = crate::git_service::list_accessible_repos(&db, &team_id, &member_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(json!({
+        "ok": true,
+        "repos": repos,
+    })))
+}
+
+/// POST /git/repos - Create a repository
+async fn git_create_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = body.get("team_id").and_then(|t| t.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let name = body.get("name").and_then(|n| n.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let description = body.get("description").and_then(|d| d.as_str());
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check if member is owner or admin
+    let is_owner: bool = db
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM members m 
+             INNER JOIN teams t ON t.owner_member_id = m.id
+             WHERE t.id = ?1 AND m.session_key = ?2",
+            params![team_id, member_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !is_owner {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    let repo = crate::git_service::create_repo(&db, team_id, name, description, &member_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(json!({
+        "ok": true,
+        "repo": repo,
+    })))
+}
+
+/// GET /git/repos/:repo - Get repository info
+async fn git_get_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    axum::extract::Query(args): axum::extract::Query<serde_json::Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = extract_team_id(&args).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "read")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    Ok(Json(json!({
+        "ok": true,
+        "repo": repo,
+    })))
+}
+
+/// DELETE /git/repos/:repo - Delete a repository
+async fn git_delete_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    axum::extract::Query(args): axum::extract::Query<serde_json::Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = extract_team_id(&args).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "admin")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    crate::git_service::delete_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(json!({
+        "ok": true,
+    })))
+}
+
+/// GET /git/repos/:repo/permissions - List permissions
+async fn git_list_permissions(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    axum::extract::Query(args): axum::extract::Query<serde_json::Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = extract_team_id(&args).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "admin")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    let perms = crate::git_service::list_permissions(&db, &repo.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(json!({
+        "ok": true,
+        "permissions": perms,
+    })))
+}
+
+/// POST /git/repos/:repo/permissions - Grant permission
+async fn git_grant_permission(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = body.get("team_id").and_then(|t| t.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let target_member_id = body.get("member_id").and_then(|m| m.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let permission = body.get("permission").and_then(|p| p.as_str()).unwrap_or("read");
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "admin")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    crate::git_service::grant_permission(&db, &repo.id, target_member_id, permission, &member_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(json!({
+        "ok": true,
+    })))
+}
+
+/// POST /git/repos/:repo/clone - Clone a repository
+async fn git_clone_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = body.get("team_id").and_then(|t| t.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "read")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    // TODO: Implement actual git clone
+    // For now, return placeholder
+    Ok(Json(json!({
+        "ok": true,
+        "repo": repo_name,
+        "message": "Git clone operation (placeholder)",
+    })))
+}
+
+/// POST /git/repos/:repo/pull - Pull from repository
+async fn git_pull_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = body.get("team_id").and_then(|t| t.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "read")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    // TODO: Implement actual git pull
+    // For now, return placeholder
+    Ok(Json(json!({
+        "ok": true,
+        "repo": repo_name,
+        "message": "Git pull operation (placeholder)",
+    })))
+}
+
+/// POST /git/repos/:repo/push - Push to repository
+async fn git_push_repo(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    axum::extract::Path(repo_name): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let member_id = extract_member_id(&peer);
+    let team_id = body.get("team_id").and_then(|t| t.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Check permission
+    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    
+    let has_perm = crate::git_service::check_permission(&db, &repo.id, &member_id, "write")
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    if !has_perm {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    // TODO: Implement actual git push
+    // For now, return placeholder
+    Ok(Json(json!({
+        "ok": true,
+        "repo": repo_name,
+        "message": "Git push operation (placeholder)",
+    })))
 }

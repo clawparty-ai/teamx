@@ -149,6 +149,10 @@ pub enum Command {
     #[command(subcommand)]
     Dns(DnsCmd),
 
+    /// Git repository management (network mode): clone, pull, push via mTLS
+    #[command(subcommand)]
+    Git(GitCmd),
+
     /// Desktop tray app (L1): manage tun0 / SOCKS5 proxy from the menu bar
     /// or system tray. Needs a desktop session.
     Gui,
@@ -739,4 +743,168 @@ pub enum RoutesCmd {
     },
     /// Clear all rules (keeps the default exit).
     Clear,
+}
+
+/// Git repository commands (network mode).
+///
+/// These manage git repositories on the teamx server. Members can clone,
+/// pull, and push repositories through the mTLS-secured connection.
+#[derive(Subcommand, Debug)]
+pub enum GitCmd {
+    /// Clone a repository from the server
+    Clone {
+        /// repository name
+        #[arg(value_name = "REPO")]
+        repo: String,
+        /// local directory to clone into (default: repo name)
+        #[arg(long)]
+        directory: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Pull (fetch + merge) from the remote repository
+    Pull {
+        /// repository name
+        #[arg(value_name = "REPO")]
+        repo: String,
+        /// branch to pull (default: current branch)
+        #[arg(long)]
+        branch: Option<String>,
+        /// working directory (default: current dir)
+        #[arg(long)]
+        dir: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Push changes to the remote repository
+    Push {
+        /// repository name
+        #[arg(value_name = "REPO")]
+        repo: String,
+        /// branch to push (default: current branch)
+        #[arg(long)]
+        branch: Option<String>,
+        /// working directory (default: current dir)
+        #[arg(long)]
+        dir: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Commit local changes (git add -A + commit)
+    Commit {
+        /// commit message
+        #[arg(long, short = 'm')]
+        message: String,
+        /// working directory (default: current dir)
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Commit local changes then push to the remote repository
+    CommitPush {
+        /// commit message
+        #[arg(long, short = 'm')]
+        message: String,
+        /// repository name (default: the cloned repo)
+        #[arg(long)]
+        repo: Option<String>,
+        /// branch to push (default: current branch)
+        #[arg(long)]
+        branch: Option<String>,
+        /// working directory (default: current dir)
+        #[arg(long)]
+        dir: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List repositories accessible to the current member
+    List {
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Create a new repository (owner/admin only)
+    Create {
+        /// repository name
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// description (optional)
+        #[arg(long)]
+        description: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Delete a repository (owner/admin only)
+    Delete {
+        /// repository name
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Grant a member access to a repository (owner/admin only)
+    Grant {
+        /// repository name
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// member id to grant access to
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        /// permission level: read, write, admin (default read)
+        #[arg(long, default_value = "read")]
+        permission: String,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show access permissions of a repository (owner/admin only)
+    Permissions {
+        /// repository name
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }

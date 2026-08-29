@@ -187,6 +187,31 @@ CREATE TABLE IF NOT EXISTS local_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Git repositories (network mode): each team can have multiple repos.
+CREATE TABLE IF NOT EXISTS git_repos (
+  id            TEXT PRIMARY KEY,
+  team_id       TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  path          TEXT NOT NULL,  -- server-side filesystem path
+  description   TEXT,
+  is_bare       INTEGER NOT NULL DEFAULT 1,  -- bare repo
+  created_by    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE(team_id, name)
+);
+
+-- Git repository permissions: per-member access control.
+CREATE TABLE IF NOT EXISTS git_repo_permissions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id       TEXT NOT NULL REFERENCES git_repos(id) ON DELETE CASCADE,
+  member_id     TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  permission    TEXT NOT NULL DEFAULT 'read',  -- read, write, admin
+  granted_by    TEXT NOT NULL,
+  granted_at    TEXT NOT NULL,
+  UNIQUE(repo_id, member_id)
+);
 ";
 
 /// Apply the schema (idempotent) + migrations.
@@ -306,7 +331,35 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              );",
         )?;
     }
-    conn.pragma_update(None, "user_version", 8)?;
+    // v9: git repositories — git_repos (per-team repos) +
+    // git_repo_permissions (per-member access control). SCHEMA covers fresh
+    // DBs; idempotent for existing ones.
+    if version < 9 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS git_repos (
+               id            TEXT PRIMARY KEY,
+               team_id       TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               name          TEXT NOT NULL,
+               path          TEXT NOT NULL,
+               description   TEXT,
+               is_bare       INTEGER NOT NULL DEFAULT 1,
+               created_by    TEXT NOT NULL,
+               created_at    TEXT NOT NULL,
+               updated_at    TEXT NOT NULL,
+               UNIQUE(team_id, name)
+             );
+             CREATE TABLE IF NOT EXISTS git_repo_permissions (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               repo_id       TEXT NOT NULL REFERENCES git_repos(id) ON DELETE CASCADE,
+               member_id     TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+               permission    TEXT NOT NULL DEFAULT 'read',
+               granted_by    TEXT NOT NULL,
+               granted_at    TEXT NOT NULL,
+               UNIQUE(repo_id, member_id)
+             );",
+        )?;
+    }
+    conn.pragma_update(None, "user_version", 9)?;
     Ok(())
 }
 

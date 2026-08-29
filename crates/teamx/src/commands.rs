@@ -562,6 +562,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Dns(cmd) => {
             return cmd_dns(conn, cmd);
         }
+        Command::Git(cmd) => {
+            return cmd_git(conn, cmd);
+        }
         // `teamx gui` is handled in main() before the DB opens; unreachable here.
         Command::Gui => {
             return Err(AppError("gui must be launched via `teamx gui`".to_string()));
@@ -2825,6 +2828,16 @@ pub fn member_in_team(conn: &Connection, member_id: &str, team_id: &str) -> rusq
     Ok(n > 0)
 }
 
+/// True if this member is the owner of the given team.
+pub fn is_team_owner(conn: &Connection, team_id: &str, member_id: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM teams WHERE id = ?1 AND owner_member_id = ?2",
+        params![team_id, member_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 fn member_json(conn: &Connection, m: &MemberRow) -> Value {
     let ip = crate::db::member_ip(conn, &m.id);
     let online = crate::db::member_online(conn, &m.id);
@@ -2958,4 +2971,76 @@ fn cmd_cert_ca() -> Result<Value> {
     let pk = pki::ensure_pki(&home).map_err(AppError)?;
     let ca_pem = std::fs::read_to_string(&pk.ca_cert).map_err(|e| AppError(format!("read ca: {e}")))?;
     Ok(json!({ "ok": true, "ca_pem": ca_pem, "path": pk.ca_cert.display().to_string() }))
+}
+
+// ---------------------------------------------------------------------------
+// Git operations (network mode)
+// ---------------------------------------------------------------------------
+
+/// Handle `teamx git <subcommand>`.
+fn cmd_git(_conn: &mut Connection, cmd: &crate::cli::GitCmd) -> Result<Value> {
+    use crate::cli::GitCmd;
+
+    // Local-only commands (commit) don't need a server.
+    match cmd {
+        GitCmd::Commit { message, dir } => {
+            return crate::git_client::commit(message, dir.as_deref()).map_err(git_err)
+        }
+        _ => {}
+    }
+
+    let url = resolve_server_url(server_url_arg(cmd))?;
+    match cmd {
+        GitCmd::Clone { repo, directory, server: _, session: _, team } => {
+            crate::git_client::clone(&url, repo, directory.as_deref(), team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Pull { repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::pull(&url, repo, branch.as_deref(), team.as_deref(), dir.as_deref()).map_err(git_err)
+        }
+        GitCmd::Push { repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::push(&url, repo, branch.as_deref(), team.as_deref(), dir.as_deref()).map_err(git_err)
+        }
+        GitCmd::CommitPush { message, repo, branch, dir, server: _, session: _, team } => {
+            crate::git_client::commit_push(&url, message, repo.as_deref(), branch.as_deref(), team.as_deref(), dir.as_deref())
+                .map_err(git_err)
+        }
+        GitCmd::List { server: _, session: _, team } => {
+            crate::git_client::list(&url, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Create { name, description, server: _, session: _, team } => {
+            crate::git_client::create(&url, name, description.as_deref(), team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Delete { name, server: _, session: _, team } => {
+            crate::git_client::delete(&url, name, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Grant { name, member_id, permission, server: _, session: _, team } => {
+            crate::git_client::grant(&url, name, member_id, permission, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Permissions { name, server: _, session: _, team } => {
+            crate::git_client::permissions(&url, name, team.as_deref()).map_err(git_err)
+        }
+        GitCmd::Commit { .. } => unreachable!(),
+    }
+}
+
+/// Convert a git client error into the command error type.
+fn git_err(e: crate::git_client::GitError) -> AppError {
+    AppError(e.to_string())
+}
+
+/// Extract the `server` arg from any GitCmd variant (for URL resolution).
+fn server_url_arg(cmd: &crate::cli::GitCmd) -> Option<&str> {
+    use crate::cli::GitCmd;
+    match cmd {
+        GitCmd::Clone { server, .. } => server.as_deref(),
+        GitCmd::Pull { server, .. } => server.as_deref(),
+        GitCmd::Push { server, .. } => server.as_deref(),
+        GitCmd::CommitPush { server, .. } => server.as_deref(),
+        GitCmd::List { server, .. } => server.as_deref(),
+        GitCmd::Create { server, .. } => server.as_deref(),
+        GitCmd::Delete { server, .. } => server.as_deref(),
+        GitCmd::Grant { server, .. } => server.as_deref(),
+        GitCmd::Permissions { server, .. } => server.as_deref(),
+        GitCmd::Commit { .. } => None,
+    }
 }

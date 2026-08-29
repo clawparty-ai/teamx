@@ -624,4 +624,145 @@ export const tools = {
       return "teamx: identity is now mTLS client certificates (see teamx_team_invite); token auth is deprecated."
     },
   }),
+
+  // Git repository management tools
+  teamx_git_create: tool({
+    description:
+      "Create a new git repository on the teamx server (owner/admin only). " +
+      "The repository will be accessible to team members based on permissions.",
+    args: {
+      name: tool.schema.string().describe("repository name"),
+      description: tool.schema.string().optional().describe("repository description"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "create", args.name, ...opt("--description", args.description), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_delete: tool({
+    description:
+      "Delete a git repository from the teamx server (owner/admin only). " +
+      "This will permanently remove the repository and all its data.",
+    args: {
+      name: tool.schema.string().describe("repository name"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "delete", args.name, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_list: tool({
+    description:
+      "List git repositories accessible to the current member. " +
+      "Returns repositories that the member has at least read access to.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "list", ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_clone: tool({
+    description:
+      "Clone a git repository from the teamx server to the local machine. " +
+      "The repository must be accessible to the current member (at least read permission).",
+    args: {
+      repo: tool.schema.string().describe("repository name"),
+      directory: tool.schema.string().optional().describe("local directory to clone into (default: repo name)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "clone", args.repo, ...opt("--directory", args.directory), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_pull: tool({
+    description:
+      "Pull (fetch + merge) changes from a git repository on the teamx server. " +
+      "Must be run from within a cloned repository.",
+    args: {
+      repo: tool.schema.string().describe("repository name"),
+      branch: tool.schema.string().optional().describe("branch to pull (default: current branch)"),
+      dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "pull", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_push: tool({
+    description:
+      "Push local changes to a git repository on the teamx server. " +
+      "Requires write permission on the repository.",
+    args: {
+      repo: tool.schema.string().describe("repository name"),
+      branch: tool.schema.string().optional().describe("branch to push (default: current branch)"),
+      dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "push", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_commit: tool({
+    description:
+      "Commit local changes (git add -A + git commit) inside a teamx-cloned repository. " +
+      "This is a local operation (no network). Use with teamx_git_push to upload.",
+    args: {
+      message: tool.schema.string().describe("commit message"),
+      dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "commit", "--message", args.message, ...opt("--dir", args.dir)])
+    },
+  }),
+
+  teamx_git_commit_push: tool({
+    description:
+      "Commit local changes and push them to a teamx git repository in one step. " +
+      "Runs `git add -A` + `git commit` locally, then uploads the bundle over mTLS. " +
+      "Requires write permission on the repository.",
+    args: {
+      message: tool.schema.string().describe("commit message"),
+      repo: tool.schema.string().optional().describe("repository name (default: the cloned repo)"),
+      branch: tool.schema.string().optional().describe("branch to push (default: current branch)"),
+      dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "commit-push", "--message", args.message, ...opt("--repo", args.repo), ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_grant: tool({
+    description:
+      "Grant a team member access to a git repository (owner/admin only). " +
+      "Permission levels: read (clone/pull), write (+push), admin (+manage).",
+    args: {
+      name: tool.schema.string().describe("repository name"),
+      member_id: tool.schema.string().describe("member id to grant access to"),
+      permission: tool.schema.enum(["read", "write", "admin"]).optional().describe("permission level (default read)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "grant", args.name, args.member_id, ...opt("--permission", args.permission), ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_git_permissions: tool({
+    description:
+      "Show access permissions of a git repository (owner/admin only).",
+    args: {
+      name: tool.schema.string().describe("repository name"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["git", "permissions", args.name, ...opt("--team", args.team)])
+    },
+  }),
 }
