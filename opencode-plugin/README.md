@@ -114,6 +114,7 @@ This key is the session's identity across all teamx operations. Multiple opencod
 - `teamx_serve_token` — Generate member connection token
 
 ### Git repository management
+- `teamx_git_setup` — Configure stock `git` for mTLS from the invitation letter (then use plain `git clone/pull/push`)
 - `teamx_git_create` — Create a new git repository (owner/admin)
 - `teamx_git_delete` — Delete a git repository (owner/admin)
 - `teamx_git_list` — List accessible repositories
@@ -184,6 +185,25 @@ When `TEAMX_SERVER_URL` is set (or discovered from an imported letter), the plug
 2. **Network mode**: POST to `https://server/rpc` with mTLS client cert
 
 WebSocket push provides real-time event notifications. Both modes support the full feature set.
+
+## Git over mTLS (standard `git` protocol)
+
+The teamx server also speaks the **standard Git Smart HTTP protocol** over the same mTLS channel, so you can use a stock `git` client (no `teamx git` wrapper needed):
+
+```bash
+# 1. Configure stock git to use your invitation letter's client cert (once):
+teamx git setup --server https://server
+
+# 2. Use plain git against the server (cert paths are picked up automatically):
+git clone https://server/git/<team_id>/<repo>
+git pull
+git push
+```
+
+- `git setup` reads `client.crt` / `client.key` / `ca.crt` from the member's private directory (`~/.teamx/letters/<id>/`) and writes per-URL config into `~/.gitconfig` (`http.<server>/.sslCert`, `.sslKey`, `.sslCAInfo`).
+- Server auth is the same mTLS as the RPC channel: the client cert CN → member identity.
+- Permissions: `read` grants clone/pull/fetch; `write` grants push.
+- The `teamx git clone/pull/push` wrapper commands remain available as an alternative.
 
 ## Activity collection
 

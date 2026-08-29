@@ -709,6 +709,25 @@ export const tools = {
     },
   }),
 
+  teamx_git_setup: tool({
+    description:
+      "Configure stock `git` to talk to the teamx server over mTLS using the invitation " +
+      "letter's client certificate (stored in the member's private directory). " +
+      "Writes per-URL git config (http.<server>/sslCert/sslKey/sslCAInfo) into ~/.gitconfig, " +
+      "so after this the user can run plain `git clone/pull/push` against " +
+      "https://server/git/<team_id>/<repo> with no extra flags.",
+    args: {
+      server: tool.schema.string().optional().describe("server URL (default: TEAMX_SERVER_URL or discovered letter)"),
+      local: tool.schema.boolean().optional().describe("write to the current repo's config instead of ~/.gitconfig"),
+    },
+    async execute(args, context: ToolCtx) {
+      const parts = ["git", "setup"]
+      if (args.server) parts.push("--server", args.server)
+      if (args.local) parts.push("--local")
+      return tx(context.sessionID, parts)
+    },
+  }),
+
   teamx_git_commit: tool({
     description:
       "Commit local changes (git add -A + git commit) inside a teamx-cloned repository. " +
