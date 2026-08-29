@@ -12,18 +12,7 @@ This is different from the common "multi-agent" model. Instead of decomposing a 
 
 State is shared through a persistent event ledger until the goal is achieved.
 
-```
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│  opencode    │      │  teamx CLI   │      │  SQLite DB   │
-│  (plugin)    │─────▶│  (Rust)      │─────▶│  (ledger)    │
-└──────────────┘      └──────────────┘      └──────────────┘
-       │                     │
-       │ mTLS                │ axum
-       ▼                     ▼
-┌──────────────┐      ┌──────────────┐
-│  member 2..N │─────▶│ teamx serve  │
-└──────────────┘      └──────────────┘
-```
+![teamx core technical architecture](docs/teamx-core-architecture.png)
 
 ## Concept: Idempotent delivery
 
@@ -44,6 +33,7 @@ See the worked example: [`templates/01-product-dev-team.TEAM.md`](templates/01-p
 - **Invitation letters** — owner issues mTLS client certificates bundled into one-time invitation letters; members import and join with cryptographic identity
 - **Network mode** — `teamx serve` runs an mTLS HTTP server with WebSocket push; members collaborate in real time over LAN **or the public internet**
 - **Auto-execute** — directed tasks (`publish --assignee`) automatically wake the assigned member's session
+- **Team design sessions** — `/team-grill` runs an owner-led, multi-round design interview and preserves the glossary, session record, and ADRs in Git
 - **30+ tools** — full lifecycle exposed as opencode tools and `/team` slash commands with tab completion
 - **loopx bridge** — optional integration with [loopx](https://github.com/clawparty-ai/loopx) for stage-progress snapshots
 
@@ -104,6 +94,9 @@ opencode-plugin/        opencode plugin (30+ tools + /team agent + slash command
   src/serve.ts          Server lifecycle management
   assets/agent/         Agent routing instructions (teamx.md)
   assets/command/       Slash command files (/team create, /team invite, ...)
+dsh-plugin/             DeepSeek Harness plugin and runtime Teamx skills
+protocols/              Host-neutral deliberation protocol sources
+scripts/                Deterministic host-adapter generators
 install.sh              One-click install / --uninstall
 tests/                  run-all.sh (9-step automated suite)
 docs/                   Design docs, manual test runbooks, specs
@@ -134,6 +127,7 @@ Manual test runbooks:
 - [Two-person workflow](docs/demo.md)
 - [Three-person workflow](docs/demo-3p.md)
 - [Network mode](docs/manual-test-network.md)
+- [Grill with Docs](docs/22-manual-grill-with-docs.md)
 
 ## Security Model
 

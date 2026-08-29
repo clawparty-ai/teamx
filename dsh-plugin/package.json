@@ -19,7 +19,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outfile lib/index.js --external '@deepseek-ai/*' --external 'ws' --format esm --target node",
+    "generate:protocols": "node ../scripts/generate-grill-protocol.mjs",
+    "check:protocols": "node ../scripts/generate-grill-protocol.mjs --check",
+    "build": "npm run generate:protocols && bun build src/index.ts --outfile lib/index.js --external '@deepseek-ai/*' --external 'ws' --format esm --target node",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json > /tmp/teamx-dsh-typecheck.log 2>&1; grep -E '^src/' /tmp/teamx-dsh-typecheck.log || true; ! grep -qE '^src/' /tmp/teamx-dsh-typecheck.log"
   },
