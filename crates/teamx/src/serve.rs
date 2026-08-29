@@ -18,13 +18,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::{
+    body::{Body, Bytes},
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo,
+        Path,
         State,
     },
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Extension, Json, Router,
 };
@@ -148,6 +150,11 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .route("/git/repos/{repo}/clone", post(git_clone_repo))
         .route("/git/repos/{repo}/pull", post(git_pull_repo))
         .route("/git/repos/{repo}/push", post(git_push_repo))
+        // Git Smart HTTP (standard git protocol over mTLS). URL shape:
+        //   https://server/git/<team_id>/<repo>
+        .route("/git/{team_id}/{repo}/info/refs", get(git_http_info_refs))
+        .route("/git/{team_id}/{repo}/git-upload-pack", post(git_http_upload_pack))
+        .route("/git/{team_id}/{repo}/git-receive-pack", post(git_http_receive_pack))
         .with_state(state);
 
     // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
@@ -1584,4 +1591,170 @@ async fn git_push_repo(
         "repo": repo_name,
         "message": "Git push operation (placeholder)",
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Git Smart HTTP (standard git protocol over mTLS)
+// ---------------------------------------------------------------------------
+
+/// Resolve member + team membership + repo permission for a Smart HTTP request.
+/// Returns `(member_id, repo_id)` on success.
+fn git_http_authorize(
+    conn: &rusqlite::Connection,
+    member_id: &str,
+    team_id: &str,
+    repo_name: &str,
+    required: &str,
+) -> Result<String, Box<Response>> {
+    use crate::git_service as g;
+    if !commands::member_in_team(conn, member_id, team_id).unwrap_or(false) {
+        return Err(Box::new(git_http_error(StatusCode::FORBIDDEN, "not a member of team")));
+    }
+    let repo = g::get_repo(conn, team_id, repo_name)
+        .map_err(|_| Box::new(git_http_error(StatusCode::INTERNAL_SERVER_ERROR, "db error")))?
+        .ok_or_else(|| Box::new(git_http_error(StatusCode::NOT_FOUND, "repository not found")))?;
+    let ok = g::check_permission(conn, &repo.id, member_id, required).unwrap_or(false);
+    if !ok {
+        return Err(Box::new(git_http_error(
+            StatusCode::FORBIDDEN,
+            &format!("need `{required}` permission"),
+        )));
+    }
+    Ok(repo.id)
+}
+
+/// Build an error Response (smart HTTP clients show this in the git message).
+fn git_http_error(status: StatusCode, msg: &str) -> Response {
+    let body = format!("teamx: {msg}\n");
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// `GET /git/<team>/<repo>/info/refs?service=<svc>`
+async fn git_http_info_refs(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    Path((team_id, repo_name)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let member_id = extract_member_id(&peer);
+    let service = match params.get("service") {
+        Some(s) => s.clone(),
+        None => {
+            // Dumb protocol: not supported.
+            return git_http_error(StatusCode::NOT_IMPLEMENTED, "dumb HTTP protocol not supported");
+        }
+    };
+    // Permission level: upload-pack (fetch) needs read; receive-pack (push) needs write.
+    let required = if service == "git-receive-pack" { "write" } else { "read" };
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => return git_http_error(StatusCode::INTERNAL_SERVER_ERROR, "db lock"),
+    };
+    if let Err(resp) = git_http_authorize(&db, &member_id, &team_id, &repo_name, required) {
+        return *resp;
+    }
+    drop(db); // release lock before long-running git process
+    match crate::git_service::info_refs(&team_id, &repo_name, &service) {
+        Ok(result) => {
+            let mut resp = Response::new(axum::body::Body::from(result.body));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                "Content-Type",
+                result.content_type.parse().unwrap_or_else(|_| "text/plain".parse().unwrap()),
+            );
+            resp.headers_mut().insert(
+                "Cache-Control",
+                "no-cache, max-age=0".parse().unwrap(),
+            );
+            resp.headers_mut().insert("Expires", "Fri, 01 Jan 1980 00:00:00 GMT".parse().unwrap());
+            resp.headers_mut().insert("Pragma", "no-cache".parse().unwrap());
+            resp
+        }
+        Err(e) => git_http_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+/// Read a full request body into bytes (Smart HTTP POST payloads are pkt-line
+/// protocol; size can be a few hundred KB to MBs for pushes).
+async fn read_body(body: Body) -> Result<Bytes, Response> {
+    // 512 MiB cap for push payloads.
+    axum::body::to_bytes(body, 512 * 1024 * 1024)
+        .await
+        .map_err(|e| git_http_error(StatusCode::BAD_REQUEST, &format!("body read error: {e}")))
+}
+
+/// `POST /git/<team>/<repo>/git-upload-pack` — fetch/clone/pull.
+async fn git_http_upload_pack(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    Path((team_id, repo_name)): Path<(String, String)>,
+    body: Body,
+) -> Response {
+    let member_id = extract_member_id(&peer);
+    let payload = match read_body(body).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    {
+        let db = match state.db.lock() {
+            Ok(db) => db,
+            Err(_) => return git_http_error(StatusCode::INTERNAL_SERVER_ERROR, "db lock"),
+        };
+        if let Err(resp) = git_http_authorize(&db, &member_id, &team_id, &repo_name, "read") {
+            return *resp;
+        }
+    }
+    match crate::git_service::upload_pack(&team_id, &repo_name, &payload) {
+        Ok(result) => {
+            let mut resp = Response::new(axum::body::Body::from(result.body));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                "Content-Type",
+                result.content_type.parse().unwrap_or_else(|_| "text/plain".parse().unwrap()),
+            );
+            resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
+            resp
+        }
+        Err(e) => git_http_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+/// `POST /git/<team>/<repo>/git-receive-pack` — push.
+async fn git_http_receive_pack(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerIdentity>,
+    Path((team_id, repo_name)): Path<(String, String)>,
+    body: Body,
+) -> Response {
+    let member_id = extract_member_id(&peer);
+    let payload = match read_body(body).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    {
+        let db = match state.db.lock() {
+            Ok(db) => db,
+            Err(_) => return git_http_error(StatusCode::INTERNAL_SERVER_ERROR, "db lock"),
+        };
+        if let Err(resp) = git_http_authorize(&db, &member_id, &team_id, &repo_name, "write") {
+            return *resp;
+        }
+    }
+    match crate::git_service::receive_pack(&team_id, &repo_name, &payload) {
+        Ok(result) => {
+            let mut resp = Response::new(axum::body::Body::from(result.body));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                "Content-Type",
+                result.content_type.parse().unwrap_or_else(|_| "text/plain".parse().unwrap()),
+            );
+            resp.headers_mut().insert("Cache-Control", "no-cache".parse().unwrap());
+            resp
+        }
+        Err(e) => git_http_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
 }

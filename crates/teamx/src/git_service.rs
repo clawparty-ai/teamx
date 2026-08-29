@@ -371,6 +371,142 @@ pub fn list_permissions(
     Ok(perms)
 }
 
+// ---------------------------------------------------------------------------
+// Git Smart HTTP (standard git protocol over HTTPS/mTLS)
+// ---------------------------------------------------------------------------
+//
+// These handlers implement the "smart" HTTP transport so any stock `git`
+// client can `git clone https://server/git/<team>/<repo>` with mTLS client
+// certs from the invitation letter. The server runs the standard plumbing
+// commands (`git upload-pack` / `git receive-pack`) in --stateless-rpc mode.
+
+use std::io::Write;
+use std::process::{Command as ProcCommand, Stdio};
+
+/// Result of a Smart HTTP RPC: raw bytes to send back plus a content type.
+#[derive(Debug, Clone)]
+pub struct SmartHttpResult {
+    pub body: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+/// Handle `GET /git/<team>/<repo>/info/refs?service=...`.
+/// `service` is `git-upload-pack` (fetch/clone) or `git-receive-pack` (push).
+pub fn info_refs(team_id: &str, name: &str, service: &str) -> Result<SmartHttpResult, String> {
+    validate_name(name)?;
+    let dir = repo_dir(team_id, name);
+    if !dir.exists() {
+        return Err(format!("repository `{name}` not found"));
+    }
+    match service {
+        "git-upload-pack" | "git-receive-pack" => {
+            let plumbing = if service == "git-upload-pack" { "upload-pack" } else { "receive-pack" };
+            let body = run_plumbing(&dir, plumbing, true)?;
+            // Smart HTTP requires a service announcement preamble:
+            //   `<len># service=<service>\n` followed by a flush-pkt (`0000`).
+            // `git http-backend` normally prepends this; we do it ourselves.
+            let announce = format!("# service={service}\n");
+            let mut out = Vec::with_capacity(body.len() + 16);
+            out.extend_from_slice(pkt_line(&announce).as_bytes());
+            out.extend_from_slice(b"0000");
+            out.extend_from_slice(&body);
+            let content_type = if service == "git-upload-pack" {
+                "application/x-git-upload-pack-advertisement"
+            } else {
+                "application/x-git-receive-pack-advertisement"
+            };
+            Ok(SmartHttpResult {
+                body: out,
+                content_type,
+            })
+        }
+        other => Err(format!("unsupported service `{other}`")),
+    }
+}
+
+/// Encode `s` as a pkt-line: 4-hex length + payload (length includes the 4
+/// length bytes themselves).
+fn pkt_line(s: &str) -> String {
+    let len = s.len() + 4;
+    format!("{:04x}{s}", len)
+}
+
+/// Handle `POST /git/<team>/<repo>/git-upload-pack` (clone/fetch/pull).
+pub fn upload_pack(team_id: &str, name: &str, request_body: &[u8]) -> Result<SmartHttpResult, String> {
+    validate_name(name)?;
+    let dir = repo_dir(team_id, name);
+    if !dir.exists() {
+        return Err(format!("repository `{name}` not found"));
+    }
+    let body = run_plumbing_with_input(&dir, "upload-pack", request_body, false)?;
+    Ok(SmartHttpResult {
+        body,
+        content_type: "application/x-git-upload-pack-result",
+    })
+}
+
+/// Handle `POST /git/<team>/<repo>/git-receive-pack` (push).
+pub fn receive_pack(team_id: &str, name: &str, request_body: &[u8]) -> Result<SmartHttpResult, String> {
+    validate_name(name)?;
+    let dir = repo_dir(team_id, name);
+    if !dir.exists() {
+        return Err(format!("repository `{name}` not found"));
+    }
+    let body = run_plumbing_with_input(&dir, "receive-pack", request_body, false)?;
+    Ok(SmartHttpResult {
+        body,
+        content_type: "application/x-git-receive-pack-result",
+    })
+}
+
+/// Run `git <plumbing> --stateless-rpc --advertise-refs <dir>` (info/refs).
+fn run_plumbing(dir: &Path, plumbing: &str, advertise: bool) -> Result<Vec<u8>, String> {
+    let dir_s = dir.to_str().unwrap_or_default();
+    let mut cmd = ProcCommand::new("git");
+    cmd.arg(plumbing).arg("--stateless-rpc");
+    if advertise {
+        cmd.arg("--advertise-refs");
+    }
+    cmd.arg(dir_s)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_proc(cmd, &[])
+}
+
+/// Run `git <plumbing> --stateless-rpc <dir>` feeding `input` on stdin.
+fn run_plumbing_with_input(dir: &Path, plumbing: &str, input: &[u8], advertise: bool) -> Result<Vec<u8>, String> {
+    let dir_s = dir.to_str().unwrap_or_default();
+    let mut cmd = ProcCommand::new("git");
+    cmd.arg(plumbing).arg("--stateless-rpc");
+    if advertise {
+        cmd.arg("--advertise-refs");
+    }
+    cmd.arg(dir_s)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_proc(cmd, input)
+}
+
+/// Spawn a git process, write stdin, capture stdout; surface stderr on failure.
+fn run_proc(mut cmd: ProcCommand, input: &[u8]) -> Result<Vec<u8>, String> {
+    let mut child = cmd.spawn().map_err(|e| format!("spawn git: {e} (is git installed?)"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input);
+        // Close stdin so the child sees EOF and terminates.
+        drop(stdin);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("wait git: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("git {} failed: {}", cmd.get_program().to_string_lossy(), err));
+    }
+    Ok(out.stdout)
+}
+
 /// Check if a member has permission for a repository
 pub fn check_permission(
     conn: &Connection,

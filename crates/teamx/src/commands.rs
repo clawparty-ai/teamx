@@ -2988,6 +2988,11 @@ fn cmd_git(_conn: &mut Connection, cmd: &crate::cli::GitCmd) -> Result<Value> {
         }
         _ => {}
     }
+    // git setup: configures stock `git` from the letter; no RPC involved.
+    if let GitCmd::Setup { server, local } = cmd {
+        let url = resolve_server_url(server.as_deref())?;
+        return crate::git_client::setup(&url, *local).map_err(git_err);
+    }
 
     let url = resolve_server_url(server_url_arg(cmd))?;
     match cmd {
@@ -3019,7 +3024,7 @@ fn cmd_git(_conn: &mut Connection, cmd: &crate::cli::GitCmd) -> Result<Value> {
         GitCmd::Permissions { name, server: _, session: _, team } => {
             crate::git_client::permissions(&url, name, team.as_deref()).map_err(git_err)
         }
-        GitCmd::Commit { .. } => unreachable!(),
+        GitCmd::Setup { .. } | GitCmd::Commit { .. } => unreachable!(),
     }
 }
 
@@ -3041,6 +3046,7 @@ fn server_url_arg(cmd: &crate::cli::GitCmd) -> Option<&str> {
         GitCmd::Delete { server, .. } => server.as_deref(),
         GitCmd::Grant { server, .. } => server.as_deref(),
         GitCmd::Permissions { server, .. } => server.as_deref(),
+        GitCmd::Setup { server, .. } => server.as_deref(),
         GitCmd::Commit { .. } => None,
     }
 }

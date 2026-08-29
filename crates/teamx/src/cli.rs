@@ -751,6 +751,17 @@ pub enum RoutesCmd {
 /// pull, and push repositories through the mTLS-secured connection.
 #[derive(Subcommand, Debug)]
 pub enum GitCmd {
+    /// Configure stock `git` to talk to the teamx server over mTLS: writes
+    /// http.<server>/sslCert/Key/CAInfo from the invitation letter into the
+    /// local git config, so plain `git clone/pull/push` works.
+    Setup {
+        /// server URL (default: TEAMX_SERVER_URL or discovered letter)
+        #[arg(long)]
+        server: Option<String>,
+        /// write git config to the current repo instead of ~/.gitconfig
+        #[arg(long)]
+        local: bool,
+    },
     /// Clone a repository from the server
     Clone {
         /// repository name

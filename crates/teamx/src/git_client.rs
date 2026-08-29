@@ -338,3 +338,130 @@ pub fn permissions(server_url: &str, name: &str, team: Option<&str>) -> Result<V
     }
     Ok(resp)
 }
+
+/// A discovered mTLS letter on disk.
+pub struct LetterMaterial {
+    pub id: String,
+    pub server_url: String,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub ca: PathBuf,
+}
+
+/// Find the letter whose embedded server URL matches `server_url` (preferring
+/// an exact host match; else the most recent). Returns the cert/key/ca paths.
+pub fn find_letter(server_url: &str) -> Result<LetterMaterial, GitError> {
+    use crate::tunnel_client::host_of;
+    let home = crate::db::teamx_home();
+    let dir = home.join("letters");
+    if !dir.is_dir() {
+        return Err(GitError("no invitation letters found; import one first (teamx team import)".to_string()));
+    }
+    let wanted = host_of(server_url);
+    let mut best: Option<LetterMaterial> = None;
+    let mut best_exact: Option<LetterMaterial> = None;
+    let mut best_mtime: Option<std::time::SystemTime> = None;
+    let mut best_exact_mtime: Option<std::time::SystemTime> = None;
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let sub = e.path();
+            let letter_path = sub.join("letter.json");
+            let cert = sub.join("client.crt");
+            let key = sub.join("client.key");
+            let ca = sub.join("ca.crt");
+            if !letter_path.is_file() || !cert.is_file() || !key.is_file() || !ca.is_file() {
+                continue;
+            }
+            let url = std::fs::read_to_string(&letter_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v["teamx_invitation"]["server"]["url"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let mtime = letter_path.metadata().and_then(|m| m.modified()).ok();
+            let is_exact = !url.is_empty() && host_of(&url) == wanted;
+            if is_exact {
+                if best_exact_mtime.map(|t| mtime > Some(t)).unwrap_or(true) {
+                    best_exact_mtime = mtime;
+                    best_exact = Some(LetterMaterial {
+                        id: sub.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                        server_url: url.clone(),
+                        cert,
+                        key,
+                        ca,
+                    });
+                }
+            } else if best_mtime.map(|t| mtime > Some(t)).unwrap_or(true) {
+                best_mtime = mtime;
+                best = Some(LetterMaterial {
+                    id: sub.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    server_url: url.clone(),
+                    cert,
+                    key,
+                    ca,
+                });
+            }
+        }
+    }
+    best_exact.or(best).ok_or_else(|| {
+        GitError(format!(
+            "no invitation letter for server `{server_url}` found under {}",
+            dir.display()
+        ))
+    })
+}
+
+/// `teamx git setup [--server <url>] [--local]` — configure stock `git` to
+/// use the invitation letter's mTLS certs when talking to the teamx server.
+///
+/// Writes per-URL git config:
+///   http.<server>/sslCert   = <letter>/client.crt
+///   http.<server>/sslKey    = <letter>/client.key
+///   http.<server>/sslCAInfo = <letter>/ca.crt
+///
+/// After this, plain `git clone https://server/git/<team>/<repo>` works.
+pub fn setup(server_url: &str, _local: bool) -> Result<Value, GitError> {
+    let mat = find_letter(server_url)?;
+    // git per-URL config is only read from global/system config, so the scope
+    // flag is accepted but the URL keys always go to global config.
+    // Note: `git config --global http.<url>/sslCert` rejects `/` in the key,
+    // but `git config --file ~/.gitconfig <key>` accepts it.
+    let base = server_url.trim_end_matches('/');
+    let global = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".gitconfig");
+    let set = |key: &str, val: &str| -> Result<(), GitError> {
+        let out = Command::new("git")
+            .args(["config", "--file"])
+            .arg(global.to_str().unwrap_or_default())
+            .arg(key)
+            .arg(val)
+            .output()
+            .map_err(|e| GitError(format!("git config failed: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(GitError(format!("git config {key} failed: {err}")));
+        }
+        Ok(())
+    };
+    let cert_key = format!("http.{base}/.sslCert");
+    let key_key = format!("http.{base}/.sslKey");
+    let ca_key = format!("http.{base}/.sslCAInfo");
+    set(&cert_key, &mat.cert.display().to_string())?;
+    set(&key_key, &mat.key.display().to_string())?;
+    set(&ca_key, &mat.ca.display().to_string())?;
+
+    let clone_url = format!("{base}/git/<team_id>/<repo>");
+    Ok(json!({
+        "ok": true,
+        "server": base,
+        "letter": mat.id,
+        "letter_server_url": mat.server_url,
+        "config_file": global.display().to_string(),
+        "cert": mat.cert.display().to_string(),
+        "key": mat.key.display().to_string(),
+        "ca": mat.ca.display().to_string(),
+        "clone_url_template": clone_url,
+        "note": "git is configured for mTLS. Clone with: git clone <clone_url_template> (replace <team_id> and <repo>).",
+    }))
+}

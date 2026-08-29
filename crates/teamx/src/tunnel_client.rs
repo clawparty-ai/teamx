@@ -98,7 +98,7 @@ fn env_mtls() -> Option<MtlsMaterial> {
 }
 
 /// Host portion of a URL.
-fn host_of(url: &str) -> String {
+pub fn host_of(url: &str) -> String {
     url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").to_string()
 }
 
