@@ -56,6 +56,7 @@ struct MemberRow {
     loopx_project: Option<String>,
     joined_at: String,
     left_at: Option<String>,
+    is_lead: bool,
 }
 
 #[derive(Clone)]
@@ -121,6 +122,7 @@ fn member_row(r: &rusqlite::Row) -> rusqlite::Result<MemberRow> {
         loopx_project: r.get(6)?,
         joined_at: r.get(7)?,
         left_at: r.get(8)?,
+        is_lead: r.get(9)?,
     })
 }
 
@@ -208,7 +210,7 @@ fn team_goal(conn: &Connection, team_id: &str) -> Result<Option<GoalRow>> {
 
 fn members_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at
+        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead
          FROM members WHERE team_id = ?1 ORDER BY joined_at ASC",
     )?;
     let rows = stmt.query_map([team_id], member_row)?;
@@ -217,7 +219,7 @@ fn members_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<Me
 
 fn member_by_id(conn: &Connection, member_id: &str) -> Result<MemberRow> {
     conn.query_row(
-        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at
+        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead
          FROM members WHERE id = ?1",
         [member_id],
         member_row,
@@ -232,7 +234,7 @@ fn memberships_for_session(
     session_key: &str,
 ) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.team_id, m.session_key, m.display_name, m.role, m.state, m.loopx_project, m.joined_at, m.left_at
+        "SELECT m.id, m.team_id, m.session_key, m.display_name, m.role, m.state, m.loopx_project, m.joined_at, m.left_at, m.is_lead
          FROM members m
          JOIN teams t ON t.id = m.team_id
          WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state != 'destroyed'
@@ -274,12 +276,17 @@ fn resolve_actor(conn: &Connection, session: &str, team_opt: Option<&str>) -> Re
     Ok((m, team))
 }
 
+/// True when the member is a team lead: the primary owner or a promoted co-lead.
+fn is_team_lead_row(team: &TeamRow, member: &MemberRow) -> bool {
+    team.owner_member_id.as_deref() == Some(member.id.as_str()) || member.is_lead
+}
+
 fn ensure_owner(_conn: &Connection, actor: &MemberRow, team: &TeamRow) -> Result<()> {
-    if team.owner_member_id.as_deref() == Some(actor.id.as_str()) {
+    if is_team_lead_row(team, actor) {
         Ok(())
     } else {
         err(format!(
-            "only the team lead may do this (owner member {})",
+            "only a team lead may do this (owner member {})",
             team.owner_member_id.as_deref().unwrap_or("<none>")
         ))
     }
@@ -408,6 +415,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
             TeamCmd::Approve { member_id, session, team } => cmd_team_decide(conn, member_id, session, team.as_deref(), true)?,
             TeamCmd::Deny { member_id, session, team } => cmd_team_decide(conn, member_id, session, team.as_deref(), false)?,
+            TeamCmd::PromoteLead { member_id, session, team } => cmd_team_set_lead(conn, member_id, session, team.as_deref(), true)?,
+            TeamCmd::DemoteLead { member_id, session, team } => cmd_team_set_lead(conn, member_id, session, team.as_deref(), false)?,
             TeamCmd::List { session } => cmd_team_list(conn, session)?,
             TeamCmd::Status { team, session } => cmd_team_status(conn, team.as_deref(), session.as_deref())?,
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
@@ -1185,6 +1194,45 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
     Ok(out)
 }
 
+/// Promote (or demote) a member to a backup team lead (co-lead). Any team lead
+/// (owner or co-lead) may do this. A co-lead has full team-lead authorization
+/// while the primary owner remains the founder.
+fn cmd_team_set_lead(
+    conn: &mut Connection,
+    member_id: &str,
+    session: &str,
+    team_opt: Option<&str>,
+    promote: bool,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let target = member_by_id(conn, member_id)?;
+    if target.team_id != team.id {
+        return err(format!("member {member_id} is not in team {}", team.id));
+    }
+    if target.id == actor.id {
+        return err("cannot change your own lead status");
+    }
+    if !promote && team.owner_member_id.as_deref() == Some(target.id.as_str()) {
+        return err("the primary owner cannot be demoted");
+    }
+    let flag = if promote { 1 } else { 0 };
+    db::with_write(conn, |tx| {
+        tx.execute("UPDATE members SET is_lead = ?1 WHERE id = ?2", params![flag, target.id])?;
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            if promote { "member.promoted_lead" } else { "member.demoted_lead" },
+            json!({ "member_id": target.id, "display_name": target.display_name }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("set lead failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "member_id": target.id, "is_lead": promote }))
+}
+
 fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
     let members = memberships_for_session(conn, session).map_err(|e| AppError(format!("db error: {e}")))?;
     let mut teams = Vec::new();
@@ -1197,6 +1245,7 @@ fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
             "state": team.state,
             "my_role": m.role,
             "my_state": m.state,
+            "my_is_lead": m.is_lead,
             "goal": goal.map(|g| json!({ "title": g.title, "state": g.state })),
             "invite_token": team.invite_token,
         }));
@@ -2904,13 +2953,23 @@ pub fn member_in_team(conn: &Connection, member_id: &str, team_id: &str) -> rusq
 }
 
 /// True if this member is the owner of the given team.
+/// True if the member is a team lead of the given team: the primary owner
+/// (`owner_member_id`) or a promoted co-lead (`members.is_lead = 1`).
 pub fn is_team_owner(conn: &Connection, team_id: &str, member_id: &str) -> rusqlite::Result<bool> {
-    let n: i64 = conn.query_row(
+    let owner: i64 = conn.query_row(
         "SELECT COUNT(*) FROM teams WHERE id = ?1 AND owner_member_id = ?2",
         params![team_id, member_id],
         |r| r.get(0),
     )?;
-    Ok(n > 0)
+    if owner > 0 {
+        return Ok(true);
+    }
+    let lead: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM members WHERE id = ?1 AND team_id = ?2 AND is_lead = 1",
+        params![member_id, team_id],
+        |r| r.get(0),
+    )?;
+    Ok(lead > 0)
 }
 
 fn member_json(conn: &Connection, m: &MemberRow) -> Value {
@@ -2923,6 +2982,7 @@ fn member_json(conn: &Connection, m: &MemberRow) -> Value {
         "state": m.state,
         "loopx_project": m.loopx_project,
         "joined_at": m.joined_at,
+        "is_lead": m.is_lead,
         "ip": ip,
         "online": online,
     })
@@ -2959,6 +3019,7 @@ fn cmd_sync(conn: &mut Connection, session: &str, no_advance: bool) -> Result<Va
         status["team"]["my_role"] = Value::from(m.role.clone());
         status["team"]["my_state"] = Value::from(m.state.clone());
         status["team"]["my_member_id"] = Value::from(m.id.clone());
+        status["team"]["my_is_lead"] = Value::from(m.is_lead);
         teams_out.push(status);
         new_events.extend(events.iter().map(event_json));
     }

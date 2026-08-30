@@ -12,6 +12,8 @@
   "toast.membership_rejoined": "#{seq} {name} 申请加入（重新加入）",
   "toast.membership_approved": "#{seq} 已批准 {name} 入队",
   "toast.membership_denied": "#{seq} 已拒绝 {name}",
+  "toast.promoted_lead": "#{seq} 已将 {name} 提升为团队 lead（backup）",
+  "toast.demoted_lead": "#{seq} 已移除 {name} 的团队 lead 身份",
   "toast.clarification_asked": "#{seq} 提问 {target}: {question}",
   "toast.clarification_responded": "#{seq} 回答: {answer}",
   "toast.heartbeat": "#{seq} 心跳(idle)",

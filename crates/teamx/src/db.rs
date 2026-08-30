@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS members (
   last_seen_at  TEXT,
   last_ip       TEXT,
   joined_at     TEXT NOT NULL,
-  left_at       TEXT
+  left_at       TEXT,
+  is_lead       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -359,7 +360,23 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              );",
         )?;
     }
-    conn.pragma_update(None, "user_version", 9)?;
+    if version < 10 {
+        // v10: multiple team leads — members gain an `is_lead` flag so the owner
+        // can promote backup team leads (co-leads). Idempotent.
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(members)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        if !cols.iter().any(|c| c == "is_lead") {
+            conn.execute_batch("ALTER TABLE members ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0;")?;
+        }
+    }
+    conn.pragma_update(None, "user_version", 10)?;
     Ok(())
 }
 
