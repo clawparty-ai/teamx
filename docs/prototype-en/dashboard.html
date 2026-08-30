@@ -1,0 +1,1690 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f8f8f8">
+<title>Teamx Enterprise</title>
+<style>
+  :root {
+    --primary: #4A90E5;
+    --primary-hover: #357ABD;
+    --primary-light: #EBF3FC;
+    --on-primary: #FFFFFF;
+    --secondary: #67C23A;
+    --accent: #E6A23C;
+    --danger: #F56C6C;
+    --on-accent: #FFFFFF;
+    --bg: #f8f8f8;
+    --fg: #333333;
+    --card: #FFFFFF;
+    --card-fg: #333333;
+    --muted: #F2F6FC;
+    --muted-fg: #909399;
+    --border: #EBEEF5;
+    --ring: #4A90E5;
+    --radius: 4px;
+    --shadow: 0 2px 4px 0 rgba(214, 228, 241, 0.7);
+    --shadow-hover: 0 4px 12px rgba(214, 228, 241, 0.9);
+    --font-sans: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --transition: 200ms ease;
+  }
+  .dark {
+    --primary: #5B9EF0;
+    --primary-hover: #7BB3F5;
+    --primary-light: #1A2A3A;
+    --on-primary: #FFFFFF;
+    --secondary: #67C23A;
+    --accent: #E6A23C;
+    --danger: #F56C6C;
+    --on-accent: #FFFFFF;
+    --bg: #1A1A2E;
+    --fg: #E0E0E0;
+    --card: #22223A;
+    --card-fg: #E0E0E0;
+    --muted: #2A2A40;
+    --muted-fg: #909399;
+    --border: #333355;
+    --ring: #5B9EF0;
+    --shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.3);
+    --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+  header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; height: 60px; padding: 0 20px; background: var(--card); border-bottom: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  header .logo { display: flex; align-items: center; gap: 10px; margin-right: 40px; flex-shrink: 0; }
+  header .logo .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #4A90E5, #357ABD); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  header .logo-text { font-size: 16px; font-weight: 600; color: var(--primary); letter-spacing: 0.02em; }
+  nav { display: flex; gap: 0; flex: 1; justify-content: center; }
+  nav button { background: none; border: none; font: inherit; font-size: 14px; font-weight: 500; color: var(--muted-fg); padding: 18px 20px; border-bottom: 2px solid transparent; cursor: pointer; transition: color var(--transition), border-color var(--transition); }
+  nav button:hover { color: var(--primary); }
+  nav button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  nav button:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .header-right .user-info { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #666; }
+  .header-right .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+  .theme-toggle { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; transition: all var(--transition); }
+  .theme-toggle:hover { border-color: var(--primary); color: var(--primary); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .toolbar-left { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .toolbar-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .timepicker { position: relative; }
+  .time-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); font-size: 13px; cursor: pointer; transition: all var(--transition); }
+  .time-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .tp-icon { color: var(--primary); font-size: 14px; }
+  .tp-caret { color: var(--muted-fg); font-size: 10px; }
+  .tp-popover { position: absolute; right: 0; top: calc(100% + 6px); width: 300px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-hover); z-index: 200; display: none; overflow: hidden; }
+  .tp-popover.open { display: block; }
+  .tp-tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tp-tab { flex: 1; padding: 8px 0; border: none; background: none; color: var(--muted-fg); font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tp-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .tp-pane { display: none; padding: 10px; }
+  .tp-pane.active { display: block; }
+  .tp-quick { display: block; width: 100%; text-align: left; padding: 7px 10px; border: none; background: none; color: var(--fg); font-size: 13px; border-radius: var(--radius); cursor: pointer; transition: background var(--transition); }
+  .tp-quick:hover { background: var(--muted); }
+  .tp-quick.sel { color: var(--primary); font-weight: 600; background: var(--primary-light); }
+  .tp-pane label { display: flex; flex-direction: column; font-size: 12px; font-weight: 500; color: var(--muted-fg); gap: 4px; margin-bottom: 10px; }
+  .filters label { display: flex; flex-direction: column; font-size: 12px; font-weight: 500; color: var(--muted-fg); gap: 4px; }
+  /* ---------- timeline view toggle (segmented control) ---------- */
+  .view-toggle { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  .view-toggle button { background: none; border: none; color: var(--muted-fg); font-size: 13px; font-weight: 500; padding: 6px 12px; cursor: pointer; transition: color var(--transition), background var(--transition); }
+  .view-toggle button:hover { color: var(--primary); }
+  .view-toggle button.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+  select, input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); transition: border-color var(--transition); }
+  select:hover, input:hover { border-color: var(--primary); }
+  select:focus, input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(74,144,229,0.15); }
+  button { font: inherit; }
+  .btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); font-weight: 500; cursor: pointer; transition: all var(--transition); }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  .btn-primary:hover { background: var(--primary-hover); color: var(--on-primary); border-color: var(--primary-hover); }
+  .container { max-width: 1280px; margin: 0 auto; padding: 20px; }
+  .container.full-width { max-width: none; margin: 0; padding: 20px 24px; }
+  .view { display: none; }
+  .view.active { display: block; animation: fadein 200ms ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card { background: var(--card); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); transition: box-shadow var(--transition); display: flex; align-items: center; gap: 16px; }
+  .card:hover { box-shadow: var(--shadow-hover); }
+  .card-icon { width: 48px; height: 48px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+  .card-icon.blue { background: #EBF5FF; color: #4A90E5; }
+  .card-icon.green { background: #E8F8E8; color: #67C23A; }
+  .card-icon.orange { background: #FDF0E0; color: #E6A23C; }
+  .card-icon.purple { background: #F0E8FF; color: #9B59B6; }
+  .card-icon.red { background: #FDE8E8; color: #F56C6C; }
+  .card-body { flex: 1; min-width: 0; }
+  .card .label { font-size: 13px; color: var(--muted-fg); margin-bottom: 4px; }
+  .card .value { font-size: 24px; font-weight: 600; color: var(--fg); line-height: 1.2; }
+  .card .value .unit { font-size: 12px; font-weight: 400; color: var(--muted-fg); margin-left: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } .charts-row { grid-template-columns: 1fr; } }
+  .chart-box { display: flex; align-items: center; justify-content: center; min-height: 140px; padding: 2px 0; }
+  .chart-box svg { max-width: 150px; max-height: 150px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+  .chart-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .hbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .hbar-label { width: 92px; flex-shrink: 0; font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .hbar-track { flex: 1; height: 16px; background: var(--muted); border-radius: 3px; overflow: hidden; }
+  .hbar-fill { height: 100%; border-radius: 3px; min-width: 2px; transition: width 400ms ease; }
+  .hbar-val { font-size: 11.5px; color: var(--muted-fg); width: 74px; flex-shrink: 0; font-family: var(--font-mono); }
+  .hbar-title { font-size: 12px; margin-bottom: 8px; color: #666; font-weight: 500; }
+  section.panel { background: var(--card); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--fg); }
+  h2 .count { font-family: var(--font-mono); font-weight: 500; color: var(--muted-fg); margin-left: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr { transition: background var(--transition); }
+  tbody tr:hover { background: var(--muted); }
+  th { color: var(--muted-fg); font-weight: 600; font-size: 12px; background: var(--muted); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: 500; line-height: 1.5; }
+  .badge.proposed, .badge.blocked { background: #FDF6EC; color: #E6A23C; }
+  .badge.shared, .badge.in_progress, .badge.active { background: #EBF5FF; color: #4A90E5; }
+  .badge.achieved, .badge.completed, .badge.closed { background: #E8F8E8; color: #67C23A; }
+  .badge.refining { background: #F0E8FF; color: #9B59B6; }
+  .badge.owner { background: #EBF5FF; color: #4A90E5; }
+  .badge.contributor { background: #E8F8E8; color: #67C23A; }
+  .badge.reviewer { background: #F0E8FF; color: #9B59B6; }
+  .badge.observer { background: #FDF0E0; color: #E6A23C; }
+  .badge.idle, .badge.pending { background: #F2F6FC; color: #909399; }
+  .badge.waiting { background: #FDF6EC; color: #E6A23C; }
+  .badge.left { background: #FDE8E8; color: #F56C6C; }
+  .detail { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: pre-wrap; word-break: break-all; max-width: 480px; }
+  .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 200px; }
+  .kb-col-head { padding: 0 0 10px; border-bottom: 2px solid var(--border); margin-bottom: 10px; }
+  .kb-col-title { font-size: 13px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px; }
+  .kb-col-meta { font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
+  .kb-empty { padding: 16px; text-align: center; color: var(--muted-fg); font-size: 13px; }
+  .kb-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: box-shadow var(--transition); }
+  .kb-card:hover { box-shadow: var(--shadow-hover); }
+  .kb-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 5px; }
+  .kb-who { font-weight: 600; font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kb-body { font-size: 12px; color: var(--fg); line-height: 1.45; word-break: break-word; margin-bottom: 5px; }
+  .kb-body .tool-name { font-weight: 600; color: var(--primary); }
+  .kb-body .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
+  .kb-meta { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); overflow-wrap: anywhere; }
+  .kb-card { position: relative; }
+  .kb-tip { display: none; position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
+  .kb-tip .tip-title { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+  .kb-desc { font-size: 13px; font-weight: 500; color: #fff; background: rgba(255,255,255,0.1); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px; }
+  .kb-tip table { border-collapse: collapse; font-size: 12px; }
+  .kb-tip td { padding: 2px 8px 2px 0; vertical-align: top; }
+  .kb-tip td.k { color: #aaa; white-space: nowrap; font-weight: 500; }
+  .kb-tip td.v { word-break: break-all; font-family: var(--font-mono); font-size: 11px; }
+  .kb-card:hover .kb-tip, .kb-card:focus .kb-tip { display: block; }
+  .gantt { background: var(--card); border-radius: var(--radius); padding: 14px; }
+  .gantt-svg { display: block; width: 100%; height: auto; }
+  .gantt-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted-fg); margin-bottom: 10px; }
+  .gantt-legend .sw { width: 12px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 5px; vertical-align: 0; }
+  .gantt-row { display: flex; align-items: center; height: 40px; border-bottom: 1px solid var(--border); }
+  .gantt-label { width: 150px; flex-shrink: 0; font-size: 12px; font-weight: 500; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .gantt-track { position: relative; flex: 1; height: 100%; min-width: 420px; }
+  .gantt-gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); opacity: 0.5; pointer-events: none; }
+  .gantt-bar { position: absolute; height: 20px; top: 10px; border-radius: 3px; opacity: 0.92; min-width: 2px; cursor: pointer; transition: opacity var(--transition), transform var(--transition); box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+  .gantt-bar:hover { opacity: 1; transform: translateY(-1px); z-index: 5; }
+  .gantt-bar.work { background: linear-gradient(90deg, var(--primary), #6BB3F0); }
+  .gantt-bar.tool { background: #9B59B6; }
+  .gantt-bar.step { background: #E6A23C; }
+  .gantt-bar.human { background: #67C23A; }
+  .gantt-point { position: absolute; top: 14px; width: 12px; height: 12px; border-radius: 50%; margin-left: -6px; cursor: pointer; transition: transform var(--transition); border: 2px solid var(--card); box-shadow: 0 0 0 1px var(--border); z-index: 2; }
+  .gantt-point:hover { transform: scale(1.7); z-index: 6; }
+  .gantt-point.tool { background: #9B59B6; }
+  .gantt-point.step { background: #E6A23C; }
+  .gantt-point.human { background: #67C23A; }
+  .gantt-tip { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 400; background: #333; color: #fff; border-radius: var(--radius); padding: 8px 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); font-size: 11px; line-height: 1.55; white-space: nowrap; max-width: 340px; }
+  .gantt-tip .mono { font-family: var(--font-mono); }
+  .gantt-bar:hover .gantt-tip, .gantt-point:hover .gantt-tip, .gantt-bar:focus .gantt-tip, .gantt-point:focus .gantt-tip { display: block; }
+  .gantt-axis { position: relative; height: 22px; margin-left: 150px; font-size: 10.5px; color: var(--muted-fg); font-family: var(--font-mono); margin-bottom: 4px; }
+  .gantt-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  /* ---------- fishbone timeline (vertical) ---------- */
+  .fishbone { background: var(--card); border-radius: var(--radius); padding: 18px 14px 8px; }
+  .fb-wrap { position: relative; }
+  .fb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-1px); }
+  /* start node: a box marking the beginning of the timeline */
+  .fb-start { display: flex; justify-content: center; position: relative; z-index: 2; }
+  .fb-start-box { display: inline-flex; align-items: center; gap: 9px; padding: 7px 18px; border: 1.5px solid var(--primary); border-radius: 6px; background: var(--card); color: var(--primary); font-size: 12.5px; font-weight: 600; box-shadow: var(--shadow); letter-spacing: 0.03em; }
+  .fb-start-box:hover { box-shadow: var(--shadow-hover); }
+  .fb-start-dot { width: 10px; height: 10px; background: var(--primary); border-radius: 2px; flex-shrink: 0; }
+  .fb-day { text-align: center; padding: 14px 0 8px; font-size: 11.5px; font-weight: 600; color: var(--muted-fg); font-family: var(--font-mono); letter-spacing: 0.05em; }
+  .fb-day:first-child { padding-top: 0; }
+  .fb-day::before { content: "— "; color: var(--border); }
+  .fb-day::after { content: " —"; color: var(--border); }
+  .fb-row { position: relative; display: flex; align-items: center; min-height: 34px; padding: 3px 0; }
+  .fb-side { flex: 1; min-width: 0; position: relative; display: flex; }
+  .fb-center { flex: 0 0 30px; position: relative; display: flex; align-items: center; justify-content: center; }
+  .fb-row.left .fb-side:first-child { justify-content: flex-end; }
+  .fb-card { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-shadow: var(--shadow); max-width: 430px; transition: box-shadow var(--transition), border-color var(--transition); }
+  .fb-card:hover { box-shadow: var(--shadow-hover); border-color: var(--primary); }
+  .fb-row.left .fb-card { margin-right: 10px; }
+  .fb-row.right .fb-card { margin-left: 10px; }
+  /* fishbone connector: from card inner edge toward the spine dot */
+  .fb-row.left .fb-card::after { content: ""; position: absolute; left: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-row.right .fb-card::after { content: ""; position: absolute; right: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted-fg); border: 2px solid var(--card); box-shadow: 0 0 0 2px var(--border); z-index: 2; }
+  .fb-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
+  .fb-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .fb-who { font-size: 12px; font-weight: 600; color: var(--fg); }
+  .fb-kind { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 10.5px; font-weight: 600; color: #fff; line-height: 1.6; }
+  .fb-text { font-size: 13px; color: var(--fg); line-height: 1.45; word-break: break-word; }
+  .fb-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); margin-top: 3px; }
+  .fb-meta .human { color: #1a7f37; font-weight: 600; }
+  .fb-cost { color: var(--accent); font-weight: 600; }
+  /* ---------- horizontal fishbone (goal activity timeline) ---------- */
+  .hfb-wrap { position: relative; height: 560px; }
+  .hfb-spine { position: absolute; left: 4%; right: 4%; top: 50%; height: 2px; background: var(--border); }
+  .hfb-node { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 2; }
+  .hfb-dot { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--card); box-shadow: 0 0 0 2px var(--border); }
+  .hfb-card { position: absolute; left: 50%; transform: translateX(-50%); width: 172px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; box-shadow: var(--shadow); transition: box-shadow var(--transition), border-color var(--transition); }
+  .hfb-card:hover { box-shadow: var(--shadow-hover); border-color: var(--primary); }
+  /* four vertical levels via short/long guide lines: near top, near bottom, far top, far bottom */
+  .hfb-node.top-near .hfb-card { bottom: 20px; }
+  .hfb-node.top-far .hfb-card { bottom: 180px; }
+  .hfb-node.bottom-near .hfb-card { top: 20px; }
+  .hfb-node.bottom-far .hfb-card { top: 180px; }
+  .hfb-node.top-near .hfb-card::after, .hfb-node.top-far .hfb-card::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%); width: 2px; background: var(--border); }
+  .hfb-node.bottom-near .hfb-card::after, .hfb-node.bottom-far .hfb-card::after { content: ""; position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); width: 2px; background: var(--border); }
+  .hfb-node.top-near .hfb-card::after, .hfb-node.bottom-near .hfb-card::after { height: 18px; }
+  .hfb-node.top-far .hfb-card::after, .hfb-node.bottom-far .hfb-card::after { height: 178px; }
+  .hfb-ruler { display: flex; justify-content: space-between; margin: 6px 4% 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-fg); }
+  .hfb-cost { color: var(--accent); font-weight: 600; }
+  .lifecycle { position: relative; background: var(--card); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .lc-track { display: flex; align-items: flex-start; position: relative; }
+  .lc-step { flex: 1; text-align: center; position: relative; min-width: 90px; z-index: 1; }
+  .lc-step::before { content: ""; position: absolute; top: 7px; left: -50%; width: 100%; height: 3px; background: var(--border); z-index: 0; }
+  .lc-step:first-child::before { display: none; }
+  .lc-step.done::before, .lc-step.current::before { background: linear-gradient(90deg, var(--primary), #6BB3F0); }
+  .lc-step .dot { width: 15px; height: 15px; border-radius: 50%; margin: 0 auto 8px; background: var(--card); border: 3px solid var(--border); position: relative; z-index: 2; box-sizing: border-box; transition: all 200ms ease; }
+  .lc-step.done .dot { background: var(--primary); border-color: var(--primary); }
+  .lc-step.current .dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 4px rgba(230,162,60,0.2); }
+  .lc-step .name { font-size: 12px; font-weight: 500; color: var(--muted-fg); }
+  .lc-step.done .name { color: var(--fg); }
+  .lc-step.current .name { color: var(--accent); font-weight: 600; }
+  .lc-step .date { font-size: 11px; color: var(--muted-fg); margin-top: 3px; font-family: var(--font-mono); }
+  .goal-hero { background: var(--card); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); border-left: 4px solid var(--primary); }
+  .goal-hero h2 { font-size: 18px; margin: 0 0 8px; font-weight: 600; }
+  .goal-body { color: var(--muted-fg); margin: 0 0 12px; max-width: 760px; font-size: 14px; line-height: 1.6; }
+  .muted { color: var(--muted-fg); font-size: 12px; }
+  .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
+  .mono { font-family: var(--font-mono); }
+  .goal-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); border-radius: var(--radius); transition: background var(--transition); }
+  .goal-row:last-child { border-bottom: none; }
+  .goal-row:hover { background: var(--muted); }
+  .goal-row.current { background: var(--primary-light); }
+  .goal-row-title { font-weight: 500; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .goal-row-meta { color: var(--muted-fg); font-size: 12px; white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.online { background: var(--secondary); }
+  .status-dot.busy { background: var(--accent); }
+  .status-dot.offline { background: #C0C4CC; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .tag.blue { background: var(--primary-light); color: var(--primary); }
+  .tag.green { background: #E8F8E8; color: var(--secondary); }
+  .tag.orange { background: #FDF0E0; color: var(--accent); }
+  .tag.red { background: #FDE8E8; color: var(--danger); }
+  .tag.gray { background: var(--muted); color: var(--muted-fg); }
+  .mono { font-family: var(--font-mono); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  /* ---------- member list ---------- */
+  .member-item { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .member-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .member-item.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: var(--shadow-hover); }
+  .member-item .mi-avatar { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); font-weight: 600; }
+  .member-item.selected .mi-avatar { background: var(--primary); color: white; }
+  .member-item .mi-main { flex: 1; min-width: 0; }
+  .member-item .mi-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .member-item .mi-sub { font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+  .member-item .mi-live { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+  .live-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: var(--danger); color: white; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* ---------- session list ---------- */
+  .session-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; background: var(--card); transition: all var(--transition); }
+  .session-item:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .session-item.active { border-color: var(--primary); background: var(--primary-light); }
+  .session-item .si-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; background: var(--muted); color: var(--muted-fg); }
+  .session-item.active .si-icon { background: var(--primary); color: white; }
+  .session-item .si-main { flex: 1; min-width: 0; }
+  .session-item .si-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-item .si-sub { font-size: 12px; color: var(--muted-fg); display: flex; gap: 8px; margin-top: 2px; }
+  .session-item .si-time { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); flex-shrink: 0; }
+  /* ---------- detail pane ---------- */
+  .detail-pane { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .detail-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .detail-header .dh-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
+  .detail-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+  .detail-tabs button { background: none; border: none; padding: 10px 16px; font-size: 13px; color: var(--muted-fg); border-bottom: 2px solid transparent; cursor: pointer; font-weight: 500; }
+  .detail-tabs button.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .detail-body { padding: 16px; min-height: 400px; max-height: 600px; overflow-y: auto; }
+  /* ---------- live event stream ---------- */
+  .live-line { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .live-line .ll-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); flex-shrink: 0; width: 60px; }
+  .live-line .ll-icon { flex-shrink: 0; width: 20px; text-align: center; }
+  .live-line .ll-text { flex: 1; min-width: 0; word-break: break-all; }
+  .live-line .ll-text .tool-name { color: var(--primary); font-weight: 600; }
+  .live-line .ll-text .file { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+  .live-line.new { animation: livein 300ms ease; }
+  @keyframes livein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  /* ---------- terminal placeholder ---------- */
+  .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
+  .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-max { background: none; border: none; color: #aaa; font-size: 14px; line-height: 1; padding: 2px 7px; border-radius: 4px; cursor: pointer; transition: color 200ms, background 200ms; }
+  .term-max:hover { color: #fff; background: rgba(255,255,255,0.15); }
+  .term-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 999; display: none; }
+  .term-backdrop.show { display: block; }
+  .term-window.maximized { position: fixed; left: 24px; right: 24px; top: 24px; bottom: 24px; z-index: 1000; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  .term-window.maximized .term-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+  .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
+  .term-body .cmd { color: #9CDCFE; }
+  .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div class="logo-icon">Tx</div>
+    <span class="logo-text">Teamx Enterprise</span>
+  </div>
+  <nav>
+    <button data-view="kanban" class="active">KanBan</button>
+    <button data-view="goal" style="display:none" title="Goal Page temporarily hidden; will decide later whether to enable">Goal</button>
+    <button data-view="cost">Cost</button>
+    <button data-view="timeline">Timeline</button>
+    <button data-view="members">Members</button>
+  </nav>
+  <div class="header-right">
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
+    <div class="user-info">
+      <div class="user-avatar">O</div>
+      <span>Owner</span>
+    </div>
+  </div>
+</header>
+<div class="toolbar">
+  <div class="toolbar-left">
+    <label>Team <select id="team"></select></label>
+    <label>Goal <select id="goal"><option value="">All</option></select></label>
+  </div>
+  <div class="toolbar-right">
+    <div class="view-toggle" id="tlViewToggle" style="display:none" aria-label="Switch Timeline view">
+      <button type="button" data-tlmode="gantt">Gantt</button>
+      <button type="button" data-tlmode="fishbone" class="active">Timeline</button>
+    </div>
+    <div class="timepicker">
+      <button class="btn time-btn" id="timeBtn" title="Select time range">
+        <span class="tp-icon">◷</span>
+        <span id="timeLabel">Last 30 days</span>
+        <span class="tp-caret">▾</span>
+      </button>
+      <div class="tp-popover" id="timePopover">
+        <div class="tp-tabs">
+          <button class="tp-tab active" data-tp="quick">Quick</button>
+          <button class="tp-tab" data-tp="abs">Absolute</button>
+        </div>
+        <div class="tp-pane active" data-tp-pane="quick">
+          <button class="tp-quick" data-from="now-15m">Last 15 minutes</button>
+          <button class="tp-quick" data-from="now-1h">Last 1 hour</button>
+          <button class="tp-quick" data-from="now-24h">Last 24 hours</button>
+          <button class="tp-quick" data-from="now-7d">Last 7 days</button>
+          <button class="tp-quick" data-from="now-14d">Last 14 days</button>
+          <button class="tp-quick" data-from="now-30d" class="sel">Last 30 days</button>
+          <button class="tp-quick" data-from="now-90d">Last 90 days</button>
+          <button class="tp-quick" data-from="start">All time</button>
+        </div>
+        <div class="tp-pane" data-tp-pane="abs">
+          <label>From <input type="datetime-local" id="absFrom"></label>
+          <label>To <input type="datetime-local" id="absTo"></label>
+          <button class="btn" id="absApply">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <!-- ============ KanBan view (default) ============ -->
+  <div class="view active" id="view-kanban">
+    <div class="kanban" id="kanbanCols"></div>
+  </div>
+
+  <!-- ============ Goal view ============ -->
+  <div class="view" id="view-goal">
+    <div id="goalHero"></div>
+    <div id="goalLifecycle"></div>
+    <div id="goalHistory" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin-bottom:20px;box-shadow:var(--shadow)"></div>
+    <div class="cards" id="goalCards"></div>
+    <section class="panel"><h2>Activity timeline (this goal)</h2><div id="goalGantt"></div></section>
+    <div class="grid2">
+      <section class="panel"><h2>By member</h2><table id="gByMember"><thead><tr><th>Member</th><th>Work time</th><th>Tokens (in/out)</th><th>Cost</th><th>Actions</th></tr></thead><tbody></tbody></table></section>
+      <section class="panel"><h2>By node</h2><table id="gByNode"><thead><tr><th>Node</th><th>Work time</th><th>Tokens</th><th>Cost</th><th>Actions</th></tr></thead><tbody></tbody></table></section>
+    </div>
+    <section class="panel"><h2>Goal timeline (recent events)</h2><table id="goalEvents"><thead><tr><th>When</th><th>Event</th><th>Member</th><th>Details</th></tr></thead><tbody></tbody></table></section>
+  </div>
+
+  <!-- ============ Cost view ============ -->
+  <div class="view" id="view-cost">
+    <div class="cards" id="costCards"></div>
+    <div class="charts-row">
+      <section class="panel"><h2>Cost by member</h2><div id="chartCostDonut" class="chart-box"></div><div id="chartCostDonutLegend" class="chart-legend"></div></section>
+      <section class="panel"><h2>Cost by node</h2><div id="chartCostBars" class="chart-box"></div></section>
+    </div>
+    <div class="charts-row">
+      <section class="panel"><h2>Tokens by member</h2><div id="chartTokensBars" class="chart-box"></div></section>
+      <section class="panel"><h2>Human vs AI actions</h2><div id="chartHumanDonut" class="chart-box"></div><div id="chartHumanDonutLegend" class="chart-legend"></div></section>
+    </div>
+    <div class="grid2">
+      <section class="panel"><h2>Cost by member</h2><table id="costByMember"><thead><tr><th>Member</th><th>In tokens</th><th>Out tokens</th><th>Cost</th><th>Actions</th></tr></thead><tbody></tbody></table></section>
+      <section class="panel"><h2>Cost by node</h2><table id="costByNode"><thead><tr><th>Node</th><th>In tokens</th><th>Out tokens</th><th>Cost</th><th>Actions</th></tr></thead><tbody></tbody></table></section>
+    </div>
+    <div class="grid2">
+      <section class="panel"><h2>Tool usage</h2><table id="costTools"><thead><tr><th>Tool</th><th>Count</th></tr></thead><tbody></tbody></table></section>
+      <section class="panel"><h2>Files edited</h2><table id="costFiles"><thead><tr><th>File</th><th>Count</th></tr></thead><tbody></tbody></table></section>
+    </div>
+  </div>
+
+  <!-- ============ Timeline view (Gantt / fishbone toggle) ============ -->
+  <div class="view" id="view-timeline">
+    <div class="gantt" id="gantt" style="display:none"></div>
+    <div class="fishbone" id="fishbone"></div>
+  </div>
+
+  <!-- ============ Members view ============ -->
+  <div class="view" id="view-members">
+    <div class="cards">
+        <div class="card">
+          <div class="card-icon green">●</div>
+          <div class="card-body"><div class="label">Members online</div><div class="value">2<span class="muted" style="font-size:13px;font-weight:400">/ 3</span></div></div>
+        </div>
+        <div class="card">
+          <div class="card-icon blue">💬</div>
+          <div class="card-body"><div class="label">Active sessions</div><div class="value">4</div></div>
+        </div>
+        <div class="card">
+          <div class="card-icon orange">⚡</div>
+          <div class="card-body"><div class="label">Running tools</div><div class="value">2</div></div>
+        </div>
+        <div class="card">
+          <div class="card-icon purple">⌨</div>
+          <div class="card-body"><div class="label">Open terminals</div><div class="value">3</div></div>
+        </div>
+      </div>
+    
+      <!-- layout: member list on the left, details on the right -->
+      <div class="layout">
+        <!-- ============ left: member list ============ -->
+        <div>
+          <section class="panel">
+            <h2>Members <span class="count">3</span></h2>
+            <div class="hint">Click a member to view their live sessions</div>
+            <div id="memberList">
+              <div class="member-item" data-member="alice">
+                <div class="mi-avatar">A</div>
+                <div class="mi-main">
+                  <div class="mi-name">Alice <span class="tag green">contributor</span></div>
+                  <div class="mi-sub"><span class="status-dot online"></span>Online · 2 sessions · node-01 · <span class="cost">$4.82</span></div>
+                </div>
+                <div class="mi-live"><span class="live-badge">LIVE</span></div>
+              </div>
+              <div class="member-item" data-member="bob">
+                <div class="mi-avatar">B</div>
+                <div class="mi-main">
+                  <div class="mi-name">Bob <span class="tag orange">reviewer</span></div>
+                  <div class="mi-sub"><span class="status-dot busy"></span>Busy · 2 sessions · node-02 · <span class="cost">$4.51</span></div>
+                </div>
+                <div class="mi-live"><span class="live-badge">LIVE</span></div>
+              </div>
+              <div class="member-item" data-member="carol">
+                <div class="mi-avatar">C</div>
+                <div class="mi-main">
+                  <div class="mi-name">Carol <span class="tag gray">observer</span></div>
+                  <div class="mi-sub"><span class="status-dot offline"></span>Offline · 0 sessions · <span class="cost">$3.01</span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+    
+        <!-- ============ right: selected member's session details ============ -->
+        <div class="detail-pane">
+          <!-- when no member is selected -->
+          <div id="emptyState">
+            <div class="empty">
+              <div class="big">👈</div>
+              <div>Select a member on the left to view their opencode sessions and live activity</div>
+              <div class="muted mt16" style="font-size:12px">Watch what members are doing live: session list, tool calls, message stream, terminal</div>
+            </div>
+          </div>
+    
+          <!-- after selecting a member (Alice by default) -->
+          <div id="memberDetail" style="display:none">
+            <div class="detail-header">
+              <div class="member-chip" id="detailMemberName" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;background:var(--muted)"><span class="status-dot online"></span> Alice</div>
+              <div class="dh-title" id="detailSessionTitle">Login page + permission validation</div>
+              <span class="tag blue">running</span>
+              <span class="tag orange" id="detailCost">⚡ 12.4k tok · $0.36</span>
+              <button class="btn btn-sm" style="margin-left:auto">⏸ Interrupt</button>
+              <button class="btn btn-sm">📋 Send message</button>
+              <button class="btn btn-primary btn-sm">⌨ Open terminal</button>
+            </div>
+            <div class="detail-tabs">
+              <button class="active" data-dtab="live">Live activity</button>
+              <button data-dtab="messages">Messages</button>
+              <button data-dtab="terminal">Terminal</button>
+            </div>
+            <div class="detail-body">
+              <!-- ===== Live activity tab ===== -->
+              <div id="dtab-live">
+                <div class="live-line">
+                  <span class="ll-time">12:04:12</span><span class="ll-icon">🔧</span>
+                  <span class="ll-text"><span class="tool-name">edit</span> modified <span class="file">src/auth/login.tsx</span></span>
+                </div>
+                <div class="live-line">
+                  <span class="ll-time">12:04:08</span><span class="ll-icon">👀</span>
+                  <span class="ll-text"><span class="tool-name">read</span> <span class="file">src/auth/login.tsx</span> (1,240 bytes)</span>
+                </div>
+                <div class="live-line">
+                  <span class="ll-time">12:04:01</span><span class="ll-icon">🤖</span>
+                  <span class="ll-text">Assistant: Starting client-side validation logic for the login form; reading the existing component structure first.</span>
+                </div>
+                <div class="live-line">
+                  <span class="ll-time">12:03:55</span><span class="ll-icon">🔍</span>
+                  <span class="ll-text"><span class="tool-name">glob</span> matched <span class="file">src/auth/**/*.tsx</span> → 3 files</span>
+                </div>
+                <div class="live-line">
+                  <span class="ll-time">12:03:40</span><span class="ll-icon">💬</span>
+                  <span class="ll-text">User: Add form validation to the login page, use Chinese for error messages</span>
+                </div>
+                <div class="live-line">
+                  <span class="ll-time">12:03:38</span><span class="ll-icon">🔄</span>
+                  <span class="ll-text">Session resumed by member</span>
+                </div>
+              </div>
+              <!-- ===== Messages tab ===== -->
+              <div id="dtab-messages" style="display:none">
+                <div class="live-line"><span class="ll-time">12:03</span><span class="ll-icon">💬</span><span class="ll-text"><b>User</b>: Add form validation to the login page, use Chinese for error messages</span></div>
+                <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">🤖</span><span class="ll-text"><b>Assistant</b>: OK, I'll implement it. Reading the existing component first…</span></div>
+                <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">🔧</span><span class="ll-text"><b>Tool</b> edit: src/auth/login.tsx</span></div>
+                <div class="live-line"><span class="ll-time">12:04</span><span class="ll-icon">✅</span><span class="ll-text"><b>Tool result</b>: File updated</span></div>
+              </div>
+              <!-- ===== Terminal tab ===== -->
+              <div id="dtab-terminal" style="display:none">
+                <div id="termBackdrop" class="term-backdrop"></div>
+                <div class="term-window">
+                  <div class="term-titlebar">
+                    <span class="term-dot" style="background:#ff5f56"></span>
+                    <span class="term-dot" style="background:#ffbd2e"></span>
+                    <span class="term-dot" style="background:#27c93f"></span>
+                    <span style="margin-left:8px">alice@node-01: ~/product-dev-team</span>
+                    <span style="margin-left:auto;font-size:11px">zsh</span>
+                    <button class="term-max" id="termMax" title="Maximize">⛶</button>
+                  </div>
+                  <div class="term-body"><span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ git status
+    <span class="muted">On branch main
+    Changes not staged for commit:
+      modified:   src/auth/login.tsx</span>
+    <span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ <span class="term-cursor"></span></div>
+                </div>
+                <div class="mt16 muted" style="font-size:12px">This terminal runs on <b>Alice 's machine</b>（node-01），and is connected live over an mTLS tunnel. Input is sent to the remote shell.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+// ---- theme toggle ----
+const html = document.documentElement
+const THEME_KEY = "teamx-theme"
+function applyTheme(dark) {
+  html.classList.toggle("dark", dark)
+  const btn = document.getElementById("themeToggle")
+  if (btn) btn.textContent = dark ? "🌙" : "☀️"
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#1A1A2E" : "#f8f8f8")
+}
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY)
+  if (saved !== null) { applyTheme(saved === "dark"); return }
+  applyTheme(window.matchMedia("(prefers-color-scheme: dark)").matches)
+}
+initTheme()
+document.getElementById("themeToggle")?.addEventListener("click", () => {
+  const dark = !html.classList.contains("dark")
+  applyTheme(dark)
+  localStorage.setItem(THEME_KEY, dark ? "dark" : "light")
+})
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+  if (localStorage.getItem(THEME_KEY) === null) applyTheme(e.matches)
+})
+const $ = (s) => document.querySelector(s)
+const $$ = (s) => Array.from(document.querySelectorAll(s))
+const KINDS = ["tool_call","step_finish","command","file_edit","work_session","human_input","human_approval","human_command"]
+const KIND_COLOR = { tool_call: "#8250df", step_finish: "#bf8700", command: "#8250df", file_edit: "#bf8700", work_session: "#0969da", human_input: "#1a7f37", human_approval: "#1a7f37", human_command: "#1a7f37" }
+const GOAL_STATES = ["proposed", "shared", "refining", "in_progress", "blocked", "achieved", "closed"]
+function fmtMs(ms) {
+  if (ms == null) return "—"
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000)
+  if (h > 0) return h + "h" + (m > 0 ? m + "m" : "")
+  if (m > 0) return m + "m"
+  return Math.round(ms / 1000) + "s"
+}
+function fmtNum(v) { return v == null ? "—" : Number(v).toLocaleString() }
+function fmtCost(v) { return v == null ? "—" : "$" + Number(v).toFixed(4) }
+function fmtDate(iso) { if (!iso) return "—"; const d = new Date(iso); return d.toLocaleString() }
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML }
+function badge(text) { return `<span class="badge ${esc(text)}">${esc(text)}</span>` }
+// ---- global time range state (Kibana-style) ----
+const timeState = { type: "quick", from: "now-30d", label: "Last 30 days" }
+
+function computeRange() {
+  const now = new Date()
+  if (timeState.type === "quick") {
+    const f = timeState.from
+    if (f === "start") return { from: null, to: now.toISOString() }
+    const m = f.match(/^now-(\d+)([mhd])$/)
+    if (m) {
+      const n = parseInt(m[1]), unit = m[2]
+      const ms = unit === "m" ? n * 60000 : unit === "h" ? n * 3600000 : n * 86400000
+      return { from: new Date(now.getTime() - ms).toISOString(), to: now.toISOString() }
+    }
+    return { from: null, to: now.toISOString() }
+  }
+  // absolute
+  return {
+    from: timeState.absFrom ? new Date(timeState.absFrom).toISOString() : null,
+    to: timeState.absTo ? new Date(timeState.absTo).toISOString() : null,
+  }
+}
+
+function qs() {
+  const p = new URLSearchParams({ team: $("#team").value })
+  const r = computeRange()
+  if (r.from) p.set("from", r.from)
+  if (r.to) p.set("to", r.to)
+  return p.toString()
+}
+// ================= MOCK DATA (prototype) =================
+const MOCK = {
+  teams: { teams: [
+    { id: "t1", name: "Product Dev Team" },
+    { id: "t2", name: "Ops Team" },
+  ]},
+  goal: {
+    current: { id: "g1", title: "Release v2.0: Login + Permissions + Kanban", state: "in_progress", body: "Build the core features within 2 weeks: user login, RBAC permissions, and a member kanban. Goal: let the team collaborate in a single dashboard.", created_at: "2026-08-18T09:00:00Z", closed_at: null },
+    goals: [
+      { id: "g1", title: "Release v2.0: Login + Permissions + Kanban", state: "in_progress", body: "Finish the new version's core features within 2 weeks.", created_at: "2026-08-18T09:00:00Z", closed_at: null },
+      { id: "g0", title: "v1.0 MVP: Team Collaboration State Core", state: "closed", body: "Team state machine + event ledger.", created_at: "2026-07-20T08:00:00Z", closed_at: "2026-08-15T18:00:00Z" },
+    ],
+    lifecycle: [
+      { type: "goal.set", member_id: "m-owner", created_at: "2026-08-18T09:00:00Z", payload: { title: "Release v2.0" } },
+      { type: "goal.shared", member_id: "m-owner", created_at: "2026-08-18T09:30:00Z", payload: {} },
+      { type: "goal.state_changed", member_id: "m-owner", created_at: "2026-08-19T10:00:00Z", payload: { from: "shared", to: "in_progress" } },
+    ],
+  },
+  timeline: { items: [
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "work_session", started_at: "2026-08-27T14:00:00Z", ended_at: "2026-08-27T15:00:00Z", duration_ms: 3600000, has_human: 0, tokens_in: 18200, tokens_out: 5200, cost: 0.31, detail: { task: "Research web terminal solution" } },
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "tool_call", started_at: "2026-08-27T14:10:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 2400, tokens_out: 0, cost: 0.004, detail: { tool: "read", file: "docs/ENT-01.md" } },
+    { member_id: "m-carol", node_id: "node-03", node_name: "node-03", kind: "file_edit", started_at: "2026-08-27T14:32:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 1500, tokens_out: 300, cost: 0.003, detail: { file: "docs/ENT-01.md", action: "append research notes" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "work_session", started_at: "2026-08-27T16:00:00Z", ended_at: "2026-08-27T17:00:00Z", duration_ms: 3600000, has_human: 0, tokens_in: 41000, tokens_out: 9800, cost: 0.68, detail: { task: "review doc-flow changes" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "step_finish", started_at: "2026-08-27T16:40:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 900, tokens_out: 300, cost: 0.002, detail: { step: "doc-flow diff review complete" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "work_session", started_at: "2026-08-28T08:00:00Z", ended_at: "2026-08-28T08:40:00Z", duration_ms: 2400000, has_human: 0, tokens_in: 26000, tokens_out: 6100, cost: 0.42, detail: { task: "Research web terminal solution" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "tool_call", started_at: "2026-08-28T08:15:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 8200, tokens_out: 0, cost: 0.012, detail: { tool: "webfetch", url: "https://xtermjs.org" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "human_approval", started_at: "2026-08-28T09:00:00Z", ended_at: null, duration_ms: null, has_human: 1, tokens_in: 1200, tokens_out: 400, cost: 0.002, detail: { text: "approve PR #41 (web terminal infrastructure)" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "work_session", started_at: "2026-08-28T09:00:00Z", ended_at: "2026-08-28T10:30:00Z", duration_ms: 5400000, has_human: 1, tokens_in: 62000, tokens_out: 18500, cost: 1.08, detail: { task: "Implement login form validation" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "work_session", started_at: "2026-08-28T09:15:00Z", ended_at: "2026-08-28T11:00:00Z", duration_ms: 6300000, has_human: 1, tokens_in: 88000, tokens_out: 32000, cost: 1.62, detail: { task: "Code review #42" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "human_command", started_at: "2026-08-28T09:45:00Z", ended_at: null, duration_ms: null, has_human: 1, tokens_in: 800, tokens_out: 200, cost: 0.001, detail: { text: "Comment: LGTM, remember to add unit tests after merge" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "file_edit", started_at: "2026-08-28T10:00:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 5400, tokens_out: 600, cost: 0.008, detail: { file: "src/auth/login.tsx", action: "edit" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "step_finish", started_at: "2026-08-28T10:20:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 700, tokens_out: 200, cost: 0.001, detail: { step: "Form validation tests passed" } },
+    { member_id: "m-alice", node_id: "node-01", node_name: "node-01", kind: "tool_call", started_at: "2026-08-28T10:45:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 3100, tokens_out: 0, cost: 0.005, detail: { tool: "edit", file: "src/auth/login.tsx" } },
+    { member_id: "m-bob", node_id: "node-02", node_name: "node-02", kind: "tool_call", started_at: "2026-08-28T10:50:00Z", ended_at: null, duration_ms: null, has_human: 0, tokens_in: 2100, tokens_out: 0, cost: 0.003, detail: { tool: "gh", args: "pr review #42" } },
+  ]},
+  overview: { overview: { duration_ms: 54000000, tokens_input: 1250000, tokens_output: 380000, tokens_reasoning: 420000, cost: 12.3456, active_members: 3, active_nodes: 3 }, human: { count: 42 }, ai: { count: 386 }, overall: { count: 428 } },
+  by_member: [
+    { member_id: "m-alice", duration_ms: 18000000, tokens_input: 520000, tokens_output: 160000, cost: 4.82, count: 180 },
+    { member_id: "m-bob", duration_ms: 21000000, tokens_input: 480000, tokens_output: 150000, cost: 4.51, count: 152 },
+    { member_id: "m-carol", duration_ms: 15000000, tokens_input: 250000, tokens_output: 70000, cost: 3.01, count: 96 },
+  ],
+  by_node: [
+    { node_id: "n1", node_name: "node-01", duration_ms: 18000000, tokens_input: 520000, cost: 4.82, count: 180 },
+    { node_id: "n2", node_name: "node-02", duration_ms: 21000000, tokens_input: 480000, cost: 4.51, count: 152 },
+    { node_id: "n3", node_name: "node-03", duration_ms: 15000000, tokens_input: 250000, cost: 3.01, count: 96 },
+  ],
+  tools: [ { tool: "edit", count: 128 }, { tool: "read", count: 86 }, { tool: "bash", count: 64 }, { tool: "glob", count: 47 }, { tool: "grep", count: 39 } ],
+  files: [ { file: "src/auth/login.tsx", count: 12 }, { file: "src/rbac/roles.ts", count: 9 }, { file: "docs/ENT-01.md", count: 7 } ],
+  members: { members: [
+    { id: "m-alice", display_name: "Alice", role: "contributor", state: "active", joined_at: "2026-07-21T09:00:00Z", last_seen_at: "2026-08-28T12:04:00Z", activity: { duration_ms: 18000000, tokens_input: 520000, cost: 4.82, count: 180 } },
+    { id: "m-bob", display_name: "Bob", role: "reviewer", state: "active", joined_at: "2026-07-22T09:00:00Z", last_seen_at: "2026-08-28T11:50:00Z", activity: { duration_ms: 21000000, tokens_input: 480000, cost: 4.51, count: 152 } },
+    { id: "m-carol", display_name: "Carol", role: "observer", state: "idle", joined_at: "2026-08-01T09:00:00Z", last_seen_at: "2026-08-27T15:00:00Z", activity: { duration_ms: 15000000, tokens_input: 250000, cost: 3.01, count: 96 } },
+  ]},
+  kanban: { columns: [
+    { display_name: "Alice", role: "contributor", summary: { duration_ms: 18000000 }, tasks: [
+      { member_id: "m-alice", node_name: "node-01", kind: "work_session", has_human: 1, started_at: "2026-08-28T09:00:00Z", ended_at: "2026-08-28T10:30:00Z", duration_ms: 5400000, tokens_in: 62000, tokens_out: 18500, cost: 1.08, detail: { description: "Implement login form validation", task: "Implement login form validation", sessionID: "ses_a1" } },
+      { member_id: "m-alice", node_name: "node-01", kind: "work_session", has_human: 1, started_at: "2026-08-28T10:45:00Z", ended_at: "2026-08-28T11:30:00Z", duration_ms: 2700000, tokens_in: 48000, tokens_out: 14200, cost: 0.85, detail: { description: "Fix CI failure #42", task: "Fix CI failure #42", sessionID: "ses_a3" } },
+      { member_id: "m-alice", node_name: "node-01", kind: "work_session", has_human: 0, started_at: "2026-08-28T08:00:00Z", ended_at: "2026-08-28T08:40:00Z", duration_ms: 2400000, tokens_in: 26000, tokens_out: 6100, cost: 0.42, detail: { description: "Research web terminal solution", task: "Research web terminal solution", sessionID: "ses_a2" } },
+    ]},
+    { display_name: "Bob", role: "reviewer", summary: { duration_ms: 21000000 }, tasks: [
+      { member_id: "m-bob", node_name: "node-02", kind: "work_session", has_human: 1, started_at: "2026-08-28T09:15:00Z", ended_at: "2026-08-28T11:00:00Z", duration_ms: 6300000, tokens_in: 88000, tokens_out: 32000, cost: 1.62, detail: { description: "Code review #42", task: "Code review #42", sessionID: "ses_b1" } },
+      { member_id: "m-bob", node_name: "node-02", kind: "work_session", has_human: 0, started_at: "2026-08-27T16:00:00Z", ended_at: "2026-08-27T17:00:00Z", duration_ms: 3600000, tokens_in: 41000, tokens_out: 9800, cost: 0.68, detail: { description: "review doc-flow changes", task: "review doc-flow changes", sessionID: "ses_b2" } },
+    ]},
+    { display_name: "Carol", role: "observer", summary: { duration_ms: 15000000 }, tasks: [
+      { member_id: "m-carol", node_name: "node-03", kind: "work_session", has_human: 0, started_at: "2026-08-27T14:00:00Z", ended_at: "2026-08-27T15:00:00Z", duration_ms: 3600000, tokens_in: 18200, tokens_out: 5200, cost: 0.31, detail: { description: "Research web terminal solution", task: "Research web terminal solution", sessionID: "ses_c1" } },
+    ]},
+  ]},
+}
+// jget returns mock data keyed by the API path.
+async function jget(path) {
+  const key = path.split("?")[0].split("/").pop()
+  const map = {
+    "teams": MOCK.teams, "goal": MOCK.goal, "timeline": MOCK.timeline,
+    "overview": MOCK.overview, "by_member": MOCK.by_member, "by_node": MOCK.by_node,
+    "tools": MOCK.tools, "files": MOCK.files, "members": MOCK.members, "kanban": MOCK.kanban,
+  }
+  const data = map[key]
+  if (data === undefined) throw new Error("mock: no data for " + path)
+  return data
+}
+
+function row(o) { return o != null && typeof o === "object" ? JSON.stringify(o) : "—" }
+function tableRows(rows, cols) {
+  if (!rows || rows.length === 0) return '<tr><td colspan="10" class="muted">no data</td></tr>'
+  return rows.map((r) => `<tr>${cols.map((c) => `<td>${c(r)}</td>`).join("")}</tr>`).join("")
+}
+
+// ---- navigation ----
+let tlMode = "fishbone"
+let lastTimelineItems = []
+const FULL_WIDTH_VIEWS = new Set(["timeline", "kanban", "goal", "cost", "members"])
+function applyViewLayout(name) {
+  $(".container").classList.toggle("full-width", FULL_WIDTH_VIEWS.has(name))
+}
+function showView(name) {
+  $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
+  $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
+  applyViewLayout(name)
+  const toggle = document.getElementById("tlViewToggle")
+  if (toggle) toggle.style.display = name === "timeline" ? "inline-flex" : "none"
+  if (name === "timeline") renderTimeline()
+  if (name === "cost") renderCost()
+  if (name === "kanban") renderKanban()
+  if (name === "members") renderMembers()
+  if (name === "goal") renderGoal()
+}
+$$("nav button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)))
+
+// ---- Goal view ----
+let selectedGoalId = null
+
+// Fill the toolbar goal dropdown (current + history). Called after /api/goal.
+function fillGoalSelect(goals, currentId) {
+  const sel = document.getElementById("goal")
+  if (!sel) return
+  const list = (goals ?? []).slice().reverse() // newest first
+  const val = selectedGoalId || currentId || ""
+  sel.innerHTML = `<option value="">(current${currentId ? "" : " — none"})</option>` +
+    list.map((g) => `<option value="${esc(g.id)}" ${g.id === val ? "selected" : ""}>${esc((g.title || "goal").slice(0, 30))}${g.id === currentId ? " · active" : g.closed_at ? " · done" : ""}</option>`).join("")
+}
+
+// Load goal list and fill the toolbar dropdown (independent of the active view).
+async function refreshGoalSelect() {
+  try {
+    const team = $("#team").value
+    if (!team) return
+    const goal = await jget("/api/goal?team=" + encodeURIComponent(team))
+    fillGoalSelect(goal.goals ?? [], goal.current?.id)
+  } catch { /* keep current options */ }
+}
+
+async function renderGoal() {
+  const q = qs()
+  const [teams, goal, tl] = await Promise.all([
+    jget("/api/teams"), jget("/api/goal?" + q), jget("/api/timeline?" + q),
+  ])
+  fillTeamSelect(teams)
+  const goals = goal.goals ?? []
+  const currentId = goal.current?.id
+  // Selected goal = explicit selection, else the current goal.
+  const sel = goals.find((x) => x.id === (selectedGoalId ?? currentId)) ?? goal.current ?? null
+  // Lifecycle events scoped to the selected goal's time window.
+  const lc = (goal.lifecycle ?? []).filter((e) => {
+    const t = Date.parse(e.created_at)
+    if (!Number.isFinite(t)) return true
+    const from = sel ? Date.parse(sel.created_at) : -Infinity
+    const to = sel?.closed_at ? Date.parse(sel.closed_at) : Infinity
+    return t >= from && t < to
+  })
+  fillGoalSelect(goals, currentId)
+  const hero = $("#goalHero")
+  if (sel) {
+    hero.innerHTML = `<div class="goal-hero">
+      <h2>${esc(sel.title)} ${sel.state ? badge(sel.state) : ""} ${sel.id === currentId ? `<span class="badge active">current</span>` : ""}</h2>
+      ${sel.body ? `<p class="goal-body">${esc(sel.body)}</p>` : ""}
+      <div class="muted">created ${fmtDate(sel.created_at)} · ${sel.closed_at ? "closed " + fmtDate(sel.closed_at) : "in progress"}</div>
+    </div>`
+  } else {
+    hero.innerHTML = `<div class="goal-hero"><h2>No goal set</h2><p class="goal-body muted">Use <code>teamx goal set</code> to define the team goal.</p></div>`
+  }
+  renderLifecycle(lc, sel?.state)
+  renderGoalHistory(goals, currentId)
+  // Goal-scoped window for stats + gantt.
+  const winQ = new URLSearchParams()
+  if (sel) {
+    winQ.set("team", $("#team").value)
+    winQ.set("from", sel.created_at)
+    winQ.set("to", sel.closed_at || new Date().toISOString())
+  }
+  const win = sel ? winQ.toString() : q
+  const [overview, byMember, byNode] = await Promise.all([
+    jget("/api/overview?" + win), jget("/api/by_member?" + win), jget("/api/by_node?" + win),
+  ])
+  // Goal-scoped horizontal fishbone (activity timeline).
+  if (sel) {
+    renderHFishbone(tl.items ?? [], { el: "#goalGantt", from: sel.created_at, to: sel.closed_at || new Date().toISOString() })
+  } else {
+    const el = document.querySelector("#goalGantt")
+    if (el) el.innerHTML = '<div class="muted">no goal</div>'
+  }
+  const o = overview.overview ?? {}
+  $("#goalCards").innerHTML = [
+    ["Total work time", fmtMs(o.duration_ms)],
+    ["Total tokens", fmtNum((o.tokens_input ?? 0) + (o.tokens_output ?? 0))],
+    ["Cost", fmtCost(o.cost)],
+    ["Active members", fmtNum(o.active_members)],
+    ["Active nodes", fmtNum(o.active_nodes)],
+    ["Human actions", fmtNum(overview.human?.count)],
+    ["AI actions", fmtNum(overview.ai?.count)],
+    ["Rows", fmtNum(overview.overall?.count)],
+  ].map(([l, v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")
+  $("#gByMember tbody").innerHTML = tableRows(byMember, [
+    (m) => esc(memberLabel(m.member_id)), (m) => fmtMs(m.duration_ms),
+    (m) => fmtNum(m.tokens_input) + "/" + fmtNum(m.tokens_output), (m) => fmtCost(m.cost), (m) => fmtNum(m.count),
+  ])
+  $("#gByNode tbody").innerHTML = tableRows(byNode, [
+    (n) => esc(n.node_name ?? n.node_id?.slice(0, 8)), (n) => fmtMs(n.duration_ms),
+    (n) => fmtNum(n.tokens_input), (n) => fmtCost(n.cost), (n) => fmtNum(n.count),
+  ])
+  // lifecycle events table
+  const events = (goal.lifecycle ?? []).slice().reverse()
+  $("#goalEvents tbody").innerHTML = tableRows(events, [
+    (e) => fmtDate(e.created_at), (e) => badge(e.type),
+    (e) => esc(memberLabel(e.member_id)), (e) => esc(row(e.payload)),
+  ])
+}
+
+// Render the team's goal history (all goals, newest first; current highlighted).
+function renderGoalHistory(goals, currentId) {
+  const host = document.getElementById("goalHistory")
+  if (!host) return
+  const list = (goals ?? []).slice().reverse()
+  if (list.length === 0) {
+    host.innerHTML = '<div class="muted">No goals yet. Set the team goal with <code>teamx goal set</code>.</div>'
+    return
+  }
+  host.innerHTML = `<h2>Goal history <span class="count">${list.length}</span></h2>` + list.map((g) => `
+    <div class="goal-row ${g.id === currentId ? "current" : ""}">
+      <span class="goal-row-title">${esc(g.title)} ${g.id === currentId ? `<span class="badge active">active</span>` : g.closed_at ? badge("closed") : ""}</span>
+      <span class="goal-row-meta mono">${fmtDate(g.created_at)} → ${g.closed_at ? fmtDate(g.closed_at) : "now"}</span>
+    </div>`).join("")
+}
+
+function renderLifecycle(lifecycle, currentState) {
+  const el = $("#goalLifecycle")
+  const events = lifecycle ?? []
+  const seen = new Set()
+  const steps = []
+  for (const e of events) {
+    let state = null
+    if (e.type === "goal.set") state = "proposed"
+    else if (e.type === "goal.shared") state = "shared"
+    else if (e.type === "goal.achieved") state = "achieved"
+    else if (e.type === "team.completed") state = "closed"
+    else if (e.type === "goal.state_changed") {
+      const to = e.payload?.to
+      if (to) state = String(to)
+    }
+    if (state && !seen.has(state)) { seen.add(state); steps.push({ state, at: e.created_at }) }
+  }
+  const current = currentState ?? "proposed"
+  if (!seen.has(current) && GOAL_STATES.includes(current)) { steps.push({ state: current, at: null }); seen.add(current) }
+  if (steps.length === 0) { el.innerHTML = '<div class="muted">no lifecycle data yet</div>'; return }
+  const curIdx = steps.findIndex((s) => s.state === current)
+  const html = `<div class="lifecycle"><div class="lc-track">
+    ${steps.map((s, i) => {
+      // done = strictly before the current step; current = the current state;
+      // anything after the current (e.g. achieved/closed on an in-progress goal)
+      // is shown as upcoming (muted).
+      const cls = i === curIdx ? "current" : (curIdx >= 0 && i < curIdx ? "done" : "")
+      const day = s.at ? fmtDate(s.at).split(", ")[0] : (i === curIdx ? "now" : "—")
+      return `<div class="lc-step ${cls}"><div class="dot"></div><div class="name">${esc(s.state.replace("_", " "))}</div><div class="date">${day}</div></div>`
+    }).join("")}
+  </div></div>`
+  el.innerHTML = html
+}
+
+// ---- KanBan view (one column per member, each showing their tasks) ----
+async function renderKanban() {
+  const q = qs()
+  const kanban = await jget("/api/kanban?" + q)
+  $("#kanbanCols").innerHTML = (kanban.columns ?? []).map((col) => {
+    const s = col.summary ?? {}
+    const tasks = col.tasks ?? []
+    const done = tasks.filter((t) => t.has_human).length
+    const colCost = tasks.reduce((a, t) => a + (Number(t.cost) || 0), 0)
+    const colTokens = tasks.reduce((a, t) => a + ((Number(t.tokens_in) || 0) + (Number(t.tokens_out) || 0)), 0)
+    return `<div class="kb-col">
+      <div class="kb-col-head">
+        <div class="kb-col-title">${esc(col.display_name)} ${col.role ? badge(col.role) : ""}</div>
+        <div class="kb-col-meta muted">
+          ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${colCost ? ` · <span class="cost">⚡ ${fmtNum(colTokens)} tok · $${colCost.toFixed(2)}</span>` : ""}
+        </div>
+      </div>
+      ${tasks.slice(0, 12).map((r) => renderTaskCard(r)).join("") || '<div class="kb-empty muted">no work in this range</div>'}
+    </div>`
+  }).join("")
+}
+
+// Render one task (work_session) card.
+function renderTaskCard(r) {
+  let d = null
+  try { d = typeof r.detail === "string" ? JSON.parse(r.detail) : (r.detail ?? null) } catch { d = null }
+  const d_ = d ?? {}
+  const hrs = r.duration_ms != null ? (r.duration_ms / 3600000).toFixed(1) : "?"
+  const who = memberLabel(r.member_id)
+  const tag = r.has_human ? "human-in-loop" : "auto"
+  const desc = d_.description || d_.task || ""
+  const tipRows = []
+  const addRow = (k, v) => { if (v != null && v !== "") tipRows.push([k, String(v)]) }
+  addRow("member", who)
+  addRow("node", r.node_name)
+  addRow("started", fmtDate(r.started_at))
+  if (r.ended_at) addRow("ended", fmtDate(r.ended_at))
+  if (r.duration_ms != null) addRow("duration", fmtMs(r.duration_ms))
+  if (r.tokens_in != null || r.tokens_out != null) addRow("tokens", fmtNum((r.tokens_in ?? 0) + (r.tokens_out ?? 0)))
+  if (r.cost != null) addRow("cost", "$" + Number(r.cost).toFixed(2))
+  addRow("human", r.has_human ? "yes" : "no")
+  // description first, then the rest of detail fields (skip description dup)
+  if (desc) addRow("task", desc)
+  if (d_) { for (const [k, v] of Object.entries(d_)) { if (v == null || k === "description" || k === "task") continue; const val = typeof v === "object" ? JSON.stringify(v) : String(v); addRow(k, val.length > 300 ? val.slice(0, 300) + "…" : val) } }
+  const descHtml = desc ? `<div class="kb-desc">${esc(desc)}</div>` : ""
+  const tip = `<div class="kb-tip" role="tooltip">
+    <div class="tip-title"><span>${esc(tag)}</span><span class="badge work_session">work_session</span></div>
+    ${descHtml}
+    <table>${tipRows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`).join("")}</table>
+  </div>`
+  const costSeg = (r.cost != null || r.tokens_in != null || r.tokens_out != null)
+    ? ` · <span class="cost">⚡ ${fmtNum((r.tokens_in ?? 0) + (r.tokens_out ?? 0))} tok · $${Number(r.cost ?? 0).toFixed(2)}</span>` : ""
+  return `<div class="kb-card" tabindex="0">
+    <div class="kb-head"><span class="kb-who">${esc(who)}</span><span class="badge ${r.has_human ? "active" : "idle"}">${esc(tag)}</span></div>
+    <div class="kb-body">${desc ? esc(desc) : `Worked <b>${hrs}h</b>`}${!desc && d_.sessionID ? " · <span class='mono'>" + esc(String(d_.sessionID)) + "</span>" : ""}</div>
+    <div class="kb-meta muted">${fmtDate(r.started_at)}${r.ended_at ? " → " + fmtDate(r.ended_at) : ""}${costSeg}</div>
+    ${tip}
+  </div>`
+}
+
+// ---- Cost view ----
+async function renderCost() {
+  const q = qs()
+  const [overview, byMember, byNode, tools, files] = await Promise.all([
+    jget("/api/overview?" + q), jget("/api/by_member?" + q), jget("/api/by_node?" + q),
+    jget("/api/tools?" + q), jget("/api/files?" + q),
+  ])
+  const o = overview.overview ?? {}
+  $("#costCards").innerHTML = [
+    ["Total tokens", fmtNum((o.tokens_input ?? 0) + (o.tokens_output ?? 0))],
+    ["Input tokens", fmtNum(o.tokens_input)],
+    ["Output tokens", fmtNum(o.tokens_output)],
+    ["Reasoning tokens", fmtNum(o.tokens_reasoning)],
+    ["Cost", fmtCost(o.cost)],
+    ["Avg cost / row", fmtCost(o.cost != null && o.overall?.count ? o.cost / o.overall.count : null)],
+  ].map(([l, v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")
+  $("#costByMember tbody").innerHTML = tableRows(byMember, [
+    (m) => esc(memberLabel(m.member_id)), (m) => fmtNum(m.tokens_input),
+    (m) => fmtNum(m.tokens_output), (m) => fmtCost(m.cost), (m) => fmtNum(m.count),
+  ])
+  $("#costByNode tbody").innerHTML = tableRows(byNode, [
+    (n) => esc(n.node_name ?? n.node_id?.slice(0, 8)), (n) => fmtNum(n.tokens_input),
+    (n) => fmtNum(n.tokens_output), (n) => fmtCost(n.cost), (n) => fmtNum(n.count),
+  ])
+  $("#costTools tbody").innerHTML = tableRows(tools, [(t) => esc(t.tool), (t) => fmtNum(t.count)])
+  $("#costFiles tbody").innerHTML = tableRows(files, [(f) => esc(f.file), (f) => fmtNum(f.count)])
+
+  // ---- charts ----
+  const mem = (byMember ?? []).map((m) => ({ label: memberLabel(m.member_id), value: m.cost, meta: fmtCost(m.cost) }))
+  drawDonut("#chartCostDonut", "#chartCostDonutLegend", mem.filter((x) => x.value != null), "Cost")
+  const nodes = (byNode ?? []).map((n) => ({ label: n.node_name ?? n.node_id?.slice(0, 8) ?? "?", value: n.cost, meta: fmtCost(n.cost) }))
+  drawBars("#chartCostBars", nodes.filter((x) => x.value != null), "Cost by node")
+  const tokens = (byMember ?? []).map((m) => ({ label: memberLabel(m.member_id), a: m.tokens_input, b: m.tokens_output, meta: fmtNum(m.tokens_input) + " / " + fmtNum(m.tokens_output) }))
+  drawGroupedBars("#chartTokensBars", tokens, "in", "out")
+  drawDonut("#chartHumanDonut", "#chartHumanDonutLegend", [
+    { label: "AI", value: overview.ai?.count, meta: fmtNum(overview.ai?.count) },
+    { label: "Human", value: overview.human?.count, meta: fmtNum(overview.human?.count) },
+  ].filter((x) => x.value != null), "Actions")
+}
+
+// ---------- SVG charts (vanilla, no deps) ----------
+const CHART_COLORS = ["#1E40AF", "#3B82F6", "#8B5CF6", "#D97706", "#059669", "#DC2626", "#64748B", "#0EA5E9"]
+function chartSvg(w, h) { return `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" role="img" style="max-width:100%;height:auto">` }
+function polar(cx, cy, r, angleDeg) { const a = (angleDeg - 90) * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)] }
+function arcPath(cx, cy, r, startDeg, endDeg) {
+  const [x1, y1] = polar(cx, cy, r, startDeg)
+  const [x2, y2] = polar(cx, cy, r, endDeg)
+  const large = endDeg - startDeg > 180 ? 1 : 0
+  return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`
+}
+
+/** Donut chart (part-to-whole). data: [{label, value, meta}] */
+function drawDonut(selId, legendId, data, title) {
+  const el = document.querySelector(selId)
+  const legend = document.querySelector(legendId)
+  if (!el) return
+  if (!data || data.length === 0) { el.innerHTML = '<div class="muted">no data</div>'; if (legend) legend.innerHTML = ""; return }
+  const total = data.reduce((s, d) => s + d.value, 0)
+  if (total <= 0) { el.innerHTML = '<div class="muted">no data</div>'; if (legend) legend.innerHTML = ""; return }
+  const cx = 100, cy = 100, r = 62, R = 88
+  let angle = 0
+  const segs = data.map((d, i) => {
+    const sweep = (d.value / total) * 360
+    const color = CHART_COLORS[i % CHART_COLORS.length]
+    // outer arc (donut ring)
+    const [ax1, ay1] = polar(cx, cy, R, angle); const [ax2, ay2] = polar(cx, cy, R, angle + sweep)
+    const [bx1, by1] = polar(cx, cy, r, angle + sweep); const [bx2, by2] = polar(cx, cy, r, angle)
+    const large = sweep > 180 ? 1 : 0
+    const path = sweep >= 360
+      ? `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${color}" stroke-width="${R - r}"/>`
+      : `<path d="M ${ax1} ${ay1} A ${R} ${R} 0 ${large} 1 ${ax2} ${ay2} L ${bx1} ${by1} A ${r} ${r} 0 ${large} 0 ${bx2} ${by2} Z" fill="${color}"/>`
+    const mid = angle + sweep / 2
+    const [lx, ly] = polar(cx, cy, (R + r) / 2, mid)
+    const label = `<text x="${lx}" y="${ly + 3}" text-anchor="middle" font-size="8.5" fill="#fff" font-weight="600">${Math.round(d.value / total * 100)}%</text>`
+    angle += sweep
+    return { path, label, d }
+  })
+  el.innerHTML = chartSvg(200, 200) + `<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--border)" stroke-width="1" opacity="0.4"/>
+    ${segs.map((s) => s.path).join("")}${segs.filter((s) => s.d.value / total >= 0.05).map((s) => s.label).join("")}
+    <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--fg)">${title}</text>
+    <text x="${cx}" y="${cy + 12}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--fg)">${fmtNum(total)}</text></svg>`
+  if (legend) {
+    legend.innerHTML = data.map((d, i) => `<span><span class="sw" style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></span>${esc(d.label)} ${d.meta ?? ""}</span>`).join("")
+  }
+}
+
+/** Horizontal bar chart. data: [{label, value, meta}] */
+function drawBars(selId, data, title) {
+  const el = document.querySelector(selId)
+  if (!el) return
+  if (!data || data.length === 0) { el.innerHTML = '<div class="muted">no data</div>'; return }
+  const max = Math.max(...data.map((d) => d.value))
+  const rows = data.sort((a, b) => b.value - a.value).map((d, i) => {
+    const w = max > 0 ? (d.value / max) * 100 : 0
+    const color = CHART_COLORS[i % CHART_COLORS.length]
+    return `<div class="hbar-row" title="${esc(d.label)}: ${d.meta ?? ""}">
+      <div class="hbar-label">${esc(d.label)}</div>
+      <div class="hbar-track"><div class="hbar-fill" style="width:${w}%;background:${color}"></div></div>
+      <div class="hbar-val mono">${d.meta ?? fmtNum(d.value)}</div>
+    </div>`
+  }).join("")
+  el.innerHTML = `<div style="width:100%"><div class="hbar-title muted">${esc(title)}</div>${rows}</div>`
+}
+
+/** Grouped vertical bars (two series). data: [{label, a, b, meta}] */
+function drawGroupedBars(selId, data, nameA, nameB) {
+  const el = document.querySelector(selId)
+  if (!el) return
+  if (!data || data.length === 0) { el.innerHTML = '<div class="muted">no data</div>'; return }
+  const max = Math.max(...data.flatMap((d) => [d.a ?? 0, d.b ?? 0]))
+  const W = 300, H = 150, pad = 26, bottom = 18
+  const n = data.length
+  const groupW = (W - pad * 2) / n
+  const barW = Math.min(groupW * 0.32, 26)
+  const bars = data.map((d, i) => {
+    const x0 = pad + i * groupW
+    const hA = max > 0 ? (d.a ?? 0) / max * (H - pad - bottom) : 0
+    const hB = max > 0 ? (d.b ?? 0) / max * (H - pad - bottom) : 0
+    const yA = H - bottom - hA
+    const yB = H - bottom - hB
+    return `<rect x="${x0 + groupW / 2 - barW - 1.5}" y="${yA}" width="${barW}" height="${hA}" rx="2" fill="#1E40AF"/>
+      <rect x="${x0 + groupW / 2 + 1.5}" y="${yB}" width="${barW}" height="${hB}" rx="2" fill="#3B82F6"/>
+      <text x="${x0 + groupW / 2}" y="${H - 5}" text-anchor="middle" font-size="7.5" fill="var(--muted-fg)">${esc(d.label)}</text>`
+  }).join("")
+  el.innerHTML = chartSvg(W, H) + `
+    <text x="6" y="${H - 45}" font-size="7.5" fill="#1E40AF">${esc(nameA)}</text>
+    <text x="6" y="${H - 33}" font-size="7.5" fill="#3B82F6">${esc(nameB)}</text>
+    ${bars}</svg>`
+}
+
+// ---- Timeline view (Gantt + fishbone) ----
+async function renderTimeline() {
+  const q = qs()
+  const [teams, tl] = await Promise.all([jget("/api/teams"), jget("/api/timeline?" + q)])
+  fillTeamSelect(teams)
+  lastTimelineItems = tl.items ?? []
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+
+function setTimelineMode(mode) {
+  tlMode = mode
+  $$("#tlViewToggle button").forEach((b) => b.classList.toggle("active", b.dataset.tlmode === mode))
+  $("#gantt").style.display = mode === "gantt" ? "" : "none"
+  $("#fishbone").style.display = mode === "fishbone" ? "" : "none"
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+document.querySelectorAll("#tlViewToggle button").forEach((b) =>
+  b.addEventListener("click", () => setTimelineMode(b.dataset.tlmode)))
+
+// ---- Fishbone timeline (vertical, all events by time) ----
+const FB_KIND_LABEL = {
+  work_session: "work", tool_call: "tool", command: "tool", step_finish: "step",
+  file_edit: "file", human_input: "human", human_approval: "human", human_command: "human",
+}
+const FB_KIND_COLOR = {
+  work_session: "#0969da", tool_call: "#8250df", command: "#8250df", step_finish: "#bf8700",
+  file_edit: "#cf222e", human_input: "#1a7f37", human_approval: "#1a7f37", human_command: "#1a7f37",
+}
+function fishKindLabel(kind) { return FB_KIND_LABEL[kind] || kind || "event" }
+function fishKindColor(kind) { return FB_KIND_COLOR[kind] || "#909399" }
+
+// Per-activity cost: how many tokens / how much $ an activity consumed.
+function fmtItemCost(it) {
+  if (!it) return null
+  const tin = it.tokens_in ?? it.tokens ?? null
+  const tout = it.tokens_out ?? null
+  const c = it.cost ?? null
+  if (tin == null && tout == null && c == null) return null
+  const bits = []
+  const t = (tin ?? 0) + (tout ?? 0)
+  if (t) bits.push("⚡ " + fmtNum(t) + " tok")
+  if (c != null) bits.push("$" + Number(c).toFixed(2))
+  return bits.join(" · ")
+}
+
+function fishDetailText(it) {
+  let d = null
+  try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+  if (!d) return it.detail ? String(it.detail) : ""
+  if (it.kind === "work_session") return d.task ?? d.description ?? d.title ?? ""
+  if (it.kind === "tool_call") return d.tool ? "call tool " + d.tool + (d.file ? " · " + d.file : "") : ""
+  if (it.kind === "file_edit") return d.file ? "Edit " + d.file : ""
+  if (it.kind === "step_finish") return d.step ? "Step done: " + d.step : ""
+  if (it.kind && it.kind.startsWith("human")) return d.text ?? d.name ?? d.response ?? d.title ?? ""
+  return d.text ?? d.tool ?? d.file ?? d.task ?? JSON.stringify(d)
+}
+
+function fishboneRow(it, side) {
+  const t = new Date(it.started_at)
+  const time = t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const who = memberLabel(it.member_id)
+  const kind = it.kind || "event"
+  const label = fishKindLabel(kind)
+  const color = fishKindColor(kind)
+  const text = fishDetailText(it)
+  const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+  const node = it.node_name ? `<span>${esc(it.node_name)}</span>` : ""
+  const human = it.has_human ? `<span class="human">● human-in-loop</span>` : ""
+  const cost = fmtItemCost(it)
+  const meta = [dur, node, human, cost ? `<span class="fb-cost">${esc(cost)}</span>` : ""].filter(Boolean).join("") || ""
+  const card = `
+    <div class="fb-card">
+      <div class="fb-top">
+        <span class="fb-time">${esc(time)}</span>
+        <span class="fb-who">${esc(who)}</span>
+        <span class="fb-kind" style="background:${color}">${esc(label)}</span>
+      </div>
+      <div class="fb-text">${esc(text || "(no detail)")}</div>
+      ${meta ? `<div class="fb-meta">${meta}</div>` : ""}
+    </div>`
+  return `<div class="fb-row ${side}">
+    <div class="fb-side">${side === "left" ? card : ""}</div>
+    <div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div>
+    <div class="fb-side">${side === "right" ? card : ""}</div>
+  </div>`
+}
+
+function renderFishbone(items, title) {
+  const el = $("#fishbone")
+  const valid = (items || []).filter((it) => Number.isFinite(Date.parse(it.started_at)))
+  if (valid.length === 0) { el.innerHTML = '<div class="muted" style="padding:20px">no activity in this range</div>'; return }
+  valid.sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+  const startBox = `<div class="fb-start"><div class="fb-start-box"><span class="fb-start-dot"></span>${esc(title || "Start")}</div></div>`
+  const rows = []
+  let prevDay = null
+  valid.forEach((it, i) => {
+    const d = new Date(it.started_at)
+    const day = d.toDateString()
+    if (prevDay !== day) {
+      rows.push(`<div class="fb-day">${esc(d.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" }))}</div>`)
+      prevDay = day
+    }
+    rows.push(fishboneRow(it, i % 2 === 0 ? "left" : "right"))
+  })
+  el.innerHTML = `<div class="fb-wrap"><div class="fb-spine"></div>${startBox}${rows.join("")}</div>`
+}
+
+// ---- Horizontal fishbone (goal-scoped activity timeline) ----
+// Equal-slot layout: cards spread evenly left->right, alternating above/below
+// the spine; the bottom ruler keeps real start/end time context.
+function renderHFishbone(items, opts) {
+  opts = opts || {}
+  const el = document.querySelector(opts.el ?? "#goalGantt")
+  if (!el) return
+  const winFrom = opts.from != null ? Date.parse(opts.from) : null
+  const winTo = opts.to != null ? Date.parse(opts.to) : null
+  const valid = (items || []).filter((it) => {
+    const t = Date.parse(it.started_at)
+    if (!Number.isFinite(t)) return false
+    if (winFrom != null && t < winFrom) return false
+    if (winTo != null && t > winTo) return false
+    return true
+  })
+  if (valid.length === 0) { el.innerHTML = '<div class="muted">no activity in this range</div>'; return }
+  valid.sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+  const edge = 4
+  // Four levels cycle (top-near / bottom-near / top-far / bottom-far) via
+  // short & long guide lines so adjacent cards spread out vertically.
+  const levels = ["top-near", "bottom-near", "top-far", "bottom-far"]
+  const nodes = valid.map((it, i) => {
+    const pct = valid.length === 1 ? 50 : edge + (i / (valid.length - 1)) * (100 - edge * 2)
+    const cls = levels[i % 4]
+    const t = new Date(it.started_at)
+    const time = t.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+      t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    const who = memberLabel(it.member_id)
+    const kind = it.kind || "event"
+    const label = fishKindLabel(kind)
+    const color = fishKindColor(kind)
+    const text = fishDetailText(it) || "(no detail)"
+    const cost = fmtItemCost(it)
+    const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+    const human = it.has_human ? `<span class="human">● human</span>` : ""
+    const meta = [dur, human].filter(Boolean).join("") || ""
+    const card = `
+      <div class="hfb-card">
+        <div class="fb-top">
+          <span class="fb-time">${esc(time)}</span>
+          <span class="fb-who">${esc(who)}</span>
+          <span class="fb-kind" style="background:${color}">${esc(label)}</span>
+        </div>
+        <div class="fb-text">${esc(text)}</div>
+        <div class="fb-meta">${meta}${cost ? `<span class="hfb-cost">${esc(cost)}</span>` : ""}</div>
+      </div>`
+    return `<div class="hfb-node ${cls}" style="left:${pct.toFixed(2)}%">
+      <span class="hfb-dot" style="background:${color}"></span>${card}
+    </div>`
+  })
+  const f = new Date(valid[0].started_at)
+  const l = new Date(valid[valid.length - 1].started_at)
+  const fmtAxis = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const ruler = `<div class="hfb-ruler"><span>${esc(fmtAxis(f))}</span><span>${esc(fmtAxis(l))}</span></div>`
+  el.innerHTML = `<div class="hfb-wrap"><div class="hfb-spine"></div>${nodes.join("")}</div>${ruler}`
+}
+
+function drawGantt(items, opts) {
+  opts = opts || {}
+  const el = document.querySelector(opts.el ?? "#gantt")
+  if (!el) return
+  if (!items || items.length === 0) { el.innerHTML = '<div class="muted">no activity in this range</div>'; return }
+  // Optional fixed window (goal lifecycle): clamp items and axis to it.
+  const winFrom = opts.from != null ? new Date(opts.from).getTime() : null
+  const winTo = opts.to != null ? new Date(opts.to).getTime() : null
+  let min = Infinity, max = -Infinity
+  for (const it of items) {
+    const s = Date.parse(it.started_at); if (!Number.isFinite(s)) continue
+    if (winFrom != null && s < winFrom) continue
+    let e = s
+    if (it.ended_at) { const ee = Date.parse(it.ended_at); if (Number.isFinite(ee)) e = ee }
+    else if (it.duration_ms) e = s + it.duration_ms
+    if (winTo != null && s > winTo) continue
+    if (winFrom != null && Number.isFinite(s)) min = Math.min(min, Math.max(s, winFrom))
+    else min = Math.min(min, s)
+    if (Number.isFinite(e)) max = Math.max(max, e)
+  }
+  if (winFrom != null && Number.isFinite(min)) min = Math.min(min, winFrom)
+  if (winTo != null && Number.isFinite(max)) max = Math.max(max, winTo)
+  if (!Number.isFinite(min) || !Number.isFinite(max)) { el.innerHTML = '<div class="muted">no activity in this range</div>'; return }
+  const span = max - min
+  const byMember = new Map()
+  for (const it of items) {
+    const s = Date.parse(it.started_at)
+    if (!Number.isFinite(s)) continue
+    if (winFrom != null && s < winFrom) continue
+    if (winTo != null && s > winTo) continue
+    if (!byMember.has(it.member_id)) byMember.set(it.member_id, [])
+    byMember.get(it.member_id).push(it)
+  }
+  if (byMember.size === 0) { el.innerHTML = '<div class="muted">no activity in this range</div>'; return }
+
+  // ---- layout ----
+  const labelW = 150        // left member column
+  const rowH = 46           // lane height
+  const topPad = 34         // axis area
+  // Responsive: use full viewport width minus padding, fallback to 760px
+  const containerW = window.innerWidth - 40 || 760
+  const W = Math.max(760, containerW)   // total width (px)
+  const H = topPad + byMember.size * rowH + 12
+  const x = (t) => labelW + (t - min) / span * (W - labelW)
+  const laneTop = (i) => topPad + i * rowH
+
+  // ---- time ticks (adaptive) ----
+  const spanDays = span / 86400000
+  const unit = spanDays > 120 ? "month" : spanDays > 45 ? "week" : spanDays > 4 ? "day" : "hour"
+  const ticks = []
+  const t0 = new Date(min)
+  if (unit === "hour") { const h0 = new Date(min); h0.setMinutes(0, 0, 0); for (let t = h0.getTime(); t <= max; t += 3600000) ticks.push(t) }
+  else if (unit === "day") { const d0 = new Date(min); d0.setHours(0, 0, 0, 0); for (let t = d0.getTime(); t <= max; t += 86400000) ticks.push(t) }
+  else if (unit === "week") { const d0 = new Date(min); d0.setHours(0, 0, 0, 0); const dow = (d0.getDay() + 6) % 7; d0.setDate(d0.getDate() - dow); for (let t = d0.getTime(); t <= max; t += 7 * 86400000) ticks.push(t) }
+  else { const m0 = new Date(min); m0.setDate(1); m0.setHours(0, 0, 0, 0); for (let t = m0.getTime(); t <= max; ) { ticks.push(t); const d = new Date(t); d.setMonth(d.getMonth() + 1); t = d.getTime() } }
+  if (ticks.length > 24) { const step = Math.ceil(ticks.length / 24); for (let i = 0; i < ticks.length; i++) if (i % step !== 0) ticks[i] = null }
+
+  const fmtTick = (t) => unit === "hour" ? new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : unit === "day" ? new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : unit === "week" ? new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : new Date(t).toLocaleDateString(undefined, { month: "short", year: "2-digit" })
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const todayMs = today.getTime()
+
+  // ---- SVG ----
+  const svg = []
+  svg.push(`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" xmlns="http://www.w3.org/2000/svg" role="img" class="gantt-svg" style="display:block">`)
+  // background + lane separators
+  svg.push(`<rect x="0" y="0" width="${labelW}" height="${H}" fill="var(--muted)" opacity="0.5"/>`)
+  svg.push(`<rect x="0" y="0" width="${W}" height="${topPad}" fill="var(--card)"/>`)
+  // gridlines
+  for (const t of ticks) { if (t == null) continue; const gx = x(t); svg.push(`<line x1="${gx}" y1="${topPad}" x2="${gx}" y2="${H}" stroke="var(--border)" stroke-width="1"/>`) }
+  // today line
+  if (todayMs >= min && todayMs <= max) {
+    const tx = x(todayMs)
+    svg.push(`<line x1="${tx}" y1="${topPad}" x2="${tx}" y2="${H}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 3"/>`)
+    svg.push(`<text x="${tx + 4}" y="${topPad - 8}" font-size="10" fill="var(--accent)" font-weight="600">today</text>`)
+  }
+  // tick labels
+  for (const t of ticks) { if (t == null) continue; const tx = x(t); svg.push(`<text x="${tx}" y="${topPad - 10}" font-size="10.5" fill="var(--muted-fg)" font-family="var(--font-mono)">${esc(fmtTick(t))}</text>`) }
+
+  // ---- lanes ----
+  const defs = `<defs>
+    <linearGradient id="gWork" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4A90E5"/><stop offset="100%" stop-color="#6BB3F0"/>
+    </linearGradient>
+  </defs>`
+  svg.push(defs)
+
+  const members = Array.from(byMember.entries())
+  members.forEach(([mid, items2], i) => {
+    const yTop = laneTop(i)
+    const midY = yTop + rowH / 2
+    const name = memberLabel(mid) || (items2[0].node_name ?? mid.slice(0, 8))
+    // lane label
+    svg.push(`<text x="${labelW - 12}" y="${midY + 4}" font-size="12.5" font-weight="500" fill="var(--fg)" text-anchor="end">${esc(name)}</text>`)
+    // work sessions as bars
+    const sessions = items2.filter((it) => it.kind === "work_session")
+    sessions.forEach((it) => {
+      const s = Date.parse(it.started_at)
+      let e = s
+      if (it.ended_at) { const ee = Date.parse(it.ended_at); if (Number.isFinite(ee)) e = ee }
+      else if (it.duration_ms) e = s + it.duration_ms
+      const bx = x(s), bw = Math.max(x(e) - bx, 18)
+      const by = midY - 9
+      let d = null; try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+      const dur = it.duration_ms ? ` · ${fmtMs(it.duration_ms)}` : ""
+      const human = it.has_human ? " · human-in-loop" : ""
+      const detail = d && Object.keys(d).length ? `\n${JSON.stringify(d, null, 1)}` : ""
+      svg.push(`<g class="gantt-seg"><rect x="${bx}" y="${by}" width="${bw}" height="18" rx="9" fill="url(#gWork)" opacity="0.9">
+        <title>${esc(memberLabel(it.member_id))} · work ${new Date(s).toLocaleString()} → ${new Date(e).toLocaleString()}${dur}${human}${detail}</title>
+      </rect></g>`)
+      // human marker inside bar
+      if (it.has_human) {
+        svg.push(`<circle cx="${bx + Math.min(bw, 10)}" cy="${midY}" r="3" fill="#fff" opacity="0.9"/>`)
+      }
+    })
+    // human events as small bars (approval/input/command)
+    items2.filter((it) => it.kind.startsWith("human")).forEach((it) => {
+      const s = Date.parse(it.started_at)
+      if (!Number.isFinite(s)) return
+      const hx = x(s)
+      // Minimum bar width = 18px so short events are visible as swim-lane segments
+      const barW = 18
+      let d = null; try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+      const label = d ? (d.text ?? d.name ?? d.response ?? "") : ""
+      svg.push(`<rect x="${hx - barW / 2}" y="${midY - 6}" width="${barW}" height="12" rx="3" fill="#059669" opacity="0.85">
+        <title>${esc(it.kind)}${label ? " · " + esc(String(label).slice(0, 60)) : ""}</title>
+      </rect>`)
+    })
+    // per-lane counters (tool/step aggregated, no visual noise)
+    const tools = items2.filter((it) => it.kind === "tool_call").length
+    const steps = items2.filter((it) => it.kind === "step_finish").length
+    const files = items2.filter((it) => it.kind === "file_edit").length
+    if (tools || steps || files) {
+      const bits = []
+      if (tools) bits.push(`${tools} tools`)
+      if (steps) bits.push(`${steps} steps`)
+      if (files) bits.push(`${files} files`)
+      svg.push(`<text x="${labelW + 6}" y="${yTop + 11}" font-size="9.5" fill="var(--muted-fg)">${esc(bits.join(" · "))}</text>`)
+    }
+  })
+  svg.push(`</svg>`)
+
+  const legend = `<div class="gantt-legend">
+    <span><span class="sw" style="background:linear-gradient(90deg,var(--primary),var(--secondary))"></span>work session</span>
+    <span><span class="sw" style="background:#059669;border-radius:3px"></span>human action</span>
+    <span><span class="sw" style="background:var(--accent);border-radius:2px;width:14px"></span>today</span>
+  </div>`
+  el.innerHTML = `<div style="width:100%">${legend}${svg.join("")}</div>`
+}
+
+// ---- Members view ----
+async function renderMembers() {
+  const q = qs()
+  const data = await jget("/api/members?" + q)
+  const members = data.members ?? []
+  const host = document.querySelector("#membersTable tbody")
+  if (!host) return
+  host.innerHTML = members.map((m) => {
+    const a = m.activity ?? {}
+    return `<tr>
+      <td>${esc(m.display_name)}</td>
+      <td>${m.role ? badge(m.role) : "—"}</td>
+      <td>${badge(m.state)}</td>
+      <td>${fmtDate(m.joined_at)}</td>
+      <td>${fmtDate(m.last_seen_at)}</td>
+      <td>${fmtMs(a.duration_ms)}</td>
+      <td>${fmtNum(a.tokens_input)}</td>
+      <td>${fmtCost(a.cost)}</td>
+      <td>${fmtNum(a.count)}</td>
+    </tr>`
+  }).join("")
+}
+
+// ---- shared ----
+// member_id -> display_name (loaded once from /api/members)
+const memberNames = new Map()
+async function loadMemberNames() {
+  try {
+    const data = await jget("/api/members?team=" + encodeURIComponent($("#team").value))
+    for (const m of data.members ?? []) memberNames.set(m.id, m.display_name || m.id.slice(0, 8))
+  } catch { /* keep empty map */ }
+}
+function memberLabel(id) {
+  if (!id) return "—"
+  return memberNames.get(id) ?? id.slice(0, 8)
+}
+function fillTeamSelect(teams) {
+  const sel = $("#team")
+  if (sel.options.length === 0) {
+    const all = document.createElement("option"); all.value = ""; all.textContent = "All"; sel.appendChild(all)
+    for (const t of teams?.teams ?? []) { const o = document.createElement("option"); o.value = t.id; o.textContent = t.name; sel.appendChild(o) }
+    sel.addEventListener("change", () => { selectedGoalId = null; refreshGoalSelect(); refresh() })
+  }
+}
+function refresh() {
+  const active = $$("nav button").find((b) => b.classList.contains("active"))?.dataset.view ?? "kanban"
+  if (active === "timeline") renderTimeline()
+  else if (active === "cost") renderCost()
+  else if (active === "goal") renderGoal()
+  else if (active === "members") renderMembers()
+  else renderKanban()
+}
+$("#kind")?.addEventListener("change", refresh)
+$("#goal").addEventListener("change", () => {
+  selectedGoalId = $("#goal").value || null
+  refresh()
+})
+
+// ---- Kibana-style time picker interaction ----
+function updateTimeLabel() {
+  const el = document.getElementById("timeLabel")
+  if (el) el.textContent = timeState.label
+}
+function closeTimepicker() {
+  document.getElementById("timePopover")?.classList.remove("open")
+}
+document.getElementById("timeBtn")?.addEventListener("click", (e) => {
+  e.stopPropagation()
+  const pop = document.getElementById("timePopover")
+  if (pop) pop.classList.toggle("open")
+})
+document.getElementById("timePopover")?.addEventListener("click", (e) => e.stopPropagation())
+document.addEventListener("click", closeTimepicker)
+// quick buttons
+document.querySelectorAll(".tp-quick").forEach((b) => {
+  b.addEventListener("click", () => {
+    timeState.type = "quick"
+    timeState.from = b.dataset.from
+    timeState.label = b.textContent.trim()
+    document.querySelectorAll(".tp-quick").forEach((x) => x.classList.remove("sel"))
+    b.classList.add("sel")
+    updateTimeLabel()
+    closeTimepicker()
+    refresh()
+  })
+})
+// tabs
+document.querySelectorAll(".tp-tab").forEach((t) => {
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tp-tab").forEach((x) => x.classList.toggle("active", x === t))
+    document.querySelectorAll(".tp-pane").forEach((p) => p.classList.toggle("active", p.dataset.tpPane === t.dataset.tp))
+  })
+})
+// absolute apply
+document.getElementById("absApply")?.addEventListener("click", () => {
+  timeState.type = "absolute"
+  timeState.absFrom = document.getElementById("absFrom").value || null
+  timeState.absTo = document.getElementById("absTo").value || null
+  const fromL = timeState.absFrom ? new Date(timeState.absFrom).toLocaleString() : "start"
+  const toL = timeState.absTo ? new Date(timeState.absTo).toLocaleString() : "now"
+  timeState.label = fromL + " → " + toL
+  updateTimeLabel()
+  closeTimepicker()
+  refresh()
+})
+async function boot() {
+  try {
+    const teams = await jget("/api/teams")
+    fillTeamSelect(teams)
+    await loadMemberNames()
+    await refreshGoalSelect()
+    applyViewLayout("kanban")
+    renderKanban()
+  } catch (e) {
+    document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
+  }
+}
+boot()
+setInterval(() => refresh(), 30000)
+// ---- member select (prototype demo)----
+const memberMeta = {
+  alice: { name: "Alice", role: "contributor", dot: "online", sessionTitle: "Login page + permission validation", node: "node-01", cost: "⚡ 12.4k tok · $0.36" },
+  bob:   { name: "Bob",   role: "reviewer",   dot: "busy",   sessionTitle: "Code review #42",          node: "node-02", cost: "⚡ 18.6k tok · $0.54" },
+  carol: { name: "Carol", role: "observer",   dot: "offline", sessionTitle: null,                      node: null, cost: null },
+}
+function selectMember(el) {
+  if (!el) return
+  document.querySelectorAll(".member-item").forEach((x) => x.classList.remove("selected"))
+  el.classList.add("selected")
+  const m = memberMeta[el.dataset.member]
+  const detail = document.getElementById("memberDetail")
+  const empty = document.getElementById("emptyState")
+  if (m.sessionTitle) {
+    empty.style.display = "none"
+    detail.style.display = ""
+    document.getElementById("detailMemberName").innerHTML =
+      `<span class="status-dot ${m.dot}"></span> ${m.name}`
+    document.getElementById("detailSessionTitle").textContent = m.sessionTitle
+    const dc = document.getElementById("detailCost")
+    if (dc) dc.textContent = m.cost || ""
+  } else {
+    // Offline member: no sessions
+    empty.querySelector(".big").textContent = "😴"
+    empty.querySelector("div:nth-child(2)").textContent = `${m.name} offline, no sessions`
+    empty.style.display = ""
+    detail.style.display = "none"
+  }
+}
+document.querySelectorAll(".member-item").forEach((el) => {
+  el.addEventListener("click", () => selectMember(el))
+})
+// Select the first member by default
+selectMember(document.querySelector(".member-item"))
+
+// ---- detail tab tabs (prototype demo)----
+document.querySelectorAll(".detail-tabs button").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".detail-tabs button").forEach((x) => x.classList.remove("active"))
+    b.classList.add("active")
+    const t = b.dataset.dtab
+    ;["live", "messages", "terminal"].forEach((x) => {
+      document.getElementById("dtab-" + x).style.display = x === t ? "" : "none"
+    })
+  })
+})
+
+// ---- Live activity：random live activities (3-5s interval)----
+const LIVE_TOOLS = [
+  { icon: "🔧", html: `<span class="tool-name">edit</span> modified <span class="file">src/auth/login.tsx</span>` },
+  { icon: "👀", html: `<span class="tool-name">read</span> <span class="file">docs/ENT-01.md</span> (1,240 bytes)` },
+  { icon: "🔍", html: `<span class="tool-name">glob</span> matched <span class="file">src/auth/**/*.tsx</span> → 3 files` },
+  { icon: "🤖", html: `Assistant: Implementing client-side validation logic for the login form…` },
+  { icon: "🔍", html: `<span class="tool-name">grep</span> searching <span class="file">permission</span> in src/rbac` },
+  { icon: "🔧", html: `<span class="tool-name">bash</span> <span class="file">cargo test -p auth</span>` },
+  { icon: "📝", html: `<span class="tool-name">write</span> <span class="file">src/rbac/roles.ts</span>` },
+  { icon: "✅", html: `Tool result: <span class="file">Form validation tests passed</span>` },
+  { icon: "💬", html: `User: Remember to use Chinese for error messages` },
+  { icon: "🔄", html: `Session <b>resumed</b> by member` },
+]
+function nowClock() {
+  return new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+}
+function spawnLiveActivity() {
+  const feed = document.getElementById("dtab-live")
+  if (!feed || feed.style.display === "none") return
+  const tpl = LIVE_TOOLS[Math.floor(Math.random() * LIVE_TOOLS.length)]
+  const line = document.createElement("div")
+  line.className = "live-line new"
+  line.innerHTML = `<span class="ll-time">${esc(nowClock())}</span><span class="ll-icon">${tpl.icon}</span><span class="ll-text">${tpl.html}</span>`
+  feed.prepend(line)
+  while (feed.children.length > 12) feed.removeChild(feed.lastChild)
+}
+function scheduleLiveActivity() {
+  setTimeout(() => { spawnLiveActivity(); scheduleLiveActivity() }, 3000 + Math.random() * 2000)
+}
+scheduleLiveActivity()
+
+// ---- Terminal：random terminal commands (2.5-5s interval)----
+const TERM_CMDS = [
+  { cmd: "git status", out: "On branch main\nnothing to commit, working tree clean" },
+  { cmd: "cargo test -p auth", out: "running 12 tests\ntest result: ok. 12 passed; 0 failed" },
+  { cmd: "git diff src/auth/login.tsx", out: "+  setClientError(validate(form))\n+  Validation: email/password required, format must be correct" },
+  { cmd: "npm run lint", out: "✔ No ESLint errors (42 files checked)" },
+  { cmd: "cat src/rbac/roles.ts | head -15", out: "export const ROLES = {\n  owner: [\"create\",\"approve\",\"close\"],\n  contributor: [\"edit\",\"commit\"],\n  reviewer: [\"review\"]\n}" },
+  { cmd: "curl -s localhost:5781/api/goal | jq .title", out: "\"Release v2.0: Login + Permissions + Kanban\"" },
+  { cmd: "git log --oneline -5", out: "e2d3dfb feat(ui): teamx-ui full-page HTML prototype\n97f8e41 feat(git): team automation\n5af9c54 feat(git): Git Smart HTTP over mTLS" },
+  { cmd: "ps aux | grep teamx", out: "caishu 5301  12.3  0.2  teamx serve  ..." },
+  { cmd: "rg -n 'validation' src/auth", out: "src/auth/login.tsx:28  const clientError = validate(form)" },
+  { cmd: "git add -A && git commit -m 'feat(auth): form validation'", out: "[main 8c9f21a] feat(auth): form validation\n 2 files changed, 34 insertions(+)" },
+]
+function termPrompt() {
+  return '<span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ '
+}
+function spawnTerminalLine() {
+  const body = document.querySelector("#dtab-terminal .term-body")
+  if (!body || body.closest("#dtab-terminal").style.display === "none") return
+  const tpl = TERM_CMDS[Math.floor(Math.random() * TERM_CMDS.length)]
+  const cursor = body.querySelector(".term-cursor")
+  if (cursor) cursor.remove()
+  body.insertAdjacentHTML("beforeend",
+    `<br>${termPrompt()}${esc(tpl.cmd)}\n<span class="muted">${esc(tpl.out)}</span>`)
+  while (body.children.length > 40) body.removeChild(body.firstChild)
+  body.insertAdjacentHTML("beforeend", `<br>${termPrompt()}<span class="term-cursor"></span>`)
+  body.scrollTop = body.scrollHeight
+}
+function scheduleTerminalLine() {
+  setTimeout(() => { spawnTerminalLine(); scheduleTerminalLine() }, 2500 + Math.random() * 2500)
+}
+scheduleTerminalLine()
+
+// ---- Terminal：Maximize / Restore ----
+const termMaxBtn = document.getElementById("termMax")
+const termWin = document.querySelector(".term-window")
+const termBackdrop = document.getElementById("termBackdrop")
+function toggleTermMax() {
+  const on = termWin.classList.toggle("maximized")
+  if (termBackdrop) termBackdrop.classList.toggle("show", on)
+  if (termMaxBtn) {
+    termMaxBtn.textContent = on ? "🗕" : "⛶"
+    termMaxBtn.title = on ? "Restore" : "Maximize"
+  }
+}
+termMaxBtn?.addEventListener("click", toggleTermMax)
+termBackdrop?.addEventListener("click", () => { if (termWin.classList.contains("maximized")) toggleTermMax() })
+</script>
+</body>
+</html>
+</script>
+</body>
+</html>
