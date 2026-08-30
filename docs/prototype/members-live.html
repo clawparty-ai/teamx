@@ -121,17 +121,20 @@
   .live-line .ll-text { flex: 1; min-width: 0; word-break: break-all; }
   .live-line .ll-text .tool-name { color: var(--primary); font-weight: 600; }
   .live-line .ll-text .file { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+  .live-line.new { animation: livein 300ms ease; }
+  @keyframes livein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
   /* ---------- terminal placeholder ---------- */
   .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
   .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
   .term-dot { width: 10px; height: 10px; border-radius: 50%; }
-  .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; white-space: pre-wrap; }
+  .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
   .term-body .cmd { color: #9CDCFE; }
   .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
   @keyframes blink { 50% { opacity: 0; } }
   .empty { text-align: center; color: var(--muted-fg); padding: 60px 20px; }
   .empty .big { font-size: 40px; margin-bottom: 12px; }
   .muted { color: var(--muted-fg); }
+  .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .flex { display: flex; align-items: center; gap: 10px; }
   .mt16 { margin-top: 16px; }
   .hint { font-size: 12px; color: var(--muted-fg); padding: 0 4px 8px; }
@@ -204,7 +207,7 @@
             <div class="mi-avatar">A</div>
             <div class="mi-main">
               <div class="mi-name">Alice <span class="tag green">contributor</span></div>
-              <div class="mi-sub"><span class="status-dot online"></span>在线 · 2 会话 · node-01</div>
+              <div class="mi-sub"><span class="status-dot online"></span>在线 · 2 会话 · node-01 · <span class="cost">$4.82</span></div>
             </div>
             <div class="mi-live"><span class="live-badge">LIVE</span></div>
           </div>
@@ -212,7 +215,7 @@
             <div class="mi-avatar">B</div>
             <div class="mi-main">
               <div class="mi-name">Bob <span class="tag orange">reviewer</span></div>
-              <div class="mi-sub"><span class="status-dot busy"></span>执行中 · 2 会话 · node-02</div>
+              <div class="mi-sub"><span class="status-dot busy"></span>执行中 · 2 会话 · node-02 · <span class="cost">$4.51</span></div>
             </div>
             <div class="mi-live"><span class="live-badge">LIVE</span></div>
           </div>
@@ -220,7 +223,7 @@
             <div class="mi-avatar">C</div>
             <div class="mi-main">
               <div class="mi-name">Carol <span class="tag gray">observer</span></div>
-              <div class="mi-sub"><span class="status-dot offline"></span>离线 · 0 会话</div>
+              <div class="mi-sub"><span class="status-dot offline"></span>离线 · 0 会话 · <span class="cost">$3.01</span></div>
             </div>
           </div>
         </div>
@@ -244,6 +247,7 @@
           <div class="member-chip" id="detailMemberName" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;background:var(--muted)"><span class="status-dot online"></span> Alice</div>
           <div class="dh-title" id="detailSessionTitle">实现登录页 + 权限校验</div>
           <span class="tag blue">running</span>
+          <span class="tag orange" id="detailCost">⚡ 12.4k tok · $0.36</span>
           <button class="btn btn-sm" style="margin-left:auto">⏸ 中断</button>
           <button class="btn btn-sm">📋 发送消息</button>
           <button class="btn btn-primary btn-sm">⌨ 打开终端</button>
@@ -323,32 +327,38 @@ document.getElementById("themeToggle").addEventListener("click", () => {
 
 // ---- member 选择（原型演示）----
 const memberMeta = {
-  alice: { name: "Alice", role: "contributor", dot: "online", sessionTitle: "实现登录页 + 权限校验", node: "node-01" },
-  bob:   { name: "Bob",   role: "reviewer",   dot: "busy",   sessionTitle: "Code review #42",          node: "node-02" },
-  carol: { name: "Carol", role: "observer",   dot: "offline", sessionTitle: null,                      node: null },
+  alice: { name: "Alice", role: "contributor", dot: "online", sessionTitle: "实现登录页 + 权限校验", node: "node-01", cost: "⚡ 12.4k tok · $0.36" },
+  bob:   { name: "Bob",   role: "reviewer",   dot: "busy",   sessionTitle: "Code review #42",          node: "node-02", cost: "⚡ 18.6k tok · $0.54" },
+  carol: { name: "Carol", role: "observer",   dot: "offline", sessionTitle: null,                      node: null, cost: null },
+}
+function selectMember(el) {
+  if (!el) return
+  document.querySelectorAll(".member-item").forEach((x) => x.classList.remove("selected"))
+  el.classList.add("selected")
+  const m = memberMeta[el.dataset.member]
+  const detail = document.getElementById("memberDetail")
+  const empty = document.getElementById("emptyState")
+  if (m.sessionTitle) {
+    empty.style.display = "none"
+    detail.style.display = ""
+    document.getElementById("detailMemberName").innerHTML =
+      `<span class="status-dot ${m.dot}"></span> ${m.name}`
+    document.getElementById("detailSessionTitle").textContent = m.sessionTitle
+    const dc = document.getElementById("detailCost")
+    if (dc) dc.textContent = m.cost || ""
+  } else {
+    // 离线成员：显示无会话
+    empty.querySelector(".big").textContent = "😴"
+    empty.querySelector("div:nth-child(2)").textContent = `${m.name} 当前离线，无会话`
+    empty.style.display = ""
+    detail.style.display = "none"
+  }
 }
 document.querySelectorAll(".member-item").forEach((el) => {
-  el.addEventListener("click", () => {
-    document.querySelectorAll(".member-item").forEach((x) => x.classList.remove("selected"))
-    el.classList.add("selected")
-    const m = memberMeta[el.dataset.member]
-    const detail = document.getElementById("memberDetail")
-    const empty = document.getElementById("emptyState")
-    if (m.sessionTitle) {
-      empty.style.display = "none"
-      detail.style.display = ""
-      document.getElementById("detailMemberName").innerHTML =
-        `<span class="status-dot ${m.dot}"></span> ${m.name}`
-      document.getElementById("detailSessionTitle").textContent = m.sessionTitle
-    } else {
-      // 离线成员：显示无会话
-      empty.querySelector(".big").textContent = "😴"
-      empty.querySelector("div:nth-child(2)").textContent = `${m.name} 当前离线，无会话`
-      empty.style.display = ""
-      detail.style.display = "none"
-    }
-  })
+  el.addEventListener("click", () => selectMember(el))
 })
+// 默认选中第一个成员
+selectMember(document.querySelector(".member-item"))
 
 // ---- detail tab 切换（原型演示）----
 document.querySelectorAll(".detail-tabs button").forEach((b) => {
@@ -361,6 +371,70 @@ document.querySelectorAll(".detail-tabs button").forEach((b) => {
     })
   })
 })
+
+// ---- 实时活动：随机生成动态（3-5 秒间隔）----
+const LIVE_TOOLS = [
+  { icon: "🔧", html: `<span class="tool-name">edit</span> 修改 <span class="file">src/auth/login.tsx</span>` },
+  { icon: "👀", html: `<span class="tool-name">read</span> <span class="file">docs/ENT-01.md</span> (1,240 bytes)` },
+  { icon: "🔍", html: `<span class="tool-name">glob</span> 匹配 <span class="file">src/auth/**/*.tsx</span> → 3 个文件` },
+  { icon: "🤖", html: `Assistant: 正在实现登录表单的客户端校验逻辑…` },
+  { icon: "🔍", html: `<span class="tool-name">grep</span> 搜索 <span class="file">permission</span> in src/rbac` },
+  { icon: "🔧", html: `<span class="tool-name">bash</span> <span class="file">cargo test -p auth</span>` },
+  { icon: "📝", html: `<span class="tool-name">write</span> <span class="file">src/rbac/roles.ts</span>` },
+  { icon: "✅", html: `Tool result: <span class="file">表单校验用例通过</span>` },
+  { icon: "💬", html: `User: 错误提示记得用中文` },
+  { icon: "🔄", html: `Session <b>resumed</b> by member` },
+]
+function nowClock() {
+  return new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+}
+function spawnLiveActivity() {
+  const feed = document.getElementById("dtab-live")
+  if (!feed || feed.style.display === "none") return
+  const tpl = LIVE_TOOLS[Math.floor(Math.random() * LIVE_TOOLS.length)]
+  const line = document.createElement("div")
+  line.className = "live-line new"
+  line.innerHTML = `<span class="ll-time">${esc(nowClock())}</span><span class="ll-icon">${tpl.icon}</span><span class="ll-text">${tpl.html}</span>`
+  feed.prepend(line)
+  while (feed.children.length > 12) feed.removeChild(feed.lastChild)
+}
+function scheduleLiveActivity() {
+  setTimeout(() => { spawnLiveActivity(); scheduleLiveActivity() }, 3000 + Math.random() * 2000)
+}
+scheduleLiveActivity()
+
+// ---- 终端：随机生成命令与输出（2.5-5 秒间隔）----
+const TERM_CMDS = [
+  { cmd: "git status", out: "On branch main\nnothing to commit, working tree clean" },
+  { cmd: "cargo test -p auth", out: "running 12 tests\ntest result: ok. 12 passed; 0 failed" },
+  { cmd: "git diff src/auth/login.tsx", out: "+  setClientError(validate(form))\n+  表单校验：邮箱/密码非空、格式正确" },
+  { cmd: "npm run lint", out: "✔ No ESLint errors (42 files checked)" },
+  { cmd: "cat src/rbac/roles.ts | head -15", out: "export const ROLES = {\n  owner: [\"create\",\"approve\",\"close\"],\n  contributor: [\"edit\",\"commit\"],\n  reviewer: [\"review\"]\n}" },
+  { cmd: "curl -s localhost:5781/api/goal | jq .title", out: "\"发布 v2.0：登录 + 权限 + 看板\"" },
+  { cmd: "git log --oneline -5", out: "e2d3dfb feat(ui): teamx-ui 全页面 HTML 原型\n97f8e41 feat(git): 团队自动化\n5af9c54 feat(git): Git Smart HTTP over mTLS" },
+  { cmd: "ps aux | grep teamx", out: "caishu 5301  12.3  0.2  teamx serve  ..." },
+  { cmd: "rg -n '校验' src/auth", out: "src/auth/login.tsx:28  const clientError = validate(form)" },
+  { cmd: "git add -A && git commit -m 'feat(auth): 表单校验'", out: "[main 8c9f21a] feat(auth): 表单校验\n 2 files changed, 34 insertions(+)" },
+]
+function termPrompt() {
+  return '<span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ '
+}
+function spawnTerminalLine() {
+  const body = document.querySelector("#dtab-terminal .term-body")
+  if (!body || body.closest("#dtab-terminal").style.display === "none") return
+  const tpl = TERM_CMDS[Math.floor(Math.random() * TERM_CMDS.length)]
+  const cursor = body.querySelector(".term-cursor")
+  if (cursor) cursor.remove()
+  body.insertAdjacentHTML("beforeend",
+    `<br>${termPrompt()}${esc(tpl.cmd)}\n<span class="muted">${esc(tpl.out)}</span>`)
+  while (body.children.length > 40) body.removeChild(body.firstChild)
+  body.insertAdjacentHTML("beforeend", `<br>${termPrompt()}<span class="term-cursor"></span>`)
+  body.scrollTop = body.scrollHeight
+}
+function scheduleTerminalLine() {
+  setTimeout(() => { spawnTerminalLine(); scheduleTerminalLine() }, 2500 + Math.random() * 2500)
+}
+scheduleTerminalLine()
 </script>
 </body>
 </html>
