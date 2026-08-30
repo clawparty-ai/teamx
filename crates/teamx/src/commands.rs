@@ -1529,7 +1529,7 @@ fn cmd_team_invite(
                 desc_ref,
                 issued.serial_hex,
                 issued.cn,
-                user.as_ref().map(|(id, _)| id.as_str()),
+                user.as_ref().map(|(id, _)| id.as_str()).unwrap_or(""),
                 actor.id,
                 now
             ],
@@ -1837,12 +1837,12 @@ fn claim_invitation(
     // User binding: the letter's `user.id` must agree with the invitation row's
     // `user_id` (both owner-authored; this is a consistency guard, not an auth
     // boundary — the cert-derived user is enforced at tunnel connect time).
-    let user_id = inv_row.user_id.clone();
+    let user_id = inv_row.user_id.clone().unwrap_or_default();
     if let Some(letter_user) = inv["user"]["id"].as_str() {
         match &user_id {
-            Some(u) if u == letter_user => {}
-            Some(u) => return err(format!("letter user `{letter_user}` does not match invitation user `{u}`")),
-            None => return err(format!("letter carries user `{letter_user}` but the invitation is not bound to a user")),
+            u if u == letter_user => {}
+            u if !u.is_empty() => return err(format!("letter user `{letter_user}` does not match invitation user `{u}`")),
+            _ => return err(format!("letter carries user `{letter_user}` but the invitation is not bound to a user")),
         }
     }
 
