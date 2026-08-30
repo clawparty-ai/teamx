@@ -59,13 +59,54 @@ function nowIso(): string {
 // command) happened inside it, has_human is set. Uses a module-level map so
 // multiple sessions are tracked independently.
 // ---------------------------------------------------------------------------
-const workSegments = new Map<string, { startedAt: string; hasHuman: boolean }>()
+type WorkSegment = {
+  startedAt: string
+  hasHuman: boolean
+  cost: number
+  tokensInput: number
+  tokensOutput: number
+  tokensReasoning: number
+  tokensCacheRead: number
+  tokensCacheWrite: number
+}
+const workSegments = new Map<string, WorkSegment>()
+
+/** Per-session model attribution (sessionID -> modelID/providerID), filled by
+ * the `message.updated` hook and consumed by step_finish + work_session rows. */
+const sessionModel = new Map<string, { modelID: string; providerID: string }>()
+
+// Presence counters (real-time): tool part ids currently running + open pty ids.
+const runningTools = new Set<string>()
+const openTerminals = new Set<string>()
 
 /** Record human activity inside the current work segment (if any). */
 function markHuman(sessionID: string | undefined): void {
   if (!sessionID) return
   const seg = workSegments.get(sessionID)
   if (seg) seg.hasHuman = true
+}
+
+/** Accumulate a step's cost/tokens into the current work segment. */
+function accumulateSegment(
+  sessionID: string | undefined,
+  step: {
+    cost?: number
+    tokensInput?: number
+    tokensOutput?: number
+    tokensReasoning?: number
+    tokensCacheRead?: number
+    tokensCacheWrite?: number
+  },
+): void {
+  if (!sessionID) return
+  const seg = workSegments.get(sessionID)
+  if (!seg) return
+  seg.cost += step.cost ?? 0
+  seg.tokensInput += step.tokensInput ?? 0
+  seg.tokensOutput += step.tokensOutput ?? 0
+  seg.tokensReasoning += step.tokensReasoning ?? 0
+  seg.tokensCacheRead += step.tokensCacheRead ?? 0
+  seg.tokensCacheWrite += step.tokensCacheWrite ?? 0
 }
 
 /**
@@ -81,6 +122,7 @@ function closeWorkSegment(sessionID: string, now: string): void {
   const startMs = Date.parse(seg.startedAt)
   const endMs = Date.parse(now)
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return
+  const model = sessionModel.get(sessionID)
   collect({
     node_id: instanceId(),
     started_at: seg.startedAt,
@@ -89,6 +131,15 @@ function closeWorkSegment(sessionID: string, now: string): void {
     kind: "work_session",
     detail: { sessionID },
     has_human: seg.hasHuman,
+    // Cost/tokens aggregated from the steps that ran inside this segment.
+    cost: seg.cost > 0 ? seg.cost : undefined,
+    tokens_input: seg.tokensInput > 0 ? seg.tokensInput : undefined,
+    tokens_output: seg.tokensOutput > 0 ? seg.tokensOutput : undefined,
+    tokens_reasoning: seg.tokensReasoning > 0 ? seg.tokensReasoning : undefined,
+    tokens_cache_read: seg.tokensCacheRead > 0 ? seg.tokensCacheRead : undefined,
+    tokens_cache_write: seg.tokensCacheWrite > 0 ? seg.tokensCacheWrite : undefined,
+    model_id: model?.modelID || undefined,
+    provider_id: model?.providerID || undefined,
   })
 }
 
@@ -248,6 +299,96 @@ export const Teamx: Plugin = async ({ client }) => {
     extra?: Record<string, unknown>,
   ) => {
     client.app.log({ body: { service: LOG_SERVICE, level, message, extra } }).catch(() => {})
+  }
+
+  /**
+   * Best-effort: report opencode's live model pricing to the server
+   * (`model.pricing_sync`, source = 'opencode') so cost fallback uses real
+   * prices instead of only the built-in seed. Reads the opencode config's
+   * per-model `cost` (USD / 1M tokens). Network mode only.
+   */
+  async function syncModelPricing(): Promise<void> {
+    try {
+      const resp = (await client.config.get()) as unknown as {
+        data?: unknown
+        provider?: Record<string, unknown>
+      }
+      const providers = (resp?.data ?? resp ?? {}) as { provider?: Record<string, unknown> }
+      const rows: Array<{
+        provider_id: string
+        model_id: string
+        price_input: number
+        price_output: number
+        price_cache_read: number
+        price_cache_write: number
+        over200k_input?: number
+        over200k_output?: number
+        over200k_cache_read?: number
+        over200k_cache_write?: number
+      }> = []
+      for (const [providerID, provider] of Object.entries(providers.provider ?? {})) {
+        const models = (provider as { models?: Record<string, unknown> })?.models ?? {}
+        for (const [modelKey, m] of Object.entries(models)) {
+          const cost = (m as { cost?: Record<string, unknown> })?.cost
+          if (!cost) continue
+          const modelID = ((m as { id?: string })?.id ?? modelKey) as string
+          const over = cost.context_over_200k as Record<string, unknown> | undefined
+          rows.push({
+            provider_id: providerID,
+            model_id: modelID,
+            price_input: (cost.input as number) ?? 0,
+            price_output: (cost.output as number) ?? 0,
+            price_cache_read: (cost.cache_read as number) ?? 0,
+            price_cache_write: (cost.cache_write as number) ?? 0,
+            over200k_input: (over?.input as number) ?? undefined,
+            over200k_output: (over?.output as number) ?? undefined,
+            over200k_cache_read: (over?.cache_read as number) ?? undefined,
+            over200k_cache_write: (over?.cache_write as number) ?? undefined,
+          })
+        }
+      }
+      if (rows.length === 0) return
+      const r = await runCli(["model", "pricing-sync", "--data", JSON.stringify(rows)])
+      if (!r.ok) log("debug", "model pricing sync failed", { stderr: r.stderr })
+    } catch (e) {
+      log("debug", "model pricing sync error", { error: String(e) })
+    }
+  }
+
+  // Report model pricing once at startup (network mode only).
+  if (TEAMX_SERVER_URL) {
+    void syncModelPricing()
+  }
+
+  // ---- Enterprise presence: push a live snapshot to the server (network mode).
+  // `active_sessions` = busy work segments, `running_tools` = running tool parts,
+  // `open_terminals` = open ptys. Pushed on change (debounced) + a heartbeat
+  // keepalive so the server's TTL does not expire an idle-but-online member.
+  const PRESENCE_INTERVAL = Number(process.env.TEAMX_PRESENCE_INTERVAL ?? 10000)
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined
+  function presenceSnapshot() {
+    return {
+      active_sessions: workSegments.size,
+      running_tools: runningTools.size,
+      open_terminals: openTerminals.size,
+    }
+  }
+  async function pushPresence(): Promise<void> {
+    if (!TEAMX_SERVER_URL) return
+    const r = await runCli(["presence", "push", "--data", JSON.stringify(presenceSnapshot())])
+    if (!r.ok) log("debug", "presence push failed", { stderr: r.stderr })
+  }
+  function schedulePresencePush(): void {
+    if (presenceTimer) return
+    presenceTimer = setTimeout(() => {
+      presenceTimer = undefined
+      void pushPresence()
+    }, 500)
+  }
+  if (PRESENCE_INTERVAL > 0) {
+    setInterval(() => {
+      void pushPresence()
+    }, PRESENCE_INTERVAL)
   }
 
   // Per-session watermark of the highest seq we have already toasted, so the
@@ -492,8 +633,44 @@ export const Teamx: Plugin = async ({ client }) => {
           if (status === "busy" && !workSegments.has(sessionID)) {
             // A turn is starting: open a work segment. Its end is the next
             // session.idle (closeWorkSegment).
-            workSegments.set(sessionID, { startedAt: nowIso(), hasHuman: false })
+            workSegments.set(sessionID, {
+              startedAt: nowIso(),
+              hasHuman: false,
+              cost: 0,
+              tokensInput: 0,
+              tokensOutput: 0,
+              tokensReasoning: 0,
+              tokensCacheRead: 0,
+              tokensCacheWrite: 0,
+            })
           }
+          return
+        }
+
+        case "message.updated": {
+          // Record model attribution per session so step_finish rows can carry
+          // model_id/provider_id (needed for the cost pricing table).
+          const info = props?.info as Record<string, unknown> | undefined
+          const sid = (info?.sessionID as string | undefined) ?? sessionID
+          const modelID = info?.modelID as string | undefined
+          const providerID = info?.providerID as string | undefined
+          if (sid && (modelID || providerID)) {
+            sessionModel.set(sid, { modelID: modelID ?? "", providerID: providerID ?? "" })
+          }
+          return
+        }
+
+        case "pty.created": {
+          // Presence: track open terminals.
+          const pid = (props?.info as Record<string, unknown> | undefined)?.id as string | undefined
+          if (pid) { openTerminals.add(pid); schedulePresencePush() }
+          return
+        }
+
+        case "pty.deleted":
+        case "pty.exited": {
+          const pid = props?.id as string | undefined
+          if (pid) { openTerminals.delete(pid); schedulePresencePush() }
           return
         }
 
@@ -508,6 +685,14 @@ export const Teamx: Plugin = async ({ client }) => {
             const status = state.status ?? "unknown"
             const time = state.time as { start?: number; end?: number } | undefined
             const durationMs = time?.start && time?.end ? time.end - time.start : undefined
+            // Presence: track running tools by part id (running vs completed).
+            const pid = (part as { id?: string }).id
+            if (pid) {
+              const done = status === "completed" || (time?.start != null && time?.end != null)
+              if (done) runningTools.delete(pid)
+              else runningTools.add(pid)
+              schedulePresencePush()
+            }
             record({
               node_id: instance,
               started_at: time?.start ? new Date(time.start).toISOString() : started,
@@ -521,23 +706,38 @@ export const Teamx: Plugin = async ({ client }) => {
             const ti = (tokens?.input as number) ?? undefined
             const to = (tokens?.output as number) ?? undefined
             const tr = (tokens?.reasoning as number) ?? undefined
+            const cr = (cache?.read as number) ?? undefined
+            const cw = (cache?.write as number) ?? undefined
+            // Model attribution: recorded by the `message.updated` hook.
+            const model = sessionID ? sessionModel.get(sessionID) : undefined
             record({
               node_id: instance,
               started_at: started,
               kind: "step_finish",
-              detail: { reason: (part.reason as string) ?? undefined },
+              // Note: input/output include cached read tokens for accounting.
+              detail: {
+                reason: (part.reason as string) ?? undefined,
+                cache_read: cr,
+                cache_write: cw,
+              },
               tokens_input: ti,
               tokens_output: to,
               tokens_reasoning: tr,
+              tokens_cache_read: cr,
+              tokens_cache_write: cw,
               cost: (part.cost as number) ?? undefined,
-              // Note: input/output include cached read tokens for accounting.
-              ...(cache && {
-                detail: {
-                  reason: (part.reason as string) ?? undefined,
-                  cache_read: (cache.read as number) ?? undefined,
-                  cache_write: (cache.write as number) ?? undefined,
-                },
-              }),
+              model_id: model?.modelID || undefined,
+              provider_id: model?.providerID || undefined,
+            })
+            // A3: accumulate this step's cost/tokens into the open work segment
+            // so the eventual work_session row carries the aggregated cost.
+            accumulateSegment(sessionID, {
+              cost: (part.cost as number) ?? 0,
+              tokensInput: ti ?? 0,
+              tokensOutput: to ?? 0,
+              tokensReasoning: tr ?? 0,
+              tokensCacheRead: cr ?? 0,
+              tokensCacheWrite: cw ?? 0,
             })
           }
           return

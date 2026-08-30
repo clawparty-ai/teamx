@@ -121,6 +121,7 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
+        .route("/members-live", get(index))
         .route("/xterm.js", get(xterm_js))
         .route("/xterm.css", get(xterm_css))
         .route("/api/teams", get(api_teams))
@@ -138,6 +139,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         // Live member view (ENT-01): proxy to member's opencode via tunnel.
         .route("/api/members/{member_id}/sessions", get(api_member_sessions))
         .route("/api/members/{member_id}/session/{sid}/message", get(api_member_messages))
+        .route("/api/members/{member_id}/session/{sid}/abort", post(api_member_abort))
+        .route("/api/members/{member_id}/session/{sid}/prompt", post(api_member_prompt))
         .route("/api/members/{member_id}/shell", get(api_member_shells))
         .route("/api/members/{member_id}/pty", post(api_member_pty))
         .route("/ws/members/{member_id}/pty/{pty_id}", get(ws_member_pty))
@@ -355,6 +358,7 @@ fn page_html() -> String {
   .kb-body .tool-name { font-weight: 600; color: var(--primary); }
   .kb-body .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .kb-meta { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kb-meta .cost, .kb-col-meta .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .kb-card { position: relative; }
   .kb-tip { display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
   .kb-tip .tip-title { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
@@ -388,6 +392,58 @@ fn page_html() -> String {
   .gantt-bar:hover .gantt-tip, .gantt-point:hover .gantt-tip, .gantt-bar:focus .gantt-tip, .gantt-point:focus .gantt-tip { display: block; }
   .gantt-axis { position: relative; height: 22px; margin-left: 150px; font-size: 10.5px; color: var(--muted-fg); font-family: var(--font-mono); margin-bottom: 4px; }
   .gantt-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .view-toggle { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .view-toggle button { background: var(--card); border: none; padding: 6px 14px; font-size: 13px; color: var(--muted-fg); cursor: pointer; transition: all var(--transition); }
+  .view-toggle button + button { border-left: 1px solid var(--border); }
+  .view-toggle button.active { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+  /* ---------- fishbone timeline (vertical) ---------- */
+  .fishbone { background: var(--card); border-radius: var(--radius); padding: 18px 14px 8px; }
+  .fb-wrap { position: relative; }
+  .fb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-1px); }
+  .fb-start { display: flex; justify-content: center; position: relative; z-index: 2; }
+  .fb-start-box { display: inline-flex; align-items: center; gap: 9px; padding: 7px 18px; border: 1.5px solid var(--primary); border-radius: 6px; background: var(--card); color: var(--primary); font-size: 12.5px; font-weight: 600; box-shadow: var(--shadow); letter-spacing: 0.03em; }
+  .fb-start-box:hover { box-shadow: var(--shadow-hover); }
+  .fb-start-dot { width: 10px; height: 10px; background: var(--primary); border-radius: 2px; flex-shrink: 0; }
+  .fb-day { text-align: center; padding: 14px 0 8px; font-size: 11.5px; font-weight: 600; color: var(--muted-fg); font-family: var(--font-mono); letter-spacing: 0.05em; }
+  .fb-day:first-child { padding-top: 0; }
+  .fb-day::before { content: "— "; color: var(--border); }
+  .fb-day::after { content: " —"; color: var(--border); }
+  .fb-row { position: relative; display: flex; align-items: center; min-height: 34px; padding: 3px 0; }
+  .fb-side { flex: 1; min-width: 0; position: relative; display: flex; }
+  .fb-center { flex: 0 0 30px; position: relative; display: flex; align-items: center; justify-content: center; }
+  .fb-row.left .fb-side:first-child { justify-content: flex-end; }
+  .fb-card { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; box-shadow: var(--shadow); max-width: 430px; transition: box-shadow var(--transition), border-color var(--transition); }
+  .fb-card:hover { box-shadow: var(--shadow-hover); border-color: var(--primary); }
+  .fb-row.left .fb-card { margin-right: 10px; }
+  .fb-row.right .fb-card { margin-left: 10px; }
+  .fb-row.left .fb-card::after { content: ""; position: absolute; left: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-row.right .fb-card::after { content: ""; position: absolute; right: 100%; top: 50%; width: 25px; height: 2px; background: var(--border); transform: translateY(-50%); }
+  .fb-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted-fg); border: 2px solid var(--card); box-shadow: 0 0 0 2px var(--border); z-index: 2; }
+  .fb-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
+  .fb-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .fb-who { font-size: 12px; font-weight: 600; color: var(--fg); }
+  .fb-kind { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 10.5px; font-weight: 600; color: #fff; line-height: 1.6; }
+  .fb-text { font-size: 13px; color: var(--fg); line-height: 1.45; word-break: break-word; }
+  .fb-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); margin-top: 3px; }
+  .fb-meta .human { color: #1a7f37; font-weight: 600; }
+  .fb-cost { color: var(--accent); font-weight: 600; }
+  /* ---------- horizontal fishbone (goal activity timeline) ---------- */
+  .hfb-wrap { position: relative; height: 560px; }
+  .hfb-spine { position: absolute; left: 4%; right: 4%; top: 50%; height: 2px; background: var(--border); }
+  .hfb-node { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 2; }
+  .hfb-dot { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--card); box-shadow: 0 0 0 2px var(--border); }
+  .hfb-card { position: absolute; left: 50%; transform: translateX(-50%); width: 172px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; box-shadow: var(--shadow); transition: box-shadow var(--transition), border-color var(--transition); }
+  .hfb-card:hover { box-shadow: var(--shadow-hover); border-color: var(--primary); }
+  .hfb-node.top-near .hfb-card { bottom: 20px; }
+  .hfb-node.top-far .hfb-card { bottom: 180px; }
+  .hfb-node.bottom-near .hfb-card { top: 20px; }
+  .hfb-node.bottom-far .hfb-card { top: 180px; }
+  .hfb-node.top-near .hfb-card::after, .hfb-node.top-far .hfb-card::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%); width: 2px; background: var(--border); }
+  .hfb-node.bottom-near .hfb-card::after, .hfb-node.bottom-far .hfb-card::after { content: ""; position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); width: 2px; background: var(--border); }
+  .hfb-node.top-near .hfb-card::after, .hfb-node.bottom-near .hfb-card::after { height: 18px; }
+  .hfb-node.top-far .hfb-card::after, .hfb-node.bottom-far .hfb-card::after { height: 178px; }
+  .hfb-ruler { display: flex; justify-content: space-between; margin: 6px 4% 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-fg); }
+  .hfb-cost { color: var(--accent); font-weight: 600; }
   .lifecycle { position: relative; background: var(--card); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
   .lc-track { display: flex; align-items: flex-start; position: relative; }
   .lc-step { flex: 1; text-align: center; position: relative; min-width: 90px; z-index: 1; }
@@ -437,6 +493,7 @@ fn page_html() -> String {
   .member-item .mi-main { flex: 1; min-width: 0; }
   .member-item .mi-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .member-item .mi-sub { font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+  .member-item .mi-sub .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .member-item .mi-live { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
   .live-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: var(--danger); color: white; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -473,6 +530,12 @@ fn page_html() -> String {
   .term-body .cmd { color: #9CDCFE; }
   .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
   @keyframes blink { 50% { opacity: 0; } }
+  .term-max-btn { margin-left: 8px; background: none; border: 1px solid #555; color: #ccc; border-radius: 3px; cursor: pointer; font-size: 11px; padding: 1px 6px; }
+  .term-max-btn:hover { border-color: #888; color: #fff; }
+  .term-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 900; }
+  .term-backdrop.open { display: block; }
+  .term-window.maximized { position: fixed; inset: 24px; z-index: 901; border-radius: 8px; display: flex; flex-direction: column; }
+  .term-window.maximized .term-body { flex: 1; overflow: auto; }
 
   .mlive-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
   @media (max-width: 900px) { .mlive-layout { grid-template-columns: 1fr; } }
@@ -507,6 +570,10 @@ fn page_html() -> String {
     <label>Goal <select id="goal"><option value="">All</option></select></label>
   </div>
   <div class="toolbar-right">
+    <div class="view-toggle" id="tlViewToggle" style="display:none">
+      <button type="button" data-tlmode="gantt">Gantt</button>
+      <button type="button" data-tlmode="fishbone" class="active">Fishbone</button>
+    </div>
     <div class="timepicker">
       <button class="btn time-btn" id="timeBtn" title="Select time range">
         <span class="tp-icon">◷</span>
@@ -561,6 +628,7 @@ fn page_html() -> String {
   <!-- ============ Cost view ============ -->
   <div class="view" id="view-cost">
     <div class="cards" id="costCards"></div>
+    <section class="panel" id="costBreakdownPanel" style="display:none"><h2>Cost breakdown</h2><div id="costBreakdown"></div></section>
     <div class="charts-row">
       <section class="panel"><h2>Cost by member</h2><div id="chartCostDonut" class="chart-box"></div><div id="chartCostDonutLegend" class="chart-legend"></div></section>
       <section class="panel"><h2>Cost by node</h2><div id="chartCostBars" class="chart-box"></div></section>
@@ -579,13 +647,23 @@ fn page_html() -> String {
     </div>
   </div>
 
-  <!-- ============ Timeline view (Gantt) ============ -->
+  <!-- ============ Timeline view (Gantt / fishbone toggle) ============ -->
   <div class="view" id="view-timeline">
-    <div class="gantt" id="gantt"></div>
+    <div class="gantt" id="gantt" style="display:none"></div>
+    <div class="fishbone" id="fishbone"></div>
   </div>
 
   <!-- ============ Members view (live member sessions, ENT-01) ============ -->
   <div class="view" id="view-members">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div class="hint" style="padding:0">在线成员 / 活跃会话 / 正在执行工具为最近时间窗口的活动聚合；打开的终端为实时状态</div>
+      <div class="view-toggle" id="mliveWindowToggle">
+        <button type="button" data-win="300000">5 分钟</button>
+        <button type="button" data-win="600000" class="active">10 分钟</button>
+        <button type="button" data-win="1800000">30 分钟</button>
+        <button type="button" data-win="3600000">1 小时</button>
+      </div>
+    </div>
     <div class="cards" id="mliveCards"></div>
     <div class="mlive-layout">
       <div>
@@ -605,16 +683,22 @@ fn page_html() -> String {
           <div class="detail-header">
             <div class="member-chip" id="mliveMemberName" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;background:var(--muted)"></div>
             <div class="dh-title" id="mliveSessionTitle">—</div>
-            <button class="btn btn-primary btn-sm" style="margin-left:auto" id="mliveTermBtn">⌨ 打开终端</button>
+            <span class="tag blue" id="mliveRunningTag" style="display:none">running</span>
+            <span class="tag orange" id="mliveCostTag" style="display:none"></span>
+            <button class="btn btn-sm" id="mliveInterruptBtn" style="margin-left:auto;display:none">⏸ 中断</button>
+            <button class="btn btn-sm" id="mliveSendBtn" style="display:none">📋 发送消息</button>
+            <button class="btn btn-primary btn-sm" id="mliveTermBtn">⌨ 打开终端</button>
           </div>
           <div class="detail-tabs">
             <button class="active" data-mtab="live">实时活动</button>
             <button data-mtab="sessions">会话</button>
+            <button data-mtab="messages">消息</button>
             <button data-mtab="terminal">终端</button>
           </div>
           <div class="detail-body">
             <div id="mtab-live"></div>
             <div id="mtab-sessions" style="display:none"></div>
+            <div id="mtab-messages" style="display:none"></div>
             <div id="mtab-terminal" style="display:none">
               <div id="mliveTerm" class="muted">点击右上角"打开终端"或选择下方终端标签</div>
             </div>
@@ -711,6 +795,7 @@ function showView(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
   $(".container").classList.toggle("full-width", name === "timeline")
+  $("#tlViewToggle").style.display = name === "timeline" ? "" : "none"
   if (name === "timeline") renderTimeline()
   if (name === "cost") renderCost()
   if (name === "kanban") renderKanban()
@@ -784,9 +869,9 @@ async function renderGoal() {
   const [overview, byMember, byNode] = await Promise.all([
     jget("/api/overview?" + win), jget("/api/by_member?" + win), jget("/api/by_node?" + win),
   ])
-  // Gantt scoped to the selected goal's lifecycle window.
+  // Horizontal fishbone scoped to the selected goal's lifecycle window.
   if (sel) {
-    drawGantt(tl.items ?? [], { el: "#goalGantt", from: sel.created_at, to: sel.closed_at || new Date().toISOString() })
+    renderHFishbone(tl.items ?? [], { el: "#goalGantt", from: sel.created_at, to: sel.closed_at || new Date().toISOString() })
   } else {
     const el = document.querySelector("#goalGantt")
     if (el) el.innerHTML = '<div class="muted">no goal</div>'
@@ -876,11 +961,16 @@ async function renderKanban() {
     const s = col.summary ?? {}
     const tasks = col.tasks ?? []
     const done = tasks.filter((t) => t.has_human).length
+    const totTokens = tasks.reduce((sum, t) => sum + ((t.tokens_input ?? 0) + (t.tokens_output ?? 0)), 0)
+    const totCost = tasks.reduce((sum, t) => sum + (t.cost ?? 0), 0)
+    const costBits = totTokens > 0 || totCost > 0
+      ? ` · ⚡ ${fmtNum(totTokens)} tok · <span class="cost">${fmtCost(totCost)}</span>`
+      : ""
     return `<div class="kb-col">
       <div class="kb-col-head">
         <div class="kb-col-title">${esc(col.display_name)} ${col.role ? badge(col.role) : ""}</div>
         <div class="kb-col-meta muted">
-          ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}
+          ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${costBits}
         </div>
       </div>
       ${tasks.slice(0, 12).map((r) => renderTaskCard(r)).join("") || '<div class="kb-empty muted">no work in this range</div>'}
@@ -897,6 +987,7 @@ function renderTaskCard(r) {
   const who = memberLabel(r.member_id)
   const tag = r.has_human ? "human-in-loop" : "auto"
   const desc = d_.description || d_.task || ""
+  const totTok = (r.tokens_input ?? 0) + (r.tokens_output ?? 0)
   const tipRows = []
   const addRow = (k, v) => { if (v != null && v !== "") tipRows.push([k, String(v)]) }
   addRow("member", who)
@@ -905,10 +996,16 @@ function renderTaskCard(r) {
   if (r.ended_at) addRow("ended", fmtDate(r.ended_at))
   if (r.duration_ms != null) addRow("duration", fmtMs(r.duration_ms))
   addRow("human", r.has_human ? "yes" : "no")
+  if (r.tokens_input != null) addRow("tokens in", fmtNum(r.tokens_input))
+  if (r.tokens_output != null) addRow("tokens out", fmtNum(r.tokens_output))
+  if (r.cost != null) addRow("cost", fmtCost(r.cost))
   // description first, then the rest of detail fields (skip description dup)
   if (desc) addRow("task", desc)
   if (d_) { for (const [k, v] of Object.entries(d_)) { if (v == null || k === "description" || k === "task") continue; const val = typeof v === "object" ? JSON.stringify(v) : String(v); addRow(k, val.length > 300 ? val.slice(0, 300) + "…" : val) } }
   const descHtml = desc ? `<div class="kb-desc">${esc(desc)}</div>` : ""
+  const costMeta = totTok > 0 || (r.cost ?? 0) > 0
+    ? ` · <span class="cost">⚡ ${fmtNum(totTok)} tok · ${fmtCost(r.cost)}</span>`
+    : ""
   const tip = `<div class="kb-tip" role="tooltip">
     <div class="tip-title"><span>${esc(tag)}</span><span class="badge work_session">work_session</span></div>
     ${descHtml}
@@ -917,7 +1014,7 @@ function renderTaskCard(r) {
   return `<div class="kb-card" tabindex="0">
     <div class="kb-head"><span class="kb-who">${esc(who)}</span><span class="badge ${r.has_human ? "active" : "idle"}">${esc(tag)}</span></div>
     <div class="kb-body">${desc ? esc(desc) : `Worked <b>${hrs}h</b>`}${!desc && d_.sessionID ? " · <span class='mono'>" + esc(String(d_.sessionID)) + "</span>" : ""}</div>
-    <div class="kb-meta muted">${fmtDate(r.started_at)}${r.ended_at ? " → " + fmtDate(r.ended_at) : ""}</div>
+    <div class="kb-meta muted">${fmtDate(r.started_at)}${r.ended_at ? " → " + fmtDate(r.ended_at) : ""}${costMeta}</div>
     ${tip}
   </div>`
 }
@@ -938,6 +1035,7 @@ async function renderCost() {
     ["Cost", fmtCost(o.cost)],
     ["Avg cost / row", fmtCost(o.cost != null && o.overall?.count ? o.cost / o.overall.count : null)],
   ].map(([l, v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("")
+  renderCostBreakdown(o)
   $("#costByMember tbody").innerHTML = tableRows(byMember, [
     (m) => esc(memberLabel(m.member_id)), (m) => fmtNum(m.tokens_input),
     (m) => fmtNum(m.tokens_output), (m) => fmtCost(m.cost), (m) => fmtNum(m.count),
@@ -1052,12 +1150,195 @@ function drawGroupedBars(selId, data, nameA, nameB) {
     ${bars}</svg>`
 }
 
+/** Cost breakdown: stacked bar + legend (input/output/cache read/cache write). */
+function renderCostBreakdown(o) {
+  const panel = document.getElementById("costBreakdownPanel")
+  const host = document.getElementById("costBreakdown")
+  if (!panel || !host) return
+  const parts = [
+    ["input", o.cost_input ?? 0],
+    ["output", o.cost_output ?? 0],
+    ["cache read", o.cost_cache_read ?? 0],
+    ["cache write", o.cost_cache_write ?? 0],
+  ]
+  const colors = { input: "#1E40AF", output: "#3B82F6", "cache read": "#8B5CF6", "cache write": "#D97706" }
+  const total = o.cost ?? 0
+  const hasData = parts.some(([, v]) => v > 0)
+  if (!hasData) { panel.style.display = "none"; return }
+  panel.style.display = ""
+  const pct = (v) => (total > 0 ? (v / total * 100).toFixed(1) : "0")
+  const segs = parts.filter(([, v]) => v > 0)
+  host.innerHTML = `<div class="hbar-track" style="height:20px;display:flex;overflow:hidden;border-radius:3px">${segs.map(([k, v]) =>
+    `<div style="height:100%;width:${pct(v)}%;background:${colors[k]}" title="${k}: ${fmtCost(v)}"></div>`).join("")}</div>
+  <div class="chart-legend" style="margin-top:8px">${segs.map(([k, v]) =>
+    `<span><span class="sw" style="background:${colors[k]}"></span>${k}: ${fmtCost(v)} (${pct(v)}%)</span>`).join("")}</div>`
+}
+
 // ---- Timeline (Gantt) view ----
+// ---- Timeline view (Gantt + fishbone toggle) ----
+let tlMode = "fishbone"
+let lastTimelineItems = []
+
 async function renderTimeline() {
   const q = qs()
   const [teams, tl] = await Promise.all([jget("/api/teams"), jget("/api/timeline?" + q)])
   fillTeamSelect(teams)
-  drawGantt(tl.items ?? [])
+  lastTimelineItems = tl.items ?? []
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+
+function setTimelineMode(mode) {
+  tlMode = mode
+  $$("#tlViewToggle button").forEach((b) => b.classList.toggle("active", b.dataset.tlmode === mode))
+  $("#gantt").style.display = mode === "gantt" ? "" : "none"
+  $("#fishbone").style.display = mode === "fishbone" ? "" : "none"
+  if (tlMode === "gantt") drawGantt(lastTimelineItems)
+  else renderFishbone(lastTimelineItems)
+}
+$$("#tlViewToggle button").forEach((b) => b.addEventListener("click", () => setTimelineMode(b.dataset.tlmode)))
+
+// ---- Fishbone timeline (vertical, all events by time) ----
+const FB_KIND_LABEL = {
+  work_session: "work", tool_call: "tool", command: "tool", step_finish: "step",
+  file_edit: "file", human_input: "human", human_approval: "human", human_command: "human",
+}
+const FB_KIND_COLOR = {
+  work_session: "#0969da", tool_call: "#8250df", command: "#8250df", step_finish: "#bf8700",
+  file_edit: "#cf222e", human_input: "#1a7f37", human_approval: "#1a7f37", human_command: "#1a7f37",
+}
+function fishKindLabel(kind) { return FB_KIND_LABEL[kind] || kind || "event" }
+function fishKindColor(kind) { return FB_KIND_COLOR[kind] || "#909399" }
+
+// Per-activity cost: how many tokens / how much $ an activity consumed.
+function fmtItemCost(it) {
+  if (!it) return null
+  const tin = it.tokens_input ?? it.tokens_in ?? it.tokens ?? null
+  const tout = it.tokens_output ?? it.tokens_out ?? null
+  const c = it.cost ?? null
+  if (tin == null && tout == null && c == null) return null
+  const bits = []
+  const t = (tin ?? 0) + (tout ?? 0)
+  if (t) bits.push("⚡ " + fmtNum(t) + " tok")
+  if (c != null) bits.push("$" + Number(c).toFixed(2))
+  return bits.join(" · ")
+}
+
+function fishDetailText(it) {
+  let d = null
+  try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+  if (!d) return it.detail ? String(it.detail) : ""
+  if (it.kind === "work_session") return d.task ?? d.description ?? d.title ?? ""
+  if (it.kind === "tool_call") return d.tool ? "调用工具 " + d.tool + (d.file ? " · " + d.file : "") : ""
+  if (it.kind === "file_edit") return d.file ? "编辑 " + d.file : ""
+  if (it.kind === "step_finish") return d.step ? "完成步骤 " + d.step : ""
+  if (it.kind && it.kind.startsWith("human")) return d.text ?? d.name ?? d.response ?? d.title ?? ""
+  return d.text ?? d.tool ?? d.file ?? d.task ?? JSON.stringify(d)
+}
+
+function fishboneRow(it, side) {
+  const t = new Date(it.started_at)
+  const time = t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const who = memberLabel(it.member_id)
+  const kind = it.kind || "event"
+  const label = fishKindLabel(kind)
+  const color = fishKindColor(kind)
+  const text = fishDetailText(it)
+  const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+  const node = it.node_name ? `<span>${esc(it.node_name)}</span>` : ""
+  const human = it.has_human ? `<span class="human">● human-in-loop</span>` : ""
+  const cost = fmtItemCost(it)
+  const meta = [dur, node, human, cost ? `<span class="fb-cost">${esc(cost)}</span>` : ""].filter(Boolean).join("") || ""
+  const card = `
+    <div class="fb-card">
+      <div class="fb-top">
+        <span class="fb-time">${esc(time)}</span>
+        <span class="fb-who">${esc(who)}</span>
+        <span class="fb-kind" style="background:${color}">${esc(label)}</span>
+      </div>
+      <div class="fb-text">${esc(text || "(no detail)")}</div>
+      ${meta ? `<div class="fb-meta">${meta}</div>` : ""}
+    </div>`
+  return `<div class="fb-row ${side}">
+    <div class="fb-side">${side === "left" ? card : ""}</div>
+    <div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div>
+    <div class="fb-side">${side === "right" ? card : ""}</div>
+  </div>`
+}
+
+function renderFishbone(items, title) {
+  const el = $("#fishbone")
+  const valid = (items || []).filter((it) => Number.isFinite(Date.parse(it.started_at)))
+  if (valid.length === 0) { el.innerHTML = '<div class="muted" style="padding:20px">no activity in this range</div>'; return }
+  valid.sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+  const startBox = `<div class="fb-start"><div class="fb-start-box"><span class="fb-start-dot"></span>${esc(title || "Start")}</div></div>`
+  const rows = []
+  let prevDay = null
+  valid.forEach((it, i) => {
+    const d = new Date(it.started_at)
+    const day = d.toDateString()
+    if (prevDay !== day) {
+      rows.push(`<div class="fb-day">${esc(d.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" }))}</div>`)
+      prevDay = day
+    }
+    rows.push(fishboneRow(it, i % 2 === 0 ? "left" : "right"))
+  })
+  el.innerHTML = `<div class="fb-wrap"><div class="fb-spine"></div>${startBox}${rows.join("")}</div>`
+}
+
+// ---- Horizontal fishbone (goal-scoped activity timeline) ----
+function renderHFishbone(items, opts) {
+  opts = opts || {}
+  const el = document.querySelector(opts.el ?? "#goalGantt")
+  if (!el) return
+  const winFrom = opts.from != null ? Date.parse(opts.from) : null
+  const winTo = opts.to != null ? Date.parse(opts.to) : null
+  const valid = (items || []).filter((it) => {
+    const t = Date.parse(it.started_at)
+    if (!Number.isFinite(t)) return false
+    if (winFrom != null && t < winFrom) return false
+    if (winTo != null && t > winTo) return false
+    return true
+  })
+  if (valid.length === 0) { el.innerHTML = '<div class="muted">no activity in this range</div>'; return }
+  valid.sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+  const edge = 4
+  const levels = ["top-near", "bottom-near", "top-far", "bottom-far"]
+  const nodes = valid.map((it, i) => {
+    const pct = valid.length === 1 ? 50 : edge + (i / (valid.length - 1)) * (100 - edge * 2)
+    const cls = levels[i % 4]
+    const t = new Date(it.started_at)
+    const time = t.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+      t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    const who = memberLabel(it.member_id)
+    const kind = it.kind || "event"
+    const label = fishKindLabel(kind)
+    const color = fishKindColor(kind)
+    const text = fishDetailText(it) || "(no detail)"
+    const cost = fmtItemCost(it)
+    const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+    const human = it.has_human ? `<span class="human">● human</span>` : ""
+    const meta = [dur, human].filter(Boolean).join("") || ""
+    const card = `
+      <div class="hfb-card">
+        <div class="fb-top">
+          <span class="fb-time">${esc(time)}</span>
+          <span class="fb-who">${esc(who)}</span>
+          <span class="fb-kind" style="background:${color}">${esc(label)}</span>
+        </div>
+        <div class="fb-text">${esc(text)}</div>
+        <div class="fb-meta">${meta}${cost ? `<span class="hfb-cost">${esc(cost)}</span>` : ""}</div>
+      </div>`
+    return `<div class="hfb-node ${cls}" style="left:${pct.toFixed(2)}%">
+      <span class="hfb-dot" style="background:${color}"></span>${card}
+    </div>`
+  })
+  const f = new Date(valid[0].started_at)
+  const l = new Date(valid[valid.length - 1].started_at)
+  const fmtAxis = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const ruler = `<div class="hfb-ruler"><span>${esc(fmtAxis(f))}</span><span>${esc(fmtAxis(l))}</span></div>`
+  el.innerHTML = `<div class="hfb-wrap"><div class="hfb-spine"></div>${nodes.join("")}</div>${ruler}`
 }
 
 function drawGantt(items, opts) {
@@ -1213,30 +1494,44 @@ function drawGantt(items, opts) {
 }
 
 // ---- Members view ----
+// Recent-activity window (ms) for the cards; adjustable via #mliveWindowToggle.
+let membersWindowMs = 600000
+
 async function renderMembers() {
   // Live member view: members come from the local activity API; sessions come
   // from each member's opencode (proxied via teamx ui /api/members/{id}/...).
-  const q = qs()
+  const q = qs() + "&window=" + membersWindowMs
   const data = await jget("/api/members?" + q)
   const members = data.members ?? []
+  membersCache = members
   $("#mliveMemberCount").textContent = String(members.length)
-  // Overview cards
-  const online = members.filter((m) => m.state === "active").length
+  // Overview cards: 在线成员/活跃会话/正在执行工具 = 最近时间窗口活动聚合;
+  // 打开的终端 = 实时 presence.
+  const recent = data.recent ?? {}
+  const activeMembers = recent.active_members ?? 0
+  const workSessions = recent.work_sessions ?? 0
+  const toolCalls = recent.tool_calls ?? 0
+  const openTerminals = members.reduce((s, m) => s + (m.presence?.open_terminals ?? 0), 0)
   $("#mliveCards").innerHTML = [
-    ["Members", members.length, "👥", "blue"],
-    ["在线", online, "●", "green"],
-    ["活动行", fmtNum(members.reduce((s,m)=>s+(m.activity?.count||0),0)), "📊", "orange"],
+    ["在线成员", `${fmtNum(activeMembers)}<span class="muted" style="font-size:13px;font-weight:400">/ ${members.length}</span>`, "●", "green"],
+    ["活跃会话", fmtNum(workSessions), "💬", "blue"],
+    ["正在执行工具", fmtNum(toolCalls), "⚡", "orange"],
+    ["打开的终端", fmtNum(openTerminals), "⌨", "purple"],
   ].map(([l, v, icon, color]) => `<div class="card"><div class="card-icon ${color}">${icon}</div><div class="card-body"><div class="label">${l}</div><div class="value">${v}</div></div></div>`).join("")
   // Member list
-  $("#mliveMemberList").innerHTML = members.map((m) => `
+  $("#mliveMemberList").innerHTML = members.map((m) => {
+    const node = m.activity?.node_name ? ` · ${esc(m.activity.node_name)}` : ""
+    const cost = m.activity?.cost != null ? ` · <span class="cost">${fmtCost(m.activity.cost)}</span>` : ""
+    return `
     <div class="member-item" data-mlive="${esc(m.id)}">
       <div class="mi-avatar">${esc((m.display_name || "?").slice(0,1).toUpperCase())}</div>
       <div class="mi-main">
         <div class="mi-name">${esc(m.display_name)} ${m.role ? badge(m.role) : ""}</div>
-        <div class="mi-sub"><span class="status-dot ${m.state === "active" ? "online" : m.state === "idle" ? "busy" : "offline"}"></span>${esc(m.state)} · ${fmtMs(m.activity?.duration_ms)} 活动</div>
+        <div class="mi-sub"><span class="status-dot ${m.state === "active" ? "online" : m.state === "idle" ? "busy" : "offline"}"></span>${esc(m.state)} · ${fmtMs(m.activity?.duration_ms)}${node}${cost}</div>
       </div>
       ${m.state === "active" ? '<div class="mi-live"><span class="live-badge">LIVE</span></div>' : ""}
-    </div>`).join("")
+    </div>`
+  }).join("")
   // Click a member to load their opencode sessions
   $$(".member-item").forEach((el) => {
     el.addEventListener("click", () => {
@@ -1251,12 +1546,27 @@ async function renderMembers() {
 // ---- live member session view (ENT-01) ----
 let liveMemberId = null
 let liveTimer = null
+let liveSessionId = null
+// Cached member list (id -> activity aggregates) for the detail cost tag.
+let membersCache = []
 
 async function loadMemberLive(memberId, displayName) {
   liveMemberId = memberId
   $("#mliveEmpty").style.display = "none"
   $("#mliveDetail").style.display = ""
   $("#mliveMemberName").innerHTML = `<span class="status-dot online"></span> ${esc(displayName)}`
+  // Cost tag (per-member cumulative cost) + running tag.
+  const meta = membersCache.find((m) => m.id === memberId)
+  const cost = meta?.activity?.cost
+  const costTag = $("#mliveCostTag")
+  if (cost != null) {
+    costTag.textContent = `⚡ ${fmtNum(meta.activity.tokens_input ?? 0)} tok · ${fmtCost(cost)}`
+    costTag.style.display = ""
+  } else {
+    costTag.style.display = "none"
+  }
+  $("#mliveRunningTag").style.display = "none"
+  $("#mliveSessionTitle").textContent = "—"
   // Fetch the member's opencode sessions through the ui proxy.
   try {
     const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/sessions`)
@@ -1298,11 +1608,31 @@ function renderSessions(sessions) {
 // On repeated failures (member offline / not tunneled) we back off so a dead
 // member doesn't hammer the server with new tunnel attempts every 5s.
 let liveFailures = 0
+
+// Render the full message list (User/Assistant/Tool) into the messages tab.
+function renderMessages(msgs) {
+  const host = $("#mtab-messages")
+  if (!host) return
+  if (!Array.isArray(msgs) || msgs.length === 0) { host.innerHTML = '<div class="muted">no messages</div>'; return }
+  host.innerHTML = msgs.map((m) => {
+    const role = m.role ?? m.type ?? "event"
+    const icon = role === "user" ? "💬" : role === "assistant" ? "🤖" : role === "tool" ? "🔧" : "•"
+    const text = (m.parts ?? []).map((p) => typeof p === "string" ? p : (p.text ?? (p.tool ? "[tool " + p.tool + "]" : ""))).join(" ").slice(0, 500) || JSON.stringify(m).slice(0, 500)
+    const time = m.time?.created ? new Date(m.time.created).toLocaleTimeString() : ""
+    return `<div class="live-line"><span class="ll-time">${esc(time)}</span><span class="ll-icon">${icon}</span><span class="ll-text">${esc(role)}: ${esc(text)}</span></div>`
+  }).join("")
+}
+
 function startLivePolling(memberId, sessions) {
   if (liveTimer) clearInterval(liveTimer)
   liveFailures = 0
   if (!sessions.length) return
   const sid = sessions[0].id
+  liveSessionId = sid
+  // Show the interrupt / send-message controls now that a session is active.
+  $("#mliveInterruptBtn").style.display = ""
+  $("#mliveSendBtn").style.display = ""
+  $("#mliveRunningTag").style.display = ""
   const poll = async () => {
     if (document.hidden) return
     try {
@@ -1321,6 +1651,8 @@ function startLivePolling(memberId, sessions) {
         line.innerHTML = `<span class="ll-time">${new Date().toLocaleTimeString()}</span><span class="ll-icon">${role === "user" ? "💬" : "🤖"}</span><span class="ll-text">${esc(text)}</span>`
         host.prepend(line)
         while (host.children.length > 50) host.lastChild?.remove()
+        // Full message list for the messages tab.
+        renderMessages(msgs)
       }
     } catch {
       liveFailures++
@@ -1387,12 +1719,24 @@ let termActiveMember = null
      $("#mliveTerm").innerHTML = `<div class="muted">成员未返回 pty id：${esc(JSON.stringify(ptyId))}</div>`
      return
    }
-   const host = $("#mliveTerm")
-   host.innerHTML = `<div class="term-window"><div class="term-titlebar">
-     <span class="term-dot" style="background:#ff5f56"></span><span class="term-dot" style="background:#ffbd2e"></span><span class="term-dot" style="background:#27c93f"></span>
-     <span style="margin-left:8px" id="termTitle">member shell</span><span style="margin-left:auto;font-size:11px">pty</span></div>
-     <div class="term-body" id="termMount"></div></div>
-     <div class="mt16 muted" style="font-size:12px">该终端运行在成员的机器，通过 mTLS 隧道实时连接。输入会发送到对方 shell（owner 操作，请谨慎）。</div>`
+    const host = $("#mliveTerm")
+    host.innerHTML = `<div class="term-backdrop" id="termBackdrop"></div><div class="term-window" id="termWindow"><div class="term-titlebar">
+      <span class="term-dot" style="background:#ff5f56"></span><span class="term-dot" style="background:#ffbd2e"></span><span class="term-dot" style="background:#27c93f"></span>
+      <span style="margin-left:8px" id="termTitle">member shell</span><span style="margin-left:auto;font-size:11px">pty</span><button class="term-max-btn" id="termMax">⛶</button></div>
+      <div class="term-body" id="termMount"></div></div>
+      <div class="mt16 muted" style="font-size:12px">该终端运行在成员的机器，通过 mTLS 隧道实时连接。输入会发送到对方 shell（owner 操作，请谨慎）。</div>`
+    // Terminal maximize toggle (fullscreen overlay + backdrop).
+    const win = $("#termWindow")
+    const backdrop = $("#termBackdrop")
+    const maxBtn = $("#termMax")
+    const toggleMax = () => {
+      const on = win.classList.toggle("maximized")
+      backdrop.classList.toggle("open", on)
+      maxBtn.textContent = on ? "🗕" : "⛶"
+      if (term) setTimeout(() => term.fit(), 20)
+    }
+    maxBtn?.addEventListener("click", toggleMax)
+    backdrop?.addEventListener("click", toggleMax)
    const mount = $("#termMount")
    term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: "#1e1e1e" } })
    term.open(mount)
@@ -1417,7 +1761,7 @@ let termActiveMember = null
 
 // Terminal tab activation: if a member is selected, offer to open the terminal.
 function switchMemberTab(name) {
-  ;["live", "sessions", "terminal"].forEach((x) => {
+  ;["live", "sessions", "messages", "terminal"].forEach((x) => {
     const el = document.getElementById("mtab-" + x)
     if (el) el.style.display = x === name ? "" : "none"
   })
@@ -1518,6 +1862,32 @@ document.getElementById("mliveTermBtn")?.addEventListener("click", () => {
   switchMemberTab("terminal")
   if (liveMemberId) openMemberTerminal(liveMemberId)
 })
+// Members-view recent-activity window toggle.
+$$("#mliveWindowToggle button").forEach((b) => {
+  b.addEventListener("click", () => {
+    membersWindowMs = Number(b.dataset.win) || 600000
+    $$("#mliveWindowToggle button").forEach((x) => x.classList.toggle("active", x === b))
+    renderMembers()
+  })
+})
+// Interrupt the member's current session (proxy opencode abort).
+document.getElementById("mliveInterruptBtn")?.addEventListener("click", async () => {
+  if (!liveMemberId || !liveSessionId) return
+  try {
+    await fetch(`/api/members/${encodeURIComponent(liveMemberId)}/session/${encodeURIComponent(liveSessionId)}/abort`, { method: "POST" })
+  } catch (e) { /* ignore */ }
+})
+// Send a message to the member's current session (proxy opencode prompt).
+document.getElementById("mliveSendBtn")?.addEventListener("click", () => {
+  if (!liveMemberId || !liveSessionId) return
+  const text = window.prompt("发送消息给该成员的会话：")
+  if (text == null || text.trim() === "") return
+  fetch(`/api/members/${encodeURIComponent(liveMemberId)}/session/${encodeURIComponent(liveSessionId)}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parts: [{ type: "text", text: text.trim() }] }),
+  }).catch(() => {})
+})
 
 async function boot() {
   try {
@@ -1525,7 +1895,9 @@ async function boot() {
     fillTeamSelect(teams)
     await loadMemberNames()
     await refreshGoalSelect()
-    renderKanban()
+    // Standalone live-monitor route (/members-live) opens directly on Members.
+    if (location.pathname.endsWith("/members-live")) showView("members")
+    else renderKanban()
   } catch (e) {
     document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
   }
@@ -1786,6 +2158,9 @@ struct HashMap0 {
     member: Option<String>,
     #[serde(default)]
     limit: Option<i64>,
+    /// Recent-activity window in milliseconds (Members view cards).
+    #[serde(default)]
+    window: Option<i64>,
 }
 
 /// Guard the API routes: requires the cookie, else 401.
@@ -2048,6 +2423,33 @@ async fn api_member_messages(
     }
     let path = format!("/api/session/{sid}/message");
     member_json_response(member_request(&state, &member_id, "GET", &path, None).await)
+}
+
+/// POST /api/members/{member_id}/session/{sid}/abort — proxy opencode session abort.
+async fn api_member_abort(
+    State(state): State<S>,
+    Path((member_id, sid)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let path = format!("/api/session/{sid}/abort");
+    member_json_response(member_request(&state, &member_id, "POST", &path, None).await)
+}
+
+/// POST /api/members/{member_id}/session/{sid}/prompt — proxy opencode prompt.
+async fn api_member_prompt(
+    State(state): State<S>,
+    Path((member_id, sid)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let path = format!("/api/session/{sid}/message");
+    member_json_response(member_request(&state, &member_id, "POST", &path, Some(&body)).await)
 }
 
 /// GET /api/members/{member_id}/shell — proxy opencode /pty/shells.
@@ -2470,6 +2872,7 @@ async fn api_members(State(state): State<S>, Query(params): Query<HashMap0>, hea
                 .collect()
         })
         .unwrap_or_default();
+    let presence_map = crate::activity::presence_for_members(&c).unwrap_or_default();
     let mut out = Vec::new();
     for m in &rows {
         let mid = m["id"].as_str().unwrap_or("").to_string();
@@ -2478,13 +2881,24 @@ async fn api_members(State(state): State<S>, Query(params): Query<HashMap0>, hea
             .cloned()
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
+        let p = presence_map
+            .get(&mid)
+            .cloned()
+            .unwrap_or_default();
         let mut row = m.clone();
         if let Some(o) = row.as_object_mut() {
             o.insert("activity".to_string(), a);
+            o.insert("presence".to_string(), serde_json::json!(p));
         }
         out.push(row);
     }
-    Json(json!({ "members": out })).into_response()
+    let window_ms = params
+        .window
+        .unwrap_or(crate::activity::RECENT_WINDOW_MS)
+        .clamp(60_000, 24 * 3600 * 1000);
+    let recent = crate::activity::recent_activity(&c, team, window_ms)
+        .unwrap_or(serde_json::json!({}));
+    Json(json!({ "members": out, "recent": recent })).into_response()
 }
 
 /// KanBan view: one column per member, each showing that member's work

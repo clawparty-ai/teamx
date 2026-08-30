@@ -159,26 +159,64 @@ CREATE TABLE IF NOT EXISTS invitations (
 -- work content) pushed to the team lead's serve database. `node_id` is the
 -- source machine's instance_id; sensitive fields are kept in full (audit).
 CREATE TABLE IF NOT EXISTS activity (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  team_id          TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  member_id        TEXT NOT NULL,
-  node_id          TEXT NOT NULL,
-  node_name        TEXT,
-  started_at       TEXT NOT NULL,
-  ended_at         TEXT,
-  duration_ms      INTEGER,
-  kind             TEXT NOT NULL,
-  detail           TEXT,
-  tokens_input     INTEGER,
-  tokens_output    INTEGER,
-  tokens_reasoning INTEGER,
-  cost             REAL,
-  has_human        INTEGER NOT NULL DEFAULT 0,
-  created_at       TEXT NOT NULL
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id           TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  member_id         TEXT NOT NULL,
+  node_id           TEXT NOT NULL,
+  node_name         TEXT,
+  started_at        TEXT NOT NULL,
+  ended_at          TEXT,
+  duration_ms       INTEGER,
+  kind              TEXT NOT NULL,
+  detail            TEXT,
+  tokens_input      INTEGER,
+  tokens_output     INTEGER,
+  tokens_reasoning  INTEGER,
+  cost              REAL,
+  model_id          TEXT,
+  provider_id       TEXT,
+  tokens_cache_read  INTEGER,
+  tokens_cache_write INTEGER,
+  cost_source       TEXT NOT NULL DEFAULT 'none',
+  cost_input        REAL,
+  cost_output       REAL,
+  cost_cache_read   REAL,
+  cost_cache_write  REAL,
+  has_human         INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activity_team_time ON activity(team_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_activity_member_time ON activity(member_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_activity_node ON activity(node_id);
+
+-- Enterprise cost: per-(provider,model) token pricing (USD / 1M tokens).
+-- Source priority at read time: owner > opencode > builtin (single row per key).
+CREATE TABLE IF NOT EXISTS model_pricing (
+  provider_id          TEXT NOT NULL,
+  model_id             TEXT NOT NULL,
+  price_input          REAL NOT NULL,
+  price_output         REAL NOT NULL,
+  price_cache_read     REAL NOT NULL DEFAULT 0,
+  price_cache_write    REAL NOT NULL DEFAULT 0,
+  over200k_input       REAL,
+  over200k_output      REAL,
+  over200k_cache_read  REAL,
+  over200k_cache_write REAL,
+  source               TEXT NOT NULL DEFAULT 'builtin',
+  updated_at           TEXT NOT NULL,
+  PRIMARY KEY (provider_id, model_id)
+);
+
+-- Enterprise presence: per-member real-time state (latest snapshot only, no
+-- history). `updated_at` is the heartbeat time; readers apply a TTL to treat
+-- stale rows as offline.
+CREATE TABLE IF NOT EXISTS presence (
+  member_id        TEXT PRIMARY KEY,
+  active_sessions  INTEGER NOT NULL DEFAULT 0,
+  running_tools    INTEGER NOT NULL DEFAULT 0,
+  open_terminals   INTEGER NOT NULL DEFAULT 0,
+  updated_at       TEXT NOT NULL
+);
 
 -- Connection audit log: every authenticated member connection (long-lived
 -- WS/tunnel) records peer IP + timestamps for auditing.
@@ -456,7 +494,71 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              );",
         )?;
     }
-    conn.pragma_update(None, "user_version", 9)?;
+    if version < 10 {
+        // v10 (enterprise cost): model_pricing table (SCHEMA covers fresh DBs) +
+        // activity gains model attribution, cache token columns, and the cost
+        // decomposition columns (cost_source / cost_input / ...). Idempotent:
+        // only add a column when missing.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS model_pricing (
+               provider_id          TEXT NOT NULL,
+               model_id             TEXT NOT NULL,
+               price_input          REAL NOT NULL,
+               price_output         REAL NOT NULL,
+               price_cache_read     REAL NOT NULL DEFAULT 0,
+               price_cache_write    REAL NOT NULL DEFAULT 0,
+               over200k_input       REAL,
+               over200k_output      REAL,
+               over200k_cache_read  REAL,
+               over200k_cache_write REAL,
+               source               TEXT NOT NULL DEFAULT 'builtin',
+               updated_at           TEXT NOT NULL,
+               PRIMARY KEY (provider_id, model_id)
+             );",
+        )?;
+        let activity_cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(activity)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut v = Vec::new();
+            for row in rows {
+                v.push(row?);
+            }
+            v
+        };
+        let add_cols: &[(&str, &str)] = &[
+            ("model_id", "TEXT"),
+            ("provider_id", "TEXT"),
+            ("tokens_cache_read", "INTEGER"),
+            ("tokens_cache_write", "INTEGER"),
+            ("cost_source", "TEXT NOT NULL DEFAULT 'none'"),
+            ("cost_input", "REAL"),
+            ("cost_output", "REAL"),
+            ("cost_cache_read", "REAL"),
+            ("cost_cache_write", "REAL"),
+        ];
+        for (name, decl) in add_cols {
+            if !activity_cols.iter().any(|c| c == name) {
+                conn.execute_batch(&format!("ALTER TABLE activity ADD COLUMN {name} {decl};"))?;
+            }
+        }
+        // Seed the built-in pricing table (lowest priority; owner/opencode rows
+        // overwrite these).
+        crate::activity::seed_builtin_pricing(conn)?;
+    }
+    if version < 11 {
+        // v11 (enterprise presence): per-member real-time state table. SCHEMA
+        // covers fresh DBs; idempotent for existing ones.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS presence (
+               member_id        TEXT PRIMARY KEY,
+               active_sessions  INTEGER NOT NULL DEFAULT 0,
+               running_tools    INTEGER NOT NULL DEFAULT 0,
+               open_terminals   INTEGER NOT NULL DEFAULT 0,
+               updated_at       TEXT NOT NULL
+             );",
+        )?;
+    }
+    conn.pragma_update(None, "user_version", 11)?;
     Ok(())
 }
 

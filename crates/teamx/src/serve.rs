@@ -868,6 +868,20 @@ async fn rpc(
     }
 }
 
+/// Parse an RPC array argument from either `rows` (a JSON array) or `data`
+/// (a JSON array serialized as a string — the plugin's `--data` flag path).
+fn parse_rows<T: serde::de::DeserializeOwned>(args: &Value) -> Vec<T> {
+    if let Some(arr) = args.get("rows").and_then(Value::as_array) {
+        return arr.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect();
+    }
+    if let Some(s) = args.get("data").and_then(Value::as_str) {
+        if let Ok(v) = serde_json::from_str::<Vec<T>>(s) {
+            return v;
+        }
+    }
+    Vec::new()
+}
+
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
 /// then run it through `commands::execute`. The actor identity comes from the
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
@@ -948,11 +962,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         //    `human_rows`): owner sees all rows for the team; a member sees only
         //    their own rows.
         "activity.push" => {
-            let rows: Vec<crate::activity::ActivityRow> = args
-                .get("rows")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect())
-                .unwrap_or_default();
+            let rows: Vec<crate::activity::ActivityRow> = parse_rows(args);
             if rows.is_empty() {
                 return Err("activity.push requires non-empty `rows`".to_string());
             }
@@ -985,8 +995,35 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
                     ));
                 }
             }
+            // Resolve cost: opencode cost stays authoritative; missing cost is
+            // computed from tokens × pricing when the model is known.
+            crate::activity::apply_pricing(conn, &mut rows).map_err(|e| e.to_string())?;
             let n = crate::activity::push_activities(conn, &rows).map_err(|e| e.to_string())?;
             return Ok(serde_json::json!({ "ok": true, "inserted": n }));
+        }
+        // Enterprise cost: plugin reports the opencode model pricing it observes
+        // (`source = 'opencode'`). Any member may sync; owner rows are protected
+        // from being overwritten (priority: owner > opencode > builtin).
+        "model.pricing_sync" => {
+            let prices: Vec<crate::activity::ModelPrice> = parse_rows(args);
+            if prices.is_empty() {
+                return Err("model.pricing_sync requires non-empty `rows`".to_string());
+            }
+            let n = crate::activity::upsert_prices(conn, &prices, "opencode").map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true, "upserted": n }));
+        }
+        // Enterprise presence: the plugin pushes a live snapshot (active
+        // sessions / running tools / open terminals). Latest-only, keyed by the
+        // cert-derived member id.
+        "presence.push" => {
+            let p: crate::activity::Presence = args
+                .get("data")
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str(s).ok())
+                .or_else(|| serde_json::from_value(args.clone()).ok())
+                .unwrap_or_default();
+            crate::activity::upsert_presence(conn, &member_id, &p).map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "ok": true }));
         }
         m if m.starts_with("activity.") => {
             // Read RPCs. Resolve the target team, then enforce authorization.

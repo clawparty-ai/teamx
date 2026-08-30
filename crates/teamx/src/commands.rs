@@ -567,7 +567,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     }
                     out.push(row);
                 }
-                let n = crate::activity::push_activities(conn, &out)
+                let n = crate::activity::apply_pricing(conn, &mut out)
+                    .and_then(|()| crate::activity::push_activities(conn, &out))
                     .map_err(|e| AppError(format!("activity.push failed: {e}")))?;
                 json!({ "ok": true, "inserted": n })
             }
@@ -581,6 +582,63 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                         .map_err(|e| AppError(e.to_string()))?
                 }
             },
+        },
+        // Model cost pricing (enterprise): set/list per-model token prices.
+        Command::Model(m) => match m {
+            crate::cli::ModelCmd::Set {
+                model,
+                input,
+                output,
+                cache_read,
+                cache_write,
+                over200k_input,
+                over200k_output,
+                over200k_cache_read,
+                over200k_cache_write,
+            } => {
+                let (provider_id, model_id) = split_model_ref(model)?;
+                let price = crate::activity::ModelPrice {
+                    provider_id,
+                    model_id,
+                    price_input: *input,
+                    price_output: *output,
+                    price_cache_read: *cache_read,
+                    price_cache_write: *cache_write,
+                    over200k_input: *over200k_input,
+                    over200k_output: *over200k_output,
+                    over200k_cache_read: *over200k_cache_read,
+                    over200k_cache_write: *over200k_cache_write,
+                };
+                let n = crate::activity::upsert_prices(conn, &[price], "owner")
+                    .map_err(|e| AppError(format!("model price set: {e}")))?;
+                json!({ "ok": true, "upserted": n })
+            }
+            crate::cli::ModelCmd::Ls => {
+                let prices = crate::activity::load_prices(conn)
+                    .map_err(|e| AppError(format!("model price ls: {e}")))?;
+                let mut v: Vec<serde_json::Value> = prices
+                    .values()
+                    .map(|p| {
+                        serde_json::json!({
+                            "provider_id": p.provider_id,
+                            "model_id": p.model_id,
+                            "price_input": p.price_input,
+                            "price_output": p.price_output,
+                            "price_cache_read": p.price_cache_read,
+                            "price_cache_write": p.price_cache_write,
+                            "over200k_input": p.over200k_input,
+                            "over200k_output": p.over200k_output,
+                            "over200k_cache_read": p.over200k_cache_read,
+                            "over200k_cache_write": p.over200k_cache_write,
+                        })
+                    })
+                    .collect();
+                v.sort_by(|a, b| {
+                    (a["provider_id"].as_str(), a["model_id"].as_str())
+                        .cmp(&(b["provider_id"].as_str(), b["model_id"].as_str()))
+                });
+                json!({ "prices": v })
+            }
         },
         // Proxy commands: network-mode only, long-lived WS clients. The
         // `proxy routes` subcommands operate on the SQLite route table.
@@ -683,6 +741,17 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Split a `<provider>/<model>` reference into its two parts.
+fn split_model_ref(model: &str) -> Result<(String, String)> {
+    let (provider_id, model_id) = model
+        .split_once('/')
+        .ok_or_else(|| AppError(format!("expected `<provider>/<model>`, got `{model}`")))?;
+    if provider_id.trim().is_empty() || model_id.trim().is_empty() {
+        return Err(AppError(format!("expected `<provider>/<model>`, got `{model}`")));
+    }
+    Ok((provider_id.trim().to_string(), model_id.trim().to_string()))
 }
 
 /// Handle `teamx dns <subcommand>`.

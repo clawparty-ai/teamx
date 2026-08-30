@@ -138,6 +138,10 @@ pub enum Command {
     #[command(subcommand)]
     Activity(ActivityCmd),
 
+    /// Model cost pricing (enterprise): set/list per-model token prices (USD/1M)
+    #[command(subcommand)]
+    Model(ModelCmd),
+
     /// Web dashboard (enterprise): activity analytics UI (HTTPS + token, owner only)
     Ui(UiCmd),
 
@@ -283,6 +287,43 @@ pub enum ActivityQueryCmd {
         #[arg(long, default_value_t = 100)]
         limit: i64,
     },
+}
+
+/// `teamx model` subcommands (enterprise cost pricing).
+#[derive(Subcommand, Debug)]
+pub enum ModelCmd {
+    /// Set (or override) a model's token price. `<model>` is `<provider>/<model>`.
+    Set {
+        /// provider/model id, e.g. `anthropic/claude-sonnet-4-5`
+        #[arg(value_name = "PROVIDER/MODEL")]
+        model: String,
+        /// USD per 1M input tokens
+        #[arg(long)]
+        input: f64,
+        /// USD per 1M output tokens
+        #[arg(long)]
+        output: f64,
+        /// USD per 1M cache-read tokens (default 0)
+        #[arg(long, default_value_t = 0.0)]
+        cache_read: f64,
+        /// USD per 1M cache-write tokens (default 0)
+        #[arg(long, default_value_t = 0.0)]
+        cache_write: f64,
+        /// >200k context tier: USD per 1M input tokens (optional)
+        #[arg(long)]
+        over200k_input: Option<f64>,
+        /// >200k context tier: USD per 1M output tokens (optional)
+        #[arg(long)]
+        over200k_output: Option<f64>,
+        /// >200k context tier: USD per 1M cache-read tokens (optional)
+        #[arg(long)]
+        over200k_cache_read: Option<f64>,
+        /// >200k context tier: USD per 1M cache-write tokens (optional)
+        #[arg(long)]
+        over200k_cache_write: Option<f64>,
+    },
+    /// List all model prices.
+    Ls,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -41,6 +41,12 @@ export interface ActivityRow {
   tokens_output?: number
   tokens_reasoning?: number
   cost?: number
+  /** Model attribution (pricing-table key). */
+  model_id?: string
+  provider_id?: string
+  /** Cache token counts (lifted from detail so the server can price them). */
+  tokens_cache_read?: number
+  tokens_cache_write?: number
   has_human?: boolean
 }
 
