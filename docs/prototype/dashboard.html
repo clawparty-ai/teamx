@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f8f8f8">
 <title>Teamx Enterprise</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <style>
   :root {
     --primary: #4A90E5;
@@ -91,6 +92,55 @@
   .view-toggle button { background: none; border: none; color: var(--muted-fg); font-size: 13px; font-weight: 500; padding: 6px 12px; cursor: pointer; transition: color var(--transition), background var(--transition); }
   .view-toggle button:hover { color: var(--primary); }
   .view-toggle button.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+  /* ---------- dashboard view (map / topology) ---------- */
+  .dash-map-wrap { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+  #dashMap { height: 560px; width: 100%; }
+  #dashMap .leaflet-container { font-family: var(--font-sans); }
+  #dashMap .leaflet-popup-content-wrapper { border-radius: var(--radius); }
+  #dashMap .leaflet-popup-content { margin: 10px 12px; font-size: 12.5px; line-height: 1.6; }
+  .dark #dashMap .leaflet-tile { filter: brightness(0.85) invert(1) hue-rotate(180deg) saturate(0.7) brightness(0.95); }
+  .dash-map-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--muted-fg); font-size: 13px; z-index: 500; background: var(--card); }
+  .map-pin { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.35); font-size: 11px; font-weight: 700; color: #fff; }
+  .map-pin span { transform: rotate(45deg); }
+  .map-pin.online { background: #67C23A; }
+  .map-pin.busy { background: #E6A23C; }
+  .map-pin.offline { background: #909399; }
+  .map-pin.server { background: #4A90E5; }
+  .pop-node { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 2px; }
+  .pop-row { display: flex; justify-content: space-between; gap: 12px; }
+  .pop-row .k { color: var(--muted-fg); }
+  .pop-row .v { font-family: var(--font-mono); font-size: 11.5px; }
+  .dash-topo { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px; }
+  .dash-topo svg { display: block; width: 1200px; max-width: 100%; height: auto; margin: 0 auto; }
+  .topo-legend { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; font-size: 12px; color: var(--muted-fg); margin-bottom: 10px; }
+  .topo-legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: 2px; }
+  /* topology node boxes (font sizes match members live feed: 13px body / 11px time) */
+  .topo-node-box { width: 100%; height: 100%; box-sizing: border-box; background: var(--card); border: 1.5px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); font-size: 13px; line-height: 1.4; color: var(--fg); }
+  .topo-node-box.online { border-color: #67C23A; }
+  .topo-node-box.busy { border-color: #E6A23C; }
+  .topo-node-box.offline { border-color: #909399; }
+  .topo-node-box.server { border-color: #4A90E5; }
+  .topo-node-box.external { border-color: #9B59B6; border-style: dashed; }
+  .tnb-head { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--muted); }
+  .tnb-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .tnb-status-dot.online { background: #67C23A; box-shadow: 0 0 0 2px rgba(103,194,58,0.22); }
+  .tnb-status-dot.busy { background: #E6A23C; box-shadow: 0 0 0 2px rgba(230,162,60,0.22); }
+  .tnb-status-dot.offline { background: #909399; }
+  .tnb-status-dot.server { background: #4A90E5; }
+  .tnb-status-dot.external { background: #9B59B6; }
+  .tnb-name { font-weight: 700; font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tnb-head .badge { flex-shrink: 0; }
+  .tnb-node { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .tnb-live { height: calc(100% - 26px); overflow: hidden; padding: 4px 8px; }
+  .tnb-line { display: flex; align-items: baseline; gap: 5px; line-height: 17px; white-space: nowrap; }
+  .tnb-line.new { animation: tnbIn 300ms ease; }
+  @keyframes tnbIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .tnb-t { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); flex-shrink: 0; }
+  .tnb-i { flex-shrink: 0; font-size: 13px; }
+  .tnb-x { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tnb-empty { color: var(--muted-fg); font-size: 13px; padding: 4px 0; }
+  .tnb-meta { padding: 5px 8px; font-size: 12px; color: var(--muted-fg); }
+  .tnb-meta .mono { font-family: var(--font-mono); font-size: 11px; }
   select, input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); transition: border-color var(--transition); }
   select:hover, input:hover { border-color: var(--primary); }
   select:focus, input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(74,144,229,0.15); }
@@ -353,7 +403,8 @@
     <span class="logo-text">Teamx Enterprise</span>
   </div>
   <nav>
-    <button data-view="kanban" class="active">KanBan</button>
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="kanban">KanBan</button>
     <button data-view="goal" style="display:none" title="Goal 页面暂隐藏，后续再决定是否启用">Goal</button>
     <button data-view="cost">Cost</button>
     <button data-view="timeline">Timeline</button>
@@ -373,6 +424,10 @@
     <label>Goal <select id="goal"><option value="">All</option></select></label>
   </div>
   <div class="toolbar-right">
+    <div class="view-toggle" id="dashModeToggle" style="display:none" aria-label="切换 Dashboard 视图">
+      <button type="button" data-dashmode="map" class="active">地图模式</button>
+      <button type="button" data-dashmode="topo">拓扑模式</button>
+    </div>
     <div class="view-toggle" id="tlViewToggle" style="display:none" aria-label="切换 Timeline 视图">
       <button type="button" data-tlmode="gantt">甘特图</button>
       <button type="button" data-tlmode="fishbone" class="active">时间轴</button>
@@ -409,8 +464,21 @@
 </div>
 
 <div class="container">
-  <!-- ============ KanBan view (default) ============ -->
-  <div class="view active" id="view-kanban">
+  <!-- ============ Dashboard view (default: map / topology) ============ -->
+  <div class="view active" id="view-dashboard">
+    <div class="cards" id="dashCards"></div>
+    <div class="dash-map-wrap" id="dashMapWrap">
+      <div id="dashMap"></div>
+      <div class="dash-map-empty" id="dashMapEmpty" style="display:none">
+        <div style="font-size:22px">🗺️</div>
+        <div>地图瓦片加载失败（需要联网）。仍可查看拓扑模式。</div>
+      </div>
+    </div>
+    <div class="dash-topo" id="dashTopo" style="display:none"></div>
+  </div>
+
+  <!-- ============ KanBan view ============ -->
+  <div class="view" id="view-kanban">
     <div class="kanban" id="kanbanCols"></div>
   </div>
 
@@ -600,6 +668,7 @@
     </div>
   </div>
 </div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 // ---- theme toggle ----
 const html = document.documentElement
@@ -738,6 +807,43 @@ const MOCK = {
       { member_id: "m-carol", node_name: "node-03", kind: "work_session", has_human: 0, started_at: "2026-08-27T14:00:00Z", ended_at: "2026-08-27T15:00:00Z", duration_ms: 3600000, tokens_in: 18200, tokens_out: 5200, cost: 0.31, detail: { description: "调研 web terminal 方案", task: "调研 web terminal 方案", sessionID: "ses_c1" } },
     ]},
   ]},
+  map: { nodes: [
+    { id: "srv", name: "teamx-server", kind: "server", member_id: null, member_name: null, role: null, state: "server", region: "华东", city: "杭州", lat: 30.2741, lng: 120.1551, sessions: null, cost: null, tokens: null, latency_ms: 0, ip: "81.70.41.108" },
+    { id: "n1", name: "node-01", kind: "member", member_id: "m-alice", member_name: "Alice", role: "contributor", state: "online", region: "华东", city: "上海", lat: 31.2304, lng: 121.4737, sessions: 2, cost: 4.82, tokens: 680000, latency_ms: 24, ip: "10.0.0.5" },
+    { id: "n2", name: "node-02", kind: "member", member_id: "m-bob", member_name: "Bob", role: "reviewer", state: "busy", region: "华北", city: "北京", lat: 39.9042, lng: 116.4074, sessions: 2, cost: 4.51, tokens: 630000, latency_ms: 41, ip: "10.0.0.6" },
+    { id: "n3", name: "node-03", kind: "member", member_id: "m-carol", member_name: "Carol", role: "observer", state: "offline", region: "华南", city: "深圳", lat: 22.5431, lng: 114.0579, sessions: 0, cost: 3.01, tokens: 320000, latency_ms: null, ip: "10.0.0.7" },
+  ]},
+  topology: {
+    server: { id: "srv", name: "teamx-server", version: "0.1.0", status: "ok", region: "华东 · 杭州", addr: "81.70.41.108:5781" },
+    nodes: [
+      { id: "n1", name: "node-01", member: "Alice", role: "contributor", state: "online", region: "上海", addr: "10.0.0.5", live: [
+        { icon: "🔧", text: "edit src/auth/login.tsx" },
+        { icon: "👀", text: "read docs/ENT-01.md" },
+        { icon: "💬", text: "User: 表单校验用中文" },
+        { icon: "🤖", text: "实现登录页客户端校验" },
+        { icon: "✅", text: "表单校验用例通过" },
+        { icon: "🔍", text: "grep permission in src/rbac" },
+        { icon: "📝", text: "write src/rbac/roles.ts" },
+      ] },
+      { id: "n2", name: "node-02", member: "Bob", role: "reviewer", state: "busy", region: "北京", addr: "10.0.0.6", live: [
+        { icon: "🔍", text: "gh pr review #42" },
+        { icon: "📝", text: "comment: LGTM" },
+        { icon: "👀", text: "read diff src/rbac/roles.ts" },
+        { icon: "🤖", text: "审查 doc-flow 变更" },
+        { icon: "✅", text: "approve PR #41" },
+        { icon: "🔧", text: "gh pr merge #41" },
+      ] },
+      { id: "n3", name: "node-03", member: "Carol", role: "observer", state: "offline", region: "深圳", addr: "10.0.0.7", live: [] },
+      { id: "gw", name: "internet", member: null, role: null, state: "external", region: "公网出口", addr: null },
+    ],
+    links: [
+      { from: "srv", to: "n1", type: "mTLS WS", status: "up", detail: "成员证书 · 事件流" },
+      { from: "srv", to: "n2", type: "mTLS WS", status: "up", detail: "成员证书 · 事件流" },
+      { from: "srv", to: "n3", type: "mTLS WS", status: "down", detail: "离线（08-27 15:00）" },
+      { from: "n1", to: "srv", type: "reverse tunnel", name: "httpbin", status: "up", detail: "provider :8081 → 9100" },
+      { from: "n1", to: "gw", type: "SOCKS5 / tun0", status: "up", detail: "透明代理公网出口" },
+    ],
+  },
 }
 // jget returns mock data keyed by the API path.
 async function jget(path) {
@@ -746,6 +852,7 @@ async function jget(path) {
     "teams": MOCK.teams, "goal": MOCK.goal, "timeline": MOCK.timeline,
     "overview": MOCK.overview, "by_member": MOCK.by_member, "by_node": MOCK.by_node,
     "tools": MOCK.tools, "files": MOCK.files, "members": MOCK.members, "kanban": MOCK.kanban,
+    "map": MOCK.map, "topology": MOCK.topology,
   }
   const data = map[key]
   if (data === undefined) throw new Error("mock: no data for " + path)
@@ -761,7 +868,7 @@ function tableRows(rows, cols) {
 // ---- navigation ----
 let tlMode = "fishbone"
 let lastTimelineItems = []
-const FULL_WIDTH_VIEWS = new Set(["timeline", "kanban", "goal", "cost", "members"])
+const FULL_WIDTH_VIEWS = new Set(["timeline", "kanban", "goal", "cost", "members", "dashboard"])
 function applyViewLayout(name) {
   $(".container").classList.toggle("full-width", FULL_WIDTH_VIEWS.has(name))
 }
@@ -771,13 +878,276 @@ function showView(name) {
   applyViewLayout(name)
   const toggle = document.getElementById("tlViewToggle")
   if (toggle) toggle.style.display = name === "timeline" ? "inline-flex" : "none"
+  const dashToggle = document.getElementById("dashModeToggle")
+  if (dashToggle) dashToggle.style.display = name === "dashboard" ? "inline-flex" : "none"
   if (name === "timeline") renderTimeline()
   if (name === "cost") renderCost()
   if (name === "kanban") renderKanban()
   if (name === "members") renderMembers()
   if (name === "goal") renderGoal()
+  if (name === "dashboard") renderDashboard()
 }
 $$("nav button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)))
+
+// ---- Dashboard view (map / topology) ----
+let dashMode = "map"
+let dashMapObj = null
+let dashMarkers = null
+let dashTileErr = 0
+let dashBasemapIdx = 0
+let dashTileLayer = null
+
+function showDashMapEmpty(on) {
+  const e = document.getElementById("dashMapEmpty")
+  if (e) e.style.display = on ? "flex" : "none"
+}
+
+function mapState(node) {
+  if (node.kind === "server") return "server"
+  if (node.state === "online") return "online"
+  if (node.state === "busy") return "busy"
+  return "offline"
+}
+
+// Basemap providers with auto-failover (first that loads wins).
+// 高德使用 GCJ-02 坐标系，与 WGS-84 有数百米偏移，在整国/城市缩放级别下不可见。
+const BASEMAPS = [
+  { label: "高德地图", url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", subdomains: ["1", "2", "3", "4"], maxZoom: 18, attribution: "© 高德地图" },
+  { label: "Esri 街道图", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", subdomains: null, maxZoom: 19, attribution: "Tiles © Esri" },
+  { label: "OpenStreetMap", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", subdomains: "abc", maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' },
+]
+function addBasemap() {
+  if (!dashMapObj) return
+  if (dashTileLayer) dashMapObj.removeLayer(dashTileLayer)
+  const bm = BASEMAPS[dashBasemapIdx]
+  dashTileErr = 0
+  const opts = { maxZoom: bm.maxZoom, attribution: bm.attribution }
+  if (bm.subdomains) opts.subdomains = bm.subdomains
+  dashTileLayer = L.tileLayer(bm.url, opts)
+  dashTileLayer.on("tileerror", () => {
+    if (++dashTileErr <= 12) return
+    if (dashBasemapIdx < BASEMAPS.length - 1) { dashBasemapIdx++; addBasemap() }
+    else showDashMapEmpty(true)
+  })
+  dashTileLayer.addTo(dashMapObj)
+}
+
+async function renderDashboard() {
+  const q = qs()
+  const [teams, map, topo, overview] = await Promise.all([
+    jget("/api/teams"), jget("/api/map?" + q), jget("/api/topology?" + q), jget("/api/overview?" + q),
+  ])
+  fillTeamSelect(teams)
+  const o = overview.overview ?? {}
+  const nodes = map.nodes ?? []
+  const members = nodes.filter((n) => n.kind === "member")
+  const online = members.filter((n) => n.state === "online" || n.state === "busy").length
+  const sessions = members.reduce((s, n) => s + (Number(n.sessions) || 0), 0)
+  const links = topo.links ?? []
+  const activeTunnels = links.filter((l) => (l.type.includes("tunnel") || l.type.includes("SOCKS5")) && l.status === "up").length
+  $("#dashCards").innerHTML = [
+    ["在线成员", `${online}<span class="unit">/ ${members.length}</span>`, "green", "●"],
+    ["活跃会话", fmtNum(sessions), "blue", "💬"],
+    ["活跃隧道", fmtNum(activeTunnels), "orange", "🔁"],
+    ["总成本", fmtCost(o.cost), "purple", "💰"],
+  ].map(([l, v, color, icon]) => `<div class="card"><div class="card-icon ${color}">${icon}</div><div class="card-body"><div class="label">${l}</div><div class="value">${v}</div></div></div>`).join("")
+  renderMap(nodes)
+  renderTopology(topo)
+}
+
+function renderMap(nodes) {
+  const el = document.getElementById("dashMap")
+  if (!el) return
+  if (typeof L === "undefined") { showDashMapEmpty(true); return }
+  if (!dashMapObj) {
+    dashMapObj = L.map("dashMap", { center: [34.5, 108.5], zoom: 5, zoomControl: true, attributionControl: true })
+    dashMarkers = L.layerGroup().addTo(dashMapObj)
+    addBasemap()
+  }
+  dashMarkers.clearLayers()
+  for (const n of nodes) {
+    const state = mapState(n)
+    const initial = n.kind === "server" ? "S" : (n.member_name || n.name || "?").charAt(0)
+    const icon = L.divIcon({ className: "", html: `<div class="map-pin ${state}"><span>${esc(initial)}</span></div>`, iconSize: [22, 22], iconAnchor: [11, 22], popupAnchor: [0, -22] })
+    const rows = []
+    const add = (k, v) => { if (v != null && v !== "") rows.push(`<div class="pop-row"><span class="k">${k}</span><span class="v">${esc(String(v))}</span></div>`) }
+    add("节点", n.name)
+    add("区域", (n.city || "") + (n.region ? " · " + n.region : ""))
+    add("会话", n.sessions)
+    add("成本", n.cost != null ? "$" + Number(n.cost).toFixed(2) : null)
+    add("延迟", n.latency_ms != null ? n.latency_ms + " ms" : null)
+    add("IP", n.ip)
+    const pop = `<div class="pop-node">${esc(n.kind === "server" ? n.name : (n.member_name || n.name))}${n.role ? ` <span class="badge ${esc(n.role)}">${esc(n.role)}</span>` : ""}</div>${rows.join("")}`
+    dashMarkers.addLayer(L.marker([n.lat, n.lng], { icon }).bindPopup(pop))
+  }
+  setTimeout(() => dashMapObj.invalidateSize(), 50)
+}
+
+// ---- Topology (SVG, boxes with live activity) ----
+const TOPO_POS = {
+  srv: [600, 270],
+  n1: [280, 150],
+  n2: [920, 150],
+  n3: [920, 390],
+  gw: [280, 390],
+}
+function topoPos(id, nodes, server) {
+  if (TOPO_POS[id]) return TOPO_POS[id]
+  const i = (nodes || []).findIndex((n) => n.id === id)
+  return [600, 80 + i * 90]
+}
+// box size [w,h] per node
+function topoBoxSize(n) {
+  if (n.state === "server") return [170, 74]
+  if (n.state === "external") return [122, 50]
+  return [368, 122] // member
+}
+function edgePath(x1, y1, x2, y2, curve) {
+  if (!curve) return `M ${x1} ${y1} L ${x2} ${y2}`
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2
+  const dx = x2 - x1, dy = y2 - y1
+  const len = Math.hypot(dx, dy) || 1
+  const ox = (-dy / len) * curve, oy = (dx / len) * curve
+  return `M ${x1} ${y1} Q ${mx + ox} ${my + oy} ${x2} ${y2}`
+}
+// clip a segment so it starts/ends on the boundary of two boxes
+function clipEdge(ax, ay, bx, by, hwA, hhA, hwB, hhB) {
+  const dx = bx - ax, dy = by - ay
+  const adx = Math.abs(dx), ady = Math.abs(dy)
+  if (adx < 1e-6 && ady < 1e-6) return null
+  const tA = Math.min(adx > 1e-6 ? hwA / adx : Infinity, ady > 1e-6 ? hhA / ady : Infinity)
+  const tB = Math.min(adx > 1e-6 ? hwB / adx : Infinity, ady > 1e-6 ? hhB / ady : Infinity)
+  return [ax + dx * tA, ay + dy * tA, bx - dx * tB, by - dy * tB]
+}
+
+let lastTopoData = null
+let topoLivePool = {}
+let topoActivityStarted = false
+
+function renderTopology(data) {
+  const el = document.getElementById("dashTopo")
+  if (!el) return
+  if (lastTopoData === data && el.dataset.ready === "1") return
+  lastTopoData = data
+  const server = data.server
+  const nodes = data.nodes ?? []
+  const links = data.links ?? []
+  const byId = {}
+  for (const n of nodes) { byId[n.id] = n; if (n.live && n.live.length) topoLivePool[n.id] = n.live }
+  byId[server.id] = { id: server.id, name: server.name, state: "server", member: null, role: null, region: server.region, addr: server.addr, version: server.version }
+  const pos = {}
+  for (const id of Object.keys(byId)) pos[id] = topoPos(id, nodes, server)
+
+  // edges (clipped to box borders)
+  const LINK_TYPE = { "mTLS WS": "#4A90E5", "reverse tunnel": "#9B59B6", "tunnel connect": "#9B59B6", "SOCKS5 / tun0": "#E6A23C" }
+  const edges = links.map((l) => {
+    const a = pos[l.from], b = pos[l.to]
+    if (!a || !b) return ""
+    const na = byId[l.from], nb = byId[l.to]
+    const wa = topoBoxSize(na), wb = topoBoxSize(nb)
+    const seg = clipEdge(a[0], a[1], b[0], b[1], wa[0] / 2, wa[1] / 2, wb[0] / 2, wb[1] / 2)
+    if (!seg) return ""
+    const color = LINK_TYPE[l.type] || "#909399"
+    const dash = l.status === "down" ? ' stroke-dasharray="5 4"' : ""
+    const arrow = l.type !== "mTLS WS" ? ' marker-end="url(#topoArrow)"' : ""
+    const curve = (l.from === "srv" && l.to === "n1") || (l.from === "n1" && l.to === "srv") ? (l.type === "reverse tunnel" ? 34 : 0) : 0
+    const path = edgePath(seg[0], seg[1], seg[2], seg[3], curve)
+    const mx = (seg[0] + seg[2]) / 2, my = (seg[1] + seg[3]) / 2
+    const label = l.name ? `${l.type} · ${esc(l.name)}` : esc(l.type)
+    return `<path d="${path}" fill="none" stroke="${color}" stroke-width="${l.type === "mTLS WS" ? 1.6 : 1.4}"${dash}${arrow} opacity="${l.status === "down" ? 0.45 : 0.9}"><title>${esc(label)} · ${esc(l.detail || l.status)}</title></path>
+      <text x="${mx}" y="${my - 6}" text-anchor="middle" font-size="9.5" fill="var(--muted-fg)">${label}</text>`
+  }).join("")
+
+  // nodes (boxes via foreignObject)
+  const nodeSvg = []
+  // server box
+  const sp = pos[server.id]
+  const ss = topoBoxSize(byId[server.id])
+  nodeSvg.push(`<foreignObject x="${sp[0] - ss[0] / 2}" y="${sp[1] - ss[1] / 2}" width="${ss[0]}" height="${ss[1]}">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box server">
+      <div class="tnb-head"><span class="tnb-status-dot server"></span><span class="tnb-name">${esc(server.name)}</span><span class="tnb-node">Tx</span></div>
+      <div class="tnb-meta"><div>v${esc(server.version)} · ${esc(server.region)}</div><div class="mono">${esc(server.addr)}</div></div>
+    </div>
+  </foreignObject>`)
+  // member / external nodes
+  for (const n of nodes) {
+    const p = pos[n.id]
+    if (!p) continue
+    const sz = topoBoxSize(n)
+    const cls = n.state === "external" ? "external" : n.state === "online" ? "online" : n.state === "busy" ? "busy" : "offline"
+    if (n.state === "external") {
+      nodeSvg.push(`<foreignObject x="${p[0] - sz[0] / 2}" y="${p[1] - sz[1] / 2}" width="${sz[0]}" height="${sz[1]}">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box external">
+          <div class="tnb-head"><span class="tnb-status-dot external"></span><span class="tnb-name">${esc(n.name)}</span></div>
+          <div class="tnb-meta"><div>${esc(n.region)}</div></div>
+        </div>
+      </foreignObject>`)
+      continue
+    }
+    const live = n.live ?? []
+    const lines = live.slice(0, 5).map((it) => `<div class="tnb-line"><span class="tnb-t">${esc(nowClock())}</span><span class="tnb-i">${esc(it.icon)}</span><span class="tnb-x">${esc(it.text)}</span></div>`).join("")
+    const body = live.length ? lines : `<div class="tnb-empty">${esc(n.member || n.name)} 离线，无会话</div>`
+    nodeSvg.push(`<foreignObject x="${p[0] - sz[0] / 2}" y="${p[1] - sz[1] / 2}" width="${sz[0]}" height="${sz[1]}">
+      <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box ${cls}" data-live="1" data-node="${esc(n.id)}">
+        <div class="tnb-head">
+          <span class="tnb-status-dot ${cls}"></span>
+          <span class="tnb-name">${esc(n.member || n.name)}</span>
+          ${n.role ? `<span class="badge ${esc(n.role)}">${esc(n.role)}</span>` : ""}
+          <span class="tnb-node">${esc(n.name)}</span>
+        </div>
+        <div class="tnb-live">${body}</div>
+      </div>
+    </foreignObject>`)
+  }
+
+  const legend = `<div class="topo-legend">
+    <span><span class="sw" style="background:#4A90E5"></span>mTLS WS</span>
+    <span><span class="sw" style="background:#9B59B6"></span>reverse tunnel</span>
+    <span><span class="sw" style="background:#E6A23C"></span>SOCKS5 / tun0</span>
+    <span><span class="sw" style="background:var(--muted-fg);border-radius:2px"></span>down（虚线）</span>
+  </div>`
+  el.innerHTML = `<div class="topo-legend-wrap">${legend}<svg viewBox="0 0 1200 540" xmlns="http://www.w3.org/2000/svg" role="img">
+    <defs><marker id="topoArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#909399"/></marker></defs>
+    ${edges}
+    ${nodeSvg.join("")}
+  </svg></div>`
+  el.dataset.ready = "1"
+  scheduleTopoActivity()
+}
+
+// live activity ticker for topology boxes (mirror of members live feed)
+function spawnTopoActivity() {
+  const boxes = document.querySelectorAll("#dashTopo .topo-node-box[data-live]")
+  if (!boxes.length) return
+  const box = boxes[Math.floor(Math.random() * boxes.length)]
+  const pool = topoLivePool[box.dataset.node] || []
+  if (!pool.length) return
+  const item = pool[Math.floor(Math.random() * pool.length)]
+  const feed = box.querySelector(".tnb-live")
+  if (!feed) return
+  const line = document.createElement("div")
+  line.className = "tnb-line new"
+  line.innerHTML = `<span class="tnb-t">${esc(nowClock())}</span><span class="tnb-i">${esc(item.icon)}</span><span class="tnb-x">${esc(item.text)}</span>`
+  feed.prepend(line)
+  while (feed.children.length > 5) feed.removeChild(feed.lastChild)
+}
+function scheduleTopoActivity() {
+  if (topoActivityStarted) return
+  topoActivityStarted = true
+  setInterval(spawnTopoActivity, 3000)
+}
+
+function setDashMode(mode) {
+  dashMode = mode
+  $$("#dashModeToggle button").forEach((b) => b.classList.toggle("active", b.dataset.dashmode === mode))
+  const mapWrap = document.getElementById("dashMapWrap")
+  const topo = document.getElementById("dashTopo")
+  if (mapWrap) mapWrap.style.display = mode === "map" ? "block" : "none"
+  if (topo) topo.style.display = mode === "topo" ? "block" : "none"
+  if (mode === "map" && dashMapObj) setTimeout(() => dashMapObj.invalidateSize(), 50)
+}
+document.querySelectorAll("#dashModeToggle button").forEach((b) =>
+  b.addEventListener("click", () => setDashMode(b.dataset.dashmode)))
 
 // ---- Goal view ----
 let selectedGoalId = null
@@ -1483,11 +1853,12 @@ function fillTeamSelect(teams) {
   }
 }
 function refresh() {
-  const active = $$("nav button").find((b) => b.classList.contains("active"))?.dataset.view ?? "kanban"
+  const active = $$("nav button").find((b) => b.classList.contains("active"))?.dataset.view ?? "dashboard"
   if (active === "timeline") renderTimeline()
   else if (active === "cost") renderCost()
   else if (active === "goal") renderGoal()
   else if (active === "members") renderMembers()
+  else if (active === "dashboard") renderDashboard()
   else renderKanban()
 }
 $("#kind")?.addEventListener("change", refresh)
@@ -1549,8 +1920,7 @@ async function boot() {
     fillTeamSelect(teams)
     await loadMemberNames()
     await refreshGoalSelect()
-    applyViewLayout("kanban")
-    renderKanban()
+    showView("dashboard")
   } catch (e) {
     document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
   }
@@ -1682,9 +2052,6 @@ function toggleTermMax() {
 }
 termMaxBtn?.addEventListener("click", toggleTermMax)
 termBackdrop?.addEventListener("click", () => { if (termWin.classList.contains("maximized")) toggleTermMax() })
-</script>
-</body>
-</html>
 </script>
 </body>
 </html>
