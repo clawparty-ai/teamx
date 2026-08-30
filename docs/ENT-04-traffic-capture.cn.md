@@ -1,6 +1,7 @@
-# 19 — Enterprise TODO：本地流量抓包体系（L2 抓包 / 后解密 / TLS MITM）
+# ENT-04 — 本地流量抓包体系（L2 抓包 / 后解密 / TLS MITM）
 
 > 状态：**TODO（设计定稿，未实施）**
+> 分支约束：本文档为 **enterprise 专属**（`ENT-` 前缀），**不得合并到 main 分支**。
 > 关联：`docs/18-design-capture-feasibility.cn.md`（可行性分析）、
 > `docs/09-design-tun0.cn.md`（tun0）、`docs/06-design-proxy.cn.md`（proxy）
 > 日期：2026-08-24

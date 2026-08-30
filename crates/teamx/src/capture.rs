@@ -1,6 +1,6 @@
 //! capture.rs — local traffic capture: SQLite store, flow tracker, taps.
 //!
-//! Design (docs/19-todo-capture-system.cn.md): a dedicated capture DB
+//! Design (docs/ENT-04-traffic-capture.cn.md): a dedicated capture DB
 //! (`~/.teamx/capture.db`) holds connection metadata (`flows`), bidirectional
 //! byte streams in chunks (`stream_chunks`), optional raw IP packets
 //! (`packets`), and TLS session keys imported from an SSLKEYLOGFILE

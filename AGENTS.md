@@ -42,4 +42,4 @@
   - `tun_*.rs` / `tunnel_client.rs` / `socks5.rs` — tun0 透明代理与 SOCKS5 出口桥接。
   - `serve.rs` / `pki.rs` / `state.rs` — mTLS server / 证书 / 团队状态机。
 - 网络抓包的数据路径：数据面 tap（`CaptureTap`）→ 有界 channel → 后台 writer 批量写入 capture DB；转发路径不阻塞。
-- opencode-plugin（TypeScript）使用 bun；`app/` 是 Swift macOS 客户端；`docs/` 含中英双语设计文档，enterprise 设计见 `19-todo-capture-system.cn.md`、`22-todo-flow-replay.cn.md`、`23-todo-flow-analysis.cn.md`。
+- opencode-plugin（TypeScript）使用 bun；`app/` 是 Swift macOS 客户端；`docs/` 含中英双语设计文档，enterprise 专属设计以 `ENT-` 前缀见 `ENT-04-traffic-capture.cn.md`、`ENT-05-traffic-analysis.cn.md`、`ENT-06-traffic-replay.cn.md`。

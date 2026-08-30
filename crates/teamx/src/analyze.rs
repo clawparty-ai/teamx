@@ -2,7 +2,7 @@
 //!
 //! Pure, network-free analysis: protocol/flow statistics, HTTP header
 //! reconstruction, and (best-effort) TLS decryption using an imported
-//! SSLKEYLOGFILE (the "capture-then-decrypt" model from 23-todo-flow-analysis).
+//! SSLKEYLOGFILE (the "capture-then-decrypt" model from ENT-05-traffic-analysis).
 //!
 //! Decryption scope (v1): TLS 1.3 traffic secrets (CLIENT/SERVER_TRAFFIC_
 //! SECRET_0) exported by the *client*. TLS 1.2 RSA/CLIENT_RANDOM master
@@ -314,7 +314,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// v1 scope: TLS 1.3 traffic secrets; sequence numbers are counted over
 /// application_data records only (encrypted handshake records between
 /// ServerHello and the first app record are not separately tracked — a known
-/// limitation noted in 23-todo-flow-analysis).
+/// limitation noted in ENT-05-traffic-analysis).
 pub fn decrypt_flow(store: &mut CaptureStore, flow_id: i64) -> Result<usize, String> {
     // 1. fetch client_random from the flow
     let cr: Option<Vec<u8>> = store

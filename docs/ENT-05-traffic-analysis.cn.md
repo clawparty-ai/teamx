@@ -1,8 +1,9 @@
-# 23 — Enterprise TODO：流量分析（TLS/HTTPS 解密 · 协议识别 · 统计 · 搜索）
+# ENT-05 — 流量分析（TLS/HTTPS 解密 · 协议识别 · 统计 · 搜索）
 
 > 状态：**TODO（设计定稿，未实施）**
-> 关联：`docs/19-todo-capture-system.cn.md`（抓取底座）、
-> `docs/22-todo-flow-replay.cn.md`（回放）
+> 分支约束：本文档为 **enterprise 专属**（`ENT-` 前缀），**不得合并到 main 分支**。
+> 关联：`docs/ENT-04-traffic-capture.cn.md`（抓取底座）、
+> `docs/ENT-06-traffic-replay.cn.md`（回放）
 > 日期：2026-08-24
 
 ## 0. 定位

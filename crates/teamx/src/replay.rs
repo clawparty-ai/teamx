@@ -1,4 +1,4 @@
-//! replay.rs — traffic replay built on capture.db (22-todo-flow-replay).
+//! replay.rs — traffic replay built on capture.db (ENT-06-traffic-replay).
 //!
 //! Two TCP modes + an HTTP-exchange layer:
 //!   * `serve`   (mode B): mock server that replays a flow's recorded

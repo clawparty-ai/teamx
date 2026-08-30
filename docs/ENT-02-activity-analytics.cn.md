@@ -1,8 +1,10 @@
-# teamx 企业版：成员工时 / 财务 / 质量分析 + team-ui 看板（设计）
+# ENT-02 — 成员工时 / 财务 / 质量分析 + team-ui 看板（设计）
 
 > 状态：**实施中**（enterprise 分支）
+> 分支约束：本文档为 **enterprise 专属**（`ENT-` 前缀），**不得合并到 main 分支**。
 > 目标读者：实现者、team lead（owner）、成员
 > 关联：`docs/network-mode.md`（网络模式/中央 serve）、`opencode-plugin/src/index.ts`（event hook）、`crates/teamx/src/db.rs`（schema）、`crates/teamx/src/serve.rs`（HTTP/WS）
+> 日期：2026-08-30
 
 ---
 

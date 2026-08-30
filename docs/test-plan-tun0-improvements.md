@@ -163,7 +163,7 @@ code review 覆盖），建议至少做一次。
 
 # Part B · 抓包系统验收（enterprise P1 实施后执行）
 
-> 对应设计：docs/19-todo-capture-system.cn.md
+> 对应设计：docs/ENT-04-traffic-capture.cn.md
 > 前置：capture.db 初始化正常；`teamx capture start/status/stop` 可用
 
 ## B1 · Tap 点与数据完整性 🤖
@@ -217,7 +217,7 @@ Safari/原生 App 流量无 🔑（keylog 不支持属预期，不是缺陷）�
 
 # Part C · 回放功能验收（enterprise R1-R5 实施后执行）
 
-> 对应设计：docs/22-todo-flow-replay.cn.md
+> 对应设计：docs/ENT-06-traffic-replay.cn.md
 
 ## C1 · TCP Client Replay 🤖
 
@@ -259,7 +259,7 @@ Safari/原生 App 流量无 🔑（keylog 不支持属预期，不是缺陷）�
 
 # Part D · 分析功能验收（enterprise A1-A6 实施后执行）
 
-> 对应设计：docs/23-todo-flow-analysis.cn.md
+> 对应设计：docs/ENT-05-traffic-analysis.cn.md
 
 ## D1 · 协议识别 🤖
 

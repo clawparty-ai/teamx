@@ -1,8 +1,9 @@
-# 22 — Enterprise TODO：流量回放（TCP 回放 + HTTP 回放）
+# ENT-06 — 流量回放（TCP 回放 + HTTP 回放）
 
 > 状态：**TODO（设计定稿，未实施）**
-> 关联：`docs/19-todo-capture-system.cn.md`（抓取底座）、
-> `docs/23-todo-flow-analysis.cn.md`（流量分析）
+> 分支约束：本文档为 **enterprise 专属**（`ENT-` 前缀），**不得合并到 main 分支**。
+> 关联：`docs/ENT-04-traffic-capture.cn.md`（抓取底座）、
+> `docs/ENT-05-traffic-analysis.cn.md`（流量分析）
 > 日期：2026-08-24
 
 ## 0. 定位与数据源
