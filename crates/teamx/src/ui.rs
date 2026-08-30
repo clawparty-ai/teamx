@@ -57,7 +57,7 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         let mut stmt = c
             .prepare(
                 "SELECT DISTINCT m.team_id FROM members m JOIN teams t ON t.id = m.team_id
-                 WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state NOT IN ('destroyed') AND t.owner_member_id = m.id",
+                 WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state NOT IN ('destroyed') AND (t.owner_member_id = m.id OR m.is_lead = 1)",
             )
             .map_err(|e| format!("owner check failed: {e}"))?;
         let rows = stmt

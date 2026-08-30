@@ -356,6 +356,30 @@ export const tools = {
     },
   }),
 
+  teamx_team_promote_lead: tool({
+    description:
+      "Promote a member to a backup team lead / co-lead (team lead only). A co-lead has full team-lead " +
+      "authorization (approve members, share/close goals, invite, etc.) so they can back up the TL.",
+    args: {
+      member_id: tool.schema.string().describe("member id to promote"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "promote-lead", args.member_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_team_demote_lead: tool({
+    description: "Remove a member's backup team lead status (team lead only). The primary owner cannot be demoted.",
+    args: {
+      member_id: tool.schema.string().describe("member id to demote"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["team", "demote-lead", args.member_id, ...opt("--team", args.team)])
+    },
+  }),
+
   teamx_team_invite: tool({
     description:
       "Invite a member with a job role (owner only). Issues a client certificate + a self-contained " +
