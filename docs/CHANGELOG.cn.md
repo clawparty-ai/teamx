@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 — 2026-08-30
+
+### 合并 grill-with-docs（owner 主导设计会话）到企业版
+
+将社区版（main 分支）的 grill-with-docs 设计会话功能合并进 enterprise 分支
+（cherry-pick `d868b09` + `7858b62`，本地-only，未 push）：
+
+- **新增 `protocols/grill-with-docs.md`** — host-neutral 设计会话协议源
+  （owner 主导、多轮访谈、证据收集、ADR 沉淀）。
+- **新增 `scripts/generate-grill-protocol.mjs`** — 从协议源确定性生成各端
+  适配产物（`--check` 可校验产物与源是否一致）。
+- **opencode 端**：新增 `/team-grill` 斜杠命令（`assets/command/team-grill.md`
+  + `.en.md`），支持 `--doc` / `--resume`；`install.sh` 同步安装。
+- **DSH 端**：新增运行时 skill `teamx-grill-with-docs`
+  （`src/grill-with-docs.generated.ts`），`src/index.ts` 注册。
+- **文档**：`docs/22-manual-grill-with-docs.md`（手动测试）、
+  `docs/23-manual-grill-with-docs-usage.md`（使用指南）、
+  `docs/design/grill-with-docs.md`、ADR 0001/0002、`CONTEXT.md`。
+- **测试**：`tests/protocol-assets.test.mjs` 校验生成产物一致性；
+  `tests/run-all.sh` plugin 步骤插入 `generate-grill-protocol --check`。
+
+验证：`cargo test -p teamx` 117 passed；opencode-plugin typecheck + build 通过；
+协议生成/校验脚本通过。
+
 ## 0.3.2 — 2026-08-24
 
 ### 透明代理 DNS 方案（本地 DNS 代理 + 出口解析）+ 控制面板 card 改造
