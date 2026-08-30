@@ -1402,8 +1402,15 @@ let termActiveMember = null
    const wsProto = location.protocol === "https:" ? "wss" : "ws"
    const wsUrl = `${wsProto}://${location.host}/ws/members/${encodeURIComponent(memberId)}/pty/${encodeURIComponent(ptyId)}`
    termWs = new WebSocket(wsUrl)
+   // Terminal data arrives as binary (raw PTY bytes) — decode as UTF-8.
+   termWs.binaryType = "arraybuffer"
    termWs.onopen = () => { term.write("\r\n\x1b[92mconnected\x1b[0m\r\n"); term.focus() }
-   termWs.onmessage = (e) => { try { term.write(String(e.data)) } catch {} }
+   termWs.onmessage = (e) => {
+     try {
+       if (typeof e.data === "string") { term.write(e.data) }
+       else if (e.data instanceof ArrayBuffer) { term.write(new TextDecoder("utf-8").decode(e.data)) }
+     } catch {}
+   }
    termWs.onclose = () => { try { term.write("\r\n\x1b[91mdisconnected\x1b[0m\r\n") } catch {} }
    term.onData((d) => { if (termWs && termWs.readyState === WebSocket.OPEN) termWs.send(d) })
  }
