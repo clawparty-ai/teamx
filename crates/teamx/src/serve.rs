@@ -1341,15 +1341,8 @@ async fn git_create_repo(
     
     let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
-    // Check if member is owner or admin
-    let is_owner: bool = db
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM members m 
-             INNER JOIN teams t ON t.owner_member_id = m.id
-             WHERE t.id = ?1 AND m.session_key = ?2",
-            params![team_id, member_id],
-            |row| row.get(0),
-        )
+    // Check if member is a team lead (owner or co-lead).
+    let is_owner: bool = commands::is_team_owner(&db, team_id, &member_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     if !is_owner {

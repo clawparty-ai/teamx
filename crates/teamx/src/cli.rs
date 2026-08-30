@@ -317,6 +317,26 @@ pub enum TeamCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Promote a member to a backup team lead / co-lead (team lead only)
+    PromoteLead {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        session: String,
+        /// target team id (required only when the session belongs to several teams)
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Remove a member's backup team lead status (team lead only)
+    DemoteLead {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        session: String,
+        /// target team id (required only when the session belongs to several teams)
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// List teams the current session belongs to
     List {
         #[arg(long)]

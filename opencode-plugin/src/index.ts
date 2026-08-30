@@ -33,7 +33,7 @@ const AUTO_EXECUTE = process.env.TEAMX_AUTO_EXECUTE !== "0"
 type MemberRow = { display_name?: string; role?: string | null; state?: string }
 type QuestionRow = { state?: string; question?: string }
 type TeamBlock = {
-  team?: { name?: string; state?: string; my_role?: string; my_member_id?: string }
+  team?: { name?: string; state?: string; my_role?: string; my_member_id?: string; my_is_lead?: boolean }
   goal?: { title?: string; state?: string } | null
   members?: MemberRow[]
   questions?: QuestionRow[]
@@ -91,6 +91,10 @@ function summarizeEvent(e: SyncEvent): string {
       return t("toast.membership_approved", { seq: String(seq), name: s("display_name") })
     case "membership.denied":
       return t("toast.membership_denied", { seq: String(seq), name: s("display_name") })
+    case "member.promoted_lead":
+      return t("toast.promoted_lead", { seq: String(seq), name: s("display_name") })
+    case "member.demoted_lead":
+      return t("toast.demoted_lead", { seq: String(seq), name: s("display_name") })
     case "clarification.asked":
       return t("toast.clarification_asked", { seq: String(seq), target: s("target"), question: shorten(s("question")) })
     case "clarification.responded":
@@ -148,7 +152,7 @@ function summarize(data: SyncData): string {
 
 /** True if the sync data shows this session is a team lead (auto-execute excluded). */
 export function isOwnerSession(data: SyncData): boolean {
-  return (data?.teams ?? []).some((t) => t.team?.my_role === "owner")
+  return (data?.teams ?? []).some((t) => t.team?.my_role === "owner" || t.team?.my_is_lead === true)
 }
 
 /** The member id of the current session, from the sync response. */
@@ -398,11 +402,11 @@ export const Teamx: Plugin = async ({ client }) => {
       if (isMember === undefined || !ownerSessions.has(sessionID)) {
         const key = sessionKey(instance, sessionID)
         const r = await runCli(["team", "list", "--session", key])
-        const teams = r.data?.teams as { my_role?: string }[] | undefined
+        const teams = r.data?.teams as { my_role?: string; my_is_lead?: boolean }[] | undefined
         isMember = r.ok && Array.isArray(teams) && teams.length > 0
         markMember(sessionID, isMember)
-        // An owner's own broadcasts shouldn't auto-execute on itself.
-        const isOwner = r.ok && Array.isArray(teams) && teams.some((t) => t.my_role === "owner")
+        // An owner's / co-lead's own broadcasts shouldn't auto-execute on itself.
+        const isOwner = r.ok && Array.isArray(teams) && teams.some((t) => t.my_role === "owner" || t.my_is_lead === true)
         ownerSessions.set(sessionID, isOwner)
         if (isMember) refreshDigest(sessionID).catch(() => {})
       }

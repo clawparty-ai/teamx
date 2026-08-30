@@ -12,6 +12,8 @@
   "toast.membership_rejoined": "#{seq} {name} requested to join (rejoined)",
   "toast.membership_approved": "#{seq} {name} approved",
   "toast.membership_denied": "#{seq} {name} denied",
+  "toast.promoted_lead": "#{seq} {name} promoted to team lead (backup)",
+  "toast.demoted_lead": "#{seq} {name} removed from team lead",
   "toast.clarification_asked": "#{seq} Question to {target}: {question}",
   "toast.clarification_responded": "#{seq} Answer: {answer}",
   "toast.heartbeat": "#{seq} Heartbeat (idle)",
