@@ -1,184 +1,133 @@
 # Changelog
 
-## 0.3.2 — 2026-08-24
+## 0.2.0 — 2026-08-30
 
-### 透明代理 DNS 方案（本地 DNS 代理 + 出口解析）+ 控制面板 card 改造
+Teamx 0.2.0 从「共享目标状态机」成长为一个完整的网络协作平台：基于 mTLS 的 Git 代码托管、tun0 透明代理、owner 主导的设计评审工作流、桌面 GUI，以及按用户隔离的隧道访问。
 
-**透明代理无感知 DNS**（替代放弃的 fake-ip DNS）：
-- macOS 的 `mDNSResponder` 不接受 `198.18.0.0/15` fake-ip 应答，且 fake-ip DNS
-  会劫持 tun0 自身到 server 的解析导致 bridge 超时 → 放弃 fake-dns（`--fake-dns`
-  改为显式参数，默认关闭）。
-- 公共 DNS（8.8.8.8 / 1.1.1.1 / DoH）在墙内均被污染或阻断；只有海外出口
-  （`egress2`，AWS 东京）能解析 Google 真实 IP 并直连。
-- 新方案：本地 DNS 代理监听 `127.0.0.1:53`，系统 DNS 指向它。命中路由规则的
-  域名经 teamx mTLS 通道让出口解析（真实 IP），并加入 tun 的主机路由后应答；
-  其余域名转发上游系统 DNS。应用无需任何配置即可访问被代理域名。
-- 新增 `dns_proxy.rs`（本地 DNS 服务器）；server 端 `team.resolve_dns` RPC +
-  tunnel registry `resolve`/`complete_resolve`；exit 端 `resolve` 指令；
-  `teamx dns list` / `teamx dns resolve <domain>` CLI。
-- 路由表显式 CIDR 段规则直接加网络路由（覆盖 Google 等大 CDN 段），域名规则
-  定期解析为单 IP 主机路由兜底。
+### 亮点
 
-**控制面板 card 改造**（Swift App）：
-- 上下布局：底部 term 风格日志区；顶部 `NSSegmentedControl` 切换 8 个 card
-  （连接状态 / 虚拟网卡 / SOCKS5 代理 / 默认出口 / 隧道 / tun0 路由规则 /
-  路由表 / DNS）。
-- 新增「路由表」card：显示默认路由 + 对给定 IP/域名执行 `traceroute`。
-- 新增「DNS」card：显示默认 DNS + 对给定域名执行 `teamx dns resolve`（经出口，
-  无污染）。
+- **基于 mTLS 的 Git 代码托管** — 原生 `git clone/pull/push` 直通团队 server；建队自动建 repo / 批准成员自动授权 / 导入邀请自动 clone。
+- **tun0 透明代理**（Linux + macOS）——带本地 DNS 代理、按目标出口路由、watchdog 自愈、事件驱动 I/O（无忙轮询）。
+- **用户身份 + 按用户隧道 ACL** — 一个人可拥有多台设备；同一用户的设备零配置互访对方隧道，其他用户拒绝，owner/lead 保留监察。
+- **grill-with-docs** — owner 主导的多轮设计讨论工作流（设计树 + 事实请求 + 持久化 ADR），单协议 + 生成式适配器，主机无关交付。
+- **桌面 GUI** — 托盘应用 + 原生控制面板、实时日志、root 权限 tun0 管理。
+- **`@teamx-ai` 插件** 发布到 npm（opencode + dsh）。
 
-**其他修复**：
-- 点击托盘图标菜单导致键盘/UI 卡死：`menuNeedsUpdate` 同步执行 `tunnel list`
-  （server 往返）阻塞主线程 → 默认出口/出口列表改为读缓存，后台定时刷新。
-- tun0 核心修复：smoltcp Tx token 真正写回 tun fd；TUN fd 非阻塞 + rx_buf 不再
-  truncate；macOS utun 截断的 TCP SYN 补齐到 total_len；checksum 改为 TX 计算
-  /RX 忽略；仅在 `Established` 后接新连接；`open_tunnel_bridge` 的 stream_id
-  传递 bug（否则数据被缓存永不发送）；主循环改异步 sleep 避免饿死 spawn 任务。
-- 开机自启默认关闭（移除 LaunchAgent，打包不带 `--install-agent`）。
+### 新增内容
 
-## 0.3.1 — 2026-08-23
+#### Git 托管（网络模式）
 
-### External rule-config compatibility + L1 desktop tray
+- 团队仓库经 teamx server 管理，标准 **Git Smart HTTP over mTLS** — 原生 `git clone` / `pull` / `push` 开箱即用。
+- **团队自动化**：建队自动初始化仓库；批准成员自动授权读；导入邀请自动 clone。
+- 仓库级权限（read / write / admin），`teamx git` CLI 支持 clone/pull/push/commit/grant。
 
-**外部规则配置兼容模式**（`tun0 start --rules-config <path>`，导入其他代理
-客户端的 YAML 规则）：解析其 `rules`，映射到 teamx 路由表（DOMAIN-SUFFIX→
-通配、DOMAIN→精确、IP-CIDR→CIDR、MATCH→default）。`proxies`/`proxy-groups`
-忽略（出口从 teamx 的 egress 集选择）；DIRECT/REJECT 规则 v1 跳过。
-规则解析模块 + 8 个单元测试。
+#### 网络与隧道
 
-**L1 桌面托盘**（`teamx gui`）：tray-icon + tao（纯 Rust，跨平台 macOS 菜单栏 /
-Linux appindicator）。菜单启停 tun0 / SOCKS5 proxy、状态显示、退出。子进程由
-`teamx gui` 管理（spawn `teamx tun0 start` / `teamx proxy start`）。L2/L3
-（设置窗口、规则可视化、Tauri 完整 GUI）列入 enterprise 分支 TODO。
+- **隧道自愈**：WS keep-alive 心跳 + 断线自动重连，附生产 runbook。
+- **SOCKS5 代理按目标出口路由**：域名/IP 路由到指定代理出口。
+- **tun0 透明代理**（虚拟网卡）Linux + macOS：无需逐应用配置。
+- **本地 DNS 代理**，保留原 DNS 兜底（含 AAAA 投毒防护）。
+- tun0 工程化：watchdog phase-1、异步 bridge 搭建、AsyncFd 事件驱动（去除 2ms 忙轮询）。
 
-## 0.3.0 — 2026-08-23
+#### 团队协作
 
-### tun0 virtual NIC (transparent proxy, needs root)
+- **多团队 lead** — owner 可提升 backup lead / co-lead（`is_lead`）。
+- **用户身份 + 按用户隧道 ACL**（见亮点）。设备邀请证书 CN 携带 `user_id`；`teamx user list` 审计每个 person 的设备。
 
-A TUN device routes matching traffic through teamx proxy exits **without**
-configuring apps — apps keep talking to the network normally; traffic to the
-fake-ip range is transparently captured, TCP is reassembled in user space
-(smoltcp) and forwarded through the chosen exit.
+#### 设计工作流
 
-- **`teamx tun0 start`** (requires root): creates the tun device, injects the
-  fake-ip route, runs a fake-ip DNS responder and bridges connections.
-  - `--exit <name>` / `-f <routes.json>` to pick the default / routed exit.
-  - `--ip` (gateway, default 198.18.0.1), `--net/--net-prefix` (fake-ip net,
-    default 198.18.0.0/15), `--max-conns`.
-- **`teamx tun0 stop|status`**.
-- **fake-ip DNS** (`tun_dns.rs`): answers A queries with 198.18.x.x fake IPs,
-  keeps a fake_ip↔domain map so the exit dials by hostname.
-- **smoltcp user-space stack** (`tun_stack.rs`) with a local patch
-  (`vendor/smoltcp`, `[patch.crates-io]`) enabling `listen(0)` as an any-port
-  wildcard — required for transparent interception of arbitrary target ports.
-- **Bridge** (`tun_socks.rs`): per-connection `open_tunnel_bridge` (extracted
-  from `run_socks5_proxy`) reuses the existing WS→server→egress channel;
-  **server and egress are unchanged**.
-- Cross-platform: Linux `/dev/net/tun` + `ip route`, macOS `utun` + `route`.
-- Reuses `routes.rs` for per-target exit selection (IP/CIDR + fake-ip domain).
-- Tests: 64 unit tests (fake-ip alloc/lookup/DNS round-trip, routes, …).
-  Linux live verification on hub03: tun0 up, fake-ip route, DNS returns fake
-  A, example.com content fetched through the tunnel via egress2, .com flows
-  confirmed dialing through the egress2 exit. macOS: `tests/tun0-macos-test.sh`.
-- Docs: `docs/09-design-tun0.md` (detailed design).
+- **doc-flow**：TEAM.md `## Documents` 章节、建队时生成文档契约快照、声明式文档生命周期引擎（权限 + 动态状态机校验）、`doc.*` 事件接入 publish 闭环。
+- **grill-with-docs**：owner 主导多轮设计会话，依赖感知设计树、稳定 `DQ-`/`FR-` 标识、事实报告、ADR、`CONTEXT.md` 术语表 — 以 `/team-grill`（opencode）与 DSH runtime skill 交付，由单份主机无关协议生成。
 
-## 0.1.2 — 2026-08-22
+#### 桌面 GUI（macOS）
 
-### Proxy per-target egress routing
+- 托盘应用 → 原生 egui 控制面板（非浏览器）、实时日志面板、tun0 root 授权弹窗、LaunchAgent 安装模式、可双击 `Teamx.app`。
 
-A single local SOCKS5 port can now pick which `proxy exit` each CONNECT target uses, based on the target domain/IP — so multiple exits (e.g. different cloud hosts) can be combined behind one proxy.
+#### 插件与发布
 
-- **New `routes.rs`**: ordered first-match rules — exact domain, suffix wildcard (`*.cn`), IPv4/IPv6 CIDR, exact IP. Pure-function matcher + unit tests.
-- **CLI**: `proxy start -f/--routes <file>` (ephemeral JSON override), `proxy start` reads the **SQLite route table** by default; `--exit` remains the legacy fixed-exit fallback.
-- **SQLite persistence** (db migrate v6): `proxy_routes` (seq/match/exit) + `proxy_settings` (`default_exit`). Managed via `teamx proxy routes list|add|remove|set-default|import|clear`.
-- `tunnel_client::run_socks5_proxy` resolves the exit per CONNECT target; server/exit side unchanged.
-- Tests: routes.rs unit (matching + DB round-trip + upsert), `tests/proxy-routes-test.ts` end-to-end (file routing + SQLite routing + fixed-exit regression) — all pass.
-- Docs: `docs/08-design-proxy-routes.md` (design + usage), `docs/20-manual-tunnel-proxy-cli.md` §5.5 (multi-exit routing runbook).
+- `@teamx-ai/opencode`、`@teamx-ai/dsh` 及 installable bundle 发布到 npm；dsh 插件注册 teamx runtime skill。
 
-## 0.1.1 — 2026-08-22
+#### 工程与文档
 
-### Tunnel WS keep-alive + auto-reconnect
+- 全量代码审计（security / correctness / usability）+ 两轮 review 修复（DNS 缓存、waiter leak、pipe 死锁、AAAA 防护、UX）。
+- **双语文档**：所有设计/手册/测试/审查文档补齐 cn/en 对照；新增可行性分析、纯 CLI 隧道/代理手册、综合 E2E 套件（43 项隧道/代理检查）。
+- 本地流量抓包可行性分析（L1 HTTP / L2 TCP）— 企业版路线图前瞻。
 
-Long-idle tunnel WebSockets (`/tunnel` provider + `/tunnel/forward` consumer) were silently dropped by NAT/middleboxes, leaving stale registered tunnels and half-open connections — proxy flows then failed with `SOCKS5 (5) Connection refused` / `curl: (97)` until both processes were manually restarted.
+### 说明
 
-- **Server heartbeat** (`serve.rs`): both tunnel WS handlers now send a 30s application-level `{"type":"ping"}` (mirroring the `/ws` channel) and reply `pong` to client pings.
-- **Client pong** (`tunnel_client.rs`): `proxy exit` / `tunnel expose` / `tunnel forward` / `proxy start` reply `pong` to server pings.
-- **Provider auto-reconnect** (`run_expose`): `proxy exit` / `tunnel expose` automatically reconnect with exponential backoff (1s→30s) when the WS drops and re-register the tunnel, so consumers are never stranded.
-- `handle_tunnel_forward` merged two socket/provider tasks into one `select!` loop (single sink owner).
-- Docs: `docs/20-manual-tunnel-proxy-cli.md` §11 documents keep-alive + self-healing + systemd/while-loop production runbook.
+- CLI/DB schema 迁移到 **v11**（新增 `users` 表、`members.user_id`、`invitations.user_id`）。现有数据库首次运行自动升级。
+- 隧道访问语义对 *用户绑定* 设备有变化：同用户设备可互访对方隧道；其他用户拒绝。旧（未绑定）成员保持原有团队级访问，不影响现有团队。
 
-Verified: 43 unit tests, `tests/tunnel-proxy-comprehensive.ts` (43 asserts), `tests/proxy-test.ts`, `tests/cross-network.sh`; live kill/restart test on a cloud host confirms the provider reconnects and re-registers within seconds, and `systemd Restart=always` recovers a SIGKILLed server.
+## 0.1.0 — 2026-08-20
 
-## 0.1.0 — 2026-08-17
+首个版本：Rust CLI（SQLite 事件台账 + 状态机 + mTLS server）+ opencode 插件（30+ 工具 + `/team` 命令 + agent 路由）+ 网络模式 + 多人协作。
 
-First release: Rust CLI (SQLite event ledger + state machine + mTLS server) + opencode plugin (30+ tools + `/team` commands + agent routing) + network mode + multi-member collaboration.
+### 网络模式（N0—N4）
 
-### Network Mode (N0—N4)
+团队协作不再局限于单机。成员通过 mTLS 身份与实时 WebSocket 推送，在局域网内连接共享 server。
 
-Team collaboration is no longer limited to a single machine. Members connect to a shared server over LAN with mTLS identity and real-time WebSocket push.
+- **mTLS server**（N0）：`teamx serve` 运行 axum + tokio-rustls server，强制双向 TLS。RPC handler 从客户端证书 CN 推导成员身份（取代自报 session key）。`team.import` 通过专用路径把证书身份绑定到预分配席位。支持 `--san <ip>` 把局域网 IP 加入 server 证书 SAN；插件 `serve start` 自动探测并传入本机 IP。
+- **WebSocket 推送**（N1）：`GET /ws` 端点按客户端证书 CN 注册订阅者。事件经 `broadcast::Hub`（team→member→sender 注册表）按团队扇出。30s 心跳，断连自动清理。
+- **吊销执行**（I2）：`team invite-revoke` 触发被吊销成员的活跃 WebSocket 断连。证书在连接/RPC 时被拒绝。证书 = "can connect"，批准 = "can work"；吊销两者皆断。
+- **插件事件驱动**（N3）：WebSocket 连接期间轮询休眠（零轮询）。断连后指数退避重连（1s→60s）+ 轮询兜底。事件帧 200ms 去抖合并突发。
+- **跨网络验证**（N4）：`tests/cross-network.sh` 在非 loopback IP 上验证完整 mTLS 链路。`docs/n4-cross-network.md` 提供双机 runbook。
 
-- **mTLS server** (N0): `teamx serve` runs an axum + tokio-rustls server with mandatory mutual TLS. RPC handlers derive member identity from client certificate CN (replacing self-reported session keys). `team.import` binds certificate identity to a pre-allocated seat via a dedicated path. Supports `--san <ip>` for LAN IP in server certificate SAN; plugin `serve start` auto-detects and passes the local IP.
-- **WebSocket push** (N1): `GET /ws` endpoint registers subscribers by client certificate CN. Events are fanned out per team via `broadcast::Hub` (team→member→sender registry). 30s heartbeat, automatic cleanup on disconnect.
-- **Revocation enforcement** (I2): `team invite-revoke` triggers active WebSocket disconnect for the revoked member. Certificates are rejected at connect/RPC time. Certificate = "can connect", approve = "can work"; revocation cuts off both.
-- **Plugin event-driven** (N3): When WebSocket is connected, the poller sleeps (zero polling). On disconnect, exponential backoff reconnect (1s→60s) with polling fallback. Event frames are debounced (200ms) to batch bursts.
-- **Cross-network verification** (N4): `tests/cross-network.sh` validates the full mTLS chain over a non-loopback IP. `docs/n4-cross-network.md` provides a two-machine runbook.
+### 邀请信（I0—I1）
 
-### Invitation Letters (I0—I1)
+成员通过含 mTLS 客户端证书的一次性邀请信加入，取代共享 session key。
 
-Members join via one-time invitation letters containing mTLS client certificates, replacing shared session keys.
+- **`team invite "<role>: <desc>"`**（owner）：签发 mTLS 客户端证书（CN=`member:<id>:<role>`）并生成自包含邀请信（`teamx-inv:v1:<base64>`）。角色自动加入团队目录。
+- **`team import <letter>`**（member）：解包邀请信、存储证书、认领预分配席位（pending，自动角色）。跨机：本地存储并提示连接以完成注册。
+- **`team invite-list` / `team invite-revoke <id>`**（owner）：列出/吊销邀请信；被吊销证书在连接时被拒绝。
+- 插件工具：`teamx_team_invite`、`teamx_team_import`、`teamx_team_invite_list`、`teamx_team_invite_revoke`。
+- 斜杠命令：`/team invite`、`/team import`、`/team invite-list`、`/team invite-revoke`。
 
-- **`team invite "<role>: <desc>"`** (owner): Issues an mTLS client certificate (CN=`member:<id>:<role>`) and generates a self-contained invitation letter (`teamx-inv:v1:<base64>`). Role is automatically added to the team catalog.
-- **`team import <letter>`** (member): Unpacks the letter, stores certs, and claims the pre-allocated seat (pending, auto-roled). Cross-machine: stores locally and prompts to connect for registration.
-- **`team invite-list` / `team invite-revoke <id>`** (owner): List/revoke invitation letters; revoked certificates are rejected at connect.
-- Plugin tools: `teamx_team_invite`, `teamx_team_import`, `teamx_team_invite_list`, `teamx_team_invite_revoke`.
-- Slash commands: `/team invite`, `/team import`, `/team invite-list`, `/team invite-revoke`.
+### 自定义角色
 
-### Custom Roles
+- 成员可提议自定义角色（`role propose`）；owner 批准后自动授予提议者。
+- owner 可更新任何角色的名称/描述（`role update`）。
+- `role set` 只接受已批准角色（内置 + 已批准自定义）；pending 角色报错并提醒等待审批。
 
-- Members can propose custom roles (`role propose`); owner approval automatically grants the role to the proposer.
-- Owner can update any role's label/description (`role update`).
-- `role set` only accepts approved roles (built-in + approved custom); pending roles trigger an error with a reminder to wait for approval.
+### 命令系统
 
-### Command System
+- **`/team <subcommand>`** 路由：`create`、`join`、`status`、`sync`、`goal`、`approve`、`deny`、`role`、`state`、`ask`、`respond`、`publish`、`archive`、`help`。所有子命令都有扁平别名（`/team-create`、`/team-invite`、…）便于 tab 补全。
+- `teamx log` 审计回放（解析成员名，支持 `--team`、`--session`、`--limit`、`--after`）。
+- owner 唯一性约束：一个 session 最多拥有一个未归档团队；需先 archive 再建新团队。
 
-- **`/team <subcommand>`** routing: `create`, `join`, `status`, `sync`, `goal`, `approve`, `deny`, `role`, `state`, `ask`, `respond`, `publish`, `archive`, `help`. All subcommands have flat aliases (`/team-create`, `/team-invite`, ...) for tab completion.
-- `teamx log` audit replay (resolves member names, supports `--team`, `--session`, `--limit`, `--after`).
-- Owner uniqueness constraint: one session can own at most one non-archived team; archive before creating another.
+### 三人协作 Demo
 
-### Three-Person Collaboration Demo
+- `docs/demo-3p.md`：owner + contributor + reviewer 工作流。
+- `tests/three-member.sh`：自动化端到端测试（多成员审批、并行角色、Q&A、广播、close+archive）。
 
-- `docs/demo-3p.md`: owner + contributor + reviewer workflow.
-- `tests/three-member.sh`: automated end-to-end test (multi-member approval, parallel roles, Q&A, broadcast, close+archive).
+### 生产加固
 
-### Production Hardening
+- **状态机完备性**：移除不可达 `paused` 状态；新增 `team archive`（completed→archived）与 `member set-state idle|active`；`achieved` 可被 owner 重开（start/resume→in_progress，refine→refining）。
+- **数据模型**：移除冗余 `sessions` 表；`members` 加 `UNIQUE(team_id, session_key)`、`goals` 加 `UNIQUE(team_id)`；成员重入复用同一行；sync cursor 单调推进。
+- **鉴权/健壮性**：owner 不能 `team leave`；`team approve/deny` 支持 `--team` 消歧；`team create` 幂等（同名复用）；`publish --data` 非 JSON 时回退为 `{"message": s}`。
+- **通知风暴修复**：按 session 的已通知 seq 水位线；同一批事件只 toast 一次。
+- **M2 轮询 + agent 注入**：无 server 也能工作；轮询刷新 digest + `experimental.chat.system.transform` 把团队状态注入 agent 上下文。
 
-- **State machine completeness**: removed unreachable `paused` state; added `team archive` (completed→archived) and `member set-state idle|active`; `achieved` can be reopened by the owner (start/resume→in_progress, refine→refining).
-- **Data model**: removed redundant `sessions` table; added `UNIQUE(team_id, session_key)` on `members` and `UNIQUE(team_id)` on `goals`; member re-entry reuses the same row; sync cursor advances monotonically.
-- **Authorization/robustness**: owner cannot `team leave`; `team approve/deny` supports `--team` disambiguation; `team create` is idempotent (same name reuses); `publish --data` falls back to `{"message": s}` for non-JSON.
-- **Notification storm fix**: per-session notified-seq watermark; same batch of events only toasts once.
-- **M2 polling + agent injection**: works without a server; polling refreshes digest + `experimental.chat.system.transform` injects team state into agent context.
+### 代码审查修复
 
-### Code Review Fixes
+修复全部高/中优先级发现（见 `docs/code-review-codex-0817.md`）：
 
-Fixed all high/medium priority findings (see `docs/code-review-codex-0817.md`):
+- **跨团队读取绕过**（安全）：非成员不再能读取任意团队的 invite token、成员、角色或事件。
+- **pending 成员不能 publish**（鉴权）。
+- **非对象 payload 崩溃**（健壮性）：`publish --data '[]'` 不再 panic。
+- **邀请信路径穿越**（安全）：`invitation_id` 必须是 UUID。
+- **PKI 部分重建正确性**：丢失 `server.key` 不再使已签发成员证书失效。
+- **自动执行 seq 水位**（正确性）：`shouldAutoExecute` 用 `e.seq > lastExecutedSeq` 判断重复触发。
+- **定向任务类型匹配**（正确性）：`assignedToMe` 匹配任何带 `assignee_member_id` 的事件。
+- **非 owner 不能 `role set owner`**（鉴权）。
 
-- **Cross-team read bypass** (security): non-members can no longer read invite tokens, members, roles, or events of arbitrary teams.
-- **Pending members cannot publish** (authorization).
-- **Non-object payload panic** (robustness): `publish --data '[]'` no longer panics.
-- **Invitation letter path traversal** (security): `invitation_id` must be a UUID.
-- **PKI partial-rebuild correctness**: `server.key` loss no longer invalidates issued member certificates.
-- **Auto-execute seq watermark** (correctness): `shouldAutoExecute` uses `e.seq > lastExecutedSeq` for repeat triggers.
-- **Directed task type matching** (correctness): `assignedToMe` matches any event with `assignee_member_id`.
-- **Non-owner cannot `role set owner`** (authorization).
+### 安全模型
 
-### Security Model
+V1 无真实认证（`session_key` 自报、`invite_token` 全员可见）。这是"信任本机"的协作约定。见 `docs/goal-v1.md` 与 `v1-spec.md`。
 
-V1 has no real authentication (`session_key` self-reported, `invite_token` visible to all members). This is a "trust this machine" collaboration convention. Documented in `docs/goal-v1.md` and `v1-spec.md`.
+### 测试
 
-### Testing
+`tests/run-all.sh` 运行 9 步自动化套件：CLI 边界用例、mTLS 身份 + 吊销、WebSocket 推送 + 断连 + 重连、跨网络局域网验证、插件单元测试（auto-execute、WebSocket、状态机）。`tests/acceptance.sh` 运行真实模型验收测试（headless `opencode run --agent teamx`）。
 
-`tests/run-all.sh` runs a 9-step automated suite: CLI edge cases, mTLS identity + revocation, WebSocket push + disconnect + reconnect, cross-network LAN verification, and plugin unit tests (auto-execute, WebSocket, state machine). `tests/acceptance.sh` runs real-model acceptance tests (headless `opencode run --agent teamx`).
+### 技术栈
 
-### Tech Stack
-
-Rust CLI (axum + tokio-rustls + rusqlite + rcgen) · TypeScript plugin (opencode plugin API) · SQLite WAL · mTLS (ring + x509-parser + base64) · WebSocket (axum ws)
+Rust CLI（axum + tokio-rustls + rusqlite + rcgen）· TypeScript 插件（opencode plugin API）· SQLite WAL · mTLS（ring + x509-parser + base64）· WebSocket（axum ws）
