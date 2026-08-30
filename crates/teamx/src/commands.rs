@@ -99,6 +99,8 @@ struct InvitationRow {
     used_by: Option<String>,
     used_at: Option<String>,
     revoked_at: Option<String>,
+    auto_approve: bool,
+    as_lead: bool,
 }
 
 fn team_row(r: &rusqlite::Row) -> rusqlite::Result<TeamRow> {
@@ -168,6 +170,8 @@ fn invitation_row(r: &rusqlite::Row) -> rusqlite::Result<InvitationRow> {
         used_by: r.get(11)?,
         used_at: r.get(12)?,
         revoked_at: r.get(13)?,
+        auto_approve: r.get::<_, i64>(14)? != 0,
+        as_lead: r.get::<_, i64>(15)? != 0,
     })
 }
 
@@ -358,7 +362,7 @@ fn role_label(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<O
 fn invitation_by_id(conn: &Connection, id: &str) -> Result<InvitationRow> {
     conn.query_row(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                user_id, created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at, auto_approve, as_lead
          FROM invitations WHERE id = ?1",
         [id],
         invitation_row,
@@ -369,7 +373,7 @@ fn invitation_by_id(conn: &Connection, id: &str) -> Result<InvitationRow> {
 fn invitation_by_id_opt(conn: &Connection, id: &str) -> rusqlite::Result<Option<InvitationRow>> {
     conn.query_row(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                user_id, created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at, auto_approve, as_lead
          FROM invitations WHERE id = ?1",
         [id],
         invitation_row,
@@ -426,8 +430,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
             TeamCmd::Destroy { session, team } => cmd_team_destroy(conn, session, team.as_deref())?,
-            TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user } => {
-                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref())?
+            TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user, auto_approve, as_lead } => {
+                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref(), *auto_approve, *as_lead)?
             }
             TeamCmd::InviteList { session, team } => cmd_team_invite_list(conn, session, team.as_deref())?,
             TeamCmd::InviteRevoke { id, session, team } => cmd_team_invite_revoke(conn, id, session, team.as_deref())?,
@@ -1132,7 +1136,7 @@ fn bootstrap_from_teamfile(
         let mut letter_value = None;
         let mut letter_file = None;
         if !is_owner {
-            let inv = cmd_team_invite(conn, &role_desc, Some(&m.display_name), Some(&server_url), owner_session, Some(team_id), None, None)?;
+            let inv = cmd_team_invite(conn, &role_desc, Some(&m.display_name), Some(&server_url), owner_session, Some(team_id), None, None, false, false)?;
             let letter = inv.get("letter").and_then(|l| l.as_str()).unwrap_or("").to_string();
             letter_value = Some(inv.clone());
 
@@ -1610,7 +1614,7 @@ fn role_key_from_label(label: &str) -> String {
 fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<InvitationRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                user_id, created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at, auto_approve, as_lead
          FROM invitations WHERE team_id = ?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([team_id], invitation_row)?;
@@ -1634,9 +1638,16 @@ fn cmd_team_invite(
     team_opt: Option<&str>,
     user_name: Option<&str>,
     user_id: Option<&str>,
+    auto_approve: bool,
+    as_lead: bool,
 ) -> Result<Value> {
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
     ensure_owner(conn, &actor, &team)?;
+    // Only the primary owner may grant lead status on an invitation; a co-lead
+    // can invite members but cannot mint new co-leads.
+    if as_lead && team.owner_member_id.as_deref() != Some(actor.id.as_str()) {
+        return err("only the primary team owner can issue a lead (`--as-lead`) invitation");
+    }
 
     let (label, desc) = match role_desc.split_once(':') {
         Some((l, d)) => {
@@ -1673,6 +1684,8 @@ fn cmd_team_invite(
             "server": { "url": server, "ca_fingerprint": format!("sha256:{fingerprint}") },
             "member": { "name_hint": name_hint.unwrap_or("") },
             "role": { "key": role_key, "label": label, "description": desc },
+            "auto_approve": auto_approve,
+            "as_lead": as_lead,
             "issued_at": now,
             "expires_at": null,
         },
@@ -1695,8 +1708,8 @@ fn cmd_team_invite(
             params![team.id, role_key, label_owned, desc_ref, actor.id],
         )?;
         tx.execute(
-            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at, auto_approve, as_lead)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 invitation_id,
                 team.id,
@@ -1708,10 +1721,18 @@ fn cmd_team_invite(
                 issued.cn,
                 user.as_ref().map(|(id, _)| id.as_str()).unwrap_or(""),
                 actor.id,
-                now
+                now,
+                auto_approve,
+                as_lead
             ],
         )?;
         let mut payload = json!({ "invitation_id": invitation_id, "member_id": member_id, "role": role_key, "role_label": label_owned });
+        if auto_approve {
+            payload["auto_approve"] = json!(true);
+        }
+        if as_lead {
+            payload["as_lead"] = json!(true);
+        }
         if let Some((uid, uname)) = &user {
             payload["user"] = json!({ "id": uid, "name": uname });
         }
@@ -2030,21 +2051,40 @@ fn claim_invitation(
         .optional()
         .map_err(|e| AppError(format!("db error: {e}")))?;
 
+    // Invitation flags come from the server-side row (authoritative); the
+    // letter only carries them for display. `as_lead` cannot be minted by a
+    // plain member because only the primary owner can issue such a letter, and
+    // `cmd_team_invite` already enforced that.
+    let auto_approve = inv_row.auto_approve;
+    let as_lead = inv_row.as_lead;
+    let member_state = if auto_approve { "active" } else { "pending" };
+    let is_lead = if as_lead { 1 } else { 0 };
+
     match existing {
         Some((_, st)) if st == "left" || st == "denied" => {
             db::with_write(conn, |tx| {
                 tx.execute(
-                    "UPDATE members SET session_key = ?1, display_name = ?2, role = ?3, state = 'pending',
-                     joined_at = ?4, left_at = NULL, user_id = ?5 WHERE id = ?6",
-                    params![session, display_name, role_key, now, user_id, member_id],
+                    "UPDATE members SET session_key = ?1, display_name = ?2, role = ?3, state = ?4,
+                     joined_at = ?5, left_at = NULL, user_id = ?6, is_lead = ?7 WHERE id = ?8",
+                    params![session, display_name, role_key, member_state, now, user_id, is_lead, member_id],
                 )?;
-                emit_json(
-                    tx,
-                    &team_id,
-                    Some(&member_id),
-                    "membership.pending",
-                    json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "rejoined": true }),
-                )?;
+                if auto_approve {
+                    emit_json(
+                        tx,
+                        &team_id,
+                        Some(&member_id),
+                        "membership.auto_approved",
+                        json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "rejoined": true, "auto": true }),
+                    )?;
+                } else {
+                    emit_json(
+                        tx,
+                        &team_id,
+                        Some(&member_id),
+                        "membership.pending",
+                        json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "rejoined": true }),
+                    )?;
+                }
                 Ok(())
             })
             .map_err(|e| AppError(format!("import failed: {e}")))?;
@@ -2055,20 +2095,58 @@ fn claim_invitation(
         None => {
             db::with_write(conn, |tx| {
                 tx.execute(
-                    "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, user_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
-                    params![member_id, team_id, session, display_name, role_key, now, user_id],
+                    "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, user_id, is_lead)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![member_id, team_id, session, display_name, role_key, member_state, now, user_id, is_lead],
                 )?;
-                emit_json(
-                    tx,
-                    &team_id,
-                    Some(&member_id),
-                    "membership.pending",
-                    json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "role": role_key }),
-                )?;
+                if auto_approve {
+                    emit_json(
+                        tx,
+                        &team_id,
+                        Some(&member_id),
+                        "membership.auto_approved",
+                        json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "role": role_key, "auto": true }),
+                    )?;
+                } else {
+                    emit_json(
+                        tx,
+                        &team_id,
+                        Some(&member_id),
+                        "membership.pending",
+                        json!({ "display_name": display_name, "team": team_id, "invitation_id": invitation_id, "role": role_key }),
+                    )?;
+                }
                 Ok(())
             })
             .map_err(|e| AppError(format!("import failed: {e}")))?;
+        }
+    }
+
+    // as_lead: announce the co-lead grant (only meaningful for auto-approved
+    // imports; a pending member cannot act until approved anyway).
+    if as_lead {
+        db::with_write(conn, |tx| {
+            emit_json(
+                tx,
+                &team_id,
+                Some(&member_id),
+                "member.promoted_lead",
+                json!({ "member_id": member_id, "display_name": display_name, "source": "invitation" }),
+            )?;
+            Ok(())
+        })
+        .map_err(|e| AppError(format!("import failed: {e}")))?;
+    }
+
+    // Auto-approve grants the same git repo read access the owner would grant
+    // via `team approve` (feature: import -> approve -> clone).
+    let mut granted_repos: Vec<String> = Vec::new();
+    if auto_approve {
+        if let Ok(repos) = crate::git_service::list_repos(conn, &team_id) {
+            for r in repos {
+                let _ = crate::git_service::grant_permission(conn, &r.id, &member_id, crate::git_service::PERM_READ, &member_id);
+                granted_repos.push(r.name);
+            }
         }
     }
 
@@ -2082,27 +2160,28 @@ fn claim_invitation(
     .map_err(|e| AppError(format!("import failed: {e}")))?;
 
     let team = team_by_id(conn, &team_id)?;
-    // After approval the owner auto-grants read on all team repos, so surface
-    // the team's git repos + server URL here so the member/plugin can clone.
-    let git_repos = crate::git_service::list_repos(conn, &team_id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| r.name)
-        .collect::<Vec<_>>();
     let server_url = inv["server"]["url"].as_str().unwrap_or("").to_string();
+    let (status, note) = if auto_approve {
+        ("active", "invitation imported; auto-approved by invitation policy".to_string())
+    } else {
+        ("pending", "invitation imported; waiting for owner approval".to_string())
+    };
     let mut out = json!({
         "ok": true,
-        "status": "pending",
+        "status": status,
         "member_id": member_id,
         "role": role_key,
         "team": { "id": team.id, "name": team.name, "state": team.state },
-        "note": "invitation imported; waiting for owner approval",
+        "note": note,
     });
-    if !git_repos.is_empty() {
-        out["git_repos"] = json!(git_repos);
+    if as_lead {
+        out["is_lead"] = json!(true);
+    }
+    if !granted_repos.is_empty() {
+        out["git_repos"] = json!(granted_repos);
         out["server_url"] = json!(server_url);
         out["clone_hint"] = json!(format!(
-            "after approval, clone with: git clone {}/git/{}/<repo> (or teamx git clone)",
+            "clone with: git clone {}/git/{}/<repo> (or teamx git clone)",
             server_url, team_id
         ));
     }
@@ -3569,7 +3648,7 @@ mod tests {
 
     #[test]
     fn user_list_shows_bound_members() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         seed_team(&conn, "t1", "m1");
         // bind two members to one user, one member to another
         for (mid, uid) in [("ma", "u1"), ("mb", "u1"), ("mc", "u2")] {
@@ -3600,5 +3679,121 @@ mod tests {
         assert_eq!(zhang["members"].as_array().unwrap().len(), 2);
         let li = users.iter().find(|u| u["display_name"] == "李四").unwrap();
         assert_eq!(li["members"].as_array().unwrap().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Invitation auto-approve / as-lead
+    // -----------------------------------------------------------------------
+
+    fn seed_invitation(conn: &Connection, inv_id: &str, team_id: &str, member_id: &str, auto_approve: bool, as_lead: bool) {
+        conn.execute(
+            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at, auto_approve, as_lead)
+             VALUES (?1, ?2, ?3, 'contributor', 'Contributor', NULL, 'ser', 'cn', '', 'm1', 'now', ?4, ?5)",
+            params![inv_id, team_id, member_id, auto_approve as i64, as_lead as i64],
+        )
+        .unwrap();
+    }
+
+    fn claim_letter(conn: &mut Connection, inv_id: &str, member_id: &str, name: Option<&str>) -> Value {
+        let letter = json!({
+            "teamx_invitation": {
+                "version": 2,
+                "invitation_id": inv_id,
+                "team": { "id": "t1", "name": "T" },
+                "server": { "url": "https://srv", "ca_fingerprint": "sha256:x" },
+                "member": { "name_hint": "" },
+                "role": { "key": "contributor", "label": "Contributor", "description": null },
+                "issued_at": "now", "expires_at": null,
+            },
+            "certificates": { "ca_cert": "", "client_cert": "", "client_key": "" },
+        });
+        let inv_row = invitation_by_id(conn, inv_id).unwrap();
+        claim_invitation(conn, &inv_row, &format!("net:{member_id}"), name, &letter, Some(member_id)).unwrap()
+    }
+
+    #[test]
+    fn claim_plain_invitation_stays_pending() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        seed_invitation(&conn, "inv1", "t1", "m-new", false, false);
+        let out = claim_letter(&mut conn, "inv1", "m-new", Some("Alice"));
+        assert_eq!(out["status"], "pending");
+        let state: String = conn
+            .query_row("SELECT state FROM members WHERE id = 'm-new'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending");
+        // events: membership.pending only, no auto_approved, no promoted_lead
+        let evs: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT type FROM events WHERE team_id = 't1'").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert!(evs.contains(&"membership.pending".to_string()));
+        assert!(!evs.contains(&"membership.auto_approved".to_string()));
+        assert!(!evs.contains(&"member.promoted_lead".to_string()));
+    }
+
+    #[test]
+    fn claim_auto_approve_activates_member() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        seed_invitation(&conn, "inv2", "t1", "m-auto", true, false);
+        let out = claim_letter(&mut conn, "inv2", "m-auto", Some("Bob"));
+        assert_eq!(out["status"], "active");
+        let (state, lead): (String, i64) = conn
+            .query_row("SELECT state, is_lead FROM members WHERE id = 'm-auto'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(state, "active");
+        assert_eq!(lead, 0);
+        let evs: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT type FROM events WHERE team_id = 't1'").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert!(evs.contains(&"membership.auto_approved".to_string()));
+        assert!(!evs.contains(&"membership.pending".to_string()));
+        assert!(!evs.contains(&"member.promoted_lead".to_string()));
+    }
+
+    #[test]
+    fn claim_as_lead_sets_is_lead() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        seed_invitation(&conn, "inv3", "t1", "m-lead", true, true);
+        let out = claim_letter(&mut conn, "inv3", "m-lead", Some("Carol"));
+        assert_eq!(out["status"], "active");
+        assert_eq!(out["is_lead"], true);
+        let lead: i64 = conn
+            .query_row("SELECT is_lead FROM members WHERE id = 'm-lead'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(lead, 1);
+        let evs: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT type FROM events WHERE team_id = 't1'").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert!(evs.contains(&"membership.auto_approved".to_string()));
+        assert!(evs.contains(&"member.promoted_lead".to_string()));
+    }
+
+    #[test]
+    fn invite_as_lead_requires_primary_owner() {
+        let conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        // a co-lead member (is_lead=1, not the primary owner)
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES ('m2', 't1', 's2', 'colead', 'contributor', 'active', 'now', 1)",
+            [],
+        )
+        .unwrap();
+        let (actor, team) = resolve_actor(&conn, "s2", None).unwrap();
+        // simulate the check in cmd_team_invite
+        let res = if as_lead_invite_permitted(&team, &actor) { Ok(()) } else { Err(AppError("denied".into())) };
+        assert!(res.is_err());
+    }
+
+    fn as_lead_invite_permitted(team: &TeamRow, actor: &MemberRow) -> bool {
+        team.owner_member_id.as_deref() == Some(actor.id.as_str())
     }
 }

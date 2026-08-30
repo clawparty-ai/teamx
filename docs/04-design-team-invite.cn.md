@@ -129,6 +129,21 @@ member plugin ──TLS client hello──► teamx serve
 | `teamx team import <letter>` | teamx_team_import | 导入邀请函，建立 mTLS 连接 | 成员 |
 | `teamx team join`（免 token） | teamx_join（扩展） | 导入后由插件自动 join | 成员 |
 
+### 5.2 邀请函策略：`--auto-approve` 与 `--as-lead`（v14）
+
+签发邀请时可按需预设成员状态，免去 owner 事后 approve / promote：
+
+| 参数 | 效果 | 权限 |
+|---|---|---|
+| `--auto-approve` | 成员 import 后**直接 active**（跳过 owner 手动 approve），并自动获得团队所有 git 仓库读权限；账本写入 `membership.auto_approved` 事件 | owner / co-lead |
+| `--as-lead` | 成员 import 后**直接 is_lead=1**（co-lead）；需配合 `--auto-approve` 才有意义（pending 成员无法行使 lead 权限） | **仅 primary owner** |
+
+- `--as-lead` 仅 primary owner 可签发（co-lead 可 invite 成员但不可 mint 新 lead）。
+- 标志写入 `invitations.auto_approve / as_lead`（v14 迁移），import 时以 **server 侧 invitation 行**为准（letter 中的值仅作展示，防止伪造提升）。
+- import 事件：`--auto-approve` → `membership.auto_approved`；`--as-lead` → 追加 `member.promoted_lead`（`source: invitation`）。
+- 返回 `status: active`（而非 pending），并携带 `is_lead` / `git_repos`。
+- 示例：`team invite "管理员: 远程管理" --as-lead --auto-approve`。
+
 ### 5.1 证书吊销
 
 - 新增 `cert_revocations` 表（或复用 `invitations.revoked_at`）：server 在 TLS 握手时**检查吊销列表**，revoke 后立即拒绝。

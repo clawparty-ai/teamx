@@ -185,6 +185,8 @@ function summarizeEvent(e: SyncEvent): string {
         : t("toast.membership_pending", { seq: String(seq), name: s("display_name") })
     case "membership.approved":
       return t("toast.membership_approved", { seq: String(seq), name: s("display_name") })
+    case "membership.auto_approved":
+      return t("toast.membership_auto_approved", { seq: String(seq), name: s("display_name") })
     case "membership.denied":
       return t("toast.membership_denied", { seq: String(seq), name: s("display_name") })
     case "member.promoted_lead":

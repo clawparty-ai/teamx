@@ -1173,6 +1173,8 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             team: o("team"),
             user_name: o("user_name"),
             user: o("user"),
+            auto_approve: b("auto_approve"),
+            as_lead: b("as_lead"),
         }),
         "team.invite_list" => Command::Team(TeamCmd::InviteList { session: sess(args), team: o("team") }),
         "team.invite_revoke" => Command::Team(TeamCmd::InviteRevoke {

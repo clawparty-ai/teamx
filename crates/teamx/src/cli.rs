@@ -536,6 +536,12 @@ pub enum TeamCmd {
         /// bind this device to an existing person by user id (overrides --user-name)
         #[arg(long)]
         user: Option<String>,
+        /// auto-approve this member on import (skip the owner approval step)
+        #[arg(long)]
+        auto_approve: bool,
+        /// grant team-lead (co-lead) status on import (primary owner only)
+        #[arg(long)]
+        as_lead: bool,
     },
     /// List issued (unused/revoked) invitation letters (owner only)
     InviteList {

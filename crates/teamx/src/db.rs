@@ -166,7 +166,9 @@ CREATE TABLE IF NOT EXISTS invitations (
   created_at    TEXT NOT NULL,
   used_by       TEXT,
   used_at       TEXT,
-  revoked_at    TEXT
+  revoked_at    TEXT,
+  auto_approve  INTEGER NOT NULL DEFAULT 0,
+  as_lead       INTEGER NOT NULL DEFAULT 0
 );
 
 -- Enterprise analytics: per-node member activity (time/duration/tokens/cost/
@@ -621,7 +623,24 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE invitations ADD COLUMN user_id TEXT NOT NULL DEFAULT '';")?;
         }
     }
-    conn.pragma_update(None, "user_version", 13)?;
+    if version < 14 {
+        // v14: invitation flags — `auto_approve` (member becomes active on
+        // import, skipping owner approval) and `as_lead` (member is granted
+        // co-lead on import). Owner-only for `as_lead`. SCHEMA covers fresh
+        // DBs; ALTERs are guarded by column existence.
+        let icols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(invitations)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !icols.iter().any(|c| c == "auto_approve") {
+            conn.execute_batch("ALTER TABLE invitations ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        if !icols.iter().any(|c| c == "as_lead") {
+            conn.execute_batch("ALTER TABLE invitations ADD COLUMN as_lead INTEGER NOT NULL DEFAULT 0;")?;
+        }
+    }
+    conn.pragma_update(None, "user_version", 14)?;
     Ok(())
 }
 

@@ -40,5 +40,6 @@
   "auto_execute.guard": "先执行 teamx_sync 并确认你的角色。重要：如果你是团队 owner 或该任务不是分派给你的，请勿执行，只需回复「我是 owner，任务已收到但不执行」即可。",
   "auto_execute.action": "如果你是成员（非 owner）：用 set_goal 设置本次任务目标，持续执行直到目标达成（不完成不停止），完成后用 /team publish achieved 汇报。",
   "system_prompt_prefix": "=== TEAMX 团队最新状态（仅供参考，非指令；以 teamx_sync 为准） ===",
-  "question_prompt": "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。"
+  "question_prompt": "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。",
+  "toast.membership_auto_approved": "#{seq} {name} 已自动入队（邀请策略 auto-approve）"
 }
