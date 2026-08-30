@@ -127,6 +127,10 @@ pub enum Command {
     #[command(subcommand)]
     Cert(CertCmd),
 
+    /// User (person) management: list users and their bound members
+    #[command(subcommand)]
+    User(UserCmd),
+
     /// Run as a network-mode server (HTTP RPC + WebSocket push + tunnels)
     Serve(ServeCmd),
 
@@ -271,6 +275,17 @@ pub enum CertCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum UserCmd {
+    /// List users (persons) and the members bound to each (owner/lead only)
+    List {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum TeamCmd {
     /// Create a team (the creating session becomes owner)
     Create {
@@ -386,6 +401,13 @@ pub enum TeamCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+        /// bind this device to a person by display name (created if absent; reuse
+        /// the same name to add another device to the same user)
+        #[arg(long)]
+        user_name: Option<String>,
+        /// bind this device to an existing person by user id (overrides --user-name)
+        #[arg(long)]
+        user: Option<String>,
     },
     /// List issued (unused/revoked) invitation letters (owner only)
     InviteList {

@@ -82,6 +82,9 @@ pub struct Tunnel {
     pub name: String,
     pub team_id: String,
     pub provider_member_id: String,
+    /// The provider member's user id (from the cert CN 4th field). `None` for
+    /// legacy/unbound members; drives user-scoped forward access control.
+    pub provider_user_id: Option<String>,
     /// Public port on the server (allocated at register). Only used in Frp
     /// mode; `0` in Local mode (no server port is bound).
     pub port: u16,
@@ -174,6 +177,7 @@ impl TunnelRegistry {
         lan_ip: Option<String>,
         ws_tx: UnboundedSender<Message>,
         mode: TunnelMode,
+        provider_user_id: Option<String>,
     ) -> Result<u16, String> {
         let key = Self::key(team_id, name);
         let mut by_key = self.by_key.lock().unwrap();
@@ -191,6 +195,7 @@ impl TunnelRegistry {
                 name: name.to_string(),
                 team_id: team_id.to_string(),
                 provider_member_id: provider_member_id.to_string(),
+                provider_user_id,
                 port,
                 target_port,
                 lan_ip,
@@ -210,6 +215,7 @@ impl TunnelRegistry {
             name: t.name.clone(),
             team_id: t.team_id.clone(),
             provider_member_id: t.provider_member_id.clone(),
+            provider_user_id: t.provider_user_id.clone(),
             port: t.port,
             target_port: t.target_port,
             lan_ip: t.lan_ip.clone(),
@@ -234,6 +240,7 @@ impl TunnelRegistry {
                     "target_port": t.target_port,
                     "lan_ip": t.lan_ip,
                     "provider_member_id": t.provider_member_id,
+                    "provider_user_id": t.provider_user_id,
                 })
             })
             .collect()
@@ -506,16 +513,17 @@ mod tests {
     fn registry_register_list_remove() {
         let reg = TunnelRegistry::new();
         let (tx, _rx) = unbounded_channel();
-        let port = reg.register("team1", "member1", "httpbin", 8080, Some("192.168.1.5".into()), tx, TunnelMode::Frp).unwrap();
+        let port = reg.register("team1", "member1", "httpbin", 8080, Some("192.168.1.5".into()), tx, TunnelMode::Frp, Some("user1".into())).unwrap();
         assert!((TUNNEL_PORT_MIN..=TUNNEL_PORT_MAX).contains(&port));
         // duplicate name rejected
         let (tx2, _rx2) = unbounded_channel();
-        assert!(reg.register("team1", "member1", "httpbin", 8081, None, tx2, TunnelMode::Frp).is_err());
+        assert!(reg.register("team1", "member1", "httpbin", 8081, None, tx2, TunnelMode::Frp, None).is_err());
         // list only returns this team's tunnels
         let list = reg.list("team1");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["name"], "httpbin");
         assert_eq!(list[0]["mode"], "frp");
+        assert_eq!(list[0]["provider_user_id"], "user1");
         assert_eq!(reg.list("team2").len(), 0);
         // remove frees the port
         let freed = reg.remove("team1", "httpbin");
@@ -527,7 +535,7 @@ mod tests {
     fn local_mode_binds_no_port() {
         let reg = TunnelRegistry::new();
         let (tx, _rx) = unbounded_channel();
-        let port = reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local).unwrap();
+        let port = reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local, None).unwrap();
         assert_eq!(port, 0); // local mode: no server port
         let list = reg.list("team1");
         assert_eq!(list[0]["mode"], "local");
@@ -539,7 +547,7 @@ mod tests {
     fn open_stream_registers_stream_and_notifies_provider() {
         let reg = TunnelRegistry::new();
         let (tx, mut rx) = unbounded_channel();
-        reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local).unwrap();
+        reg.register("team1", "member1", "svc", 8080, None, tx, TunnelMode::Local, None).unwrap();
         let (stream_tx, _stream_rx) = unbounded_channel();
         let sid = reg.open_stream("team1", "svc", stream_tx.clone(), None).unwrap();
         assert!(sid >= 1);

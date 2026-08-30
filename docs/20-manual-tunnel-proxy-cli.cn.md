@@ -193,6 +193,33 @@ curl http://127.0.0.1:18080/
 
 验证完 Ctrl-C 结束 forward。local 模式下 server 全程只转发加密 WS 流量，不暴露 TCP 端口。
 
+## 4.5 用户身份与隧道访问隔离（user + tunnel ACL）
+
+同一「人」可有多台设备（例如云端一台跑 opencode，本地一台只跑 teamx）。给设备邀请
+信绑定一个 **user**，同一 user 的多台设备即可零配置互访对方隧道，其他 user 默认拒绝。
+
+**owner 签发（`--user-name` 自动建/复用 user）**：
+
+```bash
+# 第一台设备：user「张三」不存在 → 自动创建并签发
+$TEAMX team invite "开发: 云端设备" --user-name "张三" --session cli
+# 第二台设备：同名 user 已存在 → 复用同一 user_id
+$TEAMX team invite "开发: 本地设备"  --user-name "张三" --session cli
+$TEAMX user list --session cli       # 查看 user 及其绑定的设备
+```
+
+**访问规则**（server 在 `tunnel forward` 时校验证书 CN 的 user）：
+
+| 隧道提供者 | 消费方 | 结果 |
+|---|---|---|
+| 绑定 user（4 段 CN） | 同一 user 的另一设备 | ✅ 放行（零配置） |
+| 绑定 user | 其他 user 的成员 | ❌ `tunnel belongs to another user` |
+| 绑定 user | 该 team 的 owner/lead | ✅ 放行（owner 监察、`teamx ui` web terminal） |
+| 老证书（3 段 CN，未绑定） | 同 team 任意成员 | ✅ 放行（团队级，向后兼容） |
+
+绑定信息写进证书 CN 第 4 段（`member:<id>:<role>:<user_id>`），老证书无此段即视为
+未绑定。详见 `docs/25-design-user-identity-tunnel-acl.cn.md`。
+
 ## 5. 测试三：SOCKS5 出站代理（proxy exit / proxy start）
 
 **对应自动化断言：Section 4（4 项）**

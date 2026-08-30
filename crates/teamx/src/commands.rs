@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -92,6 +92,7 @@ struct InvitationRow {
     role_desc: Option<String>,
     cert_serial: Option<String>,
     cert_cn: Option<String>,
+    user_id: Option<String>,
     created_by: String,
     created_at: String,
     used_by: Option<String>,
@@ -159,11 +160,12 @@ fn invitation_row(r: &rusqlite::Row) -> rusqlite::Result<InvitationRow> {
         role_desc: r.get(5)?,
         cert_serial: r.get(6)?,
         cert_cn: r.get(7)?,
-        created_by: r.get(8)?,
-        created_at: r.get(9)?,
-        used_by: r.get(10)?,
-        used_at: r.get(11)?,
-        revoked_at: r.get(12)?,
+        user_id: r.get(8)?,
+        created_by: r.get(9)?,
+        created_at: r.get(10)?,
+        used_by: r.get(11)?,
+        used_at: r.get(12)?,
+        revoked_at: r.get(13)?,
     })
 }
 
@@ -354,7 +356,7 @@ fn role_label(conn: &Connection, team_id: &str, key: &str) -> rusqlite::Result<O
 fn invitation_by_id(conn: &Connection, id: &str) -> Result<InvitationRow> {
     conn.query_row(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at
          FROM invitations WHERE id = ?1",
         [id],
         invitation_row,
@@ -365,7 +367,7 @@ fn invitation_by_id(conn: &Connection, id: &str) -> Result<InvitationRow> {
 fn invitation_by_id_opt(conn: &Connection, id: &str) -> rusqlite::Result<Option<InvitationRow>> {
     conn.query_row(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at
          FROM invitations WHERE id = ?1",
         [id],
         invitation_row,
@@ -422,8 +424,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
             TeamCmd::Destroy { session, team } => cmd_team_destroy(conn, session, team.as_deref())?,
-            TeamCmd::Invite { role_desc, name_hint, server_url, session, team } => {
-                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref())?
+            TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user } => {
+                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref())?
             }
             TeamCmd::InviteList { session, team } => cmd_team_invite_list(conn, session, team.as_deref())?,
             TeamCmd::InviteRevoke { id, session, team } => cmd_team_invite_revoke(conn, id, session, team.as_deref())?,
@@ -489,6 +491,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             CertCmd::Init => cmd_cert_init()?,
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
             CertCmd::Ca => cmd_cert_ca()?,
+        },
+        Command::User(u) => match u {
+            UserCmd::List { session, team } => cmd_user_list(conn, session, team.as_deref())?,
         },
         // Tunnel commands: network-mode only. `expose`/`forward` are long-lived
         // WS clients; `list`/`status`/`close` are HTTP RPC calls.
@@ -950,7 +955,7 @@ fn bootstrap_from_teamfile(
         let mut letter_value = None;
         let mut letter_file = None;
         if !is_owner {
-            let inv = cmd_team_invite(conn, &role_desc, Some(&m.display_name), Some(&server_url), owner_session, Some(team_id))?;
+            let inv = cmd_team_invite(conn, &role_desc, Some(&m.display_name), Some(&server_url), owner_session, Some(team_id), None, None)?;
             let letter = inv.get("letter").and_then(|l| l.as_str()).unwrap_or("").to_string();
             letter_value = Some(inv.clone());
 
@@ -1428,7 +1433,7 @@ fn role_key_from_label(label: &str) -> String {
 fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<InvitationRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn,
-                created_by, created_at, used_by, used_at, revoked_at
+                user_id, created_by, created_at, used_by, used_at, revoked_at
          FROM invitations WHERE team_id = ?1 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([team_id], invitation_row)?;
@@ -1436,6 +1441,13 @@ fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Ve
 }
 
 /// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
+///
+/// A device invitation may be bound to a person (`user`) so the same person's
+/// multiple devices share one user id and can access each other's tunnels:
+/// - `--user <id>`: the user must already exist.
+/// - `--user-name <name>`: reuse an existing user with that exact display name,
+///   or create one on the fly.
+#[allow(clippy::too_many_arguments)]
 fn cmd_team_invite(
     conn: &mut Connection,
     role_desc: &str,
@@ -1443,6 +1455,8 @@ fn cmd_team_invite(
     server_url: Option<&str>,
     session: &str,
     team_opt: Option<&str>,
+    user_name: Option<&str>,
+    user_id: Option<&str>,
 ) -> Result<Value> {
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
     ensure_owner(conn, &actor, &team)?;
@@ -1459,19 +1473,24 @@ fn cmd_team_invite(
     }
     let role_key = role_key_from_label(label);
 
+    // Resolve the owning person (create by name when missing). `None` keeps the
+    // legacy behaviour: the member is its own (unbound) user.
+    let user = resolve_user(conn, user_id, user_name, &actor.id)?;
+    let user_id_opt = user.as_ref().map(|(id, _)| id.as_str());
+
     let member_id = uuid::Uuid::new_v4().to_string();
     let invitation_id = uuid::Uuid::new_v4().to_string();
     let home = teamx_home_dir();
-    let issued = pki::issue_member_cert(&home, &member_id, &role_key).map_err(AppError)?;
+    let issued = pki::issue_member_cert(&home, &member_id, &role_key, user_id_opt).map_err(AppError)?;
     let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
         .map_err(|e| AppError(format!("read ca cert: {e}")))?;
     let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
     let server = server_url.unwrap_or("https://127.0.0.1:5781").to_string();
     let now = db::now();
 
-    let letter = json!({
+    let mut letter = json!({
         "teamx_invitation": {
-            "version": 1,
+            "version": 2,
             "invitation_id": invitation_id,
             "team": { "id": team.id, "name": team.name },
             "server": { "url": server, "ca_fingerprint": format!("sha256:{fingerprint}") },
@@ -1486,6 +1505,9 @@ fn cmd_team_invite(
             "client_key": issued.key_pem,
         },
     });
+    if let Some((uid, uname)) = &user {
+        letter["teamx_invitation"]["user"] = json!({ "id": uid, "name": uname });
+    }
 
     let label_owned = label.to_string();
     let desc_ref = desc.as_deref();
@@ -1496,8 +1518,8 @@ fn cmd_team_invite(
             params![team.id, role_key, label_owned, desc_ref, actor.id],
         )?;
         tx.execute(
-            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 invitation_id,
                 team.id,
@@ -1507,16 +1529,21 @@ fn cmd_team_invite(
                 desc_ref,
                 issued.serial_hex,
                 issued.cn,
+                user.as_ref().map(|(id, _)| id.as_str()),
                 actor.id,
                 now
             ],
         )?;
+        let mut payload = json!({ "invitation_id": invitation_id, "member_id": member_id, "role": role_key, "role_label": label_owned });
+        if let Some((uid, uname)) = &user {
+            payload["user"] = json!({ "id": uid, "name": uname });
+        }
         emit_json(
             tx,
             &team.id,
             Some(&actor.id),
             "invitation.created",
-            json!({ "invitation_id": invitation_id, "member_id": member_id, "role": role_key, "role_label": label_owned }),
+            payload,
         )?;
         Ok(())
     })
@@ -1525,14 +1552,56 @@ fn cmd_team_invite(
     let letter_json = serde_json::to_string(&letter).map_err(|e| AppError(format!("serialize letter: {e}")))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(letter_json.as_bytes());
 
-    Ok(json!({
+    let mut out = json!({
         "ok": true,
         "invitation_id": invitation_id,
         "member_id": member_id,
         "role": { "key": role_key, "label": label, "description": desc },
         "letter": format!("teamx-inv:v1:{encoded}"),
         "note": "share this letter with the member; they import it with `teamx team import <letter>`",
-    }))
+    });
+    if let Some((uid, uname)) = &user {
+        out["user"] = json!({ "id": uid, "name": uname });
+    }
+    Ok(out)
+}
+
+/// Resolve (or create) the person a device invitation binds to.
+fn resolve_user(
+    conn: &Connection,
+    user_id: Option<&str>,
+    user_name: Option<&str>,
+    created_by: &str,
+) -> Result<Option<(String, String)>> {
+    if let Some(id) = user_id {
+        let name: Option<String> = conn
+            .query_row("SELECT display_name FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(|e| AppError(format!("db error: {e}")))?;
+        let Some(name) = name else {
+            return err(format!("user `{id}` not found"));
+        };
+        return Ok(Some((id.to_string(), name)));
+    }
+    let Some(name) = user_name.map(str::trim).filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    let existing: Option<String> = conn
+        .query_row("SELECT id FROM users WHERE display_name = ?1", [name], |r| r.get(0))
+        .optional()
+        .map_err(|e| AppError(format!("db error: {e}")))?;
+    if let Some(id) = existing {
+        return Ok(Some((id, name.to_string())));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = db::now();
+    conn.execute(
+        "INSERT INTO users (id, display_name, email, created_by, created_at, updated_at)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?4)",
+        params![id, name, created_by, now],
+    )
+    .map_err(|e| AppError(format!("create user failed: {e}")))?;
+    Ok(Some((id, name.to_string())))
 }
 
 fn cmd_team_invite_list(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
@@ -1554,6 +1623,7 @@ fn cmd_team_invite_list(conn: &Connection, session: &str, team_opt: Option<&str>
                 "member_id": i.member_id,
                 "role_key": i.role_key,
                 "role_label": i.role_label,
+                "user_id": i.user_id,
                 "state": state,
                 "created_at": i.created_at,
                 "used_by": i.used_by,
@@ -1562,6 +1632,67 @@ fn cmd_team_invite_list(conn: &Connection, session: &str, team_opt: Option<&str>
         })
         .collect();
     Ok(json!({ "ok": true, "invitations": list }))
+}
+
+/// `teamx user list` — list users (persons) and the members/agents bound to
+/// each within the team. Owner/lead only (audit).
+fn cmd_user_list(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+
+    let user_ids: Vec<(String, String, Option<String>, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, display_name, email, created_at FROM users ORDER BY display_name ASC")
+            .map_err(|e| AppError(format!("db error: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| AppError(format!("db error: {e}")))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AppError(format!("db error: {e}")))?
+    };
+
+    let mut users: Vec<Value> = Vec::new();
+    for (id, display_name, email, created_at) in user_ids {
+        let mut members: Vec<Value> = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, display_name, role, state FROM members
+                     WHERE user_id = ?1 AND team_id = ?2 AND state NOT IN ('left','denied')
+                     ORDER BY display_name ASC",
+                )
+                .map_err(|e| AppError(format!("db error: {e}")))?;
+            let rows = stmt
+                .query_map(params![id, team.id], |r| {
+                    Ok(serde_json::json!({
+                        "member_id": r.get::<_, String>(0)?,
+                        "display_name": r.get::<_, String>(1)?,
+                        "role": r.get::<_, Option<String>>(2)?,
+                        "state": r.get::<_, String>(3)?,
+                    }))
+                })
+                .map_err(|e| AppError(format!("db error: {e}")))?;
+            for m in rows {
+                members.push(m.map_err(|e| AppError(format!("db error: {e}")))?);
+            }
+        }
+        users.push(json!({
+            "id": id,
+            "display_name": display_name,
+            "email": email,
+            "created_at": created_at,
+            "members": members,
+        }));
+    }
+
+    Ok(json!({ "ok": true, "users": users }))
 }
 
 fn cmd_team_invite_revoke(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
@@ -1606,7 +1737,7 @@ fn cmd_team_import(
         .as_str()
         .ok_or_else(|| AppError("invalid letter: missing invitation_id".into()))?;
     let version = inv["version"].as_i64().unwrap_or(0);
-    if version != 1 {
+    if !(1..=2).contains(&version) {
         return err(format!("unsupported invitation letter version {version}"));
     }
 
@@ -1703,6 +1834,18 @@ fn claim_invitation(
     let member_id = inv_row.member_id.clone();
     let now = db::now();
 
+    // User binding: the letter's `user.id` must agree with the invitation row's
+    // `user_id` (both owner-authored; this is a consistency guard, not an auth
+    // boundary — the cert-derived user is enforced at tunnel connect time).
+    let user_id = inv_row.user_id.clone();
+    if let Some(letter_user) = inv["user"]["id"].as_str() {
+        match &user_id {
+            Some(u) if u == letter_user => {}
+            Some(u) => return err(format!("letter user `{letter_user}` does not match invitation user `{u}`")),
+            None => return err(format!("letter carries user `{letter_user}` but the invitation is not bound to a user")),
+        }
+    }
+
     let existing: Option<(String, String)> = conn
         .query_row("SELECT id, state FROM members WHERE id = ?1", [&member_id], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -1715,8 +1858,8 @@ fn claim_invitation(
             db::with_write(conn, |tx| {
                 tx.execute(
                     "UPDATE members SET session_key = ?1, display_name = ?2, role = ?3, state = 'pending',
-                     joined_at = ?4, left_at = NULL WHERE id = ?5",
-                    params![session, display_name, role_key, now, member_id],
+                     joined_at = ?4, left_at = NULL, user_id = ?5 WHERE id = ?6",
+                    params![session, display_name, role_key, now, user_id, member_id],
                 )?;
                 emit_json(
                     tx,
@@ -1735,9 +1878,9 @@ fn claim_invitation(
         None => {
             db::with_write(conn, |tx| {
                 tx.execute(
-                    "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
-                    params![member_id, team_id, session, display_name, role_key, now],
+                    "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, user_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+                    params![member_id, team_id, session, display_name, role_key, now, user_id],
                 )?;
                 emit_json(
                     tx,
@@ -3080,7 +3223,7 @@ fn cmd_cert_init() -> Result<Value> {
 /// `teamx cert issue <member_id> <role> [--out dir]` — issue a member cert.
 fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) -> Result<Value> {
     let home = teamx_home_dir();
-    let issued = pki::issue_member_cert(&home, member_id, role).map_err(AppError)?;
+    let issued = pki::issue_member_cert(&home, member_id, role, None).map_err(AppError)?;
     let cn = &issued.cn;
     match out {
         Some(dir) => {
@@ -3184,5 +3327,89 @@ fn server_url_arg(cmd: &crate::cli::GitCmd) -> Option<&str> {
         GitCmd::Permissions { server, .. } => server.as_deref(),
         GitCmd::Setup { server, .. } => server.as_deref(),
         GitCmd::Commit { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").ok();
+        db::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn seed_team(conn: &Connection, team_id: &str, owner_id: &str) {
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES (?1, 'T', ?2, NULL, 'forming', 'tok', 'now', 'now')",
+            params![team_id, owner_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES (?1, ?2, 's', 'owner', 'owner', 'active', 'now')",
+            params![owner_id, team_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_user_creates_then_reuses_by_name() {
+        let conn = test_conn();
+        let (id1, name1) = resolve_user(&conn, None, Some("张三"), "owner").unwrap().unwrap();
+        assert_eq!(name1, "张三");
+        // same name → same user (reused, not duplicated)
+        let (id2, _) = resolve_user(&conn, None, Some("张三"), "owner").unwrap().unwrap();
+        assert_eq!(id1, id2);
+        // distinct name → distinct user
+        let (id3, _) = resolve_user(&conn, None, Some("李四"), "owner").unwrap().unwrap();
+        assert_ne!(id1, id3);
+        // explicit id lookup resolves existing user
+        let (id4, name4) = resolve_user(&conn, Some(&id1), None, "owner").unwrap().unwrap();
+        assert_eq!(id4, id1);
+        assert_eq!(name4, "张三");
+        // unknown id errors
+        assert!(resolve_user(&conn, Some("nope"), None, "owner").is_err());
+        // no name / no id → None (unbound)
+        assert!(resolve_user(&conn, None, None, "owner").unwrap().is_none());
+        assert!(resolve_user(&conn, None, Some("  "), "owner").unwrap().is_none());
+    }
+
+    #[test]
+    fn user_list_shows_bound_members() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        // bind two members to one user, one member to another
+        for (mid, uid) in [("ma", "u1"), ("mb", "u1"), ("mc", "u2")] {
+            conn.execute(
+                "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, user_id)
+                 VALUES (?1, 't1', ?1, ?1, 'contributor', 'active', 'now', ?2)",
+                params![mid, uid],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users (id, display_name, email, created_by, created_at, updated_at)
+             VALUES ('u1', '张三', NULL, 'm1', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users (id, display_name, email, created_by, created_at, updated_at)
+             VALUES ('u2', '李四', NULL, 'm1', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+
+        let out = cmd_user_list(&conn, "s", None).unwrap();
+        let users = out["users"].as_array().unwrap();
+        assert_eq!(users.len(), 2);
+        let zhang = users.iter().find(|u| u["display_name"] == "张三").unwrap();
+        assert_eq!(zhang["members"].as_array().unwrap().len(), 2);
+        let li = users.iter().find(|u| u["display_name"] == "李四").unwrap();
+        assert_eq!(li["members"].as_array().unwrap().len(), 1);
     }
 }

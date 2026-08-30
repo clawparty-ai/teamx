@@ -39,7 +39,7 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use crate::broadcast::Hub;
-use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd};
+use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
 use crate::commands;
 use crate::pki;
 
@@ -269,8 +269,8 @@ async fn tunnel_ws_handler(
 async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentity, peer: Option<SocketAddr>) {
     use futures_util::{SinkExt, StreamExt};
 
-    let member_id = match pki::parse_member_cn(&identity.0) {
-        Some((id, _role)) => id,
+    let (member_id, provider_user_id) = match pki::parse_member_identity(&identity.0) {
+        Some((id, _role, user)) => (id, user),
         None => {
             let _ = socket.send(ws_text(r#"{"type":"error","message":"no_identity"}"#)).await;
             return;
@@ -371,7 +371,7 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                     let _ = sender.send(ws_text(r#"{"type":"error","message":"register requires name and port"}"#)).await;
                                     continue;
                                 }
-                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone(), mode) {
+                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone(), mode, provider_user_id.clone()) {
                                     Ok(port) => {
                                         owned.insert(name.clone());
                                         if mode == crate::tunnel::TunnelMode::Frp {
@@ -478,8 +478,8 @@ async fn tunnel_forward_handler(
 async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity: PeerIdentity, _peer: Option<SocketAddr>) {
     use futures_util::{SinkExt, StreamExt};
 
-    let member_id = match pki::parse_member_cn(&identity.0) {
-        Some((id, _role)) => id,
+    let (member_id, consumer_user) = match pki::parse_member_identity(&identity.0) {
+        Some((id, _role, user)) => (id, user),
         None => {
             let _ = socket.send(ws_text(r#"{"type":"error","message":"no_identity"}"#)).await;
             return;
@@ -516,15 +516,29 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
         let mid = member_id.clone();
         let nm = name.clone();
         let tunnels = state.tunnels.clone();
+        let cu = consumer_user.clone();
         match tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
             let conn = db.lock().unwrap();
             if commands::is_revoked(&conn, &mid).map_err(|e| e.to_string())? {
                 return Err("revoked".to_string());
             }
             let teams = commands::teams_for_member(&conn, &mid).map_err(|e| e.to_string())?;
-            // Find the team that owns a tunnel with this name.
+            // Find the team that owns a tunnel with this name, then enforce
+            // user-scoped access: a user-bound tunnel is reachable only by the
+            // same user's devices or by a team lead; legacy (unbound) tunnels
+            // stay team-scoped.
             for tid in teams {
-                if tunnels.get(&tid, &nm).is_some() {
+                if let Some(t) = tunnels.get(&tid, &nm) {
+                    let allowed = match &t.provider_user_id {
+                        None => true,
+                        Some(pu) => {
+                            cu.as_deref() == Some(pu.as_str())
+                                || commands::is_team_owner(&conn, &tid, &mid).unwrap_or(false)
+                        }
+                    };
+                    if !allowed {
+                        return Err(format!("tunnel `{nm}` belongs to another user"));
+                    }
                     return Ok((tid, nm));
                 }
             }
@@ -642,7 +656,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
     let member_id = match pki::parse_member_cn(&identity.0) {
         Some((id, _role)) => id,
         None => {
-            let _ = socket.send(ws_text(r#"{"type":"error","code":"no_identity"}"#)).await;
+            let _ = socket.send(ws_text(r#"{"type":"error","message":"no_identity"}"#)).await;
             return;
         }
     };
@@ -927,6 +941,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
                         "target_port": t.target_port,
                         "lan_ip": t.lan_ip,
                         "provider_member_id": t.provider_member_id,
+                        "provider_user_id": t.provider_user_id,
                         "same_subnet": same_subnet,
                         "direct_addr": t.lan_ip.as_ref().map(|ip| format!("{ip}:{}", t.target_port)),
                         "relay_addr": format!("tcp://<server>:{}", t.port),
@@ -1035,6 +1050,8 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             server_url: o("server_url"),
             session: sess(args),
             team: o("team"),
+            user_name: o("user_name"),
+            user: o("user"),
         }),
         "team.invite_list" => Command::Team(TeamCmd::InviteList { session: sess(args), team: o("team") }),
         "team.invite_revoke" => Command::Team(TeamCmd::InviteRevoke {
@@ -1042,6 +1059,8 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             session: sess(args),
             team: o("team"),
         }),
+
+        "user.list" => Command::User(UserCmd::List { session: sess(args), team: o("team") }),
 
         "goal.set" => Command::Goal(GoalCmd::Set {
             title: s("title").ok_or_else(|| "goal.set requires `title`".to_string())?,
