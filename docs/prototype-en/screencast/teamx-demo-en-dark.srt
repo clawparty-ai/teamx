@@ -1,0 +1,59 @@
+1
+00:00:01,03 --> 00:00:04,23
+title
+
+2
+00:00:04,64 --> 00:00:07,84
+Login page: paste your access token to enter the team workspace
+
+3
+00:00:14,52 --> 00:00:17,72
+KanBan board: one column per member with their work sessions
+
+4
+00:00:29,30 --> 00:00:32,50
+Each task card shows duration and Cost (tokens consumed)
+
+5
+00:00:34,91 --> 00:00:38,11
+Hover a card to reveal its session details below
+
+6
+00:00:41,47 --> 00:00:44,67
+Cost view: team spend and token usage at a glance
+
+7
+00:00:53,72 --> 00:00:56,92
+Timeline: fishbone view shows all team activity in chronological order
+
+8
+00:01:03,53 --> 00:01:06,73
+Switch to Gantt: work sessions per member lane
+
+9
+00:01:12,03 --> 00:01:15,23
+Members: online status and accumulated cost per member
+
+10
+00:01:19,44 --> 00:01:22,64
+Alice is selected by default; live activity refreshes every 3-5 seconds
+
+11
+00:01:26,86 --> 00:01:30,06
+Open the Terminal tab: random commands + one-click maximize
+
+12
+00:01:34,02 --> 00:01:37,22
+Full-screen terminal keeps streaming commands live
+
+13
+00:01:41,66 --> 00:01:44,86
+Members Live: real-time session monitoring for the whole team
+
+14
+00:01:50,32 --> 00:01:53,52
+404: friendly notice when a page does not exist, auto-return in 5s
+
+15
+00:01:56,75 --> 00:01:59,95
+outro
