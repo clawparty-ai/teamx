@@ -66,8 +66,8 @@ Example Fact Request payload:
 {
   "protocol_version": 1,
   "kind": "design.fact-requested",
-  "session": "grill-with-docs",
-  "question": "DQ-0012",
+  "session": "<session slug>",
+  "question": "DQ-0001",
   "request": "FR-0001",
   "artifact": "docs/design/grill-with-docs.md",
   "message": "Investigate how plugin assets are generated and installed."

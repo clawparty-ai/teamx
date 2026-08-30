@@ -12,7 +12,7 @@
 ## 构建与测试
 
 - 单 crate workspace：`crates/teamx`（二进制 `teamx`）。
-- 构建：`cargo build -p teamx`；单元测试：`cargo test -p teamx`（当前 92 个全绿）。
+- 构建：`cargo build -p teamx`；单元测试：`cargo test -p teamx`（当前 117 个全绿）。
 - CI（`.github/workflows/ci.yml`）在 push 到 `main`/`dev` 或 PR 时运行：
   - `cargo build`
   - `cargo clippy --all-targets -- -D warnings`（**注意：当前代码存在 31 个存量 clippy 错误**，多数集中在 `tun_stack.rs`/`analyze.rs`/`capture.rs`；修复代码后需确保 clippy 干净）
@@ -29,7 +29,7 @@
   3. `bash tests/replay-test.sh` — 回放 P3；T-C1 需要 TLS flow（先跑 capture-test）。
 - 跑 capture-test 前建议删除旧 DB：`rm -f "$TEAMX_CAPTURE_DB"`，否则 SNI 断言可能因残留数据不稳定。
 - tun0 相关测试需要 root：`CAPTURE_WITH_TUN0=1 bash tests/capture-test.sh`。
-- 完整套件：`bash tests/run-all.sh`（13 步；部分步骤需要 bun）。
+- 完整套件：`bash tests/run-all.sh`（14 步；部分步骤需要 bun）。
 
 ## 架构要点
 

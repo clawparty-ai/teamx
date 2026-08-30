@@ -21,7 +21,8 @@
 - **测试**：`tests/protocol-assets.test.mjs` 校验生成产物一致性；
   `tests/run-all.sh` plugin 步骤插入 `generate-grill-protocol --check`。
 
-验证：`cargo test -p teamx` 117 passed；opencode-plugin typecheck + build 通过；
+验证：`cargo test -p teamx` 回归全量 117 passed（本次合并不含 Rust 改动，117 为
+enterprise 全量基线）；opencode-plugin typecheck + build 通过；
 协议生成/校验脚本通过。
 
 ## 0.3.2 — 2026-08-24
