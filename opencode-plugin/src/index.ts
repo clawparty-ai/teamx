@@ -604,6 +604,7 @@ export const Teamx: Plugin = async ({ client }) => {
         const teams = r.data?.teams as { my_role?: string; my_is_lead?: boolean }[] | undefined
         isMember = r.ok && Array.isArray(teams) && teams.length > 0
         markMember(sessionID, isMember)
+        // An owner's / co-lead's own broadcasts shouldn't auto-execute on itself.
         const isOwner = r.ok && Array.isArray(teams) && teams.some((t) => t.my_role === "owner" || t.my_is_lead === true)
         ownerSessions.set(sessionID, isOwner)
         if (isMember) refreshDigest(sessionID).catch(() => {})

@@ -157,10 +157,15 @@ pub fn ensure_pki(home: &Path) -> PkiResult<PkiPaths> {
 }
 
 /// Issue a member client certificate signed by the instance CA.
-/// The CN carries the member id so the server can map a verified cert to a
-/// member row; returns PEM strings (cert, key) plus the serial, for the
-/// invitation letter and the invitations ledger.
-pub fn issue_member_cert(home: &Path, member_id: &str, role: &str) -> PkiResult<IssuedCert> {
+/// The CN carries the member id (and, optionally, a user id) so the server can
+/// map a verified cert to a member row and to the owning person; returns PEM
+/// strings (cert, key) plus the serial, for the invitation letter and the
+/// invitations ledger.
+///
+/// CN format: `member:<member_id>:<role>` (legacy), or
+/// `member:<member_id>:<role>:<user_id>` when a user id is provided. The user
+/// id is empty for token-joined members and single-device (legacy) invites.
+pub fn issue_member_cert(home: &Path, member_id: &str, role: &str, user_id: Option<&str>) -> PkiResult<IssuedCert> {
     ensure_pki(home)?;
     let dir = ca_dir(home);
     let ca_cert_pem = read_pem(&dir.join("ca.crt"))?;
@@ -172,7 +177,10 @@ pub fn issue_member_cert(home: &Path, member_id: &str, role: &str) -> PkiResult<
         .map_err(|e| format!("parse ca cert: {e}"))?;
     let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("reconstruct ca: {e}"))?;
 
-    let cn = format!("member:{member_id}:{role}");
+    let cn = match user_id.filter(|u| !u.is_empty()) {
+        Some(u) => format!("member:{member_id}:{role}:{u}"),
+        None => format!("member:{member_id}:{role}"),
+    };
     let mut params = cert_params(&cn, &[], false)?;
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     // Assign an explicit random serial so it can be recorded for revocation.
@@ -251,11 +259,30 @@ pub fn ca_fingerprint(home: &Path) -> PkiResult<String> {
     Ok(digest.as_ref().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Parse the member identity out of a client certificate CN (`member:<id>:<role>`).
+/// Parse the member identity out of a client certificate CN
+/// (`member:<id>:<role>`). A 4-part CN (`member:<id>:<role>:<user>`) still
+/// yields the member id + role; the user part is ignored here (see
+/// `parse_member_identity` for the user-aware variant).
 pub fn parse_member_cn(cn: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = cn.splitn(3, ':').collect();
-    if parts.len() == 3 && parts[0] == "member" {
+    let parts: Vec<&str> = cn.splitn(4, ':').collect();
+    if (parts.len() == 3 || parts.len() == 4) && parts[0] == "member" {
         Some((parts[1].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+/// Parse the full member identity, including the optional user id, out of a
+/// client certificate CN (`member:<id>:<role>[:<user_id>]`).
+///
+/// Returns `(member_id, role, user_id)` where `user_id` is `None` for legacy
+/// 3-part CNs (unbound members). The user presence drives tunnel access:
+/// `None` → team-scoped (legacy), `Some` → user-scoped.
+pub fn parse_member_identity(cn: &str) -> Option<(String, String, Option<String>)> {
+    let parts: Vec<&str> = cn.splitn(4, ':').collect();
+    if (parts.len() == 3 || parts.len() == 4) && parts[0] == "member" {
+        let user = (parts.len() == 4 && !parts[3].is_empty()).then(|| parts[3].to_string());
+        Some((parts[1].to_string(), parts[2].to_string(), user))
     } else {
         None
     }
@@ -277,6 +304,65 @@ pub struct IssuedCert {
     pub key_pem: String,
     /// Colon-separated hex serial (for the invitations ledger / revocation).
     pub serial_hex: String,
-    /// Certificate subject CN (`member:<id>:<role>`).
+    /// Certificate subject CN (`member:<id>:<role>[:<user_id>]`).
     pub cn: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_member_cn_legacy_and_extended() {
+        // legacy 3-part CN
+        assert_eq!(
+            parse_member_cn("member:abc123:contributor"),
+            Some(("abc123".to_string(), "contributor".to_string()))
+        );
+        // extended 4-part CN still returns member + role (user ignored)
+        assert_eq!(
+            parse_member_cn("member:abc123:contributor:user-1"),
+            Some(("abc123".to_string(), "contributor".to_string()))
+        );
+        // garbage
+        assert_eq!(parse_member_cn("server:abc:role"), None);
+        assert_eq!(parse_member_cn("member:abc"), None);
+    }
+
+    #[test]
+    fn parse_member_identity_user_presence() {
+        // legacy → user None
+        assert_eq!(
+            parse_member_identity("member:abc123:contributor"),
+            Some(("abc123".to_string(), "contributor".to_string(), None))
+        );
+        // bound → user Some
+        assert_eq!(
+            parse_member_identity("member:abc123:contributor:user-1"),
+            Some(("abc123".to_string(), "contributor".to_string(), Some("user-1".to_string())))
+        );
+        // empty user part treated as unbound
+        assert_eq!(
+            parse_member_identity("member:abc123:contributor:"),
+            Some(("abc123".to_string(), "contributor".to_string(), None))
+        );
+        assert_eq!(parse_member_identity("member:abc"), None);
+    }
+
+    #[test]
+    fn issue_member_cert_cn_shape() {
+        let home = std::env::temp_dir().join(format!("teamx-pki-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+
+        let with_user = issue_member_cert(&home, "m1", "contributor", Some("u1")).unwrap();
+        assert_eq!(with_user.cn, "member:m1:contributor:u1");
+
+        let no_user = issue_member_cert(&home, "m2", "contributor", None).unwrap();
+        assert_eq!(no_user.cn, "member:m2:contributor");
+
+        let empty_user = issue_member_cert(&home, "m3", "contributor", Some("")).unwrap();
+        assert_eq!(empty_user.cn, "member:m3:contributor");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

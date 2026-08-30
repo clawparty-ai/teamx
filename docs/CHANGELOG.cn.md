@@ -25,6 +25,64 @@
 enterprise 全量基线）；opencode-plugin typecheck + build 通过；
 协议生成/校验脚本通过。
 
+## 0.2.0 — 2026-08-30
+
+Teamx 0.2.0 从「共享目标状态机」成长为一个完整的网络协作平台：基于 mTLS 的 Git 代码托管、tun0 透明代理、owner 主导的设计评审工作流、桌面 GUI，以及按用户隔离的隧道访问。
+
+### 亮点
+
+- **基于 mTLS 的 Git 代码托管** — 原生 `git clone/pull/push` 直通团队 server；建队自动建 repo / 批准成员自动授权 / 导入邀请自动 clone。
+- **tun0 透明代理**（Linux + macOS）——带本地 DNS 代理、按目标出口路由、watchdog 自愈、事件驱动 I/O（无忙轮询）。
+- **用户身份 + 按用户隧道 ACL** — 一个人可拥有多台设备；同一用户的设备零配置互访对方隧道，其他用户拒绝，owner/lead 保留监察。
+- **grill-with-docs** — owner 主导的多轮设计讨论工作流（设计树 + 事实请求 + 持久化 ADR），单协议 + 生成式适配器，主机无关交付。
+- **桌面 GUI** — 托盘应用 + 原生控制面板、实时日志、root 权限 tun0 管理。
+- **`@teamx-ai` 插件** 发布到 npm（opencode + dsh）。
+
+### 新增内容
+
+#### Git 托管（网络模式）
+
+- 团队仓库经 teamx server 管理，标准 **Git Smart HTTP over mTLS** — 原生 `git clone` / `pull` / `push` 开箱即用。
+- **团队自动化**：建队自动初始化仓库；批准成员自动授权读；导入邀请自动 clone。
+- 仓库级权限（read / write / admin），`teamx git` CLI 支持 clone/pull/push/commit/grant。
+
+#### 网络与隧道
+
+- **隧道自愈**：WS keep-alive 心跳 + 断线自动重连，附生产 runbook。
+- **SOCKS5 代理按目标出口路由**：域名/IP 路由到指定代理出口。
+- **tun0 透明代理**（虚拟网卡）Linux + macOS：无需逐应用配置。
+- **本地 DNS 代理**，保留原 DNS 兜底（含 AAAA 投毒防护）。
+- tun0 工程化：watchdog phase-1、异步 bridge 搭建、AsyncFd 事件驱动（去除 2ms 忙轮询）。
+
+#### 团队协作
+
+- **多团队 lead** — owner 可提升 backup lead / co-lead（`is_lead`）。
+- **用户身份 + 按用户隧道 ACL**（见亮点）。设备邀请证书 CN 携带 `user_id`；`teamx user list` 审计每个 person 的设备。
+
+#### 设计工作流
+
+- **doc-flow**：TEAM.md `## Documents` 章节、建队时生成文档契约快照、声明式文档生命周期引擎（权限 + 动态状态机校验）、`doc.*` 事件接入 publish 闭环。
+- **grill-with-docs**：owner 主导多轮设计会话，依赖感知设计树、稳定 `DQ-`/`FR-` 标识、事实报告、ADR、`CONTEXT.md` 术语表 — 以 `/team-grill`（opencode）与 DSH runtime skill 交付，由单份主机无关协议生成。
+
+#### 桌面 GUI（macOS）
+
+- 托盘应用 → 原生 egui 控制面板（非浏览器）、实时日志面板、tun0 root 授权弹窗、LaunchAgent 安装模式、可双击 `Teamx.app`。
+
+#### 插件与发布
+
+- `@teamx-ai/opencode`、`@teamx-ai/dsh` 及 installable bundle 发布到 npm；dsh 插件注册 teamx runtime skill。
+
+#### 工程与文档
+
+- 全量代码审计（security / correctness / usability）+ 两轮 review 修复（DNS 缓存、waiter leak、pipe 死锁、AAAA 防护、UX）。
+- **双语文档**：所有设计/手册/测试/审查文档补齐 cn/en 对照；新增可行性分析、纯 CLI 隧道/代理手册、综合 E2E 套件（43 项隧道/代理检查）。
+- 本地流量抓包可行性分析（L1 HTTP / L2 TCP）— 企业版路线图前瞻。
+
+### 说明
+
+- CLI/DB schema 迁移到 **v13**（enterprise 合并后编号：v11 presence、v12 is_lead、v13 users，新增 `users` 表、`members.user_id`、`invitations.user_id`）。现有数据库首次运行自动升级。
+- 隧道访问语义对 *用户绑定* 设备有变化：同用户设备可互访对方隧道；其他用户拒绝。旧（未绑定）成员保持原有团队级访问，不影响现有团队。
+
 ## 0.3.2 — 2026-08-24
 
 ### 透明代理 DNS 方案（本地 DNS 代理 + 出口解析）+ 控制面板 card 改造

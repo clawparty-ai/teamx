@@ -1,6 +1,6 @@
 {
   "name": "@teamx-ai/opencode-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "teamx opencode plugin: /Team collaboration agent with teamx_* tools (team/member/goal state kernel + SQLite ledger)",
   "license": "MIT",
   "type": "module",

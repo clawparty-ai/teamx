@@ -1,124 +1,64 @@
 # Changelog
 
-## 0.3.2 — 2026-08-24
+## 0.2.0 — 2026-08-30
 
-### Transparent-proxy DNS approach (local DNS proxy + egress-side resolution) + control panel card rework
+Teamx 0.2.0 grows from a shared-goal state machine into a full network collaboration platform: managed Git over mTLS, a transparent tun0 proxy, an owner-led design-review workflow, desktop GUI, and user-scoped tunnel isolation.
 
-**Seamless DNS for the transparent proxy** (replacing the abandoned fake-ip DNS):
-- macOS `mDNSResponder` does not accept `198.18.0.0/15` fake-ip answers, and fake-ip DNS
-  hijacks tun0's own resolution of the server, causing bridge timeouts → fake-dns was
-  dropped (`--fake-dns` becomes an explicit flag, off by default).
-- Public DNS (8.8.8.8 / 1.1.1.1 / DoH) is all poisoned or blocked behind the GFW; only the
-  overseas egress (`egress2`, AWS Tokyo) can resolve Google's real IPs and connect directly.
-- New scheme: a local DNS proxy listens on `127.0.0.1:53` with the system DNS pointing at
-  it. Domains matching route rules are resolved through the teamx mTLS channel by the
-  egress (real IP), added as host routes on the tun interface, then answered; other
-  domains are forwarded upstream to the system DNS. Apps access proxied domains with no
-  configuration whatsoever.
-- Added `dns_proxy.rs` (local DNS server); server-side `team.resolve_dns` RPC +
-  tunnel registry `resolve`/`complete_resolve`; exit-side `resolve` command;
-  `teamx dns list` / `teamx dns resolve <domain>` CLI.
-- Explicit CIDR-block rules in the route table directly add network routes (covering large
-  CDN ranges like Google); domain rules are periodically resolved into single-IP host
-  routes as fallback.
+### Highlights
 
-**Control panel card rework** (Swift App):
-- Vertical layout: term-style log area at the bottom; an `NSSegmentedControl` at the top
-  switching between 8 cards (connection status / virtual NIC / SOCKS5 proxy / default
-  egress / tunnels / tun0 route rules / route table / DNS).
-- New "Route Table" card: shows the default route + runs `traceroute` to a given IP/domain.
-- New "DNS" card: shows default DNS + runs `teamx dns resolve` for a given domain
-  (via the egress, unpolluted).
+- **Git code hosting over mTLS** — native `git clone/pull/push` through the team server, plus automated repo provisioning when teams are created / members approved.
+- **tun0 transparent proxy** (Linux + macOS) with a local DNS proxy, per-target egress routing, watchdog self-healing, and event-driven I/O (no busy-poll).
+- **User identity & per-user tunnel ACL** — one person can own multiple devices; the same user's devices reach each other's tunnels with zero config, other users are denied, owners/leads keep oversight.
+- **grill-with-docs** — an owner-led design deliberation workflow (design tree + fact requests + durable ADRs) delivered host-neutrally via a single protocol + generated adapters.
+- **Desktop GUI** — tray app with a native control panel, live logs, and root-privileged tun0 management.
+- **`@teamx-ai` plugins** published to npm (opencode + dsh).
 
-**Other fixes**:
-- Clicking the tray icon menu froze keyboard/UI: `menuNeedsUpdate` synchronously ran
-  `tunnel list` (a server round trip) blocking the main thread → default egress/egress list
-  now read from cache, refreshed periodically in the background.
-- tun0 core fixes: smoltcp Tx token now actually writes back to the tun fd; TUN fd set
-  non-blocking + rx_buf no longer truncated; truncated TCP SYN from macOS utun padded out
-  to total_len; checksums computed on TX / ignored on RX; new connections accepted only in
-  `Established`; fixed stream_id passing bug in `open_tunnel_bridge` (otherwise data sat in
-  a buffer forever, never sent); main loop switched to async sleep to avoid starving
-  spawned tasks.
-- Launch-at-login now defaults to off (LaunchAgent removed; package ships without
-  `--install-agent`).
+### What's new
 
-## 0.3.1 — 2026-08-23
+#### Git hosting (network mode)
 
-### External rule-config compatibility + L1 desktop tray
+- Team repositories managed over the teamx server, with standard **Git Smart HTTP over mTLS** — native `git clone` / `pull` / `push` work out of the box.
+- **Team automation**: creating a team auto-initializes its repo; approving a member auto-grants read; importing an invitation auto-clones.
+- Repo-level permissions (read / write / admin), `teamx git` CLI for clone/pull/push/commit/grant.
 
-**External rule-config compatibility mode** (`tun0 start --rules-config <path>`, importing
-other proxy clients' YAML rules): parses their `rules`, mapping them onto the teamx route
-table (DOMAIN-SUFFIX→wildcard, DOMAIN→exact, IP-CIDR→CIDR, MATCH→default).
-`proxies`/`proxy-groups` are ignored (exits are chosen from teamx's egress set);
-DIRECT/REJECT rules are skipped in v1.
-Rule-parsing module + 8 unit tests.
+#### Networking & tunnels
 
-**L1 desktop tray** (`teamx gui`): tray-icon + tao (pure Rust, cross-platform macOS menu
-bar / Linux appindicator). Menu starts/stops tun0 / SOCKS5 proxy, shows status, quits.
-Subprocesses are managed by `teamx gui` (spawning `teamx tun0 start` /
-`teamx proxy start`). L2/L3 (settings window, rule visualization, full Tauri GUI) are on
-the enterprise branch TODO.
+- **Tunnel self-healing**: WS keep-alive heartbeat + auto-reconnect on drop, with a production runbook.
+- **Per-target egress routing** for the SOCKS5 proxy: route domains/IPs to specific proxy exits.
+- **tun0 transparent proxy** (virtual NIC) on Linux + macOS: no per-app configuration.
+- **Local DNS proxy** with the original DNS kept as fallback (plus AAAA-poisoning guard).
+- tun0 engineering: watchdog phase-1, async bridge setup, AsyncFd event-driven readiness (removes the 2 ms busy-poll).
 
-## 0.3.0 — 2026-08-23
+#### Team collaboration
 
-### tun0 virtual NIC (transparent proxy, needs root)
+- **Multiple team leads** — owner can promote backup leads / co-leads (`is_lead`).
+- **User identity + per-user tunnel ACL** (see Highlights). Device invitations carry a `user_id` in the certificate CN; `teamx user list` audits devices per person.
 
-A TUN device routes matching traffic through teamx proxy exits **without**
-configuring apps — apps keep talking to the network normally; traffic to the
-fake-ip range is transparently captured, TCP is reassembled in user space
-(smoltcp) and forwarded through the chosen exit.
+#### Design workflow
 
-- **`teamx tun0 start`** (requires root): creates the tun device, injects the
-  fake-ip route, runs a fake-ip DNS responder and bridges connections.
-  - `--exit <name>` / `-f <routes.json>` to pick the default / routed exit.
-  - `--ip` (gateway, default 198.18.0.1), `--net/--net-prefix` (fake-ip net,
-    default 198.18.0.0/15), `--max-conns`.
-- **`teamx tun0 stop|status`**.
-- **fake-ip DNS** (`tun_dns.rs`): answers A queries with 198.18.x.x fake IPs,
-  keeps a fake_ip↔domain map so the exit dials by hostname.
-- **smoltcp user-space stack** (`tun_stack.rs`) with a local patch
-  (`vendor/smoltcp`, `[patch.crates-io]`) enabling `listen(0)` as an any-port
-  wildcard — required for transparent interception of arbitrary target ports.
-- **Bridge** (`tun_socks.rs`): per-connection `open_tunnel_bridge` (extracted
-  from `run_socks5_proxy`) reuses the existing WS→server→egress channel;
-  **server and egress are unchanged**.
-- Cross-platform: Linux `/dev/net/tun` + `ip route`, macOS `utun` + `route`.
-- Reuses `routes.rs` for per-target exit selection (IP/CIDR + fake-ip domain).
-- Tests: 64 unit tests (fake-ip alloc/lookup/DNS round-trip, routes, …).
-  Linux live verification on hub03: tun0 up, fake-ip route, DNS returns fake
-  A, example.com content fetched through the tunnel via egress2, .com flows
-  confirmed dialing through the egress2 exit. macOS: `tests/tun0-macos-test.sh`.
-- Docs: `docs/09-design-tun0.md` (detailed design).
+- **doc-flow**: TEAM.md `## Documents` section, generated doc-contract snapshot at team create, a declarative document lifecycle engine with permission + dynamic state-machine validation, and `doc.*` events wired into the publish loop.
+- **grill-with-docs**: owner-led multi-round design sessions with a dependency-aware Design Tree, stable `DQ-`/`FR-` identifiers, Fact Reports, ADRs, and `CONTEXT.md` glossary — delivered as `/team-grill` (opencode) and a DSH runtime skill, generated from one host-neutral protocol.
 
-## 0.1.2 — 2026-08-22
+#### Desktop GUI (macOS)
 
-### Proxy per-target egress routing
+- Tray app → native egui control panel (not browser), live log panel, tun0 root authorization prompt, LaunchAgent install mode, double-clickable `Teamx.app`.
 
-A single local SOCKS5 port can now pick which `proxy exit` each CONNECT target uses, based on the target domain/IP — so multiple exits (e.g. different cloud hosts) can be combined behind one proxy.
+#### Plugins & publishing
 
-- **New `routes.rs`**: ordered first-match rules — exact domain, suffix wildcard (`*.cn`), IPv4/IPv6 CIDR, exact IP. Pure-function matcher + unit tests.
-- **CLI**: `proxy start -f/--routes <file>` (ephemeral JSON override), `proxy start` reads the **SQLite route table** by default; `--exit` remains the legacy fixed-exit fallback.
-- **SQLite persistence** (db migrate v6): `proxy_routes` (seq/match/exit) + `proxy_settings` (`default_exit`). Managed via `teamx proxy routes list|add|remove|set-default|import|clear`.
-- `tunnel_client::run_socks5_proxy` resolves the exit per CONNECT target; server/exit side unchanged.
-- Tests: routes.rs unit (matching + DB round-trip + upsert), `tests/proxy-routes-test.ts` end-to-end (file routing + SQLite routing + fixed-exit regression) — all pass.
-- Docs: `docs/08-design-proxy-routes.md` (design + usage), `docs/20-manual-tunnel-proxy-cli.md` §5.5 (multi-exit routing runbook).
+- `@teamx-ai/opencode`, `@teamx-ai/dsh`, and installable bundle published to npm; dsh plugin registers the teamx runtime skill.
 
-## 0.1.1 — 2026-08-22
+#### Engineering & docs
 
-### Tunnel WS keep-alive + auto-reconnect
+- Full codebase audit pass (security / correctness / usability) plus two rounds of review fixes (DNS cache, waiter leak, pipe deadlock, AAAA guards, UX).
+- **Bilingual docs**: every design/manual/test/review doc now has cn/en pairs; new feasibility analyses, pure-CLI tunnel/proxy manual, and a comprehensive E2E suite (43 tunnel/proxy checks).
+- Feasibility analysis for local traffic capture (L1 HTTP / L2 TCP) — a preview of the enterprise roadmap.
 
-Long-idle tunnel WebSockets (`/tunnel` provider + `/tunnel/forward` consumer) were silently dropped by NAT/middleboxes, leaving stale registered tunnels and half-open connections — proxy flows then failed with `SOCKS5 (5) Connection refused` / `curl: (97)` until both processes were manually restarted.
+### Notes
 
-- **Server heartbeat** (`serve.rs`): both tunnel WS handlers now send a 30s application-level `{"type":"ping"}` (mirroring the `/ws` channel) and reply `pong` to client pings.
-- **Client pong** (`tunnel_client.rs`): `proxy exit` / `tunnel expose` / `tunnel forward` / `proxy start` reply `pong` to server pings.
-- **Provider auto-reconnect** (`run_expose`): `proxy exit` / `tunnel expose` automatically reconnect with exponential backoff (1s→30s) when the WS drops and re-register the tunnel, so consumers are never stranded.
-- `handle_tunnel_forward` merged two socket/provider tasks into one `select!` loop (single sink owner).
-- Docs: `docs/20-manual-tunnel-proxy-cli.md` §11 documents keep-alive + self-healing + systemd/while-loop production runbook.
+- CLI/DB schema migrated to **v11** (adds `users` table, `members.user_id`, `invitations.user_id`). Existing databases are upgraded automatically on first run.
+- Tunnel access semantics changed for *user-bound* devices: same-user devices can forward each other's tunnels; other users are denied. Legacy (unbound) members keep the previous team-wide access, so no existing team is affected.
 
-Verified: 43 unit tests, `tests/tunnel-proxy-comprehensive.ts` (43 asserts), `tests/proxy-test.ts`, `tests/cross-network.sh`; live kill/restart test on a cloud host confirms the provider reconnects and re-registers within seconds, and `systemd Restart=always` recovers a SIGKILLed server.
-
-## 0.1.0 — 2026-08-17
+## 0.1.0 — 2026-08-20
 
 First release: Rust CLI (SQLite event ledger + state machine + mTLS server) + opencode plugin (30+ tools + `/team` commands + agent routing) + network mode + multi-member collaboration.
 

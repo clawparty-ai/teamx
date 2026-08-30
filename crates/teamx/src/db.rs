@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS members (
   last_ip       TEXT,
   joined_at     TEXT NOT NULL,
   left_at       TEXT,
-  is_lead       INTEGER NOT NULL DEFAULT 0
+  is_lead       INTEGER NOT NULL DEFAULT 0,
+  user_id       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -90,6 +91,17 @@ CREATE TABLE IF NOT EXISTS goals (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   closed_at  TEXT
+);
+
+-- Users (persons): a stable cross-device identity shared by one person's
+-- multiple members/agents. Members reference this via `members.user_id`.
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL UNIQUE,
+  email        TEXT,
+  created_by   TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS roles (
@@ -149,6 +161,7 @@ CREATE TABLE IF NOT EXISTS invitations (
   role_desc     TEXT,
   cert_serial   TEXT,
   cert_cn       TEXT,
+  user_id       TEXT NOT NULL DEFAULT '',
   created_by    TEXT NOT NULL,
   created_at    TEXT NOT NULL,
   used_by       TEXT,
@@ -575,7 +588,40 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE members ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 12)?;
+    if version < 13 {
+        // v13 (main): user identity — a `users` table (person, cross-device) plus
+        // `user_id` columns on members and invitations. Merged from main's v11;
+        // renumbered to v13 because enterprise already uses v11 (presence) and
+        // v12 (is_lead). Idempotent: SCHEMA covers fresh DBs; the ALTERs are
+        // guarded by column existence.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS users (
+               id           TEXT PRIMARY KEY,
+               display_name TEXT NOT NULL UNIQUE,
+               email        TEXT,
+               created_by   TEXT NOT NULL,
+               created_at   TEXT NOT NULL,
+               updated_at   TEXT NOT NULL
+             );",
+        )?;
+        let mcols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(members)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !mcols.iter().any(|c| c == "user_id") {
+            conn.execute_batch("ALTER TABLE members ADD COLUMN user_id TEXT NOT NULL DEFAULT '';")?;
+        }
+        let icols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(invitations)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !icols.iter().any(|c| c == "user_id") {
+            conn.execute_batch("ALTER TABLE invitations ADD COLUMN user_id TEXT NOT NULL DEFAULT '';")?;
+        }
+    }
+    conn.pragma_update(None, "user_version", 13)?;
     Ok(())
 }
 
