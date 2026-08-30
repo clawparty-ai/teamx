@@ -20,6 +20,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Path, Query, State,
@@ -48,23 +49,31 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
     crate::db::migrate(&conn).map_err(|e| format!("schema init failed: {e}"))?;
 
     // Owner check: the session must own at least one non-destroyed team.
+    // Collect the owned team ids so live-member proxies can verify that a
+    // requested member actually belongs to one of the owner's teams.
     let conn = Arc::new(std::sync::Mutex::new(conn));
-    {
+    let owner_teams: Vec<String> = {
         let c = conn.lock().unwrap();
-        let owners: i64 = c
-            .query_row(
-                "SELECT COUNT(*) FROM members m JOIN teams t ON t.id = m.team_id
+        let mut stmt = c
+            .prepare(
+                "SELECT DISTINCT m.team_id FROM members m JOIN teams t ON t.id = m.team_id
                  WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state NOT IN ('destroyed') AND t.owner_member_id = m.id",
-                [&cmd.session],
-                |r| r.get(0),
             )
             .map_err(|e| format!("owner check failed: {e}"))?;
-        if owners == 0 {
-            return Err(format!(
-                "`teamx ui` is owner-only: session `{}` does not own any team",
-                cmd.session
-            ));
+        let rows = stmt
+            .query_map([&cmd.session], |r| r.get::<_, String>(0))
+            .map_err(|e| format!("owner check failed: {e}"))?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r.map_err(|e| format!("owner check failed: {e}"))?);
         }
+        v
+    };
+    if owner_teams.is_empty() {
+        return Err(format!(
+            "`teamx ui` is owner-only: session `{}` does not own any team",
+            cmd.session
+        ));
     }
 
     // Random per-launch token (32 bytes hex).
@@ -105,6 +114,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         conn,
         token: token.clone(),
         server_url,
+        owner_teams,
+        pool: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = Router::new()
@@ -166,6 +177,10 @@ struct AppState {
     token: String,
     /// teamx server URL for member tunnel proxying (empty = live features off).
     server_url: Option<String>,
+    /// Team ids owned by the current session (for live-member authorization).
+    owner_teams: Vec<String>,
+    /// Reusable member tunnel connections (member_id → stream).
+    pool: Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::tunnel_client::TunnelStream>>>,
 }
 
 type S = Arc<AppState>;
@@ -1210,7 +1225,7 @@ async function renderMembers() {
   $("#mliveCards").innerHTML = [
     ["Members", members.length, "👥", "blue"],
     ["在线", online, "●", "green"],
-    ["活动行", fmtNum((data.members ?? []).reduce((s,m)=>s+(m.activity?.count||0),0)), "📊", "orange"],
+    ["活动行", fmtNum(members.reduce((s,m)=>s+(m.activity?.count||0),0)), "📊", "orange"],
   ].map(([l, v, icon, color]) => `<div class="card"><div class="card-icon ${color}">${icon}</div><div class="card-body"><div class="label">${l}</div><div class="value">${v}</div></div></div>`).join("")
   // Member list
   $("#mliveMemberList").innerHTML = members.map((m) => `
@@ -1280,15 +1295,21 @@ function renderSessions(sessions) {
 }
 
 // Poll the member's messages for the first session every few seconds.
+// On repeated failures (member offline / not tunneled) we back off so a dead
+// member doesn't hammer the server with new tunnel attempts every 5s.
+let liveFailures = 0
 function startLivePolling(memberId, sessions) {
   if (liveTimer) clearInterval(liveTimer)
+  liveFailures = 0
   if (!sessions.length) return
   const sid = sessions[0].id
   const poll = async () => {
     if (document.hidden) return
     try {
       const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/session/${encodeURIComponent(sid)}/message`)
+      if (!resp.ok) throw new Error("HTTP " + resp.status)
       const data = await resp.json()
+      liveFailures = 0
       const msgs = data.data ?? data.messages ?? data
       if (Array.isArray(msgs) && msgs.length) {
         const last = msgs[msgs.length - 1]
@@ -1301,7 +1322,15 @@ function startLivePolling(memberId, sessions) {
         host.prepend(line)
         while (host.children.length > 50) host.lastChild?.remove()
       }
-    } catch { /* member offline or not tunneled */ }
+    } catch {
+      liveFailures++
+      // After a few consecutive failures, stop polling (the member view is
+      // effectively offline). Any new member click resets this via startLivePolling.
+      if (liveFailures >= 3 && liveTimer) {
+        clearInterval(liveTimer)
+        liveTimer = null
+      }
+    }
   }
   poll()
   liveTimer = setInterval(poll, 5000)
@@ -1787,7 +1816,31 @@ fn member_tunnel(member_id: &str) -> String {
     format!("opencode-{member_id}")
 }
 
-/// Open a byte stream to the member's opencode serve (via tunnel).
+/// Verify that `member_id` belongs to one of the owner's teams. This is a
+/// second line of defense: the teamx server's tunnel forward already rejects
+/// cross-team consumers, but we avoid even attempting a tunnel for members the
+/// owner should not see.
+fn verify_member(state: &S, member_id: &str) -> Result<(), String> {
+    if member_id.is_empty() || member_id.len() > 128 {
+        return Err("invalid member id".to_string());
+    }
+    let c = lock(state);
+    for tid in &state.owner_teams {
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM members WHERE id = ?1 AND team_id = ?2 AND state NOT IN ('left','denied')",
+                rusqlite::params![member_id, tid],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("db error: {e}"))?;
+        if n > 0 {
+            return Ok(());
+        }
+    }
+    Err(format!("member `{member_id}` is not in any team you own"))
+}
+
+/// Open a fresh byte stream to the member's opencode serve (via tunnel).
 async fn member_stream(state: &S, member_id: &str) -> Result<crate::tunnel_client::TunnelStream, String> {
     let server_url = state.server_url.as_deref().ok_or_else(|| "live member view disabled (no server_url)".to_string())?;
     let bridge = crate::tunnel_client::open_tunnel_bridge(server_url, &member_tunnel(member_id), "")
@@ -1796,60 +1849,173 @@ async fn member_stream(state: &S, member_id: &str) -> Result<crate::tunnel_clien
     Ok(crate::tunnel_client::TunnelStream::new(bridge))
 }
 
-/// Perform a GET against the member's opencode API and return the raw body.
-/// Reads until the response's Content-Length (or Connection: close EOF).
-async fn member_get(state: &S, member_id: &str, path: &str) -> Result<(u16, Vec<u8>), String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = member_stream(state, member_id).await?;
-    let host = "127.0.0.1";
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(req.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
-
-    // Read header (until CRLFCRLF), then the body up to Content-Length.
-    let mut head_buf = Vec::new();
-    let mut byte = [0u8; 1];
-    // Read until we've seen \r\n\r\n (at most 32KiB of headers).
-    for _ in 0..(32 * 1024) {
-        let n = stream.read(&mut byte).await.map_err(|e| format!("read head: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        head_buf.push(byte[0]);
-        if head_buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    let text = String::from_utf8_lossy(&head_buf);
-    let (head, _) = match text.split_once("\r\n\r\n") {
-        Some((h, _)) => (h, ()),
-        None => (text.as_ref(), ()),
+/// Take a pooled connection for `member_id`, opening a fresh one if absent.
+async fn take_conn(state: &S, member_id: &str) -> Result<crate::tunnel_client::TunnelStream, String> {
+    let cached = {
+        let mut pool = state.pool.lock().await;
+        pool.remove(member_id)
     };
-    let status: u16 = head
+    match cached {
+        Some(s) if !s.is_eof() => Ok(s),
+        _ => member_stream(state, member_id).await,
+    }
+}
+
+/// Return a healthy connection to the pool.
+async fn put_conn(state: &S, member_id: &str, stream: crate::tunnel_client::TunnelStream) {
+    if stream.is_eof() {
+        return;
+    }
+    let mut pool = state.pool.lock().await;
+    // Only keep one idle connection per member (replace if a stale one lingers).
+    pool.insert(member_id.to_string(), stream);
+}
+
+/// A parsed HTTP response from a member's opencode serve.
+struct MemberResponse {
+    status: u16,
+    body: Vec<u8>,
+    /// Whether the connection is still usable for a follow-up request.
+    alive: bool,
+}
+
+/// Read one HTTP/1.1 response from `stream` (status line + headers + body),
+/// handling Content-Length and `Transfer-Encoding: chunked`. Returns whether
+/// the connection can be reused (`alive`).
+async fn read_http_response<S>(stream: &mut S) -> Result<MemberResponse, String>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let mut reader = BufReader::new(&mut *stream);
+
+    // Status line.
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line).await.map_err(|e| format!("read status: {e}"))? == 0 {
+        return Err("connection closed before response".to_string());
+    }
+    let status: u16 = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
-    // Content-Length determines how much body to read (Connection: close is a
-    // fallback but avoid waiting forever on keep-alive servers).
-    let clen: usize = head
-        .lines()
-        .find_map(|l| {
-            let mut it = l.splitn(2, ':');
-            if it.next().map(|k| k.eq_ignore_ascii_case("content-length")).unwrap_or(false) {
-                it.next().and_then(|v| v.trim().parse().ok())
-            } else {
-                None
+
+    // Headers.
+    let mut clen: Option<usize> = None;
+    let mut chunked = false;
+    let mut close = false;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.map_err(|e| format!("read header: {e}"))? == 0 {
+            return Err("connection closed during headers".to_string());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let k = k.trim();
+            let v = v.trim();
+            if k.eq_ignore_ascii_case("content-length") {
+                clen = v.parse().ok();
+            } else if k.eq_ignore_ascii_case("transfer-encoding") {
+                chunked = v.to_ascii_lowercase().contains("chunked");
+            } else if k.eq_ignore_ascii_case("connection") {
+                close = v.eq_ignore_ascii_case("close");
             }
-        })
-        .unwrap_or(0);
-    let mut body = Vec::with_capacity(clen);
-    if clen > 0 {
-        let mut take = stream.take(clen as u64);
-        let _ = take.read_to_end(&mut body).await.map_err(|e| format!("read body: {e}"))?;
+        }
     }
-    Ok((status, body))
+
+    let mut body = Vec::new();
+    let mut alive = !close;
+    if chunked {
+        loop {
+            let mut sz_line = String::new();
+            if reader.read_line(&mut sz_line).await.map_err(|e| format!("read chunk size: {e}"))? == 0 {
+                return Err("connection closed mid-chunk".to_string());
+            }
+            let sz_line = sz_line.trim_end_matches(['\r', '\n']);
+            let sz = usize::from_str_radix(sz_line.split(';').next().unwrap_or("0").trim(), 16).unwrap_or(0);
+            if sz == 0 {
+                // Consume the trailing CRLF after the last chunk.
+                let mut trailer = String::new();
+                let _ = reader.read_line(&mut trailer).await;
+                break;
+            }
+            let mut chunk = vec![0u8; sz];
+            reader.read_exact(&mut chunk).await.map_err(|e| format!("read chunk: {e}"))?;
+            body.extend_from_slice(&chunk);
+            let mut crlf = [0u8; 2];
+            reader.read_exact(&mut crlf).await.map_err(|e| format!("read chunk crlf: {e}"))?;
+        }
+    } else if let Some(n) = clen {
+        if n > 0 {
+            let mut buf = vec![0u8; n];
+            reader.read_exact(&mut buf).await.map_err(|e| format!("read body: {e}"))?;
+            body = buf;
+        }
+    } else {
+        // No length: read until EOF (server must close the connection).
+        reader.read_to_end(&mut body).await.map_err(|e| format!("read body: {e}"))?;
+        alive = false;
+    }
+
+    // If BufReader buffered extra bytes beyond this response, the connection
+    // cannot be cleanly reused — drop it rather than corrupting the next reply.
+    if !reader.buffer().is_empty() {
+        alive = false;
+    }
+
+    Ok(MemberResponse { status, body, alive })
+}
+
+/// Send an HTTP request over a pooled member connection and read the response.
+async fn member_request(
+    state: &S,
+    member_id: &str,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<(u16, Vec<u8>), String> {
+    use tokio::io::AsyncWriteExt;
+
+    verify_member(state, member_id)?;
+    let mut stream = take_conn(state, member_id).await?;
+
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\nConnection: keep-alive\r\n"
+    );
+    if let Some(b) = body {
+        req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()));
+    }
+    req.push_str("\r\n");
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| format!("write request: {e}"))?;
+    if let Some(b) = body {
+        stream.write_all(b).await.map_err(|e| format!("write body: {e}"))?;
+    }
+
+    let resp = read_http_response(&mut stream).await?;
+    if resp.alive && !stream.is_eof() {
+        put_conn(state, member_id, stream).await;
+    }
+    Ok((resp.status, resp.body))
+}
+
+/// Map a member proxy result into a JSON HTTP response.
+fn member_json_response(result: Result<(u16, Vec<u8>), String>) -> axum::response::Response {
+    match result {
+        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => Json(v).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
+        },
+        Ok((status, body)) => {
+            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
 }
 
 /// GET /api/members/{member_id}/sessions — proxy opencode /api/session.
@@ -1861,16 +2027,7 @@ async fn api_member_sessions(
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    match member_get(&state, &member_id, "/api/session").await {
-        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => Json(v).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
-        },
-        Ok((status, body)) => {
-            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
-    }
+    member_json_response(member_request(&state, &member_id, "GET", "/api/session", None).await)
 }
 
 /// GET /api/members/{member_id}/session/{sid}/message — proxy opencode messages.
@@ -1883,16 +2040,7 @@ async fn api_member_messages(
         return r;
     }
     let path = format!("/api/session/{sid}/message");
-    match member_get(&state, &member_id, &path).await {
-        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => Json(v).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
-        },
-        Ok((status, body)) => {
-            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
-    }
+    member_json_response(member_request(&state, &member_id, "GET", &path, None).await)
 }
 
 /// GET /api/members/{member_id}/shell — proxy opencode /pty/shells.
@@ -1904,16 +2052,7 @@ async fn api_member_shells(
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    match member_get(&state, &member_id, "/pty/shells").await {
-        Ok((200, body)) => match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => Json(v).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
-        },
-        Ok((status, body)) => {
-            (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>())).into_response()
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
-    }
+    member_json_response(member_request(&state, &member_id, "GET", "/pty/shells", None).await)
 }
 
 /// POST /api/members/{member_id}/pty — proxy opencode POST /pty (create a shell).
@@ -1921,72 +2060,12 @@ async fn api_member_pty(
     State(state): State<S>,
     Path(member_id): Path<String>,
     headers: axum::http::HeaderMap,
-    body: String,
+    body: Bytes,
 ) -> axum::response::Response {
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = match member_stream(&state, &member_id).await {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
-    };
-    let body_len = body.len();
-    let req = format!(
-        "POST /pty HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n{body}"
-    );
-    let _ = stream.write_all(req.as_bytes()).await;
-
-    // Read headers up to CRLFCRLF.
-    let mut head_buf = Vec::new();
-    let mut byte = [0u8; 1];
-    for _ in 0..(32 * 1024) {
-        let n = match stream.read(&mut byte).await {
-            Ok(n) => n,
-            Err(_) => break,
-        };
-        if n == 0 {
-            break;
-        }
-        head_buf.push(byte[0]);
-        if head_buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    let text = String::from_utf8_lossy(&head_buf);
-    let (head, _) = match text.split_once("\r\n\r\n") {
-        Some((h, _)) => (h, ()),
-        None => (text.as_ref(), ()),
-    };
-    let status: u16 = head
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(500);
-    let clen: usize = head
-        .lines()
-        .find_map(|l| {
-            let mut it = l.splitn(2, ':');
-            if it.next().map(|k| k.eq_ignore_ascii_case("content-length")).unwrap_or(false) {
-                it.next().and_then(|v| v.trim().parse().ok())
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    let mut resp_body = Vec::with_capacity(clen);
-    if clen > 0 {
-        let mut take = stream.take(clen as u64);
-        let _ = take.read_to_end(&mut resp_body).await;
-    }
-    if status == 200 {
-        match serde_json::from_slice::<serde_json::Value>(&resp_body) {
-            Ok(v) => Json(v).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "bad json from member".to_string()).into_response(),
-        }
-    } else {
-        (StatusCode::BAD_GATEWAY, format!("member returned {status}: {}", String::from_utf8_lossy(&resp_body).chars().take(200).collect::<String>())).into_response()
-    }
+    member_json_response(member_request(&state, &member_id, "POST", "/pty", Some(&body)).await)
 }
 
 /// WebSocket endpoint that bridges the browser's xterm.js to the member's
@@ -2001,6 +2080,10 @@ async fn ws_member_pty(
     // Authorize with the ui token (cookie or ?token=).
     if !authorized(&state, headers.get(header::COOKIE).and_then(|v| v.to_str().ok())) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    // Verify the member belongs to the owner's teams before opening a tunnel.
+    if let Err(e) = verify_member(&state, &member_id) {
+        return (StatusCode::FORBIDDEN, e).into_response();
     }
     let server_url = match state.server_url.as_deref() {
         Some(u) => u.to_string(),
@@ -2036,12 +2119,13 @@ async fn bridge_pty(
         Err(_) => return,
     };
     req.headers_mut().insert("Host", "127.0.0.1".parse().unwrap());
-    let (mut member_ws, _) = match tokio_tungstenite::client_async(req, stream).await {
+    let (member_ws, _) = match tokio_tungstenite::client_async(req, stream).await {
         Ok(v) => v,
         Err(_) => return,
     };
 
-    // 3. Relay bytes both ways.
+    // 3. Relay bytes both ways, with a heartbeat so idle terminals don't get
+    // silently dropped by middleboxes.
     let (mut b_sink, mut b_stream) = browser.split();
     let (mut m_sink, mut m_stream) = member_ws.split();
 
@@ -2054,24 +2138,45 @@ async fn bridge_pty(
                 WsMessage::Binary(b) => {
                     if m_sink.send(TMessage::Binary(b.to_vec().into())).await.is_err() { break; }
                 }
+                WsMessage::Ping(p) => {
+                    if m_sink.send(TMessage::Ping(p.to_vec().into())).await.is_err() { break; }
+                }
+                WsMessage::Pong(p) => {
+                    if m_sink.send(TMessage::Pong(p.to_vec().into())).await.is_err() { break; }
+                }
                 WsMessage::Close(_) => break,
-                _ => {}
             }
         }
         let _ = m_sink.close().await;
     };
 
+    // Relay member → browser, interleaving a periodic ping so an idle terminal
+    // is not reaped by the tunnel/server.
     let to_browser = async {
-        while let Some(Ok(msg)) = m_stream.next().await {
-            match msg {
-                TMessage::Text(t) => {
-                    if b_sink.send(WsMessage::Text(t.to_string().into())).await.is_err() { break; }
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(25));
+        loop {
+            tokio::select! {
+                msg = m_stream.next() => {
+                    match msg {
+                        Some(Ok(TMessage::Text(t))) => {
+                            if b_sink.send(WsMessage::Text(t.to_string().into())).await.is_err() { break; }
+                        }
+                        Some(Ok(TMessage::Binary(b))) => {
+                            if b_sink.send(WsMessage::Binary(b.to_vec().into())).await.is_err() { break; }
+                        }
+                        Some(Ok(TMessage::Ping(p))) => {
+                            if b_sink.send(WsMessage::Ping(axum::body::Bytes::from(p))).await.is_err() { break; }
+                        }
+                        Some(Ok(TMessage::Pong(p))) => {
+                            if b_sink.send(WsMessage::Pong(axum::body::Bytes::from(p))).await.is_err() { break; }
+                        }
+                        Some(Ok(TMessage::Close(_))) | Some(Ok(TMessage::Frame(_))) => {}
+                        Some(Err(_)) | None => break,
+                    }
                 }
-                TMessage::Binary(b) => {
-                    if b_sink.send(WsMessage::Binary(b.to_vec().into())).await.is_err() { break; }
+                _ = interval.tick() => {
+                    if b_sink.send(WsMessage::Ping(axum::body::Bytes::new())).await.is_err() { break; }
                 }
-                TMessage::Close(_) => break,
-                _ => {}
             }
         }
     };

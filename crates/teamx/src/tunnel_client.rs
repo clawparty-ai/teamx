@@ -1065,6 +1065,12 @@ impl TunnelStream {
     pub fn new(bridge: TunnelBridge) -> Self {
         Self { bridge, pending: std::collections::VecDeque::new(), eof: false }
     }
+
+    /// True when the stream has reached EOF or the tunnel was closed.
+    /// Used by connection pools to decide whether the stream can be reused.
+    pub fn is_eof(&self) -> bool {
+        self.eof || *self.bridge.eof.borrow()
+    }
 }
 
 impl tokio::io::AsyncRead for TunnelStream {
@@ -1074,47 +1080,48 @@ impl tokio::io::AsyncRead for TunnelStream {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         use std::task::Poll;
-        // Drain buffered chunks first.
-        while let Some(chunk) = self.pending.pop_front() {
-            if chunk.is_empty() {
-                continue;
-            }
-            let n = chunk.len().min(buf.remaining());
-            buf.put_slice(&chunk[..n]);
-            if n < chunk.len() {
-                self.pending.push_front(chunk[n..].to_vec());
-            }
-            return Poll::Ready(Ok(()));
-        }
-        if self.eof {
-            return Poll::Ready(Ok(()));
-        }
-        // Pull the next relayed chunk from the bridge's rx.
-        match self.bridge.rx.poll_recv(cx) {
-            Poll::Ready(Some(chunk)) => {
+        loop {
+            // Drain buffered chunks first.
+            while let Some(chunk) = self.pending.pop_front() {
                 if chunk.is_empty() {
-                    // loop to get a non-empty chunk
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
+                    continue;
                 }
                 let n = chunk.len().min(buf.remaining());
                 buf.put_slice(&chunk[..n]);
                 if n < chunk.len() {
                     self.pending.push_front(chunk[n..].to_vec());
                 }
-                Poll::Ready(Ok(()))
+                return Poll::Ready(Ok(()));
             }
-            Poll::Ready(None) => {
-                self.eof = true;
-                Poll::Ready(Ok(()))
+            if self.eof {
+                return Poll::Ready(Ok(()));
             }
-            Poll::Pending => {
-                // Also surface EOF if the watch signals the exit closed.
-                if *self.bridge.eof.borrow() {
+            // Pull the next relayed chunk from the bridge's rx.
+            match self.bridge.rx.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => {
+                    if chunk.is_empty() {
+                        // Empty chunk: skip and keep polling (rare; avoids a
+                        // self-wake busy loop).
+                        continue;
+                    }
+                    let n = chunk.len().min(buf.remaining());
+                    buf.put_slice(&chunk[..n]);
+                    if n < chunk.len() {
+                        self.pending.push_front(chunk[n..].to_vec());
+                    }
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(None) => {
                     self.eof = true;
-                    Poll::Ready(Ok(()))
-                } else {
-                    Poll::Pending
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending => {
+                    // Also surface EOF if the watch signals the exit closed.
+                    if *self.bridge.eof.borrow() {
+                        self.eof = true;
+                        return Poll::Ready(Ok(()));
+                    }
+                    return Poll::Pending;
                 }
             }
         }
@@ -1123,13 +1130,20 @@ impl tokio::io::AsyncRead for TunnelStream {
 
 impl tokio::io::AsyncWrite for TunnelStream {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         use std::task::Poll;
-        let _ = self.bridge.tx.send(buf.to_vec());
-        Poll::Ready(Ok(buf.len()))
+        // Surface a broken pipe when the tunnel's receiver half is gone, so
+        // callers don't silently lose writes into a dead connection.
+        match self.bridge.tx.send(buf.to_vec()) {
+            Ok(()) => Poll::Ready(Ok(buf.len())),
+            Err(_) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "tunnel stream closed",
+            ))),
+        }
     }
 
     fn poll_flush(
