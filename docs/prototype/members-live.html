@@ -127,6 +127,12 @@
   .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
   .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
   .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-max { background: none; border: none; color: #aaa; font-size: 14px; line-height: 1; padding: 2px 7px; border-radius: 4px; cursor: pointer; transition: color 200ms, background 200ms; }
+  .term-max:hover { color: #fff; background: rgba(255,255,255,0.15); }
+  .term-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 999; display: none; }
+  .term-backdrop.show { display: block; }
+  .term-window.maximized { position: fixed; left: 24px; right: 24px; top: 24px; bottom: 24px; z-index: 1000; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  .term-window.maximized .term-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
   .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
   .term-body .cmd { color: #9CDCFE; }
   .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
@@ -294,6 +300,7 @@
           </div>
           <!-- ===== 终端 tab ===== -->
           <div id="dtab-terminal" style="display:none">
+            <div id="termBackdrop" class="term-backdrop"></div>
             <div class="term-window">
               <div class="term-titlebar">
                 <span class="term-dot" style="background:#ff5f56"></span>
@@ -301,6 +308,7 @@
                 <span class="term-dot" style="background:#27c93f"></span>
                 <span style="margin-left:8px">alice@node-01: ~/product-dev-team</span>
                 <span style="margin-left:auto;font-size:11px">zsh</span>
+                <button class="term-max" id="termMax" title="最大化">⛶</button>
               </div>
               <div class="term-body"><span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ git status
 <span class="muted">On branch main
@@ -435,6 +443,21 @@ function scheduleTerminalLine() {
   setTimeout(() => { spawnTerminalLine(); scheduleTerminalLine() }, 2500 + Math.random() * 2500)
 }
 scheduleTerminalLine()
+
+// ---- 终端：最大化 / 还原 ----
+const termMaxBtn = document.getElementById("termMax")
+const termWin = document.querySelector(".term-window")
+const termBackdrop = document.getElementById("termBackdrop")
+function toggleTermMax() {
+  const on = termWin.classList.toggle("maximized")
+  if (termBackdrop) termBackdrop.classList.toggle("show", on)
+  if (termMaxBtn) {
+    termMaxBtn.textContent = on ? "🗕" : "⛶"
+    termMaxBtn.title = on ? "还原" : "最大化"
+  }
+}
+termMaxBtn?.addEventListener("click", toggleTermMax)
+termBackdrop?.addEventListener("click", () => { if (termWin.classList.contains("maximized")) toggleTermMax() })
 </script>
 </body>
 </html>

@@ -167,7 +167,7 @@
   .kb-body .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .kb-meta { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); overflow-wrap: anywhere; }
   .kb-card { position: relative; }
-  .kb-tip { display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
+  .kb-tip { display: none; position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
   .kb-tip .tip-title { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
   .kb-desc { font-size: 13px; font-weight: 500; color: #fff; background: rgba(255,255,255,0.1); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px; }
   .kb-tip table { border-collapse: collapse; font-size: 12px; }
@@ -334,6 +334,12 @@
   .term-window { background: #1e1e1e; border-radius: 6px; overflow: hidden; box-shadow: var(--shadow-hover); }
   .term-titlebar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: #2d2d2d; color: #ccc; font-size: 12px; }
   .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-max { background: none; border: none; color: #aaa; font-size: 14px; line-height: 1; padding: 2px 7px; border-radius: 4px; cursor: pointer; transition: color 200ms, background 200ms; }
+  .term-max:hover { color: #fff; background: rgba(255,255,255,0.15); }
+  .term-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 999; display: none; }
+  .term-backdrop.show { display: block; }
+  .term-window.maximized { position: fixed; left: 24px; right: 24px; top: 24px; bottom: 24px; z-index: 1000; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+  .term-window.maximized .term-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
   .term-body { padding: 12px; font-family: var(--font-mono); font-size: 12.5px; color: #d4d4d4; min-height: 300px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; }
   .term-body .cmd { color: #9CDCFE; }
   .term-cursor { display: inline-block; width: 7px; height: 14px; background: #d4d4d4; animation: blink 1s step-end infinite; vertical-align: text-bottom; }
@@ -348,7 +354,7 @@
   </div>
   <nav>
     <button data-view="kanban" class="active">KanBan</button>
-    <button data-view="goal">Goal</button>
+    <button data-view="goal" style="display:none" title="Goal 页面暂隐藏，后续再决定是否启用">Goal</button>
     <button data-view="cost">Cost</button>
     <button data-view="timeline">Timeline</button>
     <button data-view="members">Members</button>
@@ -569,6 +575,7 @@
               </div>
               <!-- ===== 终端 tab ===== -->
               <div id="dtab-terminal" style="display:none">
+                <div id="termBackdrop" class="term-backdrop"></div>
                 <div class="term-window">
                   <div class="term-titlebar">
                     <span class="term-dot" style="background:#ff5f56"></span>
@@ -576,6 +583,7 @@
                     <span class="term-dot" style="background:#27c93f"></span>
                     <span style="margin-left:8px">alice@node-01: ~/product-dev-team</span>
                     <span style="margin-left:auto;font-size:11px">zsh</span>
+                    <button class="term-max" id="termMax" title="最大化">⛶</button>
                   </div>
                   <div class="term-body"><span class="cmd">alice@node-01</span> <span style="color:#4EC9B0">~/product-dev-team</span> $ git status
     <span class="muted">On branch main
@@ -753,11 +761,14 @@ function tableRows(rows, cols) {
 // ---- navigation ----
 let tlMode = "fishbone"
 let lastTimelineItems = []
+const FULL_WIDTH_VIEWS = new Set(["timeline", "kanban", "goal", "cost", "members"])
+function applyViewLayout(name) {
+  $(".container").classList.toggle("full-width", FULL_WIDTH_VIEWS.has(name))
+}
 function showView(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
-  const fullWidthViews = new Set(["timeline", "kanban", "goal", "cost", "members"])
-  $(".container").classList.toggle("full-width", fullWidthViews.has(name))
+  applyViewLayout(name)
   const toggle = document.getElementById("tlViewToggle")
   if (toggle) toggle.style.display = name === "timeline" ? "inline-flex" : "none"
   if (name === "timeline") renderTimeline()
@@ -1538,6 +1549,7 @@ async function boot() {
     fillTeamSelect(teams)
     await loadMemberNames()
     await refreshGoalSelect()
+    applyViewLayout("kanban")
     renderKanban()
   } catch (e) {
     document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
@@ -1655,6 +1667,21 @@ function scheduleTerminalLine() {
   setTimeout(() => { spawnTerminalLine(); scheduleTerminalLine() }, 2500 + Math.random() * 2500)
 }
 scheduleTerminalLine()
+
+// ---- 终端：最大化 / 还原 ----
+const termMaxBtn = document.getElementById("termMax")
+const termWin = document.querySelector(".term-window")
+const termBackdrop = document.getElementById("termBackdrop")
+function toggleTermMax() {
+  const on = termWin.classList.toggle("maximized")
+  if (termBackdrop) termBackdrop.classList.toggle("show", on)
+  if (termMaxBtn) {
+    termMaxBtn.textContent = on ? "🗕" : "⛶"
+    termMaxBtn.title = on ? "还原" : "最大化"
+  }
+}
+termMaxBtn?.addEventListener("click", toggleTermMax)
+termBackdrop?.addEventListener("click", () => { if (termWin.classList.contains("maximized")) toggleTermMax() })
 </script>
 </body>
 </html>
