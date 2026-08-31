@@ -113,6 +113,26 @@ teamx team create "cloud-proxy-lab" --session s:cloud \
 
 > 提示：owner 会话的 `--session` 由你自定（如 `s:cloud`），它只在 serve 本地的 CLI 上下文有意义；网络模式下 server 一律以**证书 CN** 识别身份，`--session` 参数被忽略。
 
+### 3.1 创建 teamx git 仓库（同样在 server 上）
+
+团队建好后，立即在 serve 机器创建代码仓库（bare repo 存在 server 本地 `~/.teamx/repos/<team_id>/<name>.git`，成员通过 mTLS 访问，无需自建 git 服务）：
+
+```bash
+# 云主机 A（team lead/owner）：
+teamx git create <repo-name> --description "团队代码仓库" \
+  --session s:cloud --team <team-id>
+# 期望输出：ok repo=<repo-name>（bare repo 已初始化，默认分支 main）
+
+# 查看团队仓库列表（成员也可用）
+teamx git list --session s:cloud --team <team-id>
+```
+
+> 说明：
+> - `teamx git create` 仅 **team lead**（owner 或 co-lead）可执行（`serve.rs` 的 `git.create` 用 `is_team_owner` 校验）。
+> - 仓库权限分 `read`（clone/pull）/ `write`（push）/ `admin`；**批准成员时自动授权 read**（`team approve` 或 auto-approve 都会执行），所以 lead 邀请函（`--auto-approve`）导入的成员可直接 clone。
+> - 需要更多成员可写时，owner 显式 `teamx git grant <repo> <member_id> --permission write --session s:cloud --team <id>`。
+> - 仓库即团队资产，用 `teamx git delete <repo> --session s:cloud --team <id>` 删除（owner/admin）。
+
 ---
 
 ## 4. 签发第一个邀请函：标记为 team lead + auto-approve
@@ -155,6 +175,41 @@ import 之后：
 - 管理员即可在本地远程管理团队：`teamx team status --team <id>`、`teamx goal set`、`teamx team invite` 等（需要时带 `--session s:admin --team <id>`）
 
 > 验证：`teamx team status --session s:admin --team <team-id>` 应返回 `my_is_lead: true`。
+
+### 5.1 把团队代码 clone 到本地
+
+管理员（及所有成员）import 后即可把 server 上的代码仓库 clone 到本地。两种方式任选：
+
+**方式一：teamx git clone（bundle 传输，推荐给团队内部用）**
+
+```bash
+# 本地：
+teamx git clone <repo-name> --session s:admin --team <team-id>
+# 期望输出：cloned <repo-name> -> ./<repo-name>（含 origin 记录）
+cd <repo-name>
+# 后续提交：
+teamx git commit -m "说明"
+teamx git push <repo-name> --session s:admin --team <team-id>
+# 或一步：teamx git commit-push -m "说明" --repo <repo-name> --session s:admin --team <team-id>
+# 拉取更新：
+teamx git pull <repo-name> --session s:admin --team <team-id>
+```
+
+**方式二：标准 git over mTLS（smart HTTP，习惯原生 git 的人用）**
+
+```bash
+# 本地，一次性配置证书到 ~/.gitconfig（从 import 的 letter 自动读取）：
+teamx git setup --server https://<云主机A>:8888
+# 之后用原生 git（URL 带 mTLS 证书，自动鉴权）：
+git clone https://<云主机A>:8888/git/<team-id>/<repo-name>
+cd <repo-name>
+git pull && git push
+```
+
+> 说明：
+> - clone 需要 **read** 权限：lead 邀请函（`--auto-approve`）导入后已自动授权；普通成员由 owner `teamx git grant <repo> <member_id> --permission read` 授权。
+> - `teamx git setup` 把 `http.<server>/.sslCert / .sslKey / .sslCAInfo` 写入 `~/.gitconfig`（`git_client.rs`），原生 git 即可过 mTLS。
+> - 两种方式读写的是**同一个 server 仓库**，可混用。
 
 ---
 
@@ -251,6 +306,13 @@ teamx tunnel forward ttyd --local-port 17681 \
 | 签发 lead+自动批准 | 加 `--as-lead --auto-approve` |
 | 查看已签发邀请 | `teamx team invite list --session <s> --team <id>` |
 | 吊销邀请 | `teamx team invite revoke <invitation_id> --session <s> --team <id>` |
+| 创建仓库 | `teamx git create <repo> --description "..." --session <s> --team <id>` |
+| 查看仓库 | `teamx git list --session <s> --team <id>` |
+| clone 到本地 | `teamx git clone <repo> --session <s> --team <id>` |
+| 配置原生 git mTLS | `teamx git setup --server https://A:8888` |
+| 提交+推送 | `teamx git commit-push -m "msg" --repo <repo> --session <s> --team <id>` |
+| 拉取更新 | `teamx git pull <repo> --session <s> --team <id>` |
+| 授权成员 | `teamx git grant <repo> <member_id> --permission write --session <s> --team <id>` |
 | 开放服务 | `teamx tunnel expose <name> --port <local> --mode local --session <s> --team <id>` |
 | 本地使用 | `teamx tunnel forward <name> --local-port <p> --session <s> --team <id>` |
 | 关闭隧道 | `teamx tunnel close <name> --session <s> --team <id>` |

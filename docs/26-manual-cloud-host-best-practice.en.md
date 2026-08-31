@@ -114,6 +114,26 @@ Record the returned **team id** (used later for `--team <id>` in invite / tunnel
 
 > Tip: the owner session `--session` value (e.g. `s:cloud`) is only meaningful in the serve host's local CLI context; in network mode the server always identifies by the **certificate CN** and ignores `--session`.
 
+### 3.1 Create a teamx git repository (also on the server)
+
+Right after the team is created, create the code repository on the serve host (bare repos live under `~/.teamx/repos/<team_id>/<name>.git`; members access them over mTLS — no self-hosted git server needed):
+
+```bash
+# Cloud host A (team lead/owner):
+teamx git create <repo-name> --description "team code repository" \
+  --session s:cloud --team <team-id>
+# Expected: ok repo=<repo-name> (bare repo initialized, default branch main)
+
+# List the team's repositories (members can also run this)
+teamx git list --session s:cloud --team <team-id>
+```
+
+> Notes:
+> - `teamx git create` is **team-lead only** (owner or co-lead); `serve.rs`'s `git.create` checks `is_team_owner`.
+> - Repo permissions: `read` (clone/pull) / `write` (push) / `admin`; **approval auto-grants read** (`team approve` and auto-approve both do this), so members imported via a lead letter (`--auto-approve`) can clone immediately.
+> - To let more members write, the owner explicitly runs `teamx git grant <repo> <member_id> --permission write --session s:cloud --team <id>`.
+> - Repos are team assets; remove with `teamx git delete <repo> --session s:cloud --team <id>` (owner/admin).
+
 ---
 
 ## 4. Issue the first invitation: mark as team lead + auto-approve
@@ -156,6 +176,41 @@ After import:
 - The admin can now manage the team remotely: `teamx team status --team <id>`, `teamx goal set`, `teamx team invite`, etc. (pass `--session s:admin --team <id>` when needed)
 
 > Verify: `teamx team status --session s:admin --team <team-id>` should report `my_is_lead: true`.
+
+### 5.1 Clone the team code locally
+
+After importing, the admin (and every member) can clone the server's repositories locally. Two equivalent ways:
+
+**Option 1: `teamx git clone` (bundle transport, recommended inside the team)**
+
+```bash
+# Local:
+teamx git clone <repo-name> --session s:admin --team <team-id>
+# Expected: cloned <repo-name> -> ./<repo-name> (with origin recorded)
+cd <repo-name>
+# Later commits:
+teamx git commit -m "message"
+teamx git push <repo-name> --session s:admin --team <team-id>
+# or in one step: teamx git commit-push -m "message" --repo <repo-name> --session s:admin --team <team-id>
+# Pull updates:
+teamx git pull <repo-name> --session s:admin --team <team-id>
+```
+
+**Option 2: standard git over mTLS (smart HTTP, for those who prefer plain git)**
+
+```bash
+# Local, one-time config: write the certificate paths into ~/.gitconfig (auto-read from the imported letter):
+teamx git setup --server https://<cloud-host-A>:8888
+# Then use plain git (the URL carries the mTLS certs automatically):
+git clone https://<cloud-host-A>:8888/git/<team-id>/<repo-name>
+cd <repo-name>
+git pull && git push
+```
+
+> Notes:
+> - clone needs **read** permission: lead letters (`--auto-approve`) already grant it on import; ordinary members are granted by the owner via `teamx git grant <repo> <member_id> --permission read`.
+> - `teamx git setup` writes `http.<server>/.sslCert / .sslKey / .sslCAInfo` into `~/.gitconfig` (`git_client.rs`), so plain git passes mTLS.
+> - Both options access the **same server repository** and can be mixed.
 
 ---
 
@@ -252,6 +307,13 @@ Then open `http://127.0.0.1:17681/` in a browser to reach cloud host B's web ter
 | Issue lead + auto-approve | add `--as-lead --auto-approve` |
 | List invitations | `teamx team invite list --session <s> --team <id>` |
 | Revoke invitation | `teamx team invite revoke <invitation_id> --session <s> --team <id>` |
+| Create a repo | `teamx git create <repo> --description "..." --session <s> --team <id>` |
+| List repos | `teamx git list --session <s> --team <id>` |
+| Clone locally | `teamx git clone <repo> --session <s> --team <id>` |
+| Configure plain-git mTLS | `teamx git setup --server https://A:8888` |
+| Commit + push | `teamx git commit-push -m "msg" --repo <repo> --session <s> --team <id>` |
+| Pull updates | `teamx git pull <repo> --session <s> --team <id>` |
+| Grant a member | `teamx git grant <repo> <member_id> --permission write --session <s> --team <id>` |
 | Expose a service | `teamx tunnel expose <name> --port <local> --mode local --session <s> --team <id>` |
 | Use it locally | `teamx tunnel forward <name> --local-port <p> --session <s> --team <id>` |
 | Close a tunnel | `teamx tunnel close <name> --session <s> --team <id>` |
