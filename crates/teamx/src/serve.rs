@@ -155,7 +155,8 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         .route("/git/{team_id}/{repo}/info/refs", get(git_http_info_refs))
         .route("/git/{team_id}/{repo}/git-upload-pack", post(git_http_upload_pack))
         .route("/git/{team_id}/{repo}/git-receive-pack", post(git_http_receive_pack))
-        .with_state(state);
+        // Clone for the background nudge task before `state` moves into the router.
+        .with_state(state.clone());
 
     // Bind address: support both IPv4 (`0.0.0.0:5781`) and IPv6 (`[::]:5781`).
     let bind_str = if cmd.addr.contains(':') {
@@ -184,6 +185,16 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
         db_path.display()
     );
     rt.block_on(async {
+        // Start the idle-team nudge task: periodically write a `system.nudge`
+        // ledger event for teams that have gone silent with an unfinished goal,
+        // and fan it out to live WS connections. Offline members get it on the
+        // next `sync` (it is a ledger event). Configurable via env:
+        //   TEAMX_NUDGE_ENABLED      (default 1)
+        //   TEAMX_NUDGE_INTERVAL_SECS (default 60)  how often we check
+        //   TEAMX_NUDGE_AFTER_SECS    (default 300) silent-before-nudge
+        let nudge_state = state.clone();
+        tokio::spawn(async move { crate::serve::nudge_task(nudge_state).await });
+
         let config = RustlsConfig::from_config(tls_config);
         let server = axum_server::bind_rustls(addr, config)
             .map(|acceptor| CertAcceptor { inner: acceptor });
@@ -192,6 +203,50 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
             .await
             .map_err(|e| format!("server error: {e}"))
     })
+}
+
+/// Background task: periodically nudge teams whose goal is unfinished but which
+/// have had no ledger activity for `TEAMX_NUDGE_AFTER_SECS` (default 300s).
+/// The nudge is a `system.nudge` ledger event + live WS fan-out.
+async fn nudge_task(state: AppState) {
+    let enabled = std::env::var("TEAMX_NUDGE_ENABLED")
+        .map(|s| s != "0" && s != "false")
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let interval_secs = std::env::var("TEAMX_NUDGE_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60u64);
+    let after_secs = std::env::var("TEAMX_NUDGE_AFTER_SECS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(300);
+
+    let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
+    tick.tick().await; // consume the immediate first tick
+    loop {
+        tick.tick().await;
+        let db = state.db.clone();
+        let hub = state.hub.clone();
+        // DB access is blocking (rusqlite); do it off the async runtime.
+        let events = tokio::task::spawn_blocking(move || {
+            let mut conn = db.lock().unwrap();
+            commands::nudge_idle_teams(&mut conn, after_secs, None)
+        })
+        .await;
+        let Ok(Ok(events)) = events else { continue };
+        if events.is_empty() {
+            continue;
+        }
+        eprintln!("teamx serve: nudged {} silent team(s)", events.len());
+        for ev in &events {
+            if let Some(team_id) = ev.get("team_id").and_then(Value::as_str) {
+                hub.publish(team_id, &json!({ "type": "event", "event": ev }));
+            }
+        }
+    }
 }
 
 /// Build a rustls ServerConfig enforcing mutual TLS:

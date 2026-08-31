@@ -3086,6 +3086,118 @@ pub fn teams_for_member(conn: &Connection, member_id: &str) -> rusqlite::Result<
     rows.collect()
 }
 
+/// Parse an RFC3339 timestamp into seconds since the Unix epoch.
+fn ts_secs(s: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0)
+}
+
+/// Write a `system.nudge` ledger event for every team that has gone silent
+/// (no ledger activity for `after_secs`) while its goal is still unfinished.
+///
+/// This is the server-side "your task isn't done yet" reminder. It is
+/// idempotent-ish: a team is only nudged again once `after_secs` have passed
+/// since its *last nudge*, so a still-silent team gets a periodic poke (e.g.
+/// every 5 minutes) without spamming on every tick.
+///
+/// Returns the newly-written events (with `team_id`) so the caller (serve)
+/// can fan them out to live WebSocket connections immediately; offline members
+/// pick them up on their next `sync` because they are ledger events.
+pub fn nudge_idle_teams(
+    conn: &mut Connection,
+    after_secs: i64,
+    now_secs: Option<i64>,
+) -> rusqlite::Result<Vec<Value>> {
+    let now = now_secs.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let mut written: Vec<Value> = Vec::new();
+
+    // Active teams (goal shared, not completed/archived, not forming).
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, COALESCE(g.title, ''), t.state
+         FROM teams t
+         LEFT JOIN goals g ON g.id = t.goal_id
+         WHERE t.state IN ('active','blocked')
+           AND g.state IS NOT NULL AND g.state NOT IN ('achieved','closed')",
+    )?;
+    let teams: Vec<(String, String, String, String)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    for (team_id, team_name, goal_title, team_state) in teams {
+        // Latest event timestamp for this team (any type; the ledger is the
+        // activity clock). MAX over an empty set is NULL -> None.
+        let last_ts: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1",
+            [&team_id],
+            |r| r.get(0),
+        )?;
+        let last_event_secs = last_ts.as_deref().map(ts_secs).unwrap_or(0);
+        let silent_for = if last_event_secs > 0 { now - last_event_secs } else { i64::MAX };
+
+        if silent_for < after_secs {
+            continue; // team is still active — no nudge
+        }
+
+        // Skip if a nudge was already sent recently (within after_secs). This
+        // paces the reminder to roughly one poke per `after_secs` window.
+        let last_nudge: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND type = 'system.nudge'",
+            [&team_id],
+            |r| r.get(0),
+        )?;
+        if let Some(n) = last_nudge {
+            let since = now - ts_secs(&n);
+            if since < after_secs {
+                continue;
+            }
+        }
+
+        let message = if team_state == "blocked" {
+            format!("团队「{team_name}」处于 blocked 状态，目标「{goal_title}」尚未完成。请成员说明阻塞原因，或尽快恢复推进。")
+        } else {
+            format!("团队「{team_name}」的目标「{goal_title}」还未完成。你的任务是否执行完了？没完成请尽快完成，完成请提交产物。")
+        };
+        let payload = json!({
+            "kind": "idle_reminder",
+            "team_name": team_name,
+            "goal_title": goal_title,
+            "silent_for_secs": silent_for,
+            "message": message,
+        });
+        // Write the nudge with an explicit created_at (the test-injectable clock
+        // `now_secs`, or the real one) so pacing can be verified deterministically.
+        let ts = chrono::DateTime::from_timestamp(now, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(crate::events::db_now);
+        db::with_write(conn, |tx| {
+            let seq = events::emit(tx, &team_id, None, "system.nudge", Some(&payload))?;
+            // Overwrite created_at so it reflects the injected clock.
+            tx.execute(
+                "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                params![ts, team_id, seq],
+            )?;
+            Ok(())
+        })?;
+        written.push(json!({
+            "team_id": team_id,
+            "member_id": Value::Null,
+            "type": "system.nudge",
+            "payload": payload,
+        }));
+    }
+
+    Ok(written)
+}
+
 /// True if this member's invitation letter has been revoked (network mode I2).
 /// Only invitation-issued members have an `invitations` row; token-joined
 /// members are not affected by invitation revocation.
@@ -3427,5 +3539,85 @@ mod tests {
         assert_eq!(zhang["members"].as_array().unwrap().len(), 2);
         let li = users.iter().find(|u| u["display_name"] == "李四").unwrap();
         assert_eq!(li["members"].as_array().unwrap().len(), 1);
+    }
+
+    /// Helper: an active team with a shared, unfinished goal.
+    fn seed_active_goal(conn: &Connection, team_id: &str, goal_id: &str, goal_state: &str) {
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES (?1, '目标团队', 'm1', ?2, 'active', 'tok', 'now', 'now')",
+            params![team_id, goal_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO goals (id, team_id, title, body, state, created_at, updated_at)
+             VALUES (?1, ?2, '完成产品', NULL, ?3, 'now', 'now')",
+            params![goal_id, team_id, goal_state],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn nudge_fires_for_silent_active_team() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        // No events at all -> team is maximally silent -> nudge fires.
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["type"], "system.nudge");
+        assert_eq!(written[0]["team_id"], "t1");
+        let msg = written[0]["payload"]["message"].as_str().unwrap();
+        assert!(msg.contains("目标「完成产品」"), "message should mention the goal: {msg}");
+    }
+
+    #[test]
+    fn nudge_respects_recent_activity() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        // A recent ledger event (progress) means the team is not silent.
+        conn.execute(
+            "INSERT INTO events (team_id, member_id, seq, type, payload_json, created_at)
+             VALUES ('t1', 'm1', 1, 'progress.published', NULL, ?1)",
+            params!["2026-08-31T00:00:00+00:00"],
+        )
+        .unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(written.is_empty(), "recent activity must suppress the nudge");
+    }
+
+    #[test]
+    fn nudge_paces_itself_no_spam() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        let first = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert_eq!(first.len(), 1);
+
+        // Immediately re-running with the same clock must not write again
+        // (the pacing window prevents one nudge per tick).
+        let second = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(second.is_empty(), "no spam: a second nudge is suppressed within the window");
+
+        // After `after_secs` pass, it may nudge again.
+        let third = nudge_idle_teams(&mut conn, 300, Some(10_000 + 300)).unwrap();
+        assert_eq!(third.len(), 1, "a later tick may nudge again");
+    }
+
+    #[test]
+    fn nudge_skips_achieved_and_forming_teams() {
+        let mut conn = test_conn();
+        // achieved goal -> no nudge
+        seed_active_goal(&conn, "t1", "g1", "achieved");
+        // forming team (no goal shared yet) -> no nudge
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t2', '招募中', 'm1', NULL, 'forming', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(written.is_empty(), "achieved/forming teams must not be nudged");
     }
 }
