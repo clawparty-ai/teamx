@@ -241,11 +241,14 @@ After=network-online.target
 [Service]
 Type=simple
 User=cicd
-ExecStart=/usr/local/bin/ttyd -p 7681 -t disableReconnect=true /usr/local/bin/opencode
+# 用 `opencode -c` 继续上一个 session；经 bash 中转避免 ttyd 直接 exec opencode -c 时的 SEGV
+ExecStart=/usr/local/bin/ttyd -p 7681 -W -T xterm-256color -t disableReconnect=true /bin/bash -lc "cd /home/cicd && exec /usr/local/bin/opencode -c"
 Restart=always
 RestartSec=3
 WorkingDirectory=/home/cicd
 Environment=HOME=/home/cicd
+Environment=TEAMX_SERVER_URL=https://<云主机A>:8888
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -256,7 +259,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ttyd-cicd
 sudo ss -tlnp | grep 7681    # ttyd 监听 0.0.0.0:7681
 ```
 
-> ttyd 在 7681 提供 web 终端（直接进入 opencode TUI）。**默认无认证**：若安全组放行公网，务必在 `ExecStart` 加 `-c user:pass` 或走内网/隧道访问。
+> **为什么用 `opencode -c` + bash 中转**：
+> - `opencode -c`（`--continue`）启动时自动**继续上一个 session**（会话记录保存在 cicd 的 `~/.local/share/opencode/opencode.db`），这样 ttyd 每次重连都回到上次工作现场，而不是开新会话。
+> - **直接** `ttyd ... /usr/local/bin/opencode -c` 在 ttyd 1.7.7 下会 **SEGV 崩溃**（ttyd 直接 fork+exec 恢复模式的 opencode 时的 PTY 兼容问题，日志 `code=killed, status=11/SEGV`）。
+> - 用 `/bin/bash -lc "cd /home/cicd && exec opencode -c"` 中转后稳定运行——bash 重新初始化终端，规避该崩溃。
+> - 若你的 opencode 装在非系统路径（如 hub03 的 `/home/cicd/.local/bin/opencode`），把 ExecStart 里的路径换成实际路径即可。
+> - ttyd 在 7681 提供 web 终端（直接进入 opencode TUI）。**默认无认证**：若安全组放行公网，务必在 `ExecStart` 加 `-c user:pass` 或走内网/隧道访问。
 
 ### 6.3 云主机 B 作为 teamx 成员
 

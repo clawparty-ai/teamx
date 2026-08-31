@@ -242,11 +242,15 @@ After=network-online.target
 [Service]
 Type=simple
 User=cicd
-ExecStart=/usr/local/bin/ttyd -p 7681 -t disableReconnect=true /usr/local/bin/opencode
+# `opencode -c` resumes the last session; bash indirection avoids a SEGV when
+# ttyd execs `opencode -c` directly
+ExecStart=/usr/local/bin/ttyd -p 7681 -W -T xterm-256color -t disableReconnect=true /bin/bash -lc "cd /home/cicd && exec /usr/local/bin/opencode -c"
 Restart=always
 RestartSec=3
 WorkingDirectory=/home/cicd
 Environment=HOME=/home/cicd
+Environment=TEAMX_SERVER_URL=https://<cloud-host-A>:8888
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -257,7 +261,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ttyd-cicd
 sudo ss -tlnp | grep 7681    # ttyd listening on 0.0.0.0:7681
 ```
 
-> ttyd serves a web terminal on 7681 (directly entering the opencode TUI). **No auth by default**: if the security group exposes it publicly, add `-c user:pass` to `ExecStart` or reach it via tunnel/private network.
+> **Why `opencode -c` + bash indirection**:
+> - `opencode -c` (`--continue`) resumes the **last session** on startup (session data lives in cicd's `~/.local/share/opencode/opencode.db`), so every ttyd reconnect returns to the previous workspace instead of opening a fresh session.
+> - Running `ttyd ... /usr/local/bin/opencode -c` **directly** SEGV-crashes on ttyd 1.7.7 (a PTY compatibility issue when ttyd forks+execs opencode in resume mode; log shows `code=killed, status=11/SEGV`).
+> - Wrapping it as `/bin/bash -lc "cd /home/cicd && exec opencode -c"` runs stably — bash re-initializes the terminal and avoids the crash.
+> - If your opencode lives elsewhere (e.g. hub03's `/home/cicd/.local/bin/opencode`), point the ExecStart path at the actual binary.
+> - ttyd serves a web terminal on 7681 (directly entering the opencode TUI). **No auth by default**: if the security group exposes it publicly, add `-c user:pass` to `ExecStart` or reach it via tunnel/private network.
 
 ### 6.3 Cloud host B joins as a teamx member
 
