@@ -268,6 +268,7 @@ pub fn restore_system_dns() -> Result<(), String> {
 /// macOS only; no-op elsewhere.
 
 /// Per-service DNS snapshot saved across a tun0 session.
+#[cfg(target_os = "macos")]
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct DnsBackup {
     #[allow(dead_code)] // recorded for diagnostics; services is authoritative for restore
