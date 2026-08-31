@@ -24,7 +24,10 @@ jobs:
         run: cargo build --release --features gui
 
       - name: Clippy (deny new warnings, allow pre-existing lints)
-        # Same allow-list as ci.yml; see that file for rationale.
+        # Same allow-list as ci.yml; see that file for rationale. Runs under
+        # bash so the backslash continuations are not misread as file args by
+        # the default PowerShell shell.
+        shell: bash
         run: |
           cargo clippy --all-targets -- -D warnings \
             -A clippy::collapsible_if \
