@@ -2,6 +2,9 @@ mod broadcast;
 mod cli;
 mod commands;
 mod db;
+// dns_proxy + tun_dns 只服务 tun0 透明代理链路（被 tun_socks/tun_cli 使用），
+// 与 tun0 一样是 Unix-only；Windows 上 stub。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod dns_proxy;
 mod doc_flow;
 mod events;
@@ -11,6 +14,8 @@ mod git_service;
 mod gui;
 #[cfg(feature = "gui")]
 mod gui_panel;
+#[cfg(feature = "gui")]
+mod gui_member_panel;
 mod loopx;
 mod metrics;
 mod pki;
@@ -21,12 +26,20 @@ mod state;
 mod teamfile;
 mod tunnel;
 mod tunnel_client;
+// rules_config 只被 tun_cli（Unix-only）使用。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod rules_config;
+// tun0 透明代理是 Unix-only（macOS utun / Linux tunN）。Windows 上 stub
+// 掉这几个模块；`tun_dev` 保留（`system_dns_servers` 被 `dns list` 使用）。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tun_cli;
-mod tun_dev;
-mod tun_dns;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tun_socks;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tun_stack;
+mod tun_dev;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod tun_dns;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -78,6 +91,24 @@ fn main() {
     #[cfg(not(feature = "gui"))]
     if let Command::GuiPanel = &cli.command {
         eprintln!("teamx error: `gui-panel` requires the `gui` feature — rebuild with --features gui");
+        std::process::exit(1);
+    }
+    // `teamx gui-member` is the member-side window (L1): import letter +
+    // tunnel mappings. Cross-platform; no privileged ops.
+    #[cfg(feature = "gui")]
+    if let Command::GuiMember = &cli.command {
+        match gui_member_panel::run_panel() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    #[cfg(not(feature = "gui"))]
+    if let Command::GuiMember = &cli.command {
+        eprintln!("teamx error: `gui-member` requires the `gui` feature — rebuild with --features gui");
         std::process::exit(1);
     }
     let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);

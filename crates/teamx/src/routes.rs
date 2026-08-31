@@ -148,6 +148,7 @@ impl RouteTable {
     /// Domain patterns (exact / `*.suffix`) that the rules explicitly
     /// intercept. Used by the fake-ip DNS to only fake-ip these domains; all
     /// other queries are dropped so the client falls back to its real DNS.
+    #[cfg_attr(windows, allow(dead_code))] // only used by the tun0 (Unix) chain
     pub fn intercept_patterns(&self) -> Vec<String> {
         self.rules
             .iter()
@@ -160,6 +161,7 @@ impl RouteTable {
 
     /// IPv4 CIDR networks (or bare /32 IPs) the rules explicitly intercept.
     /// Used by IP-routing mode to add network routes through the tun.
+    #[cfg_attr(windows, allow(dead_code))] // only used by the tun0 (Unix) chain
     pub fn intercept_cidrs(&self) -> Vec<(Ipv4Addr, u8)> {
         let mut out = Vec::new();
         for r in &self.rules {

@@ -1,0 +1,52 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows x86_64 (native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI (default features)
+        run: cargo build --release
+
+      - name: Build CLI + member panel (gui feature)
+        run: cargo build --release --features gui
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test
+
+      - name: Verify gui-member command present
+        shell: bash
+        run: ./target/release/teamx.exe --help | grep -q "gui-member"
+
+      - name: Verify tun0 is stubbed on Windows
+        shell: bash
+        run: |
+          set +e
+          out=$(./target/release/teamx.exe tun0 status 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ]
+          echo "$out" | grep -qi "macOS and Linux"
+
+      - name: Upload teamx.exe (with GUI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: teamx-windows-x86_64
+          path: target/release/teamx.exe
+          if-no-files-found: error

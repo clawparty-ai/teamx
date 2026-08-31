@@ -7,13 +7,28 @@
 //!
 //! The wrapper exposes raw packet read/write (L3 IP packets, no Ethernet
 //! header) plus the raw fd for smoltcp's `phy::wait` poll loop.
+//!
+//! Windows: tun0 is not supported yet (wintun adaptation pending). The TUN
+//! device types/functions become stubs and the OS-specific helpers are unused,
+//! so the module carries a `windows` allow list.
+
+#![cfg_attr(windows, allow(dead_code, unused_variables, unreachable_code, unused_imports))]
 
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
-use std::os::fd::AsRawFd;
+
+/// A configured, up and running TUN device (Unix only: macOS utun / Linux
+/// tunN). Windows 上用 wintun 的适配（tun crate 在 Windows 上 API 不同）尚未
+/// 实现，故 tun0 在 Windows 上不可用。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::AbstractDevice;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 /// A configured, up and running TUN device.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct TunDevice {
     dev: tun::Device,
     /// Actual interface name (`utun3`, `tun0`, ...) — may differ from the
@@ -24,6 +39,7 @@ pub struct TunDevice {
     pub mtu: u16,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunDevice {
     /// Create and bring up a TUN device.
     ///
@@ -79,6 +95,35 @@ impl TunDevice {
     #[allow(dead_code)] // kept as a low-level primitive; the poll loop now sleeps asynchronously
     pub fn as_raw_fd(&self) -> i32 {
         self.dev.as_raw_fd()
+    }
+}
+
+/// Windows stub: tun0 is not supported (needs wintun adaptation).
+#[cfg(windows)]
+pub struct TunDevice {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub mtu: u16,
+}
+
+#[cfg(windows)]
+impl TunDevice {
+    pub fn create(_name: Option<&str>, _ip: Ipv4Addr, _netmask: Ipv4Addr, _mtu: u16) -> Result<TunDevice, String> {
+        Err("tun0 is only supported on macOS and Linux".to_string())
+    }
+
+    pub fn read_packet(&mut self, _buf: &mut [u8]) -> Option<usize> {
+        None
+    }
+
+    #[allow(dead_code)]
+    pub fn write_packet(&mut self, _packet: &[u8]) -> Result<(), String> {
+        Err("tun0 is only supported on macOS and Linux".to_string())
+    }
+
+    #[allow(dead_code)]
+    pub fn as_raw_fd(&self) -> i32 {
+        -1
     }
 }
 

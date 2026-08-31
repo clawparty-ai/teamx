@@ -164,6 +164,11 @@ pub enum Command {
     /// Native control-panel window (L1): status + start/stop for tun0 and
     /// the SOCKS5 proxy, and the default exit. Spawned by `teamx gui`.
     GuiPanel,
+
+    /// Member-side window (L1): import an invitation letter, manage reverse
+    /// tunnel port mappings (expose/forward/close) and toggle the SOCKS5
+    /// proxy. Cross-platform (macOS / Linux / Windows); no privileged ops.
+    GuiMember,
 }
 
 /// `teamx tun0` subcommands.

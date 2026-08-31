@@ -269,6 +269,7 @@ async fn connect_tunnel_ws(server_url: &str, path: &str) -> Result<tokio_tungste
 ///
 /// The bridge task handles `stream_open` ack, application-level pings and
 /// disconnects. On close it emits an `eof` notification.
+#[cfg_attr(windows, allow(dead_code))] // used by the tun0 (Unix) chain; kept as a shared primitive
 pub struct TunnelBridge {
     /// Send bytes to the exit.
     pub tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
@@ -281,6 +282,7 @@ pub struct TunnelBridge {
 }
 
 /// Open a bridge to `exit` for `target` (`host:port` or `domain:port`).
+#[cfg_attr(windows, allow(dead_code))] // used by the tun0 (Unix) chain; kept as a shared primitive
 pub async fn open_tunnel_bridge(
     server_url: &str,
     exit: &str,

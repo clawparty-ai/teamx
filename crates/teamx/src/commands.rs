@@ -571,7 +571,15 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         }
         // tun0 virtual NIC: needs root, bridges matching traffic to exits.
         Command::Tun0(cmd) => {
-            return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = cmd;
+                return Err(AppError("tun0 is only supported on macOS and Linux".to_string()));
+            }
         }
         Command::Dns(cmd) => {
             return cmd_dns(conn, cmd);
@@ -586,6 +594,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         // `teamx gui-panel` is handled in main() before the DB opens.
         Command::GuiPanel => {
             return Err(AppError("gui-panel must be launched via `teamx gui-panel`".to_string()));
+        }
+        // `teamx gui-member` is handled in main() before the DB opens.
+        Command::GuiMember => {
+            return Err(AppError("gui-member must be launched via `teamx gui-member`".to_string()));
         }
     };
     Ok(out)
@@ -1995,6 +2007,10 @@ fn chmod_0600(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path; // no-op on Windows
+    }
 }
 
 /// Write a secret file (keys, invitation letters), creating it with mode 0600
@@ -3380,7 +3396,7 @@ mod tests {
 
     #[test]
     fn user_list_shows_bound_members() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         seed_team(&conn, "t1", "m1");
         // bind two members to one user, one member to another
         for (mid, uid) in [("ma", "u1"), ("mb", "u1"), ("mc", "u2")] {
