@@ -60,6 +60,24 @@ See the worked example: [`templates/01-product-dev-team.TEAM.md`](templates/01-p
 - **30+ tools** — full lifecycle exposed as opencode tools and `/team` slash commands with tab completion
 - **loopx bridge** — optional integration with [loopx](https://github.com/clawparty-ai/loopx) for stage-progress snapshots
 
+## Install
+
+**Homebrew (macOS, prebuilt binary):**
+
+```bash
+brew tap clawparty-ai/teamx
+brew install teamx
+teamx plugin install   # wire the opencode plugin (dist + agent + /team commands)
+```
+
+**From source (any platform, builds CLI + opencode plugin):**
+
+```bash
+./install.sh
+```
+
+Restart opencode after installing. Then:
+
 ## Quick Start
 
 ```bash
