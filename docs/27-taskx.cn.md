@@ -23,44 +23,78 @@ assigned → acked → claimed → in_progress → done → verified
              │        │
              ├─(小任务可跳过 claimed)→ in_progress
              └→ help_requested（求助，状态不变）→ in_progress
+claimed → retracted → assigned（退单，重新开放抢单）
 done → rejected →（打回）→ assigned / in_progress
 ```
 
 | 状态 | 含义 |
 |---|---|
-| `assigned` | lead 已派发，等待成员接收 |
+| `assigned` | 任务已发布。direct/broadcast 下指定了 assignee；bid 下等待成员抢单 |
 | `acked` | 成员已自动回执（确认收到） |
-| `claimed` | 成员认领（可选，大任务宣示主权） |
+| `claimed` | （bid）成员已抢单 |
 | `in_progress` | 执行中 |
 | `done` | 成员提交完成，待 lead 验收 |
 | `verified` | lead 验收通过，闭环 |
 | `help_requested` | 成员求助（通知 lead，状态不变） |
 
-## 三、命令一览
+## 三、任务委派模式（assign_mode）
+
+taskx 支持三种委派方式，决定"任务给谁做"：
+
+| 模式 | 指定方式 | 谁做 | 实例数 |
+|---|---|---|---|
+| **direct（指派）** | `--assignee <member>` | 指定的成员 | 1 |
+| **bid（抢单，默认）** | `--role <role>` | 该角色成员竞争，先到先得 | 1 |
+| **broadcast（广播）** | `--role <role> --mode broadcast` | 该角色每个成员各做一份 | 每成员 1 个 |
+
+### 抢单模式（bid）
+
+`task create --role reviewer`（默认即 bid）：
+
+1. lead 发布任务，**不指定具体成员**（assignee 为空），广播给该角色所有成员；
+2. 角色匹配的成员（或 lead）可 `task claim <id>` **抢单**——先到先得，抢到即写入 assignee；
+3. 抢单后正常执行（claim → done → verified）；
+4. 若抢到单的成员（或其用户）没时间做，可 `task retract <id>` **退单**——任务回到 `assigned` 开放池，**无黑名单**，任何成员（含刚退单的）都可再抢；
+5. lead 可 `task re-bid <id>` 重新广播，让角色成员知道又可抢了。
+
+> 退单权限：抢单者可退自己的单；**lead 可退任意单**。退单不是惩罚——只是"这单先不做"，不影响后续抢单。
+
+### 广播模式（broadcast）
+
+`task create --role reviewer --mode broadcast`：
+
+- 为角色每个成员各创建一个独立实例（id 带 `@<member>` 后缀，如 `review@rev-1`）；
+- 每个成员对自己的实例负责，各自独立走状态机、各自闭环；
+- `task list --role <r>` 可聚合查看全员进度。
+
+## 四、命令一览
 
 ```bash
-# lead 派发任务（指定成员或角色；executor 标记人/机委派）
-teamx task create "修复登录 bug" --assignee <member_id>              # 默认 either
-teamx task create "审核设计文档" --assignee <member_id> --executor human --priority high
-teamx task create "跑自动化测试" --assignee <member_id> --executor agent
+# lead 派发任务（三种委派模式）
+teamx task create "修复登录 bug" --assignee <member_id>              # direct
+teamx task create "评审代码" --role reviewer                         # bid（默认）
+teamx task create "全员评审" --role reviewer --mode broadcast        # broadcast
+# 可选参数：--executor either|agent|human（默认 either）、--priority、--id、--detail
 
 # 成员操作
 teamx task ack <id>                 # 自动回执（plugin 通常自动完成）
-teamx task claim <id>               # 认领（可选）
+teamx task claim <id>               # 抢单（bid 模式，先到先得）
+teamx task retract <id>             # 退单（抢单者或 lead）
 teamx task update <id> --progress "已完成 60%"
 teamx task help <id> --reason "依赖第三方 API 文档"
 teamx task done <id> --result "已修复并测试通过"
 
-# lead 验收
+# lead 验收 / 重新广播
 teamx task verify <id>              # 验收闭环
 teamx task reject <id> --reason "缺少边界用例"
+teamx task re-bid <id>              # 重新广播（任务已开放时）
 
 # 查看
-teamx task list [--mine] [--state <s>] [--executor agent|human]
+teamx task list [--mine] [--state <s>] [--executor either|agent|human]
 teamx task log <id>                 # 完整审计历史
 ```
 
-## 四、人 / 机任务区分
+## 五、人 / 机任务区分
 
 taskx 用 `executor` 字段区分任务由谁执行，有三种委派类型：
 
@@ -80,25 +114,25 @@ teamx task create "训练模型" --assignee <member_id> --executor agent
 teamx task create "签署合同" --assignee <member_id> --executor human
 ```
 
-## 五、自动回执
+## 六、自动回执
 
 当 `doc.created`（taskx）事件到达成员且 `assignee_member_id` 是当前成员时，opencode 插件**自动调用 `teamx task ack`** 回执，无需用户操作。回执写入 ledger（`doc.acknowledged`），lead 可以看到任务已被成员接收。
 
-## 六、完成与验收
+## 七、完成与验收
 
 1. 成员 `teamx task done <id> --result "..."` → 任务进入 `done`，事件 `doc.done` 通过 reactions 定向通知 lead；
 2. lead 在 digest / 通知中看到"任务已完成待验收"；
 3. lead 检查任务文档 + git 产物 → `teamx task verify <id>` → 闭环；
 4. 若不合格，lead `teamx task reject <id> --reason "..."` 打回，任务回到 `assigned`。
 
-## 七、求助与协作
+## 八、求助与协作
 
 执行中受阻时，成员可 `teamx task help <id> --reason "..."`：
 - 写 `doc.help_requested` 事件（**状态不变**，任务仍在当前状态）；
 - reactions 定向通知 lead；
 - lead 查看任务文档和求助原因，通过 `task update` 或 `ask` 回应，或直接改派。
 
-## 八、todo 提醒（nudge）
+## 九、todo 提醒（nudge）
 
 server 的 nudge 任务会定期扫描未完成任务：
 - 对每个有未完成任务（`assigned/acked/claimed/in_progress`）的 assignee，发送 `task.nudge` 定向事件；
@@ -106,11 +140,11 @@ server 的 nudge 任务会定期扫描未完成任务：
 
 这样即使成员会话中途停下，server 也会提醒它继续推进未完成的任务。
 
-## 九、git 集成
+## 十、git 集成
 
 每次任务事件（创建/认领/进展/完成/验收…）后，teamx 默认**自动 `git commit + push`** 任务文档变更；用 `--no-push` 可关闭自动提交（改由成员手动 `git commit`）。任务文档在 git 里的历史就是任务的完整内容演化。
 
-## 十、团队视角
+## 十一、团队视角
 
 - **全员透明**：任务、状态、assignee、executor 都在团队 ledger 和 git 中，谁都能查；
 - **审计可追溯**：`task log <id>` 展示每一次状态流转（谁、何时、什么事件）；

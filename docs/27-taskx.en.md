@@ -23,44 +23,78 @@ assigned → acked → claimed → in_progress → done → verified
              │        │
              ├─(small tasks may skip claimed)→ in_progress
              └→ help_requested (blocked; state unchanged) → in_progress
+claimed → retracted → assigned (retract; reopened for bidding)
 done → rejected →（sent back）→ assigned / in_progress
 ```
 
 | State | Meaning |
 |---|---|
-| `assigned` | Lead has dispatched; awaiting member receipt |
+| `assigned` | Task published. direct/broadcast: assignee fixed; bid: awaiting a claim |
 | `acked` | Member auto-acknowledged (confirmed receipt) |
-| `claimed` | Member claimed (optional; for larger tasks) |
+| `claimed` | (bid) a member claimed the task |
 | `in_progress` | In execution |
 | `done` | Member submitted; awaiting lead verification |
 | `verified` | Lead verified; loop closed |
 | `help_requested` | Member requested help (notifies lead; state unchanged) |
 
-## 3. Commands
+## 3. Task delegation modes (assign_mode)
+
+taskx supports three delegation modes that decide "who does the task":
+
+| Mode | Specified by | Who does it | Instances |
+|---|---|---|---|
+| **direct (assign)** | `--assignee <member>` | the named member | 1 |
+| **bid (claim, default)** | `--role <role>` | role members compete, first-come-first-served | 1 |
+| **broadcast** | `--role <role> --mode broadcast` | every role member does their own copy | one per member |
+
+### Bid mode
+
+`task create --role reviewer` (bid is the default for `--role`):
+
+1. the lead publishes the task **without a fixed member** (assignee empty), broadcast to all members of the role;
+2. any role-matching member (or a lead) runs `task claim <id>` to **claim** — first come, first served; the claimer becomes the assignee;
+3. execution proceeds normally (claim → done → verified);
+4. if the claimer (or their user) has no time, they run `task retract <id>` to **retract** — the task returns to `assigned` (open pool), **no blacklist**: any member (including the one who just retracted) may claim again;
+5. a lead can run `task re-bid <id>` to re-broadcast so role members know it is claimable again.
+
+> Retract permission: the claimer may retract their own claim; **a lead may retract any**. Retracting is not a penalty — it simply means "not doing this one for now" and does not affect later claims.
+
+### Broadcast mode
+
+`task create --role reviewer --mode broadcast`:
+
+- creates one independent instance per role member (id suffixed `@<member>`, e.g. `review@rev-1`);
+- each member owns their instance, runs its own state machine, and closes it independently;
+- `task list --role <r>` aggregates the whole-team progress.
+
+## 4. Commands
 
 ```bash
-# Lead dispatches (specific member or role; executor marks human/agent delegation)
-teamx task create "Fix login bug" --assignee <member_id>              # default either
-teamx task create "Review design doc" --assignee <member_id> --executor human --priority high
-teamx task create "Run automated tests" --assignee <member_id> --executor agent
+# Lead dispatches (three delegation modes)
+teamx task create "Fix login bug" --assignee <member_id>              # direct
+teamx task create "Review code" --role reviewer                      # bid (default)
+teamx task create "Review all" --role reviewer --mode broadcast      # broadcast
+# Optional: --executor either|agent|human (default either), --priority, --id, --detail
 
 # Member operations
 teamx task ack <id>                 # auto-ack (the plugin usually does this)
-teamx task claim <id>               # claim (optional)
+teamx task claim <id>               # claim (bid mode, first-come-first-served)
+teamx task retract <id>             # retract (claimer or lead)
 teamx task update <id> --progress "60% done"
 teamx task help <id> --reason "blocked on third-party API docs"
 teamx task done <id> --result "fixed and tested"
 
-# Lead verification
+# Lead verification / re-broadcast
 teamx task verify <id>              # close the loop
 teamx task reject <id> --reason "missing edge-case tests"
+teamx task re-bid <id>              # re-broadcast (when the task is open)
 
 # Viewing
-teamx task list [--mine] [--state <s>] [--executor agent|human]
+teamx task list [--mine] [--state <s>] [--executor either|agent|human]
 teamx task log <id>                 # full audit history
 ```
 
-## 4. Human / agent tasks
+## 5. Human / agent tasks
 
 taskx uses the `executor` field to mark who performs a task, with three delegation types:
 
@@ -80,25 +114,25 @@ teamx task create "Train model" --assignee <member_id> --executor agent
 teamx task create "Sign contract" --assignee <member_id> --executor human
 ```
 
-## 5. Auto-acknowledgement
+## 6. Auto-acknowledgement
 
 When a `doc.created` (taskx) event reaches a member and `assignee_member_id` is the current member, the opencode plugin **automatically calls `teamx task ack`** — no user action needed. The acknowledgement is written to the ledger (`doc.acknowledged`), so the lead sees the task has been received.
 
-## 6. Completion and verification
+## 7. Completion and verification
 
 1. Member runs `teamx task done <id> --result "..."` → task moves to `done`; the `doc.done` event notifies the lead via reactions;
 2. The lead sees "task completed, awaiting verification" in the digest / notifications;
 3. The lead reviews the task doc + git artifacts → `teamx task verify <id>` → loop closed;
 4. If unsatisfactory, the lead runs `teamx task reject <id> --reason "..."` and the task returns to `assigned`.
 
-## 7. Help and collaboration
+## 8. Help and collaboration
 
 When blocked mid-execution, a member can run `teamx task help <id> --reason "..."`:
 - writes a `doc.help_requested` event (**state unchanged**; the task stays where it is);
 - reactions notify the lead;
 - the lead reviews the task doc and the reason, responds via `task update` or `ask`, or reassigns.
 
-## 8. TODO nudges
+## 9. TODO nudges
 
 The server's nudge pass periodically scans unfinished tasks:
 - for every assignee with open tasks (`assigned/acked/claimed/in_progress`), it emits a `task.nudge` directed event;
@@ -106,11 +140,11 @@ The server's nudge pass periodically scans unfinished tasks:
 
 So even if a member session stops mid-way, the server reminds it to keep pushing its unfinished tasks.
 
-## 9. Git integration
+## 10. Git integration
 
 After each task event (create/claim/progress/done/verify…), teamx **auto `git commit + push`** by default; use `--no-push` to disable auto-commit (the member then commits manually). The git history of the task document is the complete content evolution of the task.
 
-## 10. Team perspective
+## 11. Team perspective
 
 - **Full transparency**: tasks, states, assignees, and executors live in the team ledger and git — anyone can look them up;
 - **Auditable**: `task log <id>` shows every transition (who, when, which event);
