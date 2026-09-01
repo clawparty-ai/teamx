@@ -76,7 +76,9 @@ jobs:
       - name: List artifacts
         run: ls -la dist/
 
+      # create release + upload assets. `generate_release_notes` is disabled:
+      # the default GITHUB_TOKEN lacks the releases/generate-notes API scope.
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz
-          generate_release_notes: true
+          fail_on_unmatched_files: true
