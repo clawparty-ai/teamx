@@ -7,14 +7,18 @@
 # .github/workflows/release.yml on each `v*` tag). To enable the opencode
 # plugin, run `teamx plugin install` after installing (it wires dist + agent +
 # commands into ~/.config/opencode).
-#
-# NOTE: the SHA256 below is a placeholder — update it from the release asset
-# (see README of this tap, or `shasum -a 256` on the downloaded tarball).
 class Teamx < Formula
   desc "Shared-goal team collaboration for opencode (AI-native organizations)"
   homepage "https://github.com/clawparty-ai/teamx"
-  url "https://github.com/clawparty-ai/teamx/releases/download/v0.2.0/teamx-aarch64-apple-darwin.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "https://github.com/clawparty-ai/teamx/releases/download/v0.3.0/teamx-aarch64-apple-darwin.tar.gz",
+      using: CurlDownloadStrategy
+  sha256 "e19ac7a274c8b10d8e5c9e13a2ebcb43d29285015fc9853eacaeb91a7385f502"
+
+  on_intel do
+    url "https://github.com/clawparty-ai/teamx/releases/download/v0.3.0/teamx-x86_64-apple-darwin.tar.gz",
+        using: CurlDownloadStrategy
+    sha256 "eea2fc979fb0caaf62cb9bad2c9ca6ce44a35cf02eeff3da71e1fabcb737a40e"
+  end
 
   depends_on "opencode" => :recommended
 
