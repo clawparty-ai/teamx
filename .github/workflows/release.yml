@@ -67,9 +67,36 @@ jobs:
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
+  win-gui:
+    name: Windows GUI (teamx-win.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI + GUI (gui feature)
+        run: cargo build --release --features gui
+
+      - name: Stage Windows artifacts
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp target/release/teamx.exe staging/teamx.exe
+          cp target/release/teamx-win.exe staging/teamx-win.exe
+          cd staging && zip -q teamx-windows-x86_64.zip teamx.exe teamx-win.exe
+          ls -la
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: teamx-windows-x86_64.zip
+          path: staging/teamx-windows-x86_64.zip
+          if-no-files-found: error
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, win-gui]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -85,5 +112,7 @@ jobs:
       # the default GITHUB_TOKEN lacks the releases/generate-notes API scope.
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
           fail_on_unmatched_files: true
