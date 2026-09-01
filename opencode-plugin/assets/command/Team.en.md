@@ -10,6 +10,7 @@ teamx team collaboration command. Route and execute based on the following subco
 - `leave` → teamx_leave (leave a team; owner cannot leave, use destroy)
 - `status` → teamx_status (view full current team status)
 - `sync` → teamx_sync (pull latest team events)
+- `start` → run a grill-doc design session to interactively create/improve the team's .teamx/TEAM.md (owner-led; once the contract is ready, use team create to launch the team in one shot)
 - `goal set <title> [body]` → teamx_set_goal (owner drafts goal)
 - `goal share` → teamx_share_goal (owner shares goal, start execution)
 - `goal close` → teamx_close_goal (owner verifies and closes goal)

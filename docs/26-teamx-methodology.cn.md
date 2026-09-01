@@ -234,7 +234,13 @@ grill-doc 是一个由 team owner 主导的交互式设计会话：它把你的�
 
 ### 4.1 启动会话
 
-在 team owner 的 opencode 会话中：
+在 team owner 的 opencode 会话中，最直接的方式是使用 `/team start`——它专为设计团队的 TEAM.md 定制，自动把输出绑定到 `.teamx/TEAM.md`：
+
+```text
+/team start
+```
+
+如果想对设计会话有更多控制（例如固定会话记录路径），也可以用 grill-doc 的通用入口：
 
 ```text
 /team-grill 设计我们团队的 TEAM.md --doc .teamx/TEAM.md
@@ -242,7 +248,8 @@ grill-doc 是一个由 team owner 主导的交互式设计会话：它把你的�
 
 要点：
 
-- `--doc .teamx/TEAM.md` 把设计会话的记录直接绑定到 TEAM.md 的最终落点——设计完成后，`TEAM.md` 就是产物；
+- `/team start` 的目标固定为 `.teamx/TEAM.md`——设计完成后，`TEAM.md` 就是产物；若已存在则在其上继续改进，不丢弃历史；
+- `--doc .teamx/TEAM.md` 同样把会话记录直接绑定到 TEAM.md 的最终落点；
 - grill-doc 会先同步团队状态、确认 owner 身份，然后读取仓库里能安全发现的事实；
 - 未指定 `--doc` 时，会话记录默认写在 `docs/design/<topic-slug>.md`。
 

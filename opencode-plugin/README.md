@@ -148,6 +148,7 @@ This key is the session's identity across all teamx operations. Multiple opencod
 | `/team-ask <member> <msg>` | Ask a question |
 | `/team-respond <id> <msg>` | Answer a question |
 | `/team-grill <topic>` | Start an owner-led design session (`--doc` and `--resume` supported) |
+| `/team-start` | Start a grill-doc design session to interactively create/improve `.teamx/TEAM.md` |
 | `/team-serve-start` | Start network server |
 | `/team-serve-stop` | Stop network server |
 | `/team-tunnel-expose` | Expose local port |

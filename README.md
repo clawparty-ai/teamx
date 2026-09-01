@@ -125,7 +125,8 @@ Then:
 For a complete reference, see the [TEAM.md methodology](docs/26-teamx-methodology.cn.md). To design your own TEAM.md interactively, run a design session:
 
 ```text
-/team-grill 设计我们团队的 TEAM.md --doc .teamx/TEAM.md
+/team start                          # design your team's TEAM.md interactively
+/team-grill 设计我们团队的 TEAM.md --doc .teamx/TEAM.md   # same, with a fixed record path
 ```
 
 A ready-made example lives at [`templates/01-product-dev-team.TEAM.md`](templates/01-product-dev-team.TEAM.md) — a four-role product team with enforced design-first / review / test-first rules.

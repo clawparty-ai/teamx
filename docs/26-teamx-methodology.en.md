@@ -234,7 +234,13 @@ grill-doc is an owner-led interactive design session: it expands your idea into 
 
 ### 4.1 Start a session
 
-In the team owner's opencode session:
+In the team owner's opencode session, the most direct way is `/team start` — it is purpose-built for designing the team's TEAM.md and automatically binds the output to `.teamx/TEAM.md`:
+
+```text
+/team start
+```
+
+For more control over the session (e.g. a fixed record path), use the general grill-doc entry:
 
 ```text
 /team-grill 设计我们团队的 TEAM.md --doc .teamx/TEAM.md
@@ -242,7 +248,8 @@ In the team owner's opencode session:
 
 Key points:
 
-- `--doc .teamx/TEAM.md` binds the Design Session Record directly to TEAM.md's final location — when the session completes, `TEAM.md` is the artifact;
+- `/team start` always targets `.teamx/TEAM.md` — when the session completes, `TEAM.md` is the artifact; if it already exists, the session continues from and improves it without discarding history;
+- `--doc .teamx/TEAM.md` also binds the Design Session Record directly to TEAM.md's final location;
 - grill-doc first syncs team state, verifies the owner identity, then reads facts it can discover safely from the repository;
 - without `--doc`, the record defaults to `docs/design/<topic-slug>.md`.
 
