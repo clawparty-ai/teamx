@@ -725,7 +725,15 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         }
         // tun0 virtual NIC: needs root, bridges matching traffic to exits.
         Command::Tun0(cmd) => {
-            return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                return crate::tun_cli::handle_tun0(cmd).map_err(AppError);
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = cmd;
+                return Err(AppError("tun0 is only supported on macOS and Linux".to_string()));
+            }
         }
         Command::Dns(cmd) => {
             return cmd_dns(conn, cmd);
