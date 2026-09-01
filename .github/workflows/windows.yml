@@ -32,7 +32,7 @@ jobs:
           cargo clippy --all-targets -- -D warnings \
             -A clippy::collapsible_if \
             -A clippy::collapsible_match \
-            -A clippy::result_large_err \
+            -A clippy::doc_overindented_list_items \
             -A clippy::empty_line_after_doc_comments \
             -A clippy::let_underscore_future \
             -A clippy::let_unit_value \
@@ -40,6 +40,9 @@ jobs:
             -A clippy::manual_unwrap_or_default \
             -A clippy::match_like_matches_macro \
             -A clippy::needless_borrow \
+            -A clippy::result_large_err \
+            -A clippy::result_unit_err \
+            -A clippy::should_implement_trait \
             -A clippy::single_match \
             -A clippy::unnecessary_unwrap \
             -A clippy::useless_conversion

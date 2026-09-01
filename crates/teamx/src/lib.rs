@@ -1,9 +1,9 @@
 //! teamx — shared-goal team collaboration state kernel (Rust CLI + SQLite).
 //!
 //! Library crate shared by two binaries:
-//!   - `teamx`     : the full CLI (team/role/events, network mode, tun0, …)
-//!   - `teamx-win` : Windows GUI launcher — opens the member-side panel
-//!                   (`gui-member`) directly on double-click.
+//! - `teamx`     : the full CLI (team/role/events, network mode, tun0, …)
+//! - `teamx-win` : Windows GUI launcher — opens the member-side panel
+//!                 (`gui-member`) directly on double-click.
 //!
 //! All command logic lives in [`commands`]; `main.rs`/`serve.rs` only translate
 //! a CLI invocation or RPC request into a `Command` and render the result.
