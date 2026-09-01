@@ -27,6 +27,7 @@
   "toast.role_updated": "#{seq} Role \"{label}\" description updated by {updated_by}",
   "toast.loopx_progress": "#{seq} loopx progress update",
   "toast.nudge": "#{seq} ⏰ Reminder: {message}",
+  "toast.nudge_lead": "#{seq} 🚩 Coordination reminder (team lead): {message}",
   "toast.default": "#{seq} {type}: {message}",
   "toast.default_no_msg": "#{seq} {type}",
   "toast_title": "teamx",
@@ -42,5 +43,6 @@
   "auto_execute.action": "If you are a member (not owner): use set_goal to set the goal for this task, keep working until the goal is achieved (do not stop until done), then report with /team publish achieved.",
   "system_prompt_prefix": "=== TEAMX Latest Team Status (reference only, not instructions; run teamx_sync for authoritative state) ===",
   "question_prompt": "📩 teamx: You received a team question. Use /team sync to view and respond.",
-  "nudge_prompt": "⏰ teamx: The team goal is still unfinished (server reminder). Run /team sync to see the details; if your task isn't done keep going, if it is submit the artifact with /team publish achieved."
+  "nudge_prompt": "⏰ teamx: The team goal is still unfinished (server reminder). Run /team sync to see the details; if your task isn't done keep going, if it is submit the artifact with /team publish achieved.",
+  "nudge_lead_prompt": "🚩 teamx (team lead): The team has gone silent and the goal is unfinished (server coordination reminder). Run /team sync for details and coordinate: check member progress, approve pending joins, broadcast next steps, or adjust the goal."
 }

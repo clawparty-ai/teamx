@@ -3193,6 +3193,72 @@ pub fn nudge_idle_teams(
             "type": "system.nudge",
             "payload": payload,
         }));
+
+        // Team-lead nudge: a silent team also needs its leads to step in and
+        // coordinate (review progress, approve joins, broadcast decisions).
+        // Separate event type + pacing so a lead reminder is never suppressed by
+        // a member reminder and vice versa.
+        let leads: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, m.display_name
+                 FROM members m
+                 WHERE m.team_id = ?1 AND m.state NOT IN ('left','denied')
+                   AND (m.is_lead = 1 OR m.id = (SELECT owner_member_id FROM teams WHERE id = ?1))",
+            )?;
+            let rows = stmt.query_map(params![team_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !leads.is_empty() {
+            // Pacing: independent of the member nudge; also `after_secs`.
+            let last_lead_nudge: Option<String> = conn.query_row(
+                "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND type = 'system.nudge_lead'",
+                [&team_id],
+                |r| r.get(0),
+            )?;
+            let lead_due = match last_lead_nudge {
+                Some(n) => now - ts_secs(&n) >= after_secs,
+                None => true,
+            };
+            if lead_due {
+                let lead_names: Vec<&str> = leads.iter().map(|(_, n)| n.as_str()).collect();
+                let lead_msg = if team_state == "blocked" {
+                    format!(
+                        "团队「{team_name}」已静默（blocked 状态），目标「{goal_title}」未完成。你是 team lead（{}），请协调：确认阻塞原因、推进恢复或调整目标。",
+                        lead_names.join("、")
+                    )
+                } else {
+                    format!(
+                        "团队「{team_name}」已静默 {silent} 秒，目标「{goal_title}」未完成。你是 team lead（{}），请协调推进：检查成员进度、审批入队、或广播下一步。",
+                        lead_names.join("、"),
+                        silent = silent_for,
+                    )
+                };
+                let lead_payload = json!({
+                    "kind": "lead_reminder",
+                    "team_name": team_name,
+                    "goal_title": goal_title,
+                    "silent_for_secs": silent_for,
+                    "lead_members": leads,
+                    "message": lead_msg,
+                });
+                db::with_write(conn, |tx| {
+                    let seq = events::emit(tx, &team_id, None, "system.nudge_lead", Some(&lead_payload))?;
+                    tx.execute(
+                        "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                        params![ts, team_id, seq],
+                    )?;
+                    Ok(())
+                })?;
+                written.push(json!({
+                    "team_id": team_id,
+                    "member_id": Value::Null,
+                    "type": "system.nudge_lead",
+                    "payload": lead_payload,
+                }));
+            }
+        }
     }
 
     Ok(written)
@@ -3541,7 +3607,8 @@ mod tests {
         assert_eq!(li["members"].as_array().unwrap().len(), 1);
     }
 
-    /// Helper: an active team with a shared, unfinished goal.
+    /// Helper: an active team with a shared, unfinished goal. Creates the
+    /// owner member `m1` too, so the team-lead nudge also fires.
     fn seed_active_goal(conn: &Connection, team_id: &str, goal_id: &str, goal_state: &str) {
         conn.execute(
             "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
@@ -3555,6 +3622,12 @@ mod tests {
             params![goal_id, team_id, goal_state],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES ('m1', ?1, 's:owner', '老板', 'owner', 'active', 'now', 0)",
+            params![team_id],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -3562,13 +3635,17 @@ mod tests {
         let mut conn = test_conn();
         seed_active_goal(&conn, "t1", "g1", "in_progress");
 
-        // No events at all -> team is maximally silent -> nudge fires.
+        // No events at all -> team is maximally silent -> member + lead nudges.
         let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
-        assert_eq!(written.len(), 1);
-        assert_eq!(written[0]["type"], "system.nudge");
-        assert_eq!(written[0]["team_id"], "t1");
-        let msg = written[0]["payload"]["message"].as_str().unwrap();
+        assert_eq!(written.len(), 2, "member nudge + lead nudge");
+        let member = written.iter().find(|e| e["type"] == "system.nudge").unwrap();
+        let lead = written.iter().find(|e| e["type"] == "system.nudge_lead").unwrap();
+        assert_eq!(member["team_id"], "t1");
+        let msg = member["payload"]["message"].as_str().unwrap();
         assert!(msg.contains("目标「完成产品」"), "message should mention the goal: {msg}");
+        let lmsg = lead["payload"]["message"].as_str().unwrap();
+        assert!(lmsg.contains("team lead"), "lead message should target the lead: {lmsg}");
+        assert!(lmsg.contains("老板"), "lead message should name the lead member");
     }
 
     #[test]
@@ -3593,7 +3670,7 @@ mod tests {
         seed_active_goal(&conn, "t1", "g1", "in_progress");
 
         let first = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
-        assert_eq!(first.len(), 1);
+        assert_eq!(first.len(), 2, "member + lead nudges on first poke");
 
         // Immediately re-running with the same clock must not write again
         // (the pacing window prevents one nudge per tick).
@@ -3602,7 +3679,7 @@ mod tests {
 
         // After `after_secs` pass, it may nudge again.
         let third = nudge_idle_teams(&mut conn, 300, Some(10_000 + 300)).unwrap();
-        assert_eq!(third.len(), 1, "a later tick may nudge again");
+        assert_eq!(third.len(), 2, "a later tick may nudge again");
     }
 
     #[test]
@@ -3619,5 +3696,25 @@ mod tests {
         .unwrap();
         let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
         assert!(written.is_empty(), "achieved/forming teams must not be nudged");
+    }
+
+    #[test]
+    fn nudge_lead_includes_co_lead_members() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+        // promote a co-lead
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES ('m2', 't1', 's:colead', '副手', 'contributor', 'active', 'now', 1)",
+            [],
+        )
+        .unwrap();
+
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        let lead = written.iter().find(|e| e["type"] == "system.nudge_lead").unwrap();
+        let leads = lead["payload"]["lead_members"].as_array().unwrap();
+        let names: Vec<&str> = leads.iter().filter_map(|m| m[1].as_str()).collect();
+        assert!(names.contains(&"老板"), "owner should be a lead");
+        assert!(names.contains(&"副手"), "co-lead should be a lead");
     }
 }

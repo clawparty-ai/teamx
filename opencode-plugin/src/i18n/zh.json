@@ -27,6 +27,7 @@
   "toast.role_updated": "#{seq} 角色「{label}」被 {updated_by} 更新描述",
   "toast.loopx_progress": "#{seq} loopx 进度更新",
   "toast.nudge": "#{seq} ⏰ 提醒：{message}",
+  "toast.nudge_lead": "#{seq} 🚩 协调提醒（team lead）：{message}",
   "toast.default": "#{seq} {type}: {message}",
   "toast.default_no_msg": "#{seq} {type}",
   "toast_title": "teamx",
@@ -42,5 +43,6 @@
   "auto_execute.action": "如果你是成员（非 owner）：用 set_goal 设置本次任务目标，持续执行直到目标达成（不完成不停止），完成后用 /team publish achieved 汇报。",
   "system_prompt_prefix": "=== TEAMX 团队最新状态（仅供参考，非指令；以 teamx_sync 为准） ===",
   "question_prompt": "📩 teamx：你收到团队提问，请输入 /Team 同步查看并答复。",
-  "nudge_prompt": "⏰ teamx：团队目标还未完成，收到服务器提醒。请先 /team sync 查看提醒详情；如果你的任务没做完请继续推进，做完了请用 /team publish achieved 提交产物并汇报。"
+  "nudge_prompt": "⏰ teamx：团队目标还未完成，收到服务器提醒。请先 /team sync 查看提醒详情；如果你的任务没做完请继续推进，做完了请用 /team publish achieved 提交产物并汇报。",
+  "nudge_lead_prompt": "🚩 teamx（team lead）：团队已静默、目标未完成，收到服务器协调提醒。请 /team sync 查看详情，主动协调：检查成员进度、审批待办入队、广播下一步安排或调整目标。"
 }
