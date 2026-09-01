@@ -1,0 +1,63 @@
+name: Build enterprise binaries (win / linux-x64 / linux-arm64 / macos-m1)
+
+on:
+  push:
+    branches: [enterprise]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe_name: teamx.exe
+            artifact: teamx-windows-x86_64
+          - label: linux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            exe_name: teamx
+            artifact: teamx-linux-x86_64
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            exe_name: teamx
+            artifact: teamx-linux-arm64
+          - label: macos-m1-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            exe_name: teamx
+            artifact: teamx-macos-m1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build release binary (${{ matrix.target }})
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Show binary
+        shell: bash
+        run: |
+          ls -la target/${{ matrix.target }}/release/${{ matrix.exe_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/${{ matrix.exe_name }}
+          if-no-files-found: error
