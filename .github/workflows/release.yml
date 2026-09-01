@@ -65,8 +65,21 @@ jobs:
           tar -C pkg -czf "${{ matrix.asset }}" "teamx-${VERSION#v}"
           ls -la "${{ matrix.asset }}"
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Release (private source repo)
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset }}
+          fail_on_unmatched_files: true
+
+      # The enterprise repo is PRIVATE, so Homebrew cannot anonymously download
+      # its release assets. Mirror each tarball to the PUBLIC homebrew-tap
+      # release so `brew install caishu97/tap/teamx` works. Requires a PAT with
+      # `repo` scope on caishu97/homebrew-tap stored as TAP_RELEASE_TOKEN.
+      - name: Mirror tarball to public homebrew-tap release
+        if: ${{ secrets.TAP_RELEASE_TOKEN != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          token: ${{ secrets.TAP_RELEASE_TOKEN }}
+          repo: caishu97/homebrew-tap
           fail_on_unmatched_files: true
