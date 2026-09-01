@@ -40,10 +40,14 @@ tao = { version = "0.37", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 eframe = { version = "0.31", features = ["default_fonts"], optional = true }
 egui = { version = "0.31", optional = true }
+# Native file dialog for the member panel (pick an invitation letter file).
+# default-features = false keeps the Linux xdg-portal/wayland backends out of
+# the macOS/Windows builds (the native platform backends are auto-selected).
+rfd = { version = "0.17", optional = true, default-features = false }
 
 [features]
 default = []
-gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui"]
+gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui", "dep:rfd"]
 
 [[bin]]
 name = "teamx"
