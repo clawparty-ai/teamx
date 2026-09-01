@@ -300,9 +300,11 @@ export const Teamx: Plugin = async ({ client }) => {
         (tt) => tt.state !== "done" && tt.state !== "verified",
       )
       if (open.length > 0) {
-        const lines = open.map(
-          (tt) => `  ${tt.executor === "human" ? "👤" : "🤖"} [${tt.state}] ${tt.title} (task ${tt.id})`,
-        )
+        const lines = open.map((tt) => {
+          // executor icons: 👤 human-only, 🤖 agent-only, 👤🤖 either (both may do it)
+          const icon = tt.executor === "human" ? "👤" : tt.executor === "agent" ? "🤖" : "👤🤖"
+          return `  ${icon} [${tt.state}] ${tt.title} (task ${tt.id})`
+        })
         digest += `\n${t("digest.tasks_header", { count: String(open.length) })}\n${lines.join("\n")}`
       }
     }
@@ -381,11 +383,18 @@ export const Teamx: Plugin = async ({ client }) => {
       const directive = fresh.find(
         (e) => e.payload?.assignee_member_id === myMemberId(data) && (e.seq ?? 0) > lastExecuted,
       )
+      const isTask = directive?.payload?.doc === "taskx"
+      const taskExecutor = isTask ? (directive?.payload?.executor as string | undefined) ?? "either" : undefined
       // A human-executor task must NOT auto-execute: it needs a person. Surface
       // it to the user instead of letting the agent run it.
-      if (directive?.payload?.doc === "taskx" && directive?.payload?.executor === "human") {
+      if (isTask && taskExecutor === "human") {
         await client.tui.appendPrompt({ body: { text: t("task_prompt_human") } }).catch(() => {})
       } else {
+        // either / agent: the agent starts; for either, tell the user it can
+        // take over at any time.
+        if (isTask && taskExecutor === "either") {
+          await client.tui.appendPrompt({ body: { text: t("task_prompt_either") } }).catch(() => {})
+        }
         const summary = directive ? summarizeEvent(directive) : ""
         await triggerAutoExecute(sessionID, summary).catch(() => {})
       }

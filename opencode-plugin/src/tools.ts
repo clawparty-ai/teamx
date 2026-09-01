@@ -602,13 +602,15 @@ export const tools = {
     description:
       "Create a team task (team lead). Tasks are teamx documents (taskx type): " +
       "content in git, state machine in .meta.json. Assign to a specific member " +
-      "(--assignee) or a role (--role). executor=human marks a task that needs a " +
-      "human, agent marks one the AI can do. Optionally set --priority.",
+      "(--assignee) or a role (--role). executor=either (default) means a human or " +
+      "agent may do it (agent auto-executes, user can take over); executor=agent " +
+      "means an AI must do it; executor=human means a person must do it (AI is " +
+      "instructed not to take over). Optionally set --priority.",
     args: {
       title: tool.schema.string().describe("task title"),
       assignee: tool.schema.string().optional().describe("assignee member id"),
       role: tool.schema.string().optional().describe("assignee role key (e.g. reviewer)"),
-      executor: tool.schema.enum(["agent", "human"]).optional().describe("executor kind (default agent)"),
+      executor: tool.schema.enum(["either", "agent", "human"]).optional().describe("executor kind (default either)"),
       priority: tool.schema.enum(["high", "medium", "low"]).optional().describe("priority (default medium)"),
       id: tool.schema.string().optional().describe("task id (default: slug of title)"),
       detail: tool.schema.string().optional().describe("task detail / background"),
@@ -707,7 +709,7 @@ export const tools = {
     args: {
       mine: tool.schema.boolean().optional().describe("only tasks assigned to the current member"),
       state: tool.schema.string().optional().describe("filter by state (assigned/acked/claimed/in_progress/done/verified)"),
-      executor: tool.schema.enum(["agent", "human"]).optional().describe("filter by executor kind"),
+      executor: tool.schema.enum(["either", "agent", "human"]).optional().describe("filter by executor kind"),
     },
     async execute(args, context: ToolCtx) {
       return tx(context.sessionID, [

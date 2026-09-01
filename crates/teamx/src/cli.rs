@@ -704,8 +704,9 @@ pub enum TaskCmd {
         /// assignee role key (assign to every active member of a role)
         #[arg(long)]
         role: Option<String>,
-        /// executor kind: agent (default) or human
-        #[arg(long, default_value = "agent", value_parser = ["agent", "human"])]
+        /// executor kind: either (default, human or agent may do it),
+        /// agent (must be done by an AI), or human (must be done by a person)
+        #[arg(long, default_value = "either", value_parser = ["either", "agent", "human"])]
         executor: String,
         /// priority: high / medium / low
         #[arg(long, default_value = "medium", value_parser = ["high", "medium", "low"])]
@@ -818,7 +819,7 @@ pub enum TaskCmd {
         /// filter by assignee member id
         #[arg(long)]
         assignee: Option<String>,
-        /// filter by executor kind (agent/human)
+        /// filter by executor kind (either/agent/human)
         #[arg(long)]
         executor: Option<String>,
         #[arg(long)]

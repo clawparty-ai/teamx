@@ -39,9 +39,10 @@ done → rejected →（打回）→ assigned / in_progress
 ## 三、命令一览
 
 ```bash
-# lead 派发任务（指定成员或角色；executor 标记人/机）
-teamx task create "修复登录 bug" --assignee <member_id> --executor agent
+# lead 派发任务（指定成员或角色；executor 标记人/机委派）
+teamx task create "修复登录 bug" --assignee <member_id>              # 默认 either
 teamx task create "审核设计文档" --assignee <member_id> --executor human --priority high
+teamx task create "跑自动化测试" --assignee <member_id> --executor agent
 
 # 成员操作
 teamx task ack <id>                 # 自动回执（plugin 通常自动完成）
@@ -61,12 +62,23 @@ teamx task log <id>                 # 完整审计历史
 
 ## 四、人 / 机任务区分
 
-taskx 用 `executor` 字段区分任务由谁执行：
+taskx 用 `executor` 字段区分任务由谁执行，有三种委派类型：
 
-- **`executor=agent`**（默认）：AI 会话可以自动执行。opencode 成员收到后自动回执，并进入 `task list --mine` 的待办，digest 里显示为 🤖，auto-execute 会驱动 agent 开始工作；
-- **`executor=human`**：需要人来处理。opencode 成员收到后自动回执，但**不会自动执行**——会通过 appendPrompt 提醒用户"有一个需要人工处理的任务"，digest 里显示为 👤。
+| executor | 语义 | 成员端行为 |
+|---|---|---|
+| **`either`**（默认） | 人或 agent 都可以做 | agent 自动执行，digest 显示 👤🤖，同时提醒用户"可随时接管" |
+| **`agent`** | 必须由 AI 执行 | agent 自动执行，digest 显示 🤖 |
+| **`human`** | 必须由人来执行（硬约束） | **不自动执行**，appendPrompt 提醒用户；agent 被明确告知【不得】代替用户执行，digest 显示 👤 |
 
-这样 lead 可以明确区分"机器能干的活"和"必须人来做的活"，避免 AI 抢跑需要人工判断的任务。
+这样 lead 可以明确区分"机器必须做的活"、"必须人来做的活"、"谁做都行"——默认 `either` 让 agent 高效推进，同时保留用户随时接管的可能；`human` 则硬性防止 AI 抢跑需要人工判断的任务。
+
+### 命令示例
+
+```bash
+teamx task create "修复登录 bug" --assignee <member_id>            # 默认 either
+teamx task create "训练模型" --assignee <member_id> --executor agent
+teamx task create "签署合同" --assignee <member_id> --executor human
+```
 
 ## 五、自动回执
 

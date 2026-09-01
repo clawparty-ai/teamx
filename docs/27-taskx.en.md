@@ -39,9 +39,10 @@ done → rejected →（sent back）→ assigned / in_progress
 ## 3. Commands
 
 ```bash
-# Lead dispatches (specific member or role; executor marks human/agent)
-teamx task create "Fix login bug" --assignee <member_id> --executor agent
+# Lead dispatches (specific member or role; executor marks human/agent delegation)
+teamx task create "Fix login bug" --assignee <member_id>              # default either
 teamx task create "Review design doc" --assignee <member_id> --executor human --priority high
+teamx task create "Run automated tests" --assignee <member_id> --executor agent
 
 # Member operations
 teamx task ack <id>                 # auto-ack (the plugin usually does this)
@@ -61,12 +62,23 @@ teamx task log <id>                 # full audit history
 
 ## 4. Human / agent tasks
 
-taskx uses the `executor` field to mark who performs a task:
+taskx uses the `executor` field to mark who performs a task, with three delegation types:
 
-- **`executor=agent`** (default): an AI session can execute it. An opencode member auto-acknowledges on receipt, the task appears in `task list --mine`, shows as 🤖 in the digest, and auto-execute drives the agent to start working;
-- **`executor=human`**: needs a person. An opencode member auto-acknowledges but does **not** auto-execute — the user is prompted "there is a task that needs a human", and it shows as 👤 in the digest.
+| executor | Meaning | Member-side behavior |
+|---|---|---|
+| **`either`** (default) | A human or an agent may do it | The agent auto-executes; digest shows 👤🤖 and the user is reminded "you can take over at any time" |
+| **`agent`** | Must be done by an AI | The agent auto-executes; digest shows 🤖 |
+| **`human`** | Must be done by a person (hard constraint) | **No auto-execute**; appendPrompt reminds the user; the agent is explicitly told it **MUST NOT** take over; digest shows 👤 |
 
-This lets the lead clearly separate "what machines can do" from "what must be done by a human", preventing the AI from running ahead on tasks that need human judgment.
+This lets the lead clearly separate "what machines must do", "what must be done by a human", and "either is fine". The default `either` lets an agent push work forward efficiently while keeping the user able to take over; `human` hard-prevents the AI from running ahead on tasks that need human judgment.
+
+### Examples
+
+```bash
+teamx task create "Fix login bug" --assignee <member_id>            # default either
+teamx task create "Train model" --assignee <member_id> --executor agent
+teamx task create "Sign contract" --assignee <member_id> --executor human
+```
 
 ## 5. Auto-acknowledgement
 

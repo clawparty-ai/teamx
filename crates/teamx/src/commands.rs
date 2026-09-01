@@ -933,7 +933,7 @@ fn task_list(
                 "title": title,
                 "state": meta.state,
                 "assignee": meta.assignee,
-                "executor": meta.executor.unwrap_or_else(|| "agent".to_string()),
+                "executor": meta.executor.unwrap_or_else(|| "either".to_string()),
                 "priority": meta.priority.unwrap_or_else(|| "medium".to_string()),
                 "owner": meta.owner,
                 "updated_at": meta.updated_at,
