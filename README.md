@@ -57,6 +57,7 @@ See the worked example: [`templates/01-product-dev-team.TEAM.md`](templates/01-p
 - **Auto-execute** — directed tasks (`publish --assignee`) automatically wake the assigned member's session
 - **Team design sessions** — `/team-grill` runs an owner-led, multi-round design interview and preserves the glossary, session record, and ADRs in Git
 - **Idle-team nudges** — the server periodically reminds silent members and team leads that the goal is still unfinished
+- **Tasks (taskx)** — lead assigns document-centric tasks (content in git, state in `.meta.json`); auto-acknowledge, human/agent executor split, and `task.nudge` reminders keep work moving
 - **30+ tools** — full lifecycle exposed as opencode tools and `/team` slash commands with tab completion
 - **loopx bridge** — optional integration with [loopx](https://github.com/clawparty-ai/loopx) for stage-progress snapshots
 

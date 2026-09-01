@@ -221,6 +221,51 @@ function summarizeEvent(e: SyncEvent): string {
       return t("toast.role_updated", { seq: String(seq), label: s("label"), updated_by: s("updated_by") })
     case "loopx.progress":
       return t("toast.loopx_progress", { seq: String(seq) })
+    // taskx (built-in task doc type): assigned / acked / done / help / verified /
+    // task.nudge. `doc.created` with doc=taskx is a task assignment.
+    case "doc.created":
+    case "doc.claimed":
+    case "doc.acknowledged":
+    case "doc.done":
+    case "doc.verified":
+    case "doc.rejected":
+    case "doc.help_requested":
+    case "doc.retracted":
+    case "doc.rebid": {
+      if (p["doc"] !== "taskx") {
+        // fall through to the default renderer for other doc types
+        return msg
+          ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
+          : t("toast.default_no_msg", { seq: String(seq), type: t_ })
+      }
+      const title = s("title")
+      const tid = s("id")
+      const kind = t_.replace("doc.", "")
+      if (kind === "created") {
+        return t("toast.task_assigned", {
+          seq: String(seq),
+          title: title || tid,
+          id: tid,
+          executor: String(p["executor"] ?? "agent"),
+        })
+      }
+      if (kind === "done") return t("toast.task_done", { seq: String(seq), title: title || tid })
+      if (kind === "help_requested") {
+        return t("toast.task_help_requested", { seq: String(seq), title: title || tid, reason: shorten(s("note")) })
+      }
+      if (kind === "verified") return t("toast.task_verified", { seq: String(seq), title: title || tid })
+      if (kind === "acknowledged") return t("toast.task_acknowledged", { seq: String(seq), title: title || tid })
+      if (kind === "retracted" || kind === "rebid") {
+        return t("toast.task_rebid", { seq: String(seq), title: title || tid, role: s("assignee_role") })
+      }
+      return msg
+        ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
+        : t("toast.default_no_msg", { seq: String(seq), type: t_ })
+    }
+    case "task.nudge": {
+      const body = msg ? shorten(msg) : ""
+      return t("toast.task_nudge", { seq: String(seq), message: body })
+    }
     case "system.nudge": {
       // Server-side idle-team reminder: "your task isn't done — finish or
       // submit". Surfaced loudly so the member knows the team is waiting.
@@ -453,7 +498,25 @@ export const Teamx: Plugin = async ({ client }) => {
     const r = await runCli(["sync", "--no-advance", "--session", key], { cwd: dirOfSession(sessionID) })
     if (!r.ok || !r.data) return
     const data = r.data as unknown as SyncData
-    setDigest(sessionID, summarize(data))
+    // My open tasks (taskx) — injected into the digest so the agent sees its
+    // TODO without an explicit `task list` call. Human tasks are flagged so the
+    // model knows to surface them to the user rather than auto-execute.
+    let digest = summarize(data)
+    const tasks = await runCli(["task", "list", "--mine", "--json", "--session", key], { cwd: dirOfSession(sessionID) })
+    if (tasks.ok && tasks.data?.tasks && Array.isArray((tasks.data as { tasks?: unknown[] }).tasks)) {
+      const open = ((tasks.data as { tasks: { id: string; title: string; state: string; executor?: string }[] }).tasks).filter(
+        (tt) => tt.state !== "done" && tt.state !== "verified",
+      )
+      if (open.length > 0) {
+        const lines = open.map((tt) => {
+          // executor icons: 👤 human-only, 🤖 agent-only, 👤🤖 either (both may do it)
+          const icon = tt.executor === "human" ? "👤" : tt.executor === "agent" ? "🤖" : "👤🤖"
+          return `  ${icon} [${tt.state}] ${tt.title} (task ${tt.id})`
+        })
+        digest += `\n${t("digest.tasks_header", { count: String(open.length) })}\n${lines.join("\n")}`
+      }
+    }
+    setDigest(sessionID, digest)
     const events = Array.isArray(data.new_events) ? data.new_events : []
     if (events.length === 0) return
     const seqs = events.map((e) => e.seq ?? 0).filter((s) => s > 0)
@@ -500,6 +563,40 @@ export const Teamx: Plugin = async ({ client }) => {
         .appendPrompt({ body: { text: t("nudge_lead_prompt") } })
         .catch(() => {})
     }
+    // Auto-acknowledge taskx assignments to this member (automatic receipt).
+    // A `doc.created` with doc=taskx and assignee_member_id == me means the lead
+    // assigned us a task; record receipt immediately (no user action needed).
+    const myId = myMemberId(data)
+    const myRole = (data?.teams ?? []).find((t) => t.team?.my_member_id === myId)?.team?.my_role
+    const newTasks = fresh.filter(
+      (e) => e.type === "doc.created" && e.payload?.doc === "taskx" && e.payload?.assignee_member_id === myId,
+    )
+    for (const t of newTasks) {
+      const tid = t.payload?.id as string | undefined
+      if (!tid) continue
+      await runCli(["task", "ack", tid, "--session", sk(sessionID)], { cwd: dirOfSession(sessionID) }).catch(() => {})
+      log("info", "auto-acked task", { sessionID, task: tid })
+    }
+
+    // Bid tasks: auto-claim when the task is dispatched to our role and no one
+    // has claimed it yet. This covers fresh `doc.created` (bid, assignee empty)
+    // and re-opened tasks (`doc.retracted` / `doc.rebid`). The agent represents
+    // the user session, so it claims on their behalf; the user can retract.
+    const bidOpen = fresh.filter(
+      (e) =>
+        e.payload?.doc === "taskx" &&
+        (e.type === "doc.created" || e.type === "doc.retracted" || e.type === "doc.rebid") &&
+        e.payload?.assignee_member_id == null &&
+        e.payload?.assignee_role != null &&
+        e.payload?.assignee_role === myRole,
+    )
+    for (const t of bidOpen) {
+      const tid = t.payload?.id as string | undefined
+      if (!tid) continue
+      await runCli(["task", "claim", tid, "--session", sk(sessionID)], { cwd: dirOfSession(sessionID) }).catch(() => {})
+      log("info", "auto-claimed bid task", { sessionID, task: tid, role: myRole })
+    }
+
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
     // carrying `assignee_member_id == my_member_id` is a task for us; every
     // other broadcast (unassigned, or another member's task) is informational.
@@ -514,8 +611,21 @@ export const Teamx: Plugin = async ({ client }) => {
       const directive = fresh.find(
         (e) => e.payload?.assignee_member_id === myMemberId(data) && (e.seq ?? 0) > lastExecuted,
       )
-      const summary = directive ? summarizeEvent(directive) : ""
-      await triggerAutoExecute(sessionID, summary).catch(() => {})
+      const isTask = directive?.payload?.doc === "taskx"
+      const taskExecutor = isTask ? (directive?.payload?.executor as string | undefined) ?? "either" : undefined
+      // A human-executor task must NOT auto-execute: it needs a person. Surface
+      // it to the user instead of letting the agent run it.
+      if (isTask && taskExecutor === "human") {
+        await client.tui.appendPrompt({ body: { text: t("task_prompt_human") } }).catch(() => {})
+      } else {
+        // either / agent: the agent starts; for either, tell the user it can
+        // take over at any time.
+        if (isTask && taskExecutor === "either") {
+          await client.tui.appendPrompt({ body: { text: t("task_prompt_either") } }).catch(() => {})
+        }
+        const summary = directive ? summarizeEvent(directive) : ""
+        await triggerAutoExecute(sessionID, summary).catch(() => {})
+      }
     }
   }
 

@@ -230,17 +230,20 @@ async fn nudge_task(state: AppState) {
         tick.tick().await;
         let db = state.db.clone();
         let hub = state.hub.clone();
-        // DB access is blocking (rusqlite); do it off the async runtime.
+        // DB access is blocking (rusqlite); do it off the async runtime. The
+        // nudge pass covers both team-level silence and per-member open tasks.
         let events = tokio::task::spawn_blocking(move || {
             let mut conn = db.lock().unwrap();
-            commands::nudge_idle_teams(&mut conn, after_secs, None)
+            let mut out = commands::nudge_idle_teams(&mut conn, after_secs, None)?;
+            out.extend(commands::nudge_open_tasks(&mut conn, after_secs, None, None)?);
+            Ok::<_, rusqlite::Error>(out)
         })
         .await;
-        let Ok(Ok(events)) = events else { continue };
+        let Ok(Ok(events)) = events else { eprintln!("teamx serve: nudge pass failed"); continue };
         if events.is_empty() {
             continue;
         }
-        eprintln!("teamx serve: nudged {} silent team(s)", events.len());
+        eprintln!("teamx serve: nudged {} item(s)", events.len());
         for ev in &events {
             if let Some(team_id) = ev.get("team_id").and_then(Value::as_str) {
                 hub.publish(team_id, &json!({ "type": "event", "event": ev }));
