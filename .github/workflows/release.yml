@@ -84,7 +84,8 @@ jobs:
           mkdir -p staging
           cp target/release/teamx.exe staging/teamx.exe
           cp target/release/teamx-win.exe staging/teamx-win.exe
-          cd staging && zip -q teamx-windows-x86_64.zip teamx.exe teamx-win.exe
+          # tar on Windows 10+ is bsdtar and can write a zip archive.
+          cd staging && tar -a -c -f teamx-windows-x86_64.zip teamx.exe teamx-win.exe
           ls -la
 
       - name: Upload Windows artifact
