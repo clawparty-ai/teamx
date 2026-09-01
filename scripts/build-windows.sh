@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# build-windows.sh — cross-compile the teamx CLI for Windows (x86_64 GNU).
+# build-windows.sh — cross-compile the teamx CLI + GUI launcher for Windows.
 #
 #   ./scripts/build-windows.sh              # CLI only   -> dist/teamx-windows/teamx.exe
-#   ./scripts/build-windows.sh --gui        # + member panel (gui feature)
+#   ./scripts/build-windows.sh --gui        # + teamx-win.exe (double-click GUI panel)
 #   ./scripts/build-windows.sh --zip        # also create dist/teamx-windows-x86_64.zip
 #
 # Requires (on macOS):
@@ -16,9 +16,9 @@
 #   - tun0 (TUN device) is Unix-only and stubbed out on Windows; the rest of the
 #     CLI (team/role/events, network mode: serve/tunnel/proxy/git/dns) is fully
 #     functional.
-#   - `--gui` builds the member-side panel (`teamx gui-member`: import letter +
-#     tunnel mappings + SOCKS5). eframe/egui are bundled; no extra runtime.
-#   - The Windows binary links the UCRT (api-ms-win-crt-*) which ships with
+#   - `--gui` also builds `teamx-win.exe`: a window-subsystem launcher that opens
+#     the member-side panel directly on double-click (no console, no subcommand).
+#   - The Windows binaries link the UCRT (api-ms-win-crt-*) which ships with
 #     Windows 10/11; no extra runtime is bundled.
 set -euo pipefail
 
@@ -28,6 +28,7 @@ cd "$ROOT"
 TARGET="x86_64-pc-windows-gnu"
 OUT_DIR="$ROOT/dist/teamx-windows"
 EXE="$ROOT/target/$TARGET/release/teamx.exe"
+WIN_EXE="$ROOT/target/$TARGET/release/teamx-win.exe"
 
 # Prefer the rustup cargo shim so the target's std is found (a Homebrew rust in
 # PATH may not know the rustup-installed x86_64-pc-windows-gnu std).
@@ -51,6 +52,9 @@ step "1/3 build release binary for $TARGET${GUI:+ ($GUI)}"
 step "2/3 copy exe to dist/"
 mkdir -p "$OUT_DIR"
 cp "$EXE" "$OUT_DIR/teamx.exe"
+if [[ -n "$GUI" && -f "$WIN_EXE" ]]; then
+    cp "$WIN_EXE" "$OUT_DIR/teamx-win.exe"
+fi
 cp "$ROOT/README.md" "$OUT_DIR/README.md" 2>/dev/null || true
 cp "$ROOT/LICENSE" "$OUT_DIR/LICENSE" 2>/dev/null || true
 
@@ -58,9 +62,10 @@ cp "$ROOT/LICENSE" "$OUT_DIR/LICENSE" 2>/dev/null || true
 cat > "$OUT_DIR/使用说明.md" <<'MD'
 # teamx Windows 版
 
-`teamx.exe` 是 teamx 团队协作 CLI（Windows x86_64）。
+`teamx.exe` 是 teamx 团队协作 CLI（Windows x86_64），`teamx-win.exe` 是
+可视化成员端（双击即用）。
 
-## 快速开始
+## 快速开始（CLI）
 
 1. 打开 PowerShell 或 CMD，进入本目录：
    ```powershell
@@ -78,23 +83,21 @@ cat > "$OUT_DIR/使用说明.md" <<'MD'
    .\teamx.exe sync --session <session-key>
    ```
 
-## 成员端窗口（GUI，需 --gui 构建）
+## 成员端窗口（GUI）— 双击 `teamx-win.exe`
 
-双击运行或在终端执行，打开可视化面板：
-```powershell
-.\teamx.exe gui-member
-```
-面板支持：
+双击 `teamx-win.exe` 直接打开可视化面板（无需命令行），支持：
 - **导入邀请函**：粘贴 `teamx-inv:v1:...` 或选择 letter 文件，自动记录服务器地址
 - **隧道端口映射**：expose 本地服务 / forward 队友隧道 / close 关闭，实时列表
 - **SOCKS5 代理**：一键启停本地 1080 端口代理
+
+命令行等效：`.\teamx.exe gui-member`
 
 ## 常用命令
 
 | 功能 | 命令 |
 |---|---|
 | 查看帮助 | `teamx.exe --help` |
-| 成员端窗口 | `teamx.exe gui-member` |
+| 成员端窗口 | `teamx-win.exe`（双击）或 `teamx.exe gui-member` |
 | 列出团队 | `teamx.exe team list --session <s>` |
 | 团队状态 | `teamx.exe team status --session <s>` |
 | 同步新事件 | `teamx.exe sync --session <s>` |
@@ -111,8 +114,11 @@ MD
 
 step "3/3 done"
 echo
-echo "Done: $OUT_DIR/teamx.exe"
-echo "  size: $(du -h "$OUT_DIR/teamx.exe" | cut -f1)"
+echo "Done:"
+echo "  $OUT_DIR/teamx.exe      (CLI)"
+if [[ -n "$GUI" && -f "$OUT_DIR/teamx-win.exe" ]]; then
+    echo "  $OUT_DIR/teamx-win.exe  (GUI, double-click)"
+fi
 echo
 echo "Verify (optional):"
 echo "  wine $OUT_DIR/teamx.exe --help"
@@ -120,7 +126,7 @@ echo
 echo "Package:"
 echo "  cd $ROOT && zip -r dist/teamx-windows-x86_64.zip dist/teamx-windows"
 
-if [[ "${1:-}" == "--zip" ]]; then
+if [[ " $* " == *" --zip "* ]]; then
     (cd "$ROOT" && zip -r dist/teamx-windows-x86_64.zip dist/teamx-windows >/dev/null)
     echo "ZIP: dist/teamx-windows-x86_64.zip"
 fi

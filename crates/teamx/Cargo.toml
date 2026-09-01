@@ -48,3 +48,10 @@ gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui"]
 [[bin]]
 name = "teamx"
 path = "src/main.rs"
+
+# Windows GUI launcher: double-click to open the member-side panel directly.
+# Requires the `gui` feature (the Windows build enables it).
+[[bin]]
+name = "teamx-win"
+path = "src/bin/teamx-win.rs"
+required-features = ["gui"]

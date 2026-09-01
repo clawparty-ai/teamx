@@ -51,6 +51,12 @@ jobs:
         shell: bash
         run: ./target/release/teamx.exe --help | grep -q "gui-member"
 
+      - name: Verify teamx-win.exe exists (GUI launcher)
+        shell: bash
+        run: |
+          ls -la target/release/teamx-win.exe
+          file target/release/teamx-win.exe | grep -qi "PE32"
+
       - name: Verify tun0 is stubbed on Windows
         shell: bash
         run: |
@@ -62,9 +68,11 @@ jobs:
           [ "$code" -ne 0 ]
           echo "$out" | grep -qi "macOS and Linux"
 
-      - name: Upload teamx.exe (with GUI)
+      - name: Upload teamx.exe + teamx-win.exe (with GUI)
         uses: actions/upload-artifact@v4
         with:
           name: teamx-windows-x86_64
-          path: target/release/teamx.exe
+          path: |
+            target/release/teamx.exe
+            target/release/teamx-win.exe
           if-no-files-found: error

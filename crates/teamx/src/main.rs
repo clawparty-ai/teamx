@@ -1,55 +1,15 @@
-mod broadcast;
-mod cli;
-mod commands;
-mod db;
-// dns_proxy + tun_dns 只服务 tun0 透明代理链路（被 tun_socks/tun_cli 使用），
-// 与 tun0 一样是 Unix-only；Windows 上 stub。
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod dns_proxy;
-mod doc_flow;
-mod events;
-mod git_client;
-mod git_service;
-#[cfg(feature = "gui")]
-mod gui;
-#[cfg(feature = "gui")]
-mod gui_panel;
-#[cfg(feature = "gui")]
-mod gui_member_panel;
-mod loopx;
-mod metrics;
-mod pki;
-mod routes;
-mod serve;
-mod socks5;
-mod state;
-mod teamfile;
-mod tunnel;
-mod tunnel_client;
-// rules_config 只被 tun_cli（Unix-only）使用。
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod rules_config;
-// tun0 透明代理是 Unix-only（macOS utun / Linux tunN）。Windows 上 stub
-// 掉这几个模块；`tun_dev` 保留（`system_dns_servers` 被 `dns list` 使用）。
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod tun_cli;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod tun_socks;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod tun_stack;
-mod tun_dev;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod tun_dns;
+//! teamx CLI — entry point. All logic lives in the `teamx` library crate;
+//! this binary only parses args and renders results.
 
 use clap::Parser;
-use cli::{Cli, Command};
+use teamx::cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
     // `teamx serve` runs forever and manages its own DB lifecycle; it bypasses
     // the normal open-once-per-invocation flow.
     if let Command::Serve(sc) = &cli.command {
-        match serve::serve(sc) {
+        match teamx::serve::serve(sc) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -62,7 +22,7 @@ fn main() {
     // does not open the DB itself. Requires the `gui` feature.
     #[cfg(feature = "gui")]
     if let Command::Gui = &cli.command {
-        match gui::run_tray() {
+        match teamx::gui::run_tray() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -79,7 +39,7 @@ fn main() {
     // `teamx gui-panel` is the native control-panel window (L1).
     #[cfg(feature = "gui")]
     if let Command::GuiPanel = &cli.command {
-        match gui_panel::run_panel() {
+        match teamx::gui_panel::run_panel() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -97,7 +57,7 @@ fn main() {
     // tunnel mappings. Cross-platform; no privileged ops.
     #[cfg(feature = "gui")]
     if let Command::GuiMember = &cli.command {
-        match gui_member_panel::run_panel() {
+        match teamx::gui_member_panel::run_panel() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -111,9 +71,9 @@ fn main() {
         eprintln!("teamx error: `gui-member` requires the `gui` feature — rebuild with --features gui");
         std::process::exit(1);
     }
-    let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);
+    let db_path = cli.db.clone().unwrap_or_else(teamx::db::default_db_path);
 
-    let result = run(&cli, &db_path);
+    let result = teamx::run(&cli, &db_path);
     match result {
         Ok(out) => {
             if cli.json {
@@ -127,12 +87,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-fn run(cli: &Cli, db_path: &std::path::Path) -> Result<serde_json::Value, String> {
-    let mut conn = db::open(db_path).map_err(|e| format!("cannot open database {db_path:?}: {e}"))?;
-    db::migrate(&conn).map_err(|e| format!("schema init failed: {e}"))?;
-    commands::execute(cli, &mut conn).map_err(|e| e.to_string())
 }
 
 fn print_human(v: &serde_json::Value) {
