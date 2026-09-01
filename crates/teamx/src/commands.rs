@@ -7,6 +7,7 @@ use crate::state::{Action, GoalState, MemberState, TeamState};
 use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 pub struct AppError(pub String);
 
@@ -482,6 +483,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         },
         // Local client config (per-machine).
         Command::Local(lc) => cmd_local(conn, lc)?,
+        // Plugin management is pure file operations; it does not touch the DB.
+        Command::Plugin(pc) => return cmd_plugin(pc),
         // `teamx serve` never reaches here (handled in main); this arm exists
         // only so the match stays exhaustive.
         Command::Serve(_) => {
@@ -720,6 +723,168 @@ fn cmd_local(conn: &mut Connection, cmd: &LocalCmd) -> Result<Value> {
             serde_json::json!({ "ok": true, "key": key, "value": value })
         }
     })
+}
+
+/// Handle `teamx plugin install|uninstall`: install the teamx opencode plugin
+/// bundle (dist + agent + commands) into the opencode config directory. This
+/// is what Homebrew and direct-binary installs use to wire the CLI into
+/// opencode — no `cargo`/`bun` needed at runtime.
+fn cmd_plugin(cmd: &crate::cli::PluginCmd) -> Result<Value> {
+    match cmd {
+        crate::cli::PluginCmd::Install { path, config_dir, english } => {
+            let config = config_dir.clone().unwrap_or_else(opencode_config_dir);
+            let repo = resolve_repo_root(path.as_ref())?;
+            let plugin_dir = repo.join("opencode-plugin");
+            let dist_js = plugin_dir.join("dist").join("teamx.js");
+            if !dist_js.exists() {
+                return err(format!(
+                    "plugin bundle not found at {} — build it first (cd opencode-plugin && bun install && bun run build)",
+                    dist_js.display()
+                ));
+            }
+
+            // plugins/
+            let plugins_dir = config.join("plugins");
+            std::fs::create_dir_all(&plugins_dir).map_err(|e| AppError(format!("mkdir {plugins_dir:?}: {e}")))?;
+            std::fs::copy(&dist_js, plugins_dir.join("teamx.js"))
+                .map_err(|e| AppError(format!("copy plugin: {e}")))?;
+
+            // agent/ + commands/ — pick the language (default: detect from env).
+            let (agent_src, cmd_suffix) = if *english {
+                ("teamx.en.md".to_string(), ".en".to_string())
+            } else if detect_zh() {
+                ("teamx.md".to_string(), String::new())
+            } else {
+                ("teamx.en.md".to_string(), ".en".to_string())
+            };
+            let agent_dir = config.join("agent");
+            std::fs::create_dir_all(&agent_dir).map_err(|e| AppError(format!("mkdir {agent_dir:?}: {e}")))?;
+            let agent_file = plugin_dir.join("assets").join("agent").join(&agent_src);
+            if agent_file.exists() {
+                std::fs::copy(&agent_file, agent_dir.join(&agent_src))
+                    .map_err(|e| AppError(format!("copy agent: {e}")))?;
+            }
+
+            let commands_dir = config.join("commands");
+            std::fs::create_dir_all(&commands_dir).map_err(|e| AppError(format!("mkdir {commands_dir:?}: {e}")))?;
+            let assets_cmd = plugin_dir.join("assets").join("command");
+            let mut installed = 0usize;
+            if let Ok(entries) = std::fs::read_dir(&assets_cmd) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if cmd_suffix.is_empty() {
+                        // Chinese: install *.md (not *.en.md).
+                        if name.ends_with(".en.md") || !name.ends_with(".md") {
+                            continue;
+                        }
+                    } else {
+                        // English: install *.en.md.
+                        if !name.ends_with(".en.md") {
+                            continue;
+                        }
+                    }
+                    let base = name.trim_end_matches(&format!("{cmd_suffix}.md"));
+                    let dst = commands_dir.join(format!("{base}.md"));
+                    if let Err(e) = std::fs::copy(e.path(), &dst) {
+                        return err(format!("copy command {name}: {e}"));
+                    }
+                    installed += 1;
+                }
+            }
+            let _ = ensure_plugin_dependency(&config);
+            Ok(serde_json::json!({
+                "ok": true,
+                "plugin": dist_js.display().to_string(),
+                "config_dir": config.display().to_string(),
+                "agent": agent_src,
+                "commands_installed": installed,
+                "note": "restart opencode (or reload) to pick up the plugin, agent and /team commands",
+            }))
+        }
+        crate::cli::PluginCmd::Uninstall { config_dir } => {
+            let config = config_dir.clone().unwrap_or_else(opencode_config_dir);
+            let mut removed = Vec::new();
+            for p in ["plugins/teamx.js", "agent/teamx.md", "agent/teamx.en.md"] {
+                let f = config.join(p);
+                if f.exists() {
+                    let _ = std::fs::remove_file(&f);
+                    removed.push(p.to_string());
+                }
+            }
+            // Remove the /team command files we installed.
+            if let Ok(entries) = std::fs::read_dir(config.join("commands")) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("team") && name.ends_with(".md") {
+                        let _ = std::fs::remove_file(e.path());
+                        removed.push(format!("commands/{name}"));
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "ok": true,
+                "removed": removed.len(),
+                "note": "teamx data under ~/.teamx is preserved",
+            }))
+        }
+    }
+}
+
+/// Resolve the teamx repo root from an explicit path or the CWD. Accepts either
+/// the repo root (has opencode-plugin/) or the opencode-plugin dir itself.
+fn resolve_repo_root(path: Option<&PathBuf>) -> Result<PathBuf> {
+    let base = path.cloned().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    if base.join("opencode-plugin").is_dir() {
+        return Ok(base);
+    }
+    if base.file_name().map(|n| n == "opencode-plugin").unwrap_or(false) {
+        if let Some(parent) = base.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+    err(format!(
+        "cannot find the teamx plugin bundle: {} is not a teamx repo root \
+         (expected opencode-plugin/dist/teamx.js after building)",
+        base.display()
+    ))
+}
+
+/// Default opencode config directory (~/.config/opencode).
+fn opencode_config_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("OPENCODE_CONFIG") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("~/.config")).join("opencode")
+}
+
+/// Best-effort Chinese language detection from LANG/LC_ALL.
+fn detect_zh() -> bool {
+    let lang = std::env::var("LANG").or_else(|_| std::env::var("LC_ALL")).unwrap_or_default();
+    lang.starts_with("zh")
+}
+
+/// Pin @opencode-ai/plugin in the config package.json (best-effort), matching
+/// what the old install.sh did.
+fn ensure_plugin_dependency(config: &std::path::Path) {
+    let pkg = config.join("package.json");
+    let version = std::process::Command::new("opencode")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find_map(|l| {
+                    l.rsplit_once(' ')
+                        .map(|(_, v)| v.to_string())
+                        .filter(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+                })
+        })
+        .unwrap_or_else(|| "1.17.11".to_string());
+    let deps = serde_json::json!({ "dependencies": { "@opencode-ai/plugin": version } });
+    let _ = std::fs::write(pkg, serde_json::to_string_pretty(&deps).unwrap_or_default());
 }
 
 /// Resolve the network-mode server URL: `--server` flag > `TEAMX_SERVER_URL`

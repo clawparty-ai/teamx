@@ -123,6 +123,11 @@ pub enum Command {
     #[command(subcommand)]
     Local(LocalCmd),
 
+    /// opencode plugin management: install/uninstall the teamx plugin bundle
+    /// into the opencode config directory (used by Homebrew and manual installs)
+    #[command(subcommand)]
+    Plugin(PluginCmd),
+
     /// PKI management (mTLS certificates)
     #[command(subcommand)]
     Cert(CertCmd),
@@ -625,6 +630,32 @@ pub enum LocalCmd {
         key: String,
         #[arg(value_name = "VALUE")]
         value: String,
+    },
+}
+
+/// opencode plugin management (used by Homebrew and manual installs).
+#[derive(Subcommand, Debug)]
+pub enum PluginCmd {
+    /// Install the teamx opencode plugin bundle into the opencode config
+    /// directory. The bundle is a checkout of the teamx repo (contains
+    /// `opencode-plugin/dist/teamx.js` + `opencode-plugin/assets/`); when
+    /// omitted, the current working directory's `opencode-plugin/` is used.
+    Install {
+        /// path to the teamx repo root or the opencode-plugin directory
+        #[arg(value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+        /// override the opencode config directory (default ~/.config/opencode)
+        #[arg(long)]
+        config_dir: Option<std::path::PathBuf>,
+        /// skip language detection; force English command files (.en.md)
+        #[arg(long)]
+        english: bool,
+    },
+    /// Remove the teamx plugin pieces from the opencode config directory.
+    Uninstall {
+        /// override the opencode config directory (default ~/.config/opencode)
+        #[arg(long)]
+        config_dir: Option<std::path::PathBuf>,
     },
 }
 
