@@ -1,0 +1,72 @@
+name: Release binaries to GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos-m1-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            exe_name: teamx
+            asset: teamx-macos-arm64.tar.gz
+          - label: linux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            exe_name: teamx
+            asset: teamx-linux-x86_64.tar.gz
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            exe_name: teamx
+            asset: teamx-linux-arm64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build release binary (${{ matrix.target }})
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          BIN=target/${{ matrix.target }}/release/${{ matrix.exe_name }}
+          ls -la "$BIN"
+          # Bundle the binary + LICENSE into a tarball that Homebrew can unpack.
+          # Archive layout: teamx/<version>/<binary> (Homebrew legacy-install style)
+          # is overkill; use a flat tarball with a stable directory prefix so
+          # the formula can install -s "bin/teamx".
+          VERSION="${{ github.ref_name }}"
+          mkdir -p "pkg/teamx-${VERSION#v}/bin"
+          cp "$BIN" "pkg/teamx-${VERSION#v}/bin/teamx"
+          cp LICENSE "pkg/teamx-${VERSION#v}/LICENSE"
+          tar -C pkg -czf "${{ matrix.asset }}" "teamx-${VERSION#v}"
+          ls -la "${{ matrix.asset }}"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          fail_on_unmatched_files: true
