@@ -9,15 +9,17 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 import {
+  dirOfSession,
   getDigest,
   instanceId,
   knownMemberSessions,
   markMember,
   memberStatus,
+  noteSessionDir,
   runCli,
+  serverUrlFor,
   sessionKey,
   setDigest,
-  TEAMX_SERVER_URL,
 } from "./client"
 import { tools } from "./tools"
 import { connectWs } from "./ws"
@@ -124,7 +126,7 @@ function closeWorkSegment(sessionID: string, now: string): void {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return
   const model = sessionModel.get(sessionID)
   collect({
-    node_id: instanceId(),
+    node_id: instanceId(dirOfSession(sessionID)),
     started_at: seg.startedAt,
     ended_at: now,
     duration_ms: endMs - startMs,
@@ -298,12 +300,14 @@ export function shouldAutoExecute(opts: {
 }
 
 export const Teamx: Plugin = async ({ client }) => {
-  const instance = instanceId()
+  // Per-session workspace: the teamx space is the session's directory `.teamx/`.
+  // `sk` builds a session key from that workspace's instance id.
+  const sk = (sid: string | undefined): string => sessionKey(instanceId(dirOfSession(sid)), sid)
 
   // Enable the enterprise activity collector. The flush path needs a session
   // key to attribute rows in V1 local mode; network mode uses the mTLS cert.
   initActivity({
-    sessionKey: () => sessionKey(instance, currentSessionID),
+    sessionKey: () => sk(currentSessionID),
     log: (level, message, extra) => log(level, message, extra),
   })
 
@@ -366,7 +370,7 @@ export const Teamx: Plugin = async ({ client }) => {
         }
       }
       if (rows.length === 0) return
-      const r = await runCli(["model", "pricing-sync", "--data", JSON.stringify(rows)])
+      const r = await runCli(["model", "pricing-sync", "--data", JSON.stringify(rows)], { cwd: dirOfSession(undefined) })
       if (!r.ok) log("debug", "model pricing sync failed", { stderr: r.stderr })
     } catch (e) {
       log("debug", "model pricing sync error", { error: String(e) })
@@ -374,7 +378,7 @@ export const Teamx: Plugin = async ({ client }) => {
   }
 
   // Report model pricing once at startup (network mode only).
-  if (TEAMX_SERVER_URL) {
+  if (serverUrlFor(dirOfSession(undefined))) {
     void syncModelPricing()
   }
 
@@ -392,8 +396,8 @@ export const Teamx: Plugin = async ({ client }) => {
     }
   }
   async function pushPresence(): Promise<void> {
-    if (!TEAMX_SERVER_URL) return
-    const r = await runCli(["presence", "push", "--data", JSON.stringify(presenceSnapshot())])
+    if (!serverUrlFor(dirOfSession(undefined))) return
+    const r = await runCli(["presence", "push", "--data", JSON.stringify(presenceSnapshot())], { cwd: dirOfSession(undefined) })
     if (!r.ok) log("debug", "presence push failed", { stderr: r.stderr })
   }
   function schedulePresencePush(): void {
@@ -445,8 +449,8 @@ export const Teamx: Plugin = async ({ client }) => {
   }
 
   async function refreshDigest(sessionID: string): Promise<void> {
-    const key = sessionKey(instance, sessionID)
-    const r = await runCli(["sync", "--no-advance", "--session", key])
+    const key = sk(sessionID)
+    const r = await runCli(["sync", "--no-advance", "--session", key], { cwd: dirOfSession(sessionID) })
     if (!r.ok || !r.data) return
     const data = r.data as unknown as SyncData
     setDigest(sessionID, summarize(data))
@@ -552,8 +556,11 @@ export const Teamx: Plugin = async ({ client }) => {
   // The per-session seq watermark (in refreshDigest) keeps toasts from
   // duplicating between the push and poll paths.
   let wsHandle: ReturnType<typeof connectWs> | undefined
-  if (TEAMX_SERVER_URL) {
+  const wsServer = serverUrlFor(dirOfSession(undefined))
+  if (wsServer) {
     wsHandle = connectWs({
+      serverUrl: wsServer,
+      cwd: dirOfSession(undefined),
       onEvent: () => scheduleRefresh(),
       onStatus: (connected) => {
         wsConnected = connected
@@ -570,17 +577,20 @@ export const Teamx: Plugin = async ({ client }) => {
   // machine that recorded them re-opens them; each is idempotent (a tunnel
   // that already exists on the server is reported and skipped by the server).
   const restoredTunnelHandles: { close(): void }[] = []
-  if (TEAMX_SERVER_URL) {
+  const restoreCwd = dirOfSession(undefined)
+  const restoreServerUrl = serverUrlFor(restoreCwd)
+  if (restoreServerUrl) {
     const { listTunnels } = await import("./tunnels-store")
     const { exposeTunnel } = await import("./tunnel")
-    for (const t of listTunnels()) {
-      if (t.server_url !== TEAMX_SERVER_URL) continue
+    for (const t of listTunnels(restoreCwd)) {
+      if (t.server_url !== restoreServerUrl) continue
       const handle = exposeTunnel({
         serverUrl: t.server_url,
         name: t.name,
         port: t.port,
         mode: t.mode ?? "local",
         lanIp: t.lan_ip,
+        cwd: restoreCwd,
         log: (level, message) => log(level === "info" ? "debug" : "warn", message),
       })
       restoredTunnelHandles.push(handle)
@@ -593,12 +603,13 @@ export const Teamx: Plugin = async ({ client }) => {
     // Re-open persisted consumer-side forwards (T2).
     const { listForwards } = await import("./tunnels-store")
     const { forwardTunnel } = await import("./tunnel")
-    for (const f of listForwards()) {
-      if (f.server_url !== TEAMX_SERVER_URL) continue
+    for (const f of listForwards(restoreCwd)) {
+      if (f.server_url !== restoreServerUrl) continue
       const handle = forwardTunnel({
         serverUrl: f.server_url,
         name: f.name,
         localPort: f.local_port,
+        cwd: restoreCwd,
         log: (level, message) => log(level === "info" ? "debug" : "warn", message),
       })
       restoredTunnelHandles.push(handle)
@@ -630,8 +641,8 @@ export const Teamx: Plugin = async ({ client }) => {
       // trigger a one-time `team list` to decide.
       let isMember = sessionID ? memberStatus(sessionID) : undefined
       if (sessionID && (isMember === undefined || !ownerSessions.has(sessionID))) {
-        const key = sessionKey(instance, sessionID)
-        const r = await runCli(["team", "list", "--session", key])
+        const key = sk(sessionID)
+        const r = await runCli(["team", "list", "--session", key], { cwd: dirOfSession(sessionID) })
         const teams = r.data?.teams as { my_role?: string; my_is_lead?: boolean }[] | undefined
         isMember = r.ok && Array.isArray(teams) && teams.length > 0
         markMember(sessionID, isMember)
@@ -645,14 +656,17 @@ export const Teamx: Plugin = async ({ client }) => {
         case "session.idle": {
           if (!sessionID || isMember !== true) return
           // Keep the V1 heartbeat publish (existing behavior).
-          const r = await runCli([
-            "publish",
-            "activity",
-            "--data",
-            JSON.stringify({ kind: "session.idle" }),
-            "--session",
-            sessionKey(instance, sessionID),
-          ])
+          const r = await runCli(
+            [
+              "publish",
+              "activity",
+              "--data",
+              JSON.stringify({ kind: "session.idle" }),
+              "--session",
+              sk(sessionID),
+            ],
+            { cwd: dirOfSession(sessionID) },
+          )
           if (!r.ok) {
             log("debug", "activity publish failed", { sessionID, stderr: r.stderr })
           }
@@ -730,7 +744,7 @@ export const Teamx: Plugin = async ({ client }) => {
               schedulePresencePush()
             }
             record({
-              node_id: instance,
+              node_id: instanceId(dirOfSession(sessionID)),
               started_at: time?.start ? new Date(time.start).toISOString() : started,
               duration_ms: durationMs,
               kind: "tool_call",
@@ -747,7 +761,7 @@ export const Teamx: Plugin = async ({ client }) => {
             // Model attribution: recorded by the `message.updated` hook.
             const model = sessionID ? sessionModel.get(sessionID) : undefined
             record({
-              node_id: instance,
+              node_id: instanceId(dirOfSession(sessionID)),
               started_at: started,
               kind: "step_finish",
               // Note: input/output include cached read tokens for accounting.
@@ -782,7 +796,7 @@ export const Teamx: Plugin = async ({ client }) => {
         case "command.executed": {
           if (isMember !== true) return
           record({
-            node_id: instance,
+            node_id: instanceId(dirOfSession(sessionID)),
             started_at: nowIso(),
             kind: "command",
             detail: { name: (props?.name as string) ?? undefined, args: (props?.arguments as string) ?? undefined },
@@ -793,7 +807,7 @@ export const Teamx: Plugin = async ({ client }) => {
         case "file.edited": {
           if (isMember !== true) return
           record({
-            node_id: instance,
+            node_id: instanceId(dirOfSession(sessionID)),
             started_at: nowIso(),
             kind: "file_edit",
             detail: { file: (props?.file as string) ?? undefined },
@@ -804,7 +818,7 @@ export const Teamx: Plugin = async ({ client }) => {
         case "permission.replied": {
           if (isMember !== true) return
           record({
-            node_id: instance,
+            node_id: instanceId(dirOfSession(sessionID)),
             started_at: nowIso(),
             kind: "human_approval",
             detail: {
@@ -819,7 +833,7 @@ export const Teamx: Plugin = async ({ client }) => {
         case "tui.command.execute": {
           if (isMember !== true) return
           record({
-            node_id: instance,
+            node_id: instanceId(dirOfSession(sessionID)),
             started_at: nowIso(),
             kind: "human_command",
             detail: { name: (props?.command as string) ?? undefined },
@@ -844,7 +858,7 @@ export const Teamx: Plugin = async ({ client }) => {
         .map((p) => (p as { text?: string }).text ?? "")
         .join("\n")
       collect({
-        node_id: instance,
+        node_id: instanceId(dirOfSession(sessionID)),
         started_at: nowIso(),
         kind: "human_input",
         detail: { sessionID, text: texts || undefined },

@@ -5,7 +5,7 @@
 // reconnects with exponential backoff. When the server is unreachable the
 // plugin falls back to its M2 poller (see index.ts).
 
-import { mtlsFor, TEAMX_SERVER_URL } from "./client"
+import { mtlsFor } from "./client"
 
 export type WsEvent = Record<string, unknown> & { seq?: number; type?: string }
 
@@ -26,12 +26,14 @@ export function wsUrl(serverUrl: string): string {
  * `onStatus` reports connectivity changes (true = connected).
  */
 export function connectWs(opts: {
-  serverUrl?: string
+  serverUrl: string
+  cwd?: string
   onEvent: (event: WsEvent) => void
   onStatus?: (connected: boolean) => void
   log?: (level: "debug" | "warn", message: string) => void
 }): WsHandle {
-  const serverUrl = opts.serverUrl ?? TEAMX_SERVER_URL
+  const serverUrl = opts.serverUrl
+  const cwd = opts.cwd ?? process.cwd()
   let closed = false
   let ws: WebSocket | null = null
   let attempts = 0
@@ -47,7 +49,7 @@ export function connectWs(opts: {
 
   function connect() {
     if (closed || !serverUrl) return
-    const tls = mtlsFor(serverUrl)
+    const tls = mtlsFor(serverUrl, cwd)
     let sock: WebSocket
     try {
       sock = new WebSocket(wsUrl(serverUrl), (tls ? { tls } : undefined) as never)

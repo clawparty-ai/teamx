@@ -25,7 +25,7 @@
 
 import { connect as tcpConnect, createServer as netCreateServer, Socket } from "node:net"
 import { wsUrl } from "./ws"
-import { mtlsFor, TEAMX_SERVER_URL } from "./client"
+import { mtlsFor } from "./client"
 
 export interface TunnelExposeOpts {
   serverUrl: string
@@ -36,6 +36,8 @@ export interface TunnelExposeOpts {
   mode?: "local" | "frp"
   /** provider LAN IP for direct-connect hints (optional) */
   lanIp?: string
+  /** workspace dir for mTLS material lookup (default process.cwd()) */
+  cwd?: string
   log?: (level: "info" | "warn" | "error", message: string) => void
 }
 
@@ -53,6 +55,8 @@ export interface TunnelForwardOpts {
   localPort?: number
   /** provider's target port (used as default local port when given) */
   targetPort?: number
+  /** workspace dir for mTLS material lookup (default process.cwd()) */
+  cwd?: string
   log?: (level: "info" | "warn" | "error", message: string) => void
 }
 
@@ -160,7 +164,7 @@ export function exposeTunnel(opts: TunnelExposeOpts): TunnelHandle {
 
   function connect() {
     if (closed) return
-    const tls = mtlsFor(opts.serverUrl)
+    const tls = mtlsFor(opts.serverUrl, opts.cwd)
     let sock: WebSocket
     try {
       sock = new WebSocket(wsUrl(opts.serverUrl).replace(/\/ws$/, "/tunnel"), (tls ? { tls } : undefined) as never)
@@ -270,7 +274,7 @@ export async function runTunnelCli(argv: string[]): Promise<number> {
     const i = args.indexOf(`--${name}`)
     return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined
   }
-  const serverUrl = flag("server") ?? TEAMX_SERVER_URL
+  const serverUrl = flag("server")
   const name = flag("name")
   const port = Number(flag("port") ?? 0)
   if (!serverUrl || !name || !port) {
@@ -332,7 +336,7 @@ export function forwardTunnel(opts: TunnelForwardOpts): TunnelForwardHandle {
     clientSocket.on("error", () => sockets.delete(clientSocket))
 
     // One WS per local connection.
-    const tls = mtlsFor(opts.serverUrl)
+    const tls = mtlsFor(opts.serverUrl, opts.cwd)
     let ws: WebSocket
     try {
       ws = new WebSocket(
@@ -481,7 +485,7 @@ export async function runForwardCli(argv: string[]): Promise<number> {
     const i = args.indexOf(`--${name}`)
     return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined
   }
-  const serverUrl = flag("server") ?? TEAMX_SERVER_URL
+  const serverUrl = flag("server")
   const name = flag("name")
   const localPort = Number(flag("local-port") ?? 0)
   if (!serverUrl || !name) {

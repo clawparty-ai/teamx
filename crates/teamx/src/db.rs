@@ -4,18 +4,25 @@ use std::path::{Path, PathBuf};
 
 pub const DB_ENV: &str = "TEAMX_DB";
 
-/// Resolve the teamx home directory (default `~/.teamx`, or `TEAMX_HOME`).
+/// Resolve the teamx home directory — the current workspace's `.teamx/`.
+///
+/// Project-scoped by design: each opencode instance / CLI run uses the
+/// `.teamx/` directory under its current working directory as its private
+/// space (letters, mTLS certs, local DB, CA, instance id). `TEAMX_HOME`
+/// overrides the location explicitly (used on servers and CI).
 pub fn teamx_home() -> PathBuf {
     if let Ok(p) = std::env::var("TEAMX_HOME") {
         return PathBuf::from(p);
     }
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".teamx")
+    std::env::current_dir()
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+        .join(".teamx")
 }
 
-/// Resolve the global database path:
+/// Resolve the local database path:
 /// 1. `--db <path>` (handled by CLI, stored in `Cli.db`)
 /// 2. `TEAMX_DB` env var
-/// 3. `~/.teamx/teamx.db`
+/// 3. `<workspace>/.teamx/teamx.db`
 pub fn default_db_path() -> PathBuf {
     if let Ok(p) = std::env::var(DB_ENV) {
         return PathBuf::from(p);
@@ -35,7 +42,7 @@ pub fn open(db_path: &Path) -> rusqlite::Result<Connection> {    if let Some(dir
     Ok(conn)
 }
 
-/// The stable per-machine instance id, persisted at `~/.teamx/instance.json`
+/// The stable per-workspace instance id, persisted at `<workspace>/.teamx/instance.json`
 /// (same file the plugin uses). Created on first use.
 pub fn instance_id() -> String {
     let file = teamx_home().join("instance.json");

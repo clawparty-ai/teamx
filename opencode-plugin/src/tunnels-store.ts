@@ -1,15 +1,16 @@
 // tunnels-store.ts — persistent reverse-tunnel registry for the plugin.
 //
-// Records exposed tunnels in `~/.teamx/tunnels.json` so they survive an
-// opencode restart: on plugin startup the resident tunnel client re-opens
-// every recorded tunnel automatically.
+// Records exposed tunnels in `<cwd>/.teamx/tunnels.json` (per workspace, not
+// global) so they survive an opencode restart: on plugin startup the resident
+// tunnel client re-opens every recorded tunnel automatically.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { TEAMX_HOME } from "./client"
+import { teamxDir } from "./client"
 
-const STORE_FILE = join(TEAMX_HOME, "tunnels.json")
-const FORWARD_STORE_FILE = join(TEAMX_HOME, "forwards.json")
+function storeFile(cwd: string, name: string): string {
+  return join(teamxDir(cwd), name)
+}
 
 export interface PersistentTunnel {
   name: string
@@ -31,76 +32,92 @@ export interface PersistentForward {
 export type TunnelStore = Record<string, PersistentTunnel>
 export type ForwardStore = Record<string, PersistentForward>
 
-function readStore(): TunnelStore {
-  if (!existsSync(STORE_FILE)) return {}
+function readStore(cwd: string): TunnelStore {
+  const file = storeFile(cwd, "tunnels.json")
+  if (!existsSync(file)) return {}
   try {
-    const parsed = JSON.parse(readFileSync(STORE_FILE, "utf8")) as TunnelStore
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as TunnelStore
     return parsed ?? {}
   } catch {
     return {}
   }
 }
 
-function writeStore(store: TunnelStore): void {
-  mkdirSync(TEAMX_HOME, { recursive: true })
-  writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), { mode: 0o600 })
+function writeStore(cwd: string, store: TunnelStore): void {
+  mkdirSync(teamxDir(cwd), { recursive: true })
+  writeFileSync(storeFile(cwd, "tunnels.json"), JSON.stringify(store, null, 2), { mode: 0o600 })
 }
 
 /** Record a tunnel so it is re-opened after an opencode restart. */
-export function saveTunnel(t: PersistentTunnel): void {
-  const store = readStore()
-  store[t.name] = t
-  writeStore(store)
+export function saveTunnel(
+  name: string,
+  port: number,
+  mode: string | undefined,
+  lan_ip: string | undefined,
+  server_url: string,
+  cwd: string,
+): void {
+  const store = readStore(cwd)
+  store[name] = {
+    name,
+    port,
+    mode: mode as "local" | "frp" | undefined,
+    lan_ip,
+    server_url,
+    created_at: new Date().toISOString(),
+  }
+  writeStore(cwd, store)
 }
 
 /** Forget a tunnel (called on close / unregister). */
-export function removeTunnel(name: string): void {
-  const store = readStore()
+export function removeTunnel(name: string, cwd: string): void {
+  const store = readStore(cwd)
   if (store[name]) {
     delete store[name]
-    writeStore(store)
+    writeStore(cwd, store)
   }
 }
 
-/** All persisted tunnels (for auto-restore on startup). */
-export function listTunnels(): PersistentTunnel[] {
-  return Object.values(readStore())
+/** All persisted tunnels of a workspace (for auto-restore on startup). */
+export function listTunnels(cwd: string): PersistentTunnel[] {
+  return Object.values(readStore(cwd))
 }
 
 // --- consumer-side local forwards (T2) ---
 
-function readForwards(): ForwardStore {
-  if (!existsSync(FORWARD_STORE_FILE)) return {}
+function readForwards(cwd: string): ForwardStore {
+  const file = storeFile(cwd, "forwards.json")
+  if (!existsSync(file)) return {}
   try {
-    const parsed = JSON.parse(readFileSync(FORWARD_STORE_FILE, "utf8")) as ForwardStore
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as ForwardStore
     return parsed ?? {}
   } catch {
     return {}
   }
 }
 
-function writeForwards(store: ForwardStore): void {
-  mkdirSync(TEAMX_HOME, { recursive: true })
-  writeFileSync(FORWARD_STORE_FILE, JSON.stringify(store, null, 2), { mode: 0o600 })
+function writeForwards(cwd: string, store: ForwardStore): void {
+  mkdirSync(teamxDir(cwd), { recursive: true })
+  writeFileSync(storeFile(cwd, "forwards.json"), JSON.stringify(store, null, 2), { mode: 0o600 })
 }
 
 /** Record a forward so it is re-opened after an opencode restart. */
-export function saveForward(f: PersistentForward): void {
-  const store = readForwards()
-  store[f.name] = f
-  writeForwards(store)
+export function saveForward(name: string, local_port: number, server_url: string, cwd: string): void {
+  const store = readForwards(cwd)
+  store[name] = { name, local_port, server_url, created_at: new Date().toISOString() }
+  writeForwards(cwd, store)
 }
 
 /** Forget a forward. */
-export function removeForward(name: string): void {
-  const store = readForwards()
+export function removeForward(name: string, cwd: string): void {
+  const store = readForwards(cwd)
   if (store[name]) {
     delete store[name]
-    writeForwards(store)
+    writeForwards(cwd, store)
   }
 }
 
-/** All persisted forwards (for auto-restore on startup). */
-export function listForwards(): PersistentForward[] {
-  return Object.values(readForwards())
+/** All persisted forwards of a workspace (for auto-restore on startup). */
+export function listForwards(cwd: string): PersistentForward[] {
+  return Object.values(readForwards(cwd))
 }

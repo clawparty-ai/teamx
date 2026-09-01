@@ -3,11 +3,8 @@
 // PID so `serve status`/`serve stop` can inspect and stop it.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
-import { teamxBin, TEAMX_HOME, mtlsFor } from "./client"
-
-const SERVE_FILE = join(TEAMX_HOME, "serve.json")
+import { teamxBin, mtlsFor, teamxDir } from "./client"
 
 type ServeRecord = {
   pid: number
@@ -18,25 +15,30 @@ type ServeRecord = {
   started_at: string
 }
 
-function readRecord(): ServeRecord | null {
-  if (!existsSync(SERVE_FILE)) return null
+function serveFile(cwd: string): string {
+  return join(teamxDir(cwd), "serve.json")
+}
+
+function readRecord(cwd: string): ServeRecord | null {
+  const f = serveFile(cwd)
+  if (!existsSync(f)) return null
   try {
-    return JSON.parse(readFileSync(SERVE_FILE, "utf8")) as ServeRecord
+    return JSON.parse(readFileSync(f, "utf8")) as ServeRecord
   } catch {
     return null
   }
 }
 
-function writeRecord(rec: ServeRecord): void {
-  mkdirSync(TEAMX_HOME, { recursive: true })
-  writeFileSync(SERVE_FILE, JSON.stringify(rec, null, 2), { mode: 0o600 })
+function writeRecord(cwd: string, rec: ServeRecord): void {
+  mkdirSync(teamxDir(cwd), { recursive: true })
+  writeFileSync(serveFile(cwd), JSON.stringify(rec, null, 2), { mode: 0o600 })
 }
 
-function clearRecord(): void {
-  if (existsSync(SERVE_FILE)) {
+function clearRecord(cwd: string): void {
+  if (existsSync(serveFile(cwd))) {
     try {
       // best-effort unlink
-      writeFileSync(SERVE_FILE, "{}")
+      writeFileSync(serveFile(cwd), "{}")
     } catch {
       // ignore
     }
@@ -78,16 +80,17 @@ export interface ServeStatus {
   started_at?: string
 }
 
-export function serveStatus(): ServeStatus {
-  const rec = readRecord()
+export function serveStatus(cwd?: string): ServeStatus {
+  const rec = readRecord(cwd ?? process.cwd())
   if (!rec) return { running: false }
   if (!processAlive(rec.pid)) return { running: false, pid: rec.pid, url: rec.url }
   return { running: true, pid: rec.pid, url: rec.url, addr: rec.addr, port: rec.port, db: rec.db, started_at: rec.started_at }
 }
 
-/** Spawn a local `teamx serve` subprocess (idempotent). */
-export async function serveStart(opts: { addr?: string; port?: number; db?: string }): Promise<ServeStatus> {
-  const current = serveStatus()
+/** Spawn a local `teamx serve` subprocess (idempotent, per workspace). */
+export async function serveStart(opts: { addr?: string; port?: number; db?: string; cwd?: string }): Promise<ServeStatus> {
+  const cwd = opts.cwd ?? process.cwd()
+  const current = serveStatus(cwd)
   if (current.running) return current
 
   // Secure default: bind loopback like the CLI does. Binding a public
@@ -95,7 +98,7 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
   // accident when the plugin auto-starts the server.
   const addr = opts.addr ?? "127.0.0.1"
   const port = opts.port ?? 5781
-  const db = opts.db ?? process.env.TEAMX_DB ?? join(TEAMX_HOME, "teamx.db")
+  const db = opts.db ?? process.env.TEAMX_DB ?? join(teamxDir(cwd), "teamx.db")
   const ip = localIP()
   const publicBind = addr !== "127.0.0.1" && addr !== "localhost"
   const advertiseHost = publicBind ? ip : addr
@@ -109,7 +112,7 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
   const proc = Bun.spawn([teamxBin(), ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...(process.env as Record<string, string>) },
+    env: { ...(process.env as Record<string, string>), TEAMX_HOME: teamxDir(cwd) },
   })
 
   const rec: ServeRecord = {
@@ -120,13 +123,13 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
     db,
     started_at: new Date().toISOString(),
   }
-  writeRecord(rec)
+  writeRecord(cwd, rec)
 
   // Poll /health until ready (up to ~5s). mTLS is required, so present the
   // mTLS material when available; otherwise fall back to a process-liveness
   // wait (the server may still be coming up).
   const base = `https://127.0.0.1:${port}`
-  const mtls = mtlsFor(base)
+  const mtls = mtlsFor(base, cwd)
   for (let i = 0; i < 25; i++) {
     try {
       const init: RequestInit & { tls?: Record<string, unknown> } = {}
@@ -134,18 +137,19 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
         init.tls = { cert: mtls.cert, key: mtls.key, ca: mtls.ca, serverName: mtls.serverName }
       }
       const res = await fetch(`${base}/health`, init)
-      if (res.ok) return serveStatus()
+      if (res.ok) return serveStatus(cwd)
     } catch {
       // not up yet
     }
     await new Promise((r) => setTimeout(r, 200))
   }
-  return serveStatus()
+  return serveStatus(cwd)
 }
 
-/** Stop the embedded serve subprocess, if any. */
-export async function serveStop(): Promise<ServeStatus> {
-  const rec = readRecord()
+/** Stop the embedded serve subprocess, if any (per workspace). */
+export async function serveStop(cwd?: string): Promise<ServeStatus> {
+  const dir = cwd ?? process.cwd()
+  const rec = readRecord(dir)
   if (!rec) return { running: false }
   if (processAlive(rec.pid)) {
     try {
@@ -159,6 +163,6 @@ export async function serveStop(): Promise<ServeStatus> {
       // ignore
     }
   }
-  clearRecord()
+  clearRecord(dir)
   return { running: false }
 }

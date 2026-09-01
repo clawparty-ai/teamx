@@ -2,21 +2,27 @@
 // Each tool maps 1:1 to a `teamx` CLI subcommand and returns the JSON result.
 
 import { tool } from "@opencode-ai/plugin"
-import { instanceId, markMember, runCli, renderResult, sessionKey, TEAMX_SERVER_URL } from "./client"
+import { instanceId, markMember, noteSessionDir, runCli, renderResult, serverUrlFor, sessionKey } from "./client"
 import { serveStart, serveStatus, serveStop } from "./serve"
 
 type ToolCtx = { sessionID: string; directory: string }
 
-/** Run a teamx CLI command as the current session and render its output. */
-async function tx(sessionID: string | undefined, args: string[]): Promise<string> {
-  const r = await txResult(sessionID, args)
+/** Run a teamx CLI command as the current session in its workspace dir. */
+async function tx(sessionID: string | undefined, directory: string, args: string[]): Promise<string> {
+  const r = await txResult(sessionID, directory, args)
   return renderResult(r)
 }
 
 /** Run a teamx CLI command and return the raw result (for membership marking). */
-async function txResult(sessionID: string | undefined, args: string[]): Promise<import("./client").CliResult> {
-  const key = sessionKey(instanceId(), sessionID)
-  return runCli([...args, "--session", key])
+async function txResult(
+  sessionID: string | undefined,
+  directory: string,
+  args: string[],
+  opts?: { forceLocal?: boolean },
+): Promise<import("./client").CliResult> {
+  noteSessionDir(sessionID, directory)
+  const key = sessionKey(instanceId(directory), sessionID)
+  return runCli([...args, "--session", key], { cwd: directory, forceLocal: opts?.forceLocal })
 }
 
 function opt(name: string, value: string | undefined): string[] {
@@ -39,7 +45,7 @@ export const tools = {
       goal_body: tool.schema.string().optional().describe("optional initial goal body"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, [
+      const r = await txResult(context.sessionID, context.directory, [
         "team",
         "create",
         args.name,
@@ -58,7 +64,7 @@ export const tools = {
       body: tool.schema.string().optional().describe("goal body / detailed description"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["goal", "set", args.title, ...opt("--body", args.body)])
+      return tx(context.sessionID, context.directory, ["goal", "set", args.title, ...opt("--body", args.body)])
     },
   }),
 
@@ -66,7 +72,7 @@ export const tools = {
     description: "Share the goal with team members and move the team into the active state (owner only).",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["goal", "share"])
+      return tx(context.sessionID, context.directory, ["goal", "share"])
     },
   }),
 
@@ -76,7 +82,7 @@ export const tools = {
       "Only call this after a member reported the goal achieved.",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["goal", "close"])
+      return tx(context.sessionID, context.directory, ["goal", "close"])
     },
   }),
 
@@ -84,7 +90,7 @@ export const tools = {
     description: "Archive a completed team (owner only). Archived teams accept no new members.",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "archive"])
+      return tx(context.sessionID, context.directory, ["team", "archive"])
     },
   }),
 
@@ -96,7 +102,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "destroy", ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["team", "destroy", ...opt("--team", args.team)])
     },
   }),
 
@@ -113,10 +119,11 @@ export const tools = {
       mode: tool.schema.enum(["local", "frp"]).optional().describe("exposure mode (default local)"),
       lan_ip: tool.schema.string().optional().describe("provider LAN IP for direct-connect hints (auto-detected if absent)"),
     },
-    async execute(args, _context: ToolCtx) {
-      const serverUrl = TEAMX_SERVER_URL
+    async execute(args, context: ToolCtx) {
+      noteSessionDir(context.sessionID, context.directory)
+      const serverUrl = serverUrlFor(context.directory)
       if (!serverUrl) {
-        return "teamx error: tunnel expose requires network mode; set TEAMX_SERVER_URL (or import an invitation letter)"
+        return "teamx error: tunnel expose requires network mode; import an invitation letter in this workspace (or set TEAMX_SERVER_URL)"
       }
       const { exposeTunnel } = await import("./tunnel")
       const { saveTunnel } = await import("./tunnels-store")
@@ -133,14 +140,7 @@ export const tools = {
         return `teamx error: failed to register tunnel "${args.name}"`
       }
       // persist so the tunnel is re-opened after an opencode restart
-      saveTunnel({
-        name: args.name,
-        port: args.port,
-        mode: args.mode ?? "local",
-        lan_ip: args.lan_ip,
-        server_url: serverUrl,
-        created_at: new Date().toISOString(),
-      })
+      saveTunnel(args.name, args.port, args.mode ?? "local", args.lan_ip, serverUrl, context.directory)
       const mode = args.mode ?? "local"
       const access =
         mode === "frp"
@@ -158,7 +158,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["tunnel", "list", ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["tunnel", "list", ...opt("--team", args.team)])
     },
   }),
 
@@ -171,7 +171,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["tunnel", "status", args.name, ...opt("--team", args.team)])
     },
   }),
 
@@ -183,11 +183,11 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, ["tunnel", "close", args.name, ...opt("--team", args.team)])
+      const r = await txResult(context.sessionID, context.directory, ["tunnel", "close", args.name, ...opt("--team", args.team)])
       // forget the persisted tunnel so it is not re-opened after a restart
       if (r.ok) {
         const { removeTunnel } = await import("./tunnels-store")
-        removeTunnel(args.name)
+        removeTunnel(args.name, context.directory)
       }
       return renderResult(r)
     },
@@ -203,7 +203,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+      const r = await txResult(context.sessionID, context.directory, ["tunnel", "status", args.name, ...opt("--team", args.team)])
       if (!r.ok) return renderResult(r)
       const data = (r.data ?? {}) as Record<string, unknown>
       if (data.same_subnet === true && data.direct_addr) {
@@ -247,14 +247,15 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      const serverUrl = TEAMX_SERVER_URL
+      noteSessionDir(context.sessionID, context.directory)
+      const serverUrl = serverUrlFor(context.directory)
       if (!serverUrl) {
-        return "teamx error: tunnel forward requires network mode; set TEAMX_SERVER_URL (or import an invitation letter)"
+        return "teamx error: tunnel forward requires network mode; import an invitation letter in this workspace (or set TEAMX_SERVER_URL)"
       }
       // Resolve the provider's target port for a natural default local port.
       let targetPort: number | undefined
       if (!args.local_port) {
-        const st = await txResult(context.sessionID, ["tunnel", "status", args.name, ...opt("--team", args.team)])
+        const st = await txResult(context.sessionID, context.directory, ["tunnel", "status", args.name, ...opt("--team", args.team)])
         if (st.ok) {
           const d = (st.data ?? {}) as Record<string, unknown>
           if (typeof d.target_port === "number") targetPort = d.target_port
@@ -277,7 +278,7 @@ export const tools = {
           (candidate ? `Try --local-port ${candidate} (or confirm to bind it).` : "Pick a free port.")
         )
       }
-      saveForward({ name: args.name, local_port: bound, server_url: serverUrl, created_at: new Date().toISOString() })
+      saveForward(args.name, bound, serverUrl, context.directory)
       return JSON.stringify(
         { ok: true, name: args.name, local_port: bound, note: "access like a local service, e.g. http://127.0.0.1:" + bound },
         null,
@@ -293,7 +294,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, ["team", "leave", ...opt("--team", args.team)])
+      const r = await txResult(context.sessionID, context.directory, ["team", "leave", ...opt("--team", args.team)])
       if (r.ok) markMember(context.sessionID, false)
       return renderResult(r)
     },
@@ -308,7 +309,7 @@ export const tools = {
       member: tool.schema.string().optional().describe("target member id (owner only)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["member", "set-state", args.state, ...opt("--member", args.member)])
+      return tx(context.sessionID, context.directory, ["member", "set-state", args.state, ...opt("--member", args.member)])
     },
   }),
 
@@ -321,7 +322,7 @@ export const tools = {
       loopx_project: tool.schema.string().optional().describe("loopx project directory for stage-progress reports"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, [
+      const r = await txResult(context.sessionID, context.directory, [
         "team",
         "join",
         args.token,
@@ -341,7 +342,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "approve", args.member_id, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["team", "approve", args.member_id, ...opt("--team", args.team)])
     },
   }),
 
@@ -352,7 +353,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "deny", args.member_id, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["team", "deny", args.member_id, ...opt("--team", args.team)])
     },
   }),
 
@@ -365,7 +366,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "promote-lead", args.member_id, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["team", "promote-lead", args.member_id, ...opt("--team", args.team)])
     },
   }),
 
@@ -376,7 +377,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "demote-lead", args.member_id, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["team", "demote-lead", args.member_id, ...opt("--team", args.team)])
     },
   }),
 
@@ -391,7 +392,7 @@ export const tools = {
       server_url: tool.schema.string().optional().describe("server URL to embed in the letter (default https://127.0.0.1:5781)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, [
+      return tx(context.sessionID, context.directory, [
         "team",
         "invite",
         args.role_desc,
@@ -405,7 +406,7 @@ export const tools = {
     description: "List issued invitation letters for the team (owner only), with their state (unused/used/revoked).",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "invite-list"])
+      return tx(context.sessionID, context.directory, ["team", "invite-list"])
     },
   }),
 
@@ -415,7 +416,7 @@ export const tools = {
       id: tool.schema.string().describe("invitation id to revoke"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "invite-revoke", args.id])
+      return tx(context.sessionID, context.directory, ["team", "invite-revoke", args.id])
     },
   }),
 
@@ -430,16 +431,20 @@ export const tools = {
       name: tool.schema.string().optional().describe("display name (defaults to the letter's name_hint)"),
     },
     async execute(args, context: ToolCtx) {
-      const r = await txResult(context.sessionID, ["team", "import", args.letter, ...opt("--name", args.name)])
+      noteSessionDir(context.sessionID, context.directory)
+      // Import must always run the local CLI so the letter + mTLS material is
+      // stored under <workspace>/.teamx/letters/ (even when a server URL is
+      // configured — otherwise no client cert would exist for RPC auth).
+      const r = await txResult(context.sessionID, context.directory, ["team", "import", args.letter, ...opt("--name", args.name)], { forceLocal: true })
       if (r.ok) markMember(context.sessionID, true)
       const rendered = renderResult(r)
       // After a successful import, configure stock git with the letter's mTLS
       // certs so the user can `git clone` directly (Smart HTTP endpoint).
       if (r.ok) {
         const data = (r.data ?? {}) as Record<string, unknown>
-        const serverUrl = (data.server_url as string) || TEAMX_SERVER_URL
+        const serverUrl = (data.server_url as string) || serverUrlFor(context.directory)
         if (serverUrl) {
-          const setup = await txResult(context.sessionID, ["git", "setup", "--server", serverUrl])
+          const setup = await txResult(context.sessionID, context.directory, ["git", "setup", "--server", serverUrl], { forceLocal: true })
           if (setup.ok) {
             return rendered + "\n\n[teamx] stock git configured for mTLS: `git clone https://" +
               serverUrl.replace(/^https?:\/\//, "") + "/git/<team_id>/<repo>`" +
@@ -462,7 +467,7 @@ export const tools = {
       member: tool.schema.string().optional().describe("target member id when assigning on someone's behalf (owner only)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["role", "set", args.role, ...opt("--member", args.member)])
+      return tx(context.sessionID, context.directory, ["role", "set", args.role, ...opt("--member", args.member)])
     },
   }),
 
@@ -476,7 +481,7 @@ export const tools = {
       description: tool.schema.string().optional().describe("job-role description / responsibilities"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["role", "propose", args.role, args.label, ...(args.description ? [args.description] : [])])
+      return tx(context.sessionID, context.directory, ["role", "propose", args.role, args.label, ...(args.description ? [args.description] : [])])
     },
   }),
 
@@ -487,7 +492,7 @@ export const tools = {
       role: tool.schema.string().describe("role key to approve"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["role", "approve", args.role])
+      return tx(context.sessionID, context.directory, ["role", "approve", args.role])
     },
   }),
 
@@ -498,7 +503,7 @@ export const tools = {
       role: tool.schema.string().describe("role key to deny"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["role", "deny", args.role])
+      return tx(context.sessionID, context.directory, ["role", "deny", args.role])
     },
   }),
 
@@ -514,7 +519,7 @@ export const tools = {
       const parts = ["role", "update", args.role]
       if (args.label) parts.push("--label", args.label)
       if (args.description) parts.push("--description", args.description)
-      return tx(context.sessionID, parts)
+      return tx(context.sessionID, context.directory, parts)
     },
   }),
 
@@ -522,7 +527,7 @@ export const tools = {
     description: "List the teams the current session belongs to, with goal and role overview.",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["team", "list"])
+      return tx(context.sessionID, context.directory, ["team", "list"])
     },
   }),
 
@@ -534,8 +539,9 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      const key = sessionKey(instanceId(), context.sessionID)
-      const r = await runCli(["team", "status", ...opt("--team", args.team), "--session", key])
+      noteSessionDir(context.sessionID, context.directory)
+      const key = sessionKey(instanceId(context.directory), context.sessionID)
+      const r = await runCli(["team", "status", ...opt("--team", args.team), "--session", key], { cwd: context.directory })
       return renderResult(r)
     },
   }),
@@ -546,7 +552,7 @@ export const tools = {
       "then advance the sync cursor. Call this at the start of every turn before acting.",
     args: {},
     async execute(_args, context: ToolCtx) {
-      return tx(context.sessionID, ["sync"])
+      return tx(context.sessionID, context.directory, ["sync"])
     },
   }),
 
@@ -572,7 +578,7 @@ export const tools = {
       assignee: tool.schema.string().optional().describe("member id the task/event is directed to (auto-execute target)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["publish", args.type, ...opt("--data", args.data), ...opt("--assignee", args.assignee)])
+      return tx(context.sessionID, context.directory, ["publish", args.type, ...opt("--data", args.data), ...opt("--assignee", args.assignee)])
     },
   }),
 
@@ -583,7 +589,7 @@ export const tools = {
       question: tool.schema.string().describe("the clarifying question"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["ask", args.member_id, "--question", args.question])
+      return tx(context.sessionID, context.directory, ["ask", args.member_id, "--question", args.question])
     },
   }),
 
@@ -594,7 +600,7 @@ export const tools = {
       answer: tool.schema.string().describe("your answer"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["respond", args.ask_id, "--answer", args.answer])
+      return tx(context.sessionID, context.directory, ["respond", args.ask_id, "--answer", args.answer])
     },
   }),
 
@@ -606,19 +612,20 @@ export const tools = {
       project: tool.schema.string().optional().describe("loopx project directory"),
     },
     async execute(args, context: ToolCtx) {
-      const key = sessionKey(instanceId(), context.sessionID)
+      noteSessionDir(context.sessionID, context.directory)
+      const key = sessionKey(instanceId(context.directory), context.sessionID)
       if (args.project) {
-        const r = await runCli(["loopx", "report", args.project, "--session", key])
+        const r = await runCli(["loopx", "report", args.project, "--session", key], { cwd: context.directory })
         return renderResult(r)
       }
       // fall back to the session's bound project: read from status
-      const status = await runCli(["team", "status", "--session", key])
+      const status = await runCli(["team", "status", "--session", key], { cwd: context.directory })
       const data = status.data as { teams?: { members?: { display_name?: string; loopx_project?: string }[] }[] } | null
       const project = data?.teams?.[0]?.members?.find((m) => m.display_name)?.loopx_project
       if (!project) {
         return "teamx: no loopx project bound. Set loopx_project when joining (teamx_join) or pass project explicitly."
       }
-      const r = await runCli(["loopx", "report", project, "--session", key])
+      const r = await runCli(["loopx", "report", project, "--session", key], { cwd: context.directory })
       return renderResult(r)
     },
   }),
@@ -633,7 +640,8 @@ export const tools = {
       db: tool.schema.string().optional().describe("database path (default TEAMX_DB or ~/.teamx/teamx.db)"),
     },
     async execute(args, context: ToolCtx) {
-      const st = await serveStart({ addr: args.addr, port: args.port, db: args.db })
+      noteSessionDir(context.sessionID, context.directory)
+      const st = await serveStart({ addr: args.addr, port: args.port, db: args.db, cwd: context.directory })
       return JSON.stringify(st, null, 2)
     },
   }),
@@ -641,16 +649,16 @@ export const tools = {
   teamx_serve_status: tool({
     description: "Show whether the embedded teamx server is running, plus its URL and PID.",
     args: {},
-    async execute() {
-      return JSON.stringify(serveStatus(), null, 2)
+    async execute(_args, context: ToolCtx) {
+      return JSON.stringify(serveStatus(context.directory), null, 2)
     },
   }),
 
   teamx_serve_stop: tool({
     description: "Stop the embedded teamx server subprocess, if running.",
     args: {},
-    async execute() {
-      return JSON.stringify(await serveStop(), null, 2)
+    async execute(_args, context: ToolCtx) {
+      return JSON.stringify(await serveStop(context.directory), null, 2)
     },
   }),
 
@@ -679,7 +687,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "create", args.name, ...opt("--description", args.description), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "create", args.name, ...opt("--description", args.description), ...opt("--team", args.team)])
     },
   }),
 
@@ -692,7 +700,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "delete", args.name, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "delete", args.name, ...opt("--team", args.team)])
     },
   }),
 
@@ -704,7 +712,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "list", ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "list", ...opt("--team", args.team)])
     },
   }),
 
@@ -718,7 +726,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "clone", args.repo, ...opt("--directory", args.directory), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "clone", args.repo, ...opt("--directory", args.directory), ...opt("--team", args.team)])
     },
   }),
 
@@ -733,7 +741,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "pull", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "pull", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 
@@ -748,7 +756,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "push", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "push", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 
@@ -767,7 +775,7 @@ export const tools = {
       const parts = ["git", "setup"]
       if (args.server) parts.push("--server", args.server)
       if (args.local) parts.push("--local")
-      return tx(context.sessionID, parts)
+      return tx(context.sessionID, context.directory, parts)
     },
   }),
 
@@ -780,7 +788,7 @@ export const tools = {
       dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "commit", "--message", args.message, ...opt("--dir", args.dir)])
+      return tx(context.sessionID, context.directory, ["git", "commit", "--message", args.message, ...opt("--dir", args.dir)])
     },
   }),
 
@@ -797,7 +805,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "commit-push", "--message", args.message, ...opt("--repo", args.repo), ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "commit-push", "--message", args.message, ...opt("--repo", args.repo), ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 
@@ -812,7 +820,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "grant", args.name, args.member_id, ...opt("--permission", args.permission), ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "grant", args.name, args.member_id, ...opt("--permission", args.permission), ...opt("--team", args.team)])
     },
   }),
 
@@ -824,7 +832,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, ["git", "permissions", args.name, ...opt("--team", args.team)])
+      return tx(context.sessionID, context.directory, ["git", "permissions", args.name, ...opt("--team", args.team)])
     },
   }),
 }

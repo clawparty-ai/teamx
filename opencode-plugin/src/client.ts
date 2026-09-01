@@ -3,26 +3,37 @@
 // V1 runs the `teamx` binary directly (single-machine, no server). Every call
 // shells out to `teamx <cmd> ... --json`. For V2 this module is the single
 // seam to replace with an HTTP client against `teamx serve`.
+//
+// Project-scoped by design (v3): the teamx space for a call is the `.teamx/`
+// directory under the caller's working directory (`cwd`). Letters, mTLS
+// certs, instance id and the local DB all live there — never in a global
+// `~/.teamx`. `TEAMX_HOME` / `TEAMX_SERVER_URL` env vars still override.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 
-export const TEAMX_HOME = process.env.TEAMX_HOME ?? join(homedir(), ".teamx")
+/**
+ * Resolve the teamx space directory for a working directory `cwd`
+ * (default: process.cwd()). `TEAMX_HOME` overrides the location explicitly.
+ */
+export function teamxDir(cwd?: string): string {
+  if (process.env.TEAMX_HOME) return process.env.TEAMX_HOME
+  return join(cwd ?? process.cwd(), ".teamx")
+}
+
+/** Directory for the stored invitation letters of a workspace. */
+function lettersDir(cwd: string): string {
+  return join(teamxDir(cwd), "letters")
+}
 
 /**
- * Discover the network-mode server URL from imported invitation letters.
- *
- * A letter embeds its server URL (teamx_invitation.server.url). If
- * TEAMX_SERVER_URL is not set explicitly, the plugin should still enter
- * network mode after a member imports a letter — the letter is the "join
- * packet" and carries the connection info. This scans ~/.teamx/letters dir
- * and returns the most recently imported letter's server URL (stable, and
- * consistent with the letterMtls fallback below). Returns null when no
- * letter records a server URL (pure single-machine V1 mode).
+ * Discover the network-mode server URL for a workspace from its imported
+ * invitation letters (`<cwd>/.teamx/letters/`). Returns the most recently
+ * imported letter's server URL (stable, and consistent with letterMtls).
+ * Returns null when no letter records a server URL (pure single-machine V1).
  */
-function discoverServerUrl(): string | null {
-  const dir = join(TEAMX_HOME, "letters")
+function discoverServerUrl(cwd: string): string | null {
+  const dir = lettersDir(cwd)
   if (!existsSync(dir)) return null
   let entries: string[] = []
   try {
@@ -50,21 +61,25 @@ function discoverServerUrl(): string | null {
 }
 
 /**
- * Network-mode server URL (e.g. ws://host:5781 or https://host).
+ * Network-mode server URL for a workspace (e.g. https://host:443).
  *
  * Resolution order: explicit TEAMX_SERVER_URL env wins; otherwise the most
- * recently imported invitation letter's embedded server URL; empty string
- * means pure V1 CLI mode (no network server configured).
+ * recently imported invitation letter's embedded server URL under
+ * `<cwd>/.teamx/letters/`; empty string means pure V1 CLI mode (no network
+ * server configured).
  */
-export const TEAMX_SERVER_URL = process.env.TEAMX_SERVER_URL || discoverServerUrl() || ""
+export function serverUrlFor(cwd?: string): string {
+  return process.env.TEAMX_SERVER_URL || discoverServerUrl(cwd ?? process.cwd()) || ""
+}
 
 /**
- * Read the most recently imported letter (matching TEAMX_SERVER_URL when set)
- * as its raw JSON payload, suitable for the `team.import` RPC (which accepts a
- * plain JSON object in the `letter` field). Returns null if no letter is stored.
+ * Read the most recently imported letter (matching the resolved server URL
+ * when set) of a workspace as its raw JSON payload, suitable for the
+ * `team.import` RPC (which accepts a plain JSON object in the `letter` field).
+ * Returns null if no letter is stored.
  */
-function readStoredLetter(): { invitation_id: string; letterJson: string } | null {
-  const dir = join(TEAMX_HOME, "letters")
+function readStoredLetter(cwd: string): { invitation_id: string; letterJson: string } | null {
+  const dir = lettersDir(cwd)
   if (!existsSync(dir)) return null
   let entries: string[] = []
   try {
@@ -72,7 +87,7 @@ function readStoredLetter(): { invitation_id: string; letterJson: string } | nul
   } catch {
     return null
   }
-  const wantedHost = TEAMX_SERVER_URL ? hostOf(TEAMX_SERVER_URL) : ""
+  const wantedHost = serverUrlFor(cwd) ? hostOf(serverUrlFor(cwd)) : ""
   let best: { invitation_id: string; letterJson: string; host: string; mtime: number } | null = null
   for (const id of entries) {
     const sub = join(dir, id)
@@ -103,12 +118,12 @@ function readStoredLetter(): { invitation_id: string; letterJson: string } | nul
  * is invoked lazily: the first RPC that fails because the member has no seat
  * yet triggers it, then the original call is retried once.
  */
-async function autoClaimLetter(): Promise<boolean> {
-  if (!TEAMX_SERVER_URL) return false
-  const stored = readStoredLetter()
+async function autoClaimLetter(cwd: string): Promise<boolean> {
+  if (!serverUrlFor(cwd)) return false
+  const stored = readStoredLetter(cwd)
   if (!stored) return false
   try {
-    const r = await runRpcRaw(["team", "import", stored.letterJson])
+    const r = await runRpcRaw(["team", "import", stored.letterJson], cwd)
     return r.ok
   } catch {
     return false
@@ -120,9 +135,9 @@ export function teamxBin(): string {
   return process.env.TEAMX_BIN ?? "teamx"
 }
 
-/** Stable per-machine instance id, persisted in ~/.teamx/instance.json. */
-export function instanceId(): string {
-  const file = join(TEAMX_HOME, "instance.json")
+/** Stable per-workspace instance id, persisted at `<cwd>/.teamx/instance.json`. */
+export function instanceId(cwd?: string): string {
+  const file = join(teamxDir(cwd), "instance.json")
   if (existsSync(file)) {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as { instance_id?: string }
@@ -132,15 +147,29 @@ export function instanceId(): string {
     }
   }
   const id = crypto.randomUUID()
-  mkdirSync(TEAMX_HOME, { recursive: true })
+  mkdirSync(teamxDir(cwd), { recursive: true })
   writeFileSync(file, JSON.stringify({ instance_id: id }, null, 2))
   return id
 }
 
-/** session_key = <instance-uuid>:<opencode-session-id> */
+/** session_key = <workspace-instance>:<opencode-session-id> */
 export function sessionKey(instance: string, sessionID: string | undefined): string {
   if (!sessionID) throw new Error("teamx: no opencode sessionID available in this tool context")
   return `${instance}:${sessionID}`
+}
+
+/** Per-session workspace directory map (populated by tool calls). */
+const sessionDirs = new Map<string, string>()
+
+/** Record the workspace directory an opencode session runs in. */
+export function noteSessionDir(sessionID: string | undefined, directory: string): void {
+  if (sessionID) sessionDirs.set(sessionID, directory)
+}
+
+/** The workspace directory of a session (fallback: process.cwd()). */
+export function dirOfSession(sessionID: string | undefined): string {
+  if (sessionID && sessionDirs.has(sessionID)) return sessionDirs.get(sessionID)!
+  return process.cwd()
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +233,8 @@ function toSnake(s: string): string {
 //
 // The server requires mutual TLS: every RPC must present a client certificate
 // signed by the team's CA. This material comes from an imported invitation
-// letter (stored under ~/.teamx/letters/<invitation_id>/) or, for the owner,
-// a self-issued cert. Explicit env vars win over letter auto-discovery.
+// letter (stored under `<cwd>/.teamx/letters/<invitation_id>/`) or, for the
+// owner, a self-issued cert. Explicit env vars win over letter auto-discovery.
 // ---------------------------------------------------------------------------
 
 interface MtlsMaterial {
@@ -239,12 +268,13 @@ function hostOf(url: string): string {
 }
 
 /**
- * Auto-discover the mTLS material from imported invitation letters under
- * `~/.teamx/letters/<id>/`. Prefers the letter whose embedded server URL
- * matches the configured server; otherwise falls back to the most recent one.
+ * Auto-discover the mTLS material from the workspace's imported invitation
+ * letters under `<cwd>/.teamx/letters/<id>/`. Prefers the letter whose
+ * embedded server URL matches the configured server; otherwise falls back to
+ * the most recent one.
  */
-function letterMtls(serverUrl: string): MtlsMaterial | null {
-  const dir = join(TEAMX_HOME, "letters")
+function letterMtls(serverUrl: string, cwd: string): MtlsMaterial | null {
+  const dir = lettersDir(cwd)
   if (!existsSync(dir)) return null
   let entries: string[] = []
   try {
@@ -296,10 +326,10 @@ function letterMtls(serverUrl: string): MtlsMaterial | null {
   }
 }
 
-/** Resolve the mTLS material for a given server URL (or null if unavailable). */
-export function mtlsFor(serverUrl: string): MtlsMaterial | null {
+/** Resolve the mTLS material for a server URL in a workspace (or null). */
+export function mtlsFor(serverUrl: string, cwd?: string): MtlsMaterial | null {
   const host = hostOf(serverUrl)
-  return envMtls(host) ?? letterMtls(serverUrl)
+  return envMtls(host) ?? letterMtls(serverUrl, cwd ?? process.cwd())
 }
 
 /**
@@ -395,10 +425,10 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
  * Run a raw RPC POST against the configured server (no auto-claim).
  * Returns the parsed CliResult.
  */
-async function runRpcRaw(argv: string[]): Promise<CliResult> {
+async function runRpcRaw(argv: string[], cwd: string): Promise<CliResult> {
   const { method, args } = cliArgsToRpc(argv)
-  const base = TEAMX_SERVER_URL.replace(/\/$/, "")
-  const mtls = mtlsFor(TEAMX_SERVER_URL)
+  const base = serverUrlFor(cwd).replace(/\/$/, "")
+  const mtls = mtlsFor(serverUrlFor(cwd), cwd)
   try {
     const init: RequestInit & { tls?: Record<string, unknown> } = {
       method: "POST",
@@ -439,16 +469,17 @@ async function runRpcRaw(argv: string[]): Promise<CliResult> {
 }
 
 /**
- * Run an RPC call against the configured network-mode server.
+ * Run an RPC call against the network-mode server of a workspace.
  * When the server reports that the calling member has no seat yet (imported
  * the letter locally but never claimed it on the server), this auto-registers
  * the stored letter (`team.import`) and retries the original call once.
  */
-export async function runRpc(argv: string[]): Promise<CliResult> {
-  let r = await runRpcRaw(argv)
+export async function runRpc(argv: string[], cwd?: string): Promise<CliResult> {
+  const dir = cwd ?? process.cwd()
+  let r = await runRpcRaw(argv, dir)
   if (!r.ok && needsAutoClaim(r.stderr)) {
-    const claimed = await autoClaimLetter()
-    if (claimed) r = await runRpcRaw(argv)
+    const claimed = await autoClaimLetter(dir)
+    if (claimed) r = await runRpcRaw(argv, dir)
   }
   return r
 }
@@ -467,16 +498,20 @@ function needsAutoClaim(err: string): boolean {
 
 /**
  * Run a teamx CLI invocation via Bun.spawn and parse the JSON output.
- * When TEAMX_SERVER_URL is set, the invocation is sent as an RPC instead.
- * Non-zero exits are surfaced as `{ ok: false, stderr }` instead of throwing.
- * A 30s timeout guards against a hung `teamx` subprocess.
+ * When the workspace has a network-mode server URL, the invocation is sent
+ * as an RPC instead — unless `forceLocal` is set (used by `team import` and
+ * `git setup`, which must touch the local workspace's `.teamx/` state even
+ * when a server is configured). Non-zero exits are surfaced as
+ * `{ ok: false, stderr }` instead of throwing. A 30s timeout guards against
+ * a hung `teamx` subprocess.
  */
-export async function runCli(args: string[], opts?: { cwd?: string }): Promise<CliResult> {
-  if (TEAMX_SERVER_URL) {
+export async function runCli(args: string[], opts?: { cwd?: string; forceLocal?: boolean }): Promise<CliResult> {
+  const cwd = opts?.cwd ?? process.cwd()
+  if (!opts?.forceLocal && serverUrlFor(cwd)) {
     // Network mode: strip the trailing `--json` that the plugin appends; the
     // RPC transport always speaks JSON.
     const clean = args.filter((a) => a !== "--json")
-    return runRpc(clean)
+    return runRpc(clean, cwd)
   }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 30_000)
@@ -487,7 +522,7 @@ export async function runCli(args: string[], opts?: { cwd?: string }): Promise<C
       stdout: "pipe",
       stderr: "pipe",
       env,
-      cwd: opts?.cwd,
+      cwd,
       signal: controller.signal,
     })
     const [stdout, stderr] = await Promise.all([
