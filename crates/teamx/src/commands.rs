@@ -485,6 +485,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Local(lc) => cmd_local(conn, lc)?,
         // Session identity: read-only local query, no DB writes needed.
         Command::Session(sc) => return cmd_session(conn, sc),
+        // Task management: built-in taskx doc type (content in git, state in meta).
+        Command::Task(tc) => return cmd_task(conn, tc),
         // Plugin management is pure file operations; it does not touch the DB.
         Command::Plugin(pc) => return cmd_plugin(pc),
         // `teamx serve` never reaches here (handled in main); this arm exists
@@ -725,6 +727,329 @@ fn cmd_local(conn: &mut Connection, cmd: &LocalCmd) -> Result<Value> {
             serde_json::json!({ "ok": true, "key": key, "value": value })
         }
     })
+}
+
+/// Handle `teamx task ...`: the built-in `taskx` document type.
+///
+/// Tasks are documents: content in git (`taskx/<id>.md`), state machine in
+/// `.teamx/docs/taskx/<id>.meta.json`, every transition an auditable ledger
+/// event. This command maps `task` subcommands onto the doc engine
+/// (`doc.created` / `doc.acknowledged` / `doc.done` / ...), so permissions,
+/// state validation, meta persistence and reactions all come from the existing
+/// DocSpec machinery (see `cmd_publish_doc`).
+///
+/// `task help` is special: it is a notification-only interrupt that does NOT
+/// advance the state machine (a blocked task stays in_progress) — the lead is
+/// notified via reactions and responds by updating the doc.
+fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
+    use crate::cli::TaskCmd;
+
+    // Project root / docs root for taskx instances.
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let taskx_dir = docs_root.join(crate::doc_flow::BUILTIN_TASKX);
+
+    match cmd {
+        TaskCmd::Create { title, assignee, role, executor, priority, id, detail, no_push, session, team } => {
+            let (actor, team) = resolve_actor(conn, session, team.as_deref())?;
+            // Only a lead (owner or co-lead) may create tasks.
+            ensure_owner(conn, &actor, &team)?;
+
+            // Resolve the assignee: explicit member id > role > error.
+            let assignee_id: Option<String> = if let Some(aid) = assignee {
+                let m = member_by_id(conn, aid)?;
+                if m.team_id != team.id {
+                    return err(format!("assignee member {aid} is not in team {}", team.id));
+                }
+                Some(m.id)
+            } else if let Some(role_key) = role {
+                // Role assignment: pick the first active member of that role.
+                let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
+                let found = members
+                    .iter()
+                    .find(|m| m.state != "left" && m.state != "denied" && m.role.as_deref() == Some(role_key.as_str()))
+                    .map(|m| m.id.clone());
+                found
+            } else {
+                return err("task create requires --assignee <member_id> or --role <role>");
+            };
+            let assignee_id = assignee_id.unwrap_or_default();
+
+            // Doc id: explicit, else a short slug from the title.
+            let doc_id = id.clone().unwrap_or_else(|| slugify(title));
+            if !crate::teamfile::is_safe_key_segment(&doc_id) {
+                return err(format!("task id `{doc_id}` is not a safe identifier (no `/`, `..`, or control chars)"));
+            }
+
+            // Build the doc.created payload for the taskx type.
+            let payload = json!({
+                "doc": crate::doc_flow::BUILTIN_TASKX,
+                "id": doc_id,
+                "title": title,
+                "detail": detail,
+                "assignee_member_id": assignee_id,
+                "executor": executor,
+                "priority": priority,
+                "assignee_role": role,
+            });
+            let out = cmd_publish_doc(
+                conn,
+                "doc.created",
+                Some(&payload.to_string()),
+                if assignee_id.is_empty() { None } else { Some(&assignee_id) },
+                session.as_str(),
+                Some(&team.id),
+            )?;
+
+            // Write the task document body (content in git).
+            std::fs::create_dir_all(&taskx_dir).map_err(|e| AppError(format!("mkdir {taskx_dir:?}: {e}")))?;
+            let md_path = taskx_dir.join(format!("{doc_id}.md"));
+            if !md_path.exists() {
+                let body = build_task_md(title, detail.as_deref(), executor, priority, assignee_id.as_str());
+                std::fs::write(&md_path, body).map_err(|e| AppError(format!("write {md_path:?}: {e}")))?;
+            }
+
+            if !no_push {
+                auto_git_commit(&cwd, &format!("teamx task: {title}"))?;
+            }
+            Ok(out)
+        }
+        TaskCmd::Ack { id, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.acknowledged", id, Some("acked"), json!({}))?)
+        }
+        TaskCmd::Claim { id, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.claimed", id, Some("claimed"), json!({}))?)
+        }
+        TaskCmd::Update { id, progress, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.updated", id, None, json!({ "note": progress }))?)
+        }
+        TaskCmd::Help { id, reason, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.help_requested", id, None, json!({ "note": reason }))?)
+        }
+        TaskCmd::Done { id, result, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.done", id, Some("done"), json!({ "note": result.as_deref().unwrap_or_default() }))?)
+        }
+        TaskCmd::Verify { id, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.verified", id, Some("verified"), json!({}))?)
+        }
+        TaskCmd::Reject { id, reason, session, team } => {
+            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.rejected", id, Some("assigned"), json!({ "note": reason }))?)
+        }
+        TaskCmd::List { mine, state, assignee, executor, session, team } => {
+            let my_id = if *mine {
+                let sess = session.as_deref().ok_or_else(|| {
+                    AppError("task list --mine requires --session (to identify the current member)".into())
+                })?;
+                let (actor, _t) = resolve_actor(conn, sess, team.as_deref())?;
+                Some(actor.id)
+            } else {
+                None
+            };
+            task_list(conn, &docs_root, my_id.as_deref(), state.as_deref(), assignee.as_deref(), executor.as_deref())
+        }
+        TaskCmd::Log { id, session: _session, team: _team } => task_log(conn, &docs_root, id),
+    }
+}
+
+/// Shared handler for task lifecycle events: build the doc payload, call the
+/// doc engine, then auto git-commit (unless the event is ack — see below).
+#[allow(clippy::too_many_arguments)]
+fn task_doc_event(
+    conn: &mut Connection,
+    cmd: &crate::cli::TaskCmd,
+    session: &str,
+    team_opt: Option<&str>,
+    event: &str,
+    id: &str,
+    to_state: Option<&str>,
+    mut payload: serde_json::Value,
+) -> Result<Value> {
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    payload["doc"] = json!(crate::doc_flow::BUILTIN_TASKX);
+    payload["id"] = json!(id);
+    if let Some(t) = to_state {
+        payload["to"] = json!(t);
+    }
+    let out = cmd_publish_doc(
+        conn,
+        event,
+        Some(&payload.to_string()),
+        None,
+        session,
+        team_opt,
+    )?;
+    let _ = cmd;
+    // Auto git commit for meaningful state changes; ack is noisy so it skips.
+    if event != "doc.acknowledged" {
+        auto_git_commit(&cwd, &format!("teamx task {id}: {event}"))?;
+    }
+    Ok(out)
+}
+
+/// `task list`: aggregate taskx instances from their .meta.json files.
+fn task_list(
+    conn: &Connection,
+    docs_root: &std::path::Path,
+    my_id: Option<&str>,
+    state: Option<&str>,
+    assignee: Option<&str>,
+    executor: Option<&str>,
+) -> Result<Value> {
+    let taskx_dir = docs_root.join(crate::doc_flow::BUILTIN_TASKX);
+    let mut tasks: Vec<Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&taskx_dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".meta.json") {
+                continue;
+            }
+            let id = name.trim_end_matches(".meta.json").to_string();
+            let Ok(meta) = crate::doc_flow::DocMeta::load(&e.path()) else { continue };
+            if let Some(s) = state {
+                if meta.state != s {
+                    continue;
+                }
+            }
+            if let Some(a) = assignee {
+                if meta.assignee.as_deref() != Some(a) {
+                    continue;
+                }
+            }
+            if let Some(e) = executor {
+                if meta.executor.as_deref() != Some(e) {
+                    continue;
+                }
+            }
+            if let Some(mid) = my_id {
+                if meta.assignee.as_deref() != Some(mid) {
+                    continue;
+                }
+            }
+            // Title from the doc body's first heading (best-effort).
+            let title = read_task_title(&taskx_dir, &id);
+            let _ = conn;
+            tasks.push(json!({
+                "id": id,
+                "title": title,
+                "state": meta.state,
+                "assignee": meta.assignee,
+                "executor": meta.executor.unwrap_or_else(|| "agent".to_string()),
+                "priority": meta.priority.unwrap_or_else(|| "medium".to_string()),
+                "owner": meta.owner,
+                "updated_at": meta.updated_at,
+            }));
+        }
+    }
+    tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Ok(json!({ "ok": true, "tasks": tasks }))
+}
+
+/// `task log`: the full audit trail of one taskx instance.
+fn task_log(_conn: &Connection, docs_root: &std::path::Path, id: &str) -> Result<Value> {
+    if !crate::teamfile::is_safe_key_segment(id) {
+        return err(format!("task id `{id}` is not a safe identifier"));
+    }
+    let taskx_dir = docs_root.join(crate::doc_flow::BUILTIN_TASKX);
+    let meta_path = crate::doc_flow::DocMeta::meta_path(docs_root, crate::doc_flow::BUILTIN_TASKX, id);
+    if !meta_path.exists() {
+        return err(format!("task `{id}` does not exist"));
+    }
+    let meta = crate::doc_flow::DocMeta::load(&meta_path).map_err(AppError)?;
+    let title = read_task_title(&taskx_dir, id);
+    let mut history: Vec<Value> = meta
+        .history
+        .iter()
+        .map(|s| json!({ "state": s.state, "by": s.by, "at": s.at, "event_seq": s.event_seq }))
+        .collect();
+    // Prepend the current state as a summary line.
+    let _ = &mut history;
+    Ok(json!({
+        "ok": true,
+        "id": id,
+        "title": title,
+        "state": meta.state,
+        "assignee": meta.assignee,
+        "executor": meta.executor,
+        "priority": meta.priority,
+        "created_at": meta.created_at,
+        "updated_at": meta.updated_at,
+        "history": history,
+    }))
+}
+
+/// Best-effort title from the task markdown's first `#` heading.
+fn read_task_title(taskx_dir: &std::path::Path, id: &str) -> String {
+    let md = taskx_dir.join(format!("{id}.md"));
+    if let Ok(text) = std::fs::read_to_string(&md) {
+        for line in text.lines() {
+            let t = line.trim();
+            if let Some(h) = t.strip_prefix("# ") {
+                return h.trim().to_string();
+            }
+        }
+    }
+    id.to_string()
+}
+
+/// Build the initial task markdown body.
+fn build_task_md(title: &str, detail: Option<&str>, executor: &str, priority: &str, assignee: &str) -> String {
+    format!(
+        "# {title}\n\n- assignee: {assignee}\n- executor: {executor}\n- priority: {priority}\n\n## 目标\n\n## 验收标准\n\n## 进展\n\n## 结果\n\n{}\n",
+        detail.map(|d| format!("## 详情\n\n{d}\n")).unwrap_or_default()
+    )
+}
+
+/// Auto git commit+push in the current working directory (best-effort, quiet).
+/// The taskx/ directory must be inside a git repo the member controls.
+/// `GIT_TERMINAL_PROMPT=0` prevents git from hanging on an unauthenticated
+/// push; if the repo has no remote, commit still happens and push is skipped.
+fn auto_git_commit(cwd: &std::path::Path, message: &str) -> Result<()> {
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["add", "-A"])
+        .status();
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["commit", "-m", message])
+        .status();
+    // Only push when a remote exists (avoids hanging credential prompts).
+    let has_remote = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["remote"])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    if has_remote {
+        let _ = std::process::Command::new("git")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .arg("-C")
+            .arg(cwd)
+            .args(["push"])
+            .status();
+    }
+    Ok(())
+}
+
+/// Simple slug for task ids: lowercase, spaces -> '-', strip non-alnum.
+fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in s.chars() {
+        // Keep Unicode letters/digits (so Chinese titles produce readable ids);
+        // collapse other runs into a single dash.
+        if ch.is_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() { "task".to_string() } else { out }
 }
 
 /// Handle `teamx session list`: enumerate the local machine's teamx member
@@ -3004,6 +3329,12 @@ fn cmd_publish_doc(
         "doc.rejected",
         "doc.reopened",
         "doc.closed",
+        // taskx lifecycle (built-in task doc type):
+        "doc.claimed",
+        "doc.acknowledged",
+        "doc.help_requested",
+        "doc.done",
+        "doc.verified",
     ];
     if !KNOWN_DOC_EVENTS.contains(&publish_type) {
         return err(format!(
@@ -3017,7 +3348,9 @@ fn cmd_publish_doc(
     let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
     let docs_root = cwd.join(".teamx").join("docs");
     let spec_path = docs_root.join("_spec").join(format!("{doc_key}.json"));
-    if !spec_path.exists() {
+    // The built-in `taskx` type has a code-level spec; it never requires an
+    // on-disk `_spec/taskx.json` (a team may still override it there).
+    if !spec_path.exists() && doc_key != crate::doc_flow::BUILTIN_TASKX {
         return err(format!(
             "doc type `{doc_key}` is not recognized (no contract in TEAM.md ## 文档)"
         ));
@@ -3057,22 +3390,52 @@ fn cmd_publish_doc(
         created_at: crate::events::db_now(),
         updated_at: crate::events::db_now(),
         history: Vec::new(),
+        assignee: None,
+        executor: None,
+        priority: None,
     });
 
     // Validate + compute the next meta (pure — no side effects). A failed
     // check returns before any write. The audit label records the member's
     // display name + role so two members sharing a role stay distinguishable.
     let actor_label = format!("{} ({})", actor.display_name, actor_role);
-    let next = crate::doc_flow::apply_event(
-        &spec,
-        &meta,
-        actor_role,
-        &actor_label,
-        publish_type,
-        to_state.as_deref(),
-        0,
-    )
-    .map_err(AppError)?;
+    // taskx: the assignee member may advance their own task's state (ack/claim/
+    // update/done) even though the doc owner/approver role is "lead". We pass a
+    // synthetic role that `can_advance` accepts when the actor is the assignee.
+    let effective_role = if doc_key == crate::doc_flow::BUILTIN_TASKX
+        && meta.assignee.as_deref() == Some(actor.id.as_str())
+    {
+        // "lead" is in the approvers list, so impersonating it grants advance.
+        "lead".to_string()
+    } else {
+        actor_role.to_string()
+    };
+    // `doc.help_requested` is a notification-only interrupt: it does not
+    // advance the state machine (a task stays in_progress while blocked). We
+    // record it in meta history with an unchanged state.
+    let next = if publish_type == "doc.help_requested" {
+        let mut m = meta.clone();
+        let now = crate::events::db_now();
+        m.updated_at = now.clone();
+        m.history.push(crate::doc_flow::MetaStep {
+            state: meta.state.clone(),
+            by: actor_label,
+            at: now,
+            event_seq: 0,
+        });
+        m
+    } else {
+        crate::doc_flow::apply_event(
+            &spec,
+            &meta,
+            &effective_role,
+            &actor_label,
+            publish_type,
+            to_state.as_deref(),
+            0,
+        )
+        .map_err(AppError)?
+    };
 
     let seq = db::with_write(conn, |tx| {
         payload["doc"] = json!(doc_key);
@@ -3100,6 +3463,22 @@ fn cmd_publish_doc(
     }
     if let Some(m) = existing.as_ref() {
         persisted.created_at = m.created_at.clone();
+    }
+    // Persist task semantics (taskx only) from the payload into the meta, so
+    // `task list` can filter/display assignee, executor and priority without
+    // re-parsing the markdown body.
+    if doc_key == crate::doc_flow::BUILTIN_TASKX {
+        if let Some(a) = payload.get("assignee_member_id").and_then(|v| v.as_str()) {
+            if !a.is_empty() {
+                persisted.assignee = Some(a.to_string());
+            }
+        }
+        if let Some(e) = payload.get("executor").and_then(|v| v.as_str()) {
+            persisted.executor = Some(e.to_string());
+        }
+        if let Some(p) = payload.get("priority").and_then(|v| v.as_str()) {
+            persisted.priority = Some(p.to_string());
+        }
     }
     persisted
         .save(&meta_path)
@@ -3547,7 +3926,115 @@ pub fn nudge_idle_teams(
     Ok(written)
 }
 
-/// True if this member's invitation letter has been revoked (network mode I2).
+/// Check every member's open `taskx` tasks and emit a `task.nudge` event for
+/// members who still have unfinished tasks. Unlike `nudge_idle_teams` (team
+/// silence), this is member-directed: the plugin wakes the assignee session
+/// ("you have open tasks") so an agent keeps working and a human sees a
+/// reminder.
+///
+/// Pacing is per member + task state: a member is nudged at most once per
+/// `after_secs` (tracked by the last `task.nudge` event for that member).
+/// Returns the events to fan out (with `team_id` + `assignee_member_id`).
+pub fn nudge_open_tasks(
+    conn: &mut Connection,
+    after_secs: i64,
+    now_secs: Option<i64>,
+    taskx_dir: Option<&std::path::Path>,
+) -> rusqlite::Result<Vec<Value>> {
+    let now = now_secs.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let mut written: Vec<Value> = Vec::new();
+
+    // Locate the project's taskx instances. In network mode the server runs in
+    // the owner's repo (CWD); in local mode it is the shared working dir. If no
+    // taskx dir exists, there is nothing to nudge.
+    let taskx_dir = taskx_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        cwd.join(".teamx").join("docs").join(crate::doc_flow::BUILTIN_TASKX)
+    });
+    let Ok(entries) = std::fs::read_dir(&taskx_dir) else {
+        return Ok(written);
+    };
+
+    // Collect open tasks per assignee: id + state + title.
+    let mut per_assignee: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    let mut team_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".meta.json") {
+            continue;
+        }
+        let id = name.trim_end_matches(".meta.json").to_string();
+        let Ok(meta) = crate::doc_flow::DocMeta::load(&e.path()) else { continue };
+        // Skip finished tasks.
+        if matches!(meta.state.as_str(), "done" | "verified") {
+            continue;
+        }
+        let Some(aid) = meta.assignee.as_deref() else { continue };
+        if aid.is_empty() {
+            continue;
+        }
+        let title = read_task_title(&taskx_dir, &id);
+        per_assignee.entry(aid.to_string()).or_default().push(json!({
+            "task_id": id,
+            "state": meta.state,
+            "title": title,
+        }));
+        // team_of: resolve via the member's team (members table).
+        if let Ok(t) = conn.query_row(
+            "SELECT team_id FROM members WHERE id = ?1 AND state NOT IN ('left','denied')",
+            [aid],
+            |r| r.get::<_, String>(0),
+        ) {
+            team_of.insert(aid.to_string(), t);
+        }
+    }
+
+    for (aid, tasks) in per_assignee {
+        let Some(team_id) = team_of.get(&aid) else { continue };
+        // Pacing: at most one task.nudge per member per after_secs window.
+        let last_nudge: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND member_id = ?2 AND type = 'task.nudge'",
+            params![team_id, aid],
+            |r| r.get(0),
+        )?;
+        if let Some(n) = last_nudge {
+            if now - ts_secs(&n) < after_secs {
+                continue;
+            }
+        }
+        let names: Vec<&str> = tasks.iter().map(|t| t["title"].as_str().unwrap_or("-")).collect();
+        let message = format!(
+            "你有 {} 个未完成任务：{}。请继续推进；如受阻可 task help 求助 lead。",
+            tasks.len(),
+            names.join("、")
+        );
+        let payload = json!({
+            "kind": "task_reminder",
+            "assignee_member_id": aid,
+            "tasks": tasks,
+            "message": message,
+        });
+        let ts = chrono::DateTime::from_timestamp(now, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(crate::events::db_now);
+        db::with_write(conn, |tx| {
+            let seq = events::emit(tx, &team_id, Some(&aid), "task.nudge", Some(&payload))?;
+            tx.execute(
+                "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                params![ts, team_id, seq],
+            )?;
+            Ok(())
+        })?;
+        written.push(json!({
+            "team_id": team_id,
+            "member_id": aid,
+            "type": "task.nudge",
+            "payload": payload,
+        }));
+    }
+
+    Ok(written)
+}
 /// Only invitation-issued members have an `invitations` row; token-joined
 /// members are not affected by invitation revocation.
 pub fn is_revoked(conn: &Connection, member_id: &str) -> rusqlite::Result<bool> {
@@ -4070,5 +4557,79 @@ mod tests {
         // instance id may be empty in CI; either way the command must not error
         // and must return a sessions array.
         assert!(out["sessions"].is_array());
+    }
+
+    #[test]
+    fn nudge_open_tasks_nudges_assignee_with_open_task() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        // m1 is an active member; create an open taskx instance assigned to m1.
+        let dir = std::env::temp_dir().join(format!("teamx-nudgetask-{}", std::process::id()));
+        let taskx = dir.join("taskx");
+        std::fs::create_dir_all(&taskx).unwrap();
+        let meta = crate::doc_flow::DocMeta {
+            doc: "taskx".into(),
+            id: "t-1".into(),
+            state: "assigned".into(),
+            owner: "lead".into(),
+            assignee: Some("m1".into()),
+            executor: Some("human".into()),
+            ..Default::default()
+        };
+        crate::doc_flow::DocMeta::meta_path(&dir, "taskx", "t-1")
+            .parent()
+            .map(|p| std::fs::create_dir_all(p).unwrap());
+        meta.save(&crate::doc_flow::DocMeta::meta_path(&dir, "taskx", "t-1")).unwrap();
+        std::fs::write(taskx.join("t-1.md"), "# 写报告\n").unwrap();
+
+        let written = nudge_open_tasks(&mut conn, 300, Some(10_000), Some(&taskx)).unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["type"], "task.nudge");
+        assert_eq!(written[0]["member_id"], "m1");
+        assert_eq!(written[0]["payload"]["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(written[0]["payload"]["tasks"][0]["task_id"], "t-1");
+
+        // Pacing: immediate re-run within after_secs is suppressed.
+        let again = nudge_open_tasks(&mut conn, 300, Some(10_000), Some(&taskx)).unwrap();
+        assert!(again.is_empty(), "no spam within the pacing window");
+
+        // A later tick nudges again.
+        let later = nudge_open_tasks(&mut conn, 300, Some(10_000 + 300), Some(&taskx)).unwrap();
+        assert_eq!(later.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nudge_open_tasks_skips_finished_and_unassigned() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        let dir = std::env::temp_dir().join(format!("teamx-nudgetask2-{}", std::process::id()));
+        let taskx = dir.join("taskx");
+        std::fs::create_dir_all(&taskx).unwrap();
+        // done task -> skipped
+        let meta_done = crate::doc_flow::DocMeta {
+            doc: "taskx".into(),
+            id: "done".into(),
+            state: "done".into(),
+            owner: "lead".into(),
+            assignee: Some("m1".into()),
+            ..Default::default()
+        };
+        meta_done.save(&crate::doc_flow::DocMeta::meta_path(&dir, "taskx", "done")).unwrap();
+        // no assignee -> skipped
+        let meta_none = crate::doc_flow::DocMeta {
+            doc: "taskx".into(),
+            id: "none".into(),
+            state: "assigned".into(),
+            owner: "lead".into(),
+            assignee: None,
+            ..Default::default()
+        };
+        meta_none.save(&crate::doc_flow::DocMeta::meta_path(&dir, "taskx", "none")).unwrap();
+
+        let written = nudge_open_tasks(&mut conn, 300, Some(10_000), Some(&taskx)).unwrap();
+        assert!(written.is_empty(), "done/unassigned tasks must not be nudged");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

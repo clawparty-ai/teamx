@@ -43,6 +43,15 @@ pub struct DocMeta {
     pub updated_at: String,
     /// Transition history (oldest first); event_seq ties to the team ledger.
     pub history: Vec<MetaStep>,
+    /// Optional task semantics (used by the built-in `taskx` type): the member
+    /// this task is assigned to, whether it needs a human executor, and priority.
+    /// Absent for ordinary document types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }
 
 /// One state transition recorded in `.meta.json`.
@@ -85,11 +94,80 @@ impl DocMeta {
 // ---------------------------------------------------------------------------
 
 /// Load a doc contract from `.teamx/docs/_spec/<key>.json`.
+///
+/// The built-in `taskx` type has no required on-disk spec: if the file is
+/// absent (or the docs root itself is missing), we fall back to
+/// [`builtin_taskx_spec`], so `teamx task` works out of the box without a
+/// TEAM.md `## 文档` declaration. A team may still override `taskx` by writing
+/// its own `_spec/taskx.json` (e.g. to adjust the state flow or reactions).
 pub fn load_spec(docs_root: &Path, doc_key: &str) -> Result<DocSpec, String> {
     let path = docs_root.join("_spec").join(format!("{doc_key}.json"));
+    if !path.exists() && doc_key == BUILTIN_TASKX {
+        return Ok(builtin_taskx_spec());
+    }
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
+}
+
+/// The built-in task document key.
+pub const BUILTIN_TASKX: &str = "taskx";
+
+/// The built-in `taskx` document contract — the executable spec behind
+/// `teamx task`. Unlike TEAM.md-declared doc types, this one always exists, so
+/// task assignment works on any team without declaring a `## 文档` section.
+///
+/// State flow: `assigned -> acked -> claimed -> in_progress -> done -> verified`.
+/// `claimed` may be skipped (small tasks go straight to in_progress). A
+/// `help_requested` event is a notification-only interrupt that leaves the
+/// state unchanged (task stays in_progress); the lead responds by updating the
+/// doc. Reject/reopen are backward moves.
+pub fn builtin_taskx_spec() -> DocSpec {
+    use crate::teamfile::DocReaction;
+    DocSpec {
+        key: BUILTIN_TASKX.to_string(),
+        title: "任务".to_string(),
+        purpose: Some("team lead 派发任务，成员以文档为中心完成并提交".to_string()),
+        template: vec![
+            "目标".to_string(),
+            "验收标准".to_string(),
+            "assignee".to_string(),
+            "executor".to_string(),
+            "priority".to_string(),
+            "进展".to_string(),
+            "结果".to_string(),
+        ],
+        creators: Vec::new(), // anyone may create (lead role enforced by command layer)
+        owner: "lead".to_string(),
+        // `owner` = the team owner role key, `lead` = the built-in lead label
+        // used by reactions; both may advance task state.
+        approvers: vec!["lead".to_string(), "owner".to_string()],
+        states: vec![
+            "assigned".to_string(),
+            "acked".to_string(),
+            "claimed".to_string(),
+            "in_progress".to_string(),
+            "done".to_string(),
+            "verified".to_string(),
+        ],
+        reactions: vec![
+            DocReaction {
+                on: "created".to_string(),
+                to_role: None, // assignee-directed notification handled by cmd_task
+                action: "查看新任务并开始".to_string(),
+            },
+            DocReaction {
+                on: "done".to_string(),
+                to_role: Some("lead".to_string()),
+                action: "验收已完成的任务".to_string(),
+            },
+            DocReaction {
+                on: "help_requested".to_string(),
+                to_role: Some("lead".to_string()),
+                action: "查看成员的求助请求并回应".to_string(),
+            },
+        ],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +243,13 @@ pub fn classify_event(event: &str) -> DocEventKind {
         "doc.created" => DocEventKind::Created,
         "doc.updated" => DocEventKind::Updated,
         "doc.rejected" | "doc.reopened" => DocEventKind::Backward,
+        // Task-lifecycle events: forward moves along the taskx state flow.
+        // `doc.help_requested` is a notification-only interrupt — it does not
+        // advance state (handled by cmd_task before apply_event), so here it
+        // classifies as Forward but callers skip the transition for it.
+        "doc.claimed" | "doc.acknowledged" | "doc.done" | "doc.verified" | "doc.help_requested" => {
+            DocEventKind::Forward
+        }
         _ => DocEventKind::Forward,
     }
 }
@@ -456,6 +541,9 @@ mod tests {
                 at: "now".into(),
                 event_seq: 5,
             }],
+            assignee: None,
+            executor: None,
+            priority: None,
         };
         meta.save(&p).unwrap();
         let loaded = DocMeta::load(&p).unwrap();
@@ -474,5 +562,50 @@ mod tests {
         let loaded = load_spec(&dir, "requirements").unwrap();
         assert_eq!(loaded, spec);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------------------
+    // Built-in taskx spec
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn builtin_taskx_spec_loads_without_disk_file() {
+        // No `_spec/taskx.json` on disk anywhere -> falls back to the built-in.
+        let dir = std::env::temp_dir().join(format!("teamx-taskx-none-{}", std::process::id()));
+        let spec = load_spec(&dir, BUILTIN_TASKX).expect("builtin taskx spec always loads");
+        assert_eq!(spec.key, "taskx");
+        assert_eq!(spec.states, vec!["assigned", "acked", "claimed", "in_progress", "done", "verified"]);
+        assert_eq!(spec.approvers, vec!["lead", "owner"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn taskx_state_machine_advances_and_rejects() {
+        let spec = builtin_taskx_spec();
+        let meta = DocMeta {
+            doc: "taskx".into(),
+            id: "t1".into(),
+            state: "assigned".into(),
+            owner: "lead".into(),
+            assignee: Some("m-1".into()),
+            ..Default::default()
+        };
+        // assigned -> acked -> claimed -> in_progress -> done -> verified
+        let m1 = apply_event(&spec, &meta, "lead", "m-1", "doc.acknowledged", Some("acked"), 1).unwrap();
+        assert_eq!(m1.state, "acked");
+        let m2 = apply_event(&spec, &m1, "lead", "m-1", "doc.claimed", Some("claimed"), 2).unwrap();
+        assert_eq!(m2.state, "claimed");
+        let m3 = apply_event(&spec, &m2, "lead", "m-1", "doc.updated", None, 3).unwrap();
+        assert_eq!(m3.state, "claimed"); // updated keeps state
+        let m4 = apply_event(&spec, &m3, "lead", "m-1", "doc.done", Some("done"), 4).unwrap();
+        assert_eq!(m4.state, "done");
+        let m5 = apply_event(&spec, &m4, "owner", "m-0", "doc.verified", Some("verified"), 5).unwrap();
+        assert_eq!(m5.state, "verified");
+        // forward jumps are allowed by the chain (assigned -> verified directly)
+        let jump = apply_event(&spec, &meta, "owner", "m-0", "doc.verified", Some("verified"), 6).unwrap();
+        assert_eq!(jump.state, "verified");
+        // backward: reject done -> assigned
+        let m6 = apply_event(&spec, &m4, "lead", "m-0", "doc.rejected", Some("assigned"), 7).unwrap();
+        assert_eq!(m6.state, "assigned");
     }
 }

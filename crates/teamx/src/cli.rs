@@ -128,6 +128,11 @@ pub enum Command {
     #[command(subcommand)]
     Session(SessionCmd),
 
+    /// Task management (built-in `taskx` doc type): assign, track and close
+    /// team tasks. Tasks live as documents (content in git, state in .meta.json).
+    #[command(subcommand)]
+    Task(TaskCmd),
+
     /// opencode plugin management: install/uninstall the teamx plugin bundle
     /// into the opencode config directory (used by Homebrew and manual installs)
     #[command(subcommand)]
@@ -675,6 +680,161 @@ pub enum SessionCmd {
         /// (default: all local members)
         #[arg(long)]
         this_instance: bool,
+    },
+}
+
+/// Task commands — teamx's built-in `taskx` document type.
+///
+/// Tasks are documents: the content lives in git (`taskx/<id>.md`), the state
+/// machine in `.teamx/docs/taskx/<id>.meta.json`, and every transition is an
+/// auditable ledger event. `task create`/`task done`/etc. map onto the doc
+/// engine (`doc.created` / `doc.done` / ...).
+#[derive(Subcommand, Debug)]
+#[command(disable_help_subcommand = true)]
+pub enum TaskCmd {
+    /// Create a task (team lead). Writes taskx/<id>.md + .meta.json, broadcasts
+    /// `doc.created` and auto git-commits unless --no-push.
+    Create {
+        /// task title (also used as the doc id slug)
+        #[arg(value_name = "TITLE")]
+        title: String,
+        /// assignee member id (a specific member)
+        #[arg(long)]
+        assignee: Option<String>,
+        /// assignee role key (assign to every active member of a role)
+        #[arg(long)]
+        role: Option<String>,
+        /// executor kind: agent (default) or human
+        #[arg(long, default_value = "agent", value_parser = ["agent", "human"])]
+        executor: String,
+        /// priority: high / medium / low
+        #[arg(long, default_value = "medium", value_parser = ["high", "medium", "low"])]
+        priority: String,
+        /// task id (default: auto `task-<n>`)
+        #[arg(long)]
+        id: Option<String>,
+        /// detail / background for the task body
+        #[arg(long)]
+        detail: Option<String>,
+        /// do not auto git commit+push
+        #[arg(long)]
+        no_push: bool,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Acknowledge receipt of a task (auto-issued by the plugin on assignee
+    /// sessions; may also be called manually).
+    Ack {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Claim a task (optional; small tasks may skip straight to work).
+    Claim {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Record progress on a task (doc.updated).
+    Update {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        /// progress note
+        #[arg(long)]
+        progress: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Request help from the team lead (notification event; task stays in_progress).
+    Help {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        /// what you need help with
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Mark a task done (completion candidate; the lead verifies).
+    Done {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        /// result / deliverable summary
+        #[arg(long)]
+        result: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Verify a completed task (team lead) — closes the loop.
+    Verify {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Reject a task back to work (team lead), with a reason.
+    Reject {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List tasks (all, or filtered). `--mine` shows tasks assigned to the
+    /// current session's member.
+    List {
+        /// only tasks assigned to the current member
+        #[arg(long)]
+        mine: bool,
+        /// filter by state (assigned/acked/claimed/in_progress/done/verified)
+        #[arg(long)]
+        state: Option<String>,
+        /// filter by assignee member id
+        #[arg(long)]
+        assignee: Option<String>,
+        /// filter by executor kind (agent/human)
+        #[arg(long)]
+        executor: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show a task's full audit history (ledger events + meta transitions).
+    Log {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
     },
 }
 
