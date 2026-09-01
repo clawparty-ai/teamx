@@ -123,6 +123,11 @@ pub enum Command {
     #[command(subcommand)]
     Local(LocalCmd),
 
+    /// Session identity: list the local machine's teamx session keys
+    /// (instance:session) and how to resume them
+    #[command(subcommand)]
+    Session(SessionCmd),
+
     /// opencode plugin management: install/uninstall the teamx plugin bundle
     /// into the opencode config directory (used by Homebrew and manual installs)
     #[command(subcommand)]
@@ -656,6 +661,20 @@ pub enum PluginCmd {
         /// override the opencode config directory (default ~/.config/opencode)
         #[arg(long)]
         config_dir: Option<std::path::PathBuf>,
+    },
+}
+
+/// Session identity commands: find and resume this machine's teamx sessions.
+#[derive(Subcommand, Debug)]
+pub enum SessionCmd {
+    /// List every teamx member session known on this machine: the full
+    /// `instance:session` key, the member/team/role it maps to, and how to
+    /// resume it (opencode session or certificate-bound network identity).
+    List {
+        /// include only members whose session belongs to this instance
+        /// (default: all local members)
+        #[arg(long)]
+        this_instance: bool,
     },
 }
 

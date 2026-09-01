@@ -114,6 +114,29 @@ fn print_human(v: &serde_json::Value) {
         return;
     }
 
+    // Session identity list (`teamx session list`) — render before the generic
+    // `ok` branch so the member list is readable.
+    if let Some(sessions) = v.get("sessions").and_then(|s| s.as_array()) {
+        let inst = v.get("instance_id").and_then(|i| i.as_str()).unwrap_or("-");
+        println!("[teamx sessions] instance: {inst}");
+        for s in sessions {
+            let name = s.get("display_name").and_then(|n| n.as_str()).unwrap_or("-");
+            let team = s.get("team").and_then(|n| n.as_str()).unwrap_or("-");
+            let role = s.get("role").and_then(|n| n.as_str()).unwrap_or("-");
+            let state = s.get("state").and_then(|n| n.as_str()).unwrap_or("-");
+            let skey = s.get("session_key").and_then(|n| n.as_str()).unwrap_or("-");
+            let cert = s.get("cert_bound").and_then(|b| b.as_bool()).unwrap_or(false);
+            println!("  {name} ({team}, role: {role}, state: {state})");
+            println!("      session: {skey}");
+            if cert {
+                println!("      identity: certificate-bound (network mode) — resume with a new session + letter certs");
+            } else {
+                println!("      identity: session-bound (local mode) — resume the opencode session to keep this member");
+            }
+        }
+        return;
+    }
+
     if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
         // simple action result: print key fields except ok
         let mut fields: Vec<String> = Vec::new();
