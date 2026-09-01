@@ -1,0 +1,78 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows x86_64 (native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI (default features)
+        run: cargo build --release
+
+      - name: Build CLI + member panel (gui feature)
+        run: cargo build --release --features gui
+
+      - name: Clippy (deny new warnings, allow pre-existing lints)
+        # Same allow-list as ci.yml; see that file for rationale. Runs under
+        # bash so the backslash continuations are not misread as file args by
+        # the default PowerShell shell.
+        shell: bash
+        run: |
+          cargo clippy --all-targets -- -D warnings \
+            -A clippy::collapsible_if \
+            -A clippy::collapsible_match \
+            -A clippy::result_large_err \
+            -A clippy::empty_line_after_doc_comments \
+            -A clippy::let_underscore_future \
+            -A clippy::let_unit_value \
+            -A clippy::manual_clamp \
+            -A clippy::manual_unwrap_or_default \
+            -A clippy::match_like_matches_macro \
+            -A clippy::needless_borrow \
+            -A clippy::single_match \
+            -A clippy::unnecessary_unwrap \
+            -A clippy::useless_conversion
+
+      - name: Unit tests
+        run: cargo test
+
+      - name: Verify gui-member command present
+        shell: bash
+        run: ./target/release/teamx.exe --help | grep -q "gui-member"
+
+      - name: Verify teamx-win.exe exists (GUI launcher)
+        shell: bash
+        run: |
+          ls -la target/release/teamx-win.exe
+          file target/release/teamx-win.exe | grep -qi "PE32"
+
+      - name: Verify tun0 is stubbed on Windows
+        shell: bash
+        run: |
+          set +e
+          out=$(./target/release/teamx.exe tun0 status 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -ne 0 ]
+          echo "$out" | grep -qi "macOS and Linux"
+
+      - name: Upload teamx.exe + teamx-win.exe (with GUI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: teamx-windows-x86_64
+          path: |
+            target/release/teamx.exe
+            target/release/teamx-win.exe
+          if-no-files-found: error

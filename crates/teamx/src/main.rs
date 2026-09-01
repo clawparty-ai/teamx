@@ -1,50 +1,15 @@
-mod activity;
-mod broadcast;
-mod cli;
-mod capture;
-mod analyze;
-mod capture_cli;
-mod commands;
-mod replay;
-mod replay_cli;
-mod db;
-mod dns_proxy;
-mod doc_flow;
-mod events;
-mod git_client;
-mod git_service;
-#[cfg(feature = "gui")]
-mod gui;
-#[cfg(feature = "gui")]
-mod gui_panel;
-mod loopx;
-mod metrics;
-mod pki;
-mod routes;
-mod serve;
-mod socks5;
-mod state;
-mod teamfile;
-mod tunnel;
-mod tunnel_client;
-mod rules_config;
-mod ui;
-mod tun_cli;
-mod tun_dev;
-mod tun_dns;
-mod tun_socks;
-mod tls_parse;
-mod tun_stack;
+//! teamx CLI — entry point. All logic lives in the `teamx` library crate;
+//! this binary only parses args and renders results.
 
 use clap::Parser;
-use cli::{Cli, Command};
+use teamx::cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
     // `teamx serve` and `teamx ui` run forever and manage their own DB
     // lifecycle; they bypass the normal open-once-per-invocation flow.
     if let Command::Serve(sc) = &cli.command {
-        match serve::serve(sc) {
+        match teamx::serve::serve(sc) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -54,7 +19,7 @@ fn main() {
         return;
     }
     if let Command::Ui(uc) = &cli.command {
-        match ui::ui(uc) {
+        match teamx::ui::ui(uc) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -67,7 +32,7 @@ fn main() {
     // does not open the DB itself. Requires the `gui` feature.
     #[cfg(feature = "gui")]
     if let Command::Gui = &cli.command {
-        match gui::run_tray() {
+        match teamx::gui::run_tray() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -84,7 +49,7 @@ fn main() {
     // `teamx gui-panel` is the native control-panel window (L1).
     #[cfg(feature = "gui")]
     if let Command::GuiPanel = &cli.command {
-        match gui_panel::run_panel() {
+        match teamx::gui_panel::run_panel() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("teamx error: {e}");
@@ -98,9 +63,27 @@ fn main() {
         eprintln!("teamx error: `gui-panel` requires the `gui` feature — rebuild with --features gui");
         std::process::exit(1);
     }
-    let db_path = cli.db.clone().unwrap_or_else(db::default_db_path);
+    // `teamx gui-member` is the member-side window (L1): import letter +
+    // tunnel mappings. Cross-platform; no privileged ops.
+    #[cfg(feature = "gui")]
+    if let Command::GuiMember = &cli.command {
+        match teamx::gui_member_panel::run_panel() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    #[cfg(not(feature = "gui"))]
+    if let Command::GuiMember = &cli.command {
+        eprintln!("teamx error: `gui-member` requires the `gui` feature — rebuild with --features gui");
+        std::process::exit(1);
+    }
+    let db_path = cli.db.clone().unwrap_or_else(teamx::db::default_db_path);
 
-    let result = run(&cli, &db_path);
+    let result = teamx::run(&cli, &db_path);
     match result {
         Ok(out) => {
             if cli.json {
@@ -114,12 +97,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-fn run(cli: &Cli, db_path: &std::path::Path) -> Result<serde_json::Value, String> {
-    let mut conn = db::open(db_path).map_err(|e| format!("cannot open database {db_path:?}: {e}"))?;
-    db::migrate(&conn).map_err(|e| format!("schema init failed: {e}"))?;
-    commands::execute(cli, &mut conn).map_err(|e| e.to_string())
 }
 
 fn print_human(v: &serde_json::Value) {
@@ -237,7 +214,7 @@ fn print_human(v: &serde_json::Value) {
         return;
     }
 
-    // Git repository list (`teamx git list`).
+    // Fallback: pretty-print JSON.
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into()));
 }
 

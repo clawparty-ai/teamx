@@ -219,6 +219,18 @@ function summarizeEvent(e: SyncEvent): string {
       return t("toast.role_updated", { seq: String(seq), label: s("label"), updated_by: s("updated_by") })
     case "loopx.progress":
       return t("toast.loopx_progress", { seq: String(seq) })
+    case "system.nudge": {
+      // Server-side idle-team reminder: "your task isn't done — finish or
+      // submit". Surfaced loudly so the member knows the team is waiting.
+      const body = msg ? shorten(msg) : ""
+      return t("toast.nudge", { seq: String(seq), message: body })
+    }
+    case "system.nudge_lead": {
+      // Server-side idle-team reminder aimed at the team lead(s): the team is
+      // silent and someone needs to coordinate. Surfaced loudly for leads.
+      const body = msg ? shorten(msg) : ""
+      return t("toast.nudge_lead", { seq: String(seq), message: body })
+    }
     default:
       return msg
         ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
@@ -465,6 +477,23 @@ export const Teamx: Plugin = async ({ client }) => {
     if (hasQuestion) {
       await client.tui
         .appendPrompt({ body: { text: t("question_prompt") } })
+        .catch(() => {})
+    }
+    // Idle-team nudge: the server reminded us the goal is still unfinished.
+    // Append a prompt so the member (human or agent) is actually woken and
+    // prompted to either finish or submit what they have.
+    const hasNudge = fresh.some((e) => e.type === "system.nudge")
+    if (hasNudge) {
+      await client.tui
+        .appendPrompt({ body: { text: t("nudge_prompt") } })
+        .catch(() => {})
+    }
+    // Lead nudge: the team is silent and needs the team lead to coordinate.
+    // A lead (owner/co-lead) gets a coordination prompt, not a "submit" one.
+    const hasLeadNudge = fresh.some((e) => e.type === "system.nudge_lead")
+    if (hasLeadNudge) {
+      await client.tui
+        .appendPrompt({ body: { text: t("nudge_lead_prompt") } })
         .catch(() => {})
     }
     // Auto-execute ONLY for directed tasks assigned to this member. A publish

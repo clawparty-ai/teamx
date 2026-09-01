@@ -19,11 +19,11 @@ const LOG_CAP: usize = 400;
 pub struct LogBuf(Arc<Mutex<VecDeque<String>>>);
 
 impl LogBuf {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAP))))
     }
 
-    fn push(&self, line: String) {
+    pub(crate) fn push(&self, line: String) {
         let mut q = self.0.lock().unwrap();
         if q.len() >= LOG_CAP {
             q.pop_front();
@@ -31,30 +31,34 @@ impl LogBuf {
         q.push_back(line);
     }
 
-    fn snapshot(&self) -> Vec<String> {
+    pub(crate) fn snapshot(&self) -> Vec<String> {
         self.0.lock().unwrap().iter().cloned().collect()
+    }
+
+    pub(crate) fn clear(&self) {
+        self.0.lock().unwrap().clear();
     }
 }
 
 /// One managed worker: the child process + its stdout/stderr pump.
-struct Worker {
+pub(crate) struct Worker {
     child: Option<Child>,
     log: LogBuf,
     name: &'static str,
 }
 
 impl Worker {
-    fn new(name: &'static str, log: &LogBuf) -> Self {
+    pub(crate) fn new(name: &'static str, log: &LogBuf) -> Self {
         Worker { child: None, log: log.clone(), name }
     }
 
-    fn is_running(&mut self) -> bool {
+    pub(crate) fn is_running(&mut self) -> bool {
         self.child.as_mut().map(|c| c.try_wait().ok().flatten().is_none()).unwrap_or(false)
     }
 
     /// Spawn `teamx <args>` with piped stdout/stderr, pumping lines into the
     /// log. Any env vars passed are applied.
-    fn spawn(&mut self, args: &[&str], envs: &[(&str, String)]) -> Result<(), String> {
+    pub(crate) fn spawn(&mut self, args: &[&str], envs: &[(&str, String)]) -> Result<(), String> {
         self.kill();
         let mut cmd = Command::new(exe_path());
         cmd.args(args)
@@ -90,14 +94,13 @@ impl Worker {
         Ok(())
     }
 
-    fn kill(&mut self) {
+    pub(crate) fn kill(&mut self) {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
         }
     }
 }
-
 /// The control panel application state.
 pub struct PanelApp {
     tun0_running: bool,
@@ -206,7 +209,14 @@ fn run_privileged_detached(cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows: tun0 is not supported yet (needs wintun adaptation).
+#[cfg(windows)]
+fn run_privileged_detached(_cmd: &str) -> Result<(), String> {
+    Err("tun0 仅支持 macOS/Linux（Windows 暂未适配）".to_string())
+}
+
 /// Build the elevated shell command that launches `teamx tun0 start` detached.
+#[cfg(not(windows))]
 fn tun0_start_cmd() -> String {
     let teamx = exe_path().display().to_string();
     let mut env_prefix = String::new();
@@ -223,13 +233,24 @@ fn tun0_start_cmd() -> String {
     )
 }
 
+#[cfg(windows)]
+fn tun0_start_cmd() -> String {
+    String::new()
+}
+
 /// Whether a tun0 worker process is currently running (detected by pgrep,
 /// since a root-launched process is not a child of this process).
+#[cfg(not(windows))]
 fn is_tun0_running() -> bool {
     let out = Command::new("pgrep").args(["-f", "teamx tun0 start"]).output();
     if let Ok(o) = out {
         return o.status.success() && !o.stdout.is_empty();
     }
+    false
+}
+
+#[cfg(windows)]
+fn is_tun0_running() -> bool {
     false
 }
 
@@ -359,14 +380,14 @@ impl eframe::App for PanelApp {
 }
 
 /// What button the user pressed on a status card.
-enum CardAction {
+pub(crate) enum CardAction {
     Start,
     Stop,
     None,
 }
 
 /// A status card: title + description + on/off badge + start/stop buttons.
-fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> CardAction {
+pub(crate) fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> CardAction {
     let mut action = CardAction::None;
     egui::Frame::group(ui.style())
         .fill(card_bg())
@@ -402,7 +423,7 @@ fn status_card(ui: &mut egui::Ui, title: &str, desc: &str, running: bool) -> Car
 }
 
 /// A green/red status pill.
-fn badge(ui: &mut egui::Ui, on: bool) {
+pub(crate) fn badge(ui: &mut egui::Ui, on: bool) {
     let (text, color, bg) = if on {
         ("运行中", green(), rgba(46, 204, 113, 36))
     } else {
@@ -421,20 +442,20 @@ fn badge(ui: &mut egui::Ui, on: bool) {
 // Style helpers
 // ---------------------------------------------------------------------------
 
-fn rgba(r: u8, g: u8, b: u8, a: u8) -> egui::Color32 {
+pub(crate) fn rgba(r: u8, g: u8, b: u8, a: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
-fn style_bg() -> egui::Color32 { rgba(18, 22, 32, 255) }
-fn card_bg() -> egui::Color32 { rgba(28, 34, 48, 255) }
-fn style_accent() -> egui::Color32 { rgba(80, 160, 255, 255) }
-fn style_fg() -> egui::Color32 { rgba(232, 238, 248, 255) }
-fn style_muted() -> egui::Color32 { rgba(140, 150, 168, 255) }
-fn green() -> egui::Color32 { rgba(60, 210, 130, 255) }
-fn red() -> egui::Color32 { rgba(240, 90, 80, 255) }
-fn btn_start_bg() -> egui::Color32 { rgba(40, 140, 90, 255) }
-fn btn_stop_bg() -> egui::Color32 { rgba(180, 60, 55, 255) }
+pub(crate) fn style_bg() -> egui::Color32 { rgba(18, 22, 32, 255) }
+pub(crate) fn card_bg() -> egui::Color32 { rgba(28, 34, 48, 255) }
+pub(crate) fn style_accent() -> egui::Color32 { rgba(80, 160, 255, 255) }
+pub(crate) fn style_fg() -> egui::Color32 { rgba(232, 238, 248, 255) }
+pub(crate) fn style_muted() -> egui::Color32 { rgba(140, 150, 168, 255) }
+pub(crate) fn green() -> egui::Color32 { rgba(60, 210, 130, 255) }
+pub(crate) fn red() -> egui::Color32 { rgba(240, 90, 80, 255) }
+pub(crate) fn btn_start_bg() -> egui::Color32 { rgba(40, 140, 90, 255) }
+pub(crate) fn btn_stop_bg() -> egui::Color32 { rgba(180, 60, 55, 255) }
 
-fn apply_style(ctx: &egui::Context) {
+pub(crate) fn apply_style(ctx: &egui::Context) {
     let mut visual = egui::Visuals::dark();
     visual.panel_fill = style_bg();
     visual.window_fill = style_bg();
@@ -451,12 +472,12 @@ fn apply_style(ctx: &egui::Context) {
 }
 
 /// Path to the teamx binary (this executable).
-fn exe_path() -> std::path::PathBuf {
+pub(crate) fn exe_path() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| "teamx".into())
 }
 
 /// Load a CJK system font into egui so Chinese text renders (not tofu).
-fn setup_cjk_font(ctx: &egui::Context) {
+pub(crate) fn setup_cjk_font(ctx: &egui::Context) {
     use egui::{FontData, FontDefinitions, FontFamily};
 
     let candidates: &[&str] = &[

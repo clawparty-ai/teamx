@@ -294,7 +294,7 @@ import json,sys,base64
 s=sys.stdin.read().strip()[len('teamx-inv:v1:'):]
 d=json.loads(base64.b64decode(s))
 assert d['teamx_invitation']['server']['url']=='https://192.168.1.5:5781', d['teamx_invitation']['server']
-assert d['teamx_invitation']['version']==1
+assert d['teamx_invitation']['version'] in (1,2), d['teamx_invitation']['version']
 assert 'client_cert' in d['certificates'] and 'client_key' in d['certificates'] and 'ca_cert' in d['certificates']
 " || fail "letter should carry server url + cert/key/ca"
 

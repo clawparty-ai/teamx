@@ -750,8 +750,178 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::GuiPanel => {
             return Err(AppError("gui-panel must be launched via `teamx gui-panel`".to_string()));
         }
+        // `teamx gui-member` is handled in main() before the DB opens.
+        Command::GuiMember => {
+            return Err(AppError("gui-member must be launched via `teamx gui-member`".to_string()));
+        }
     };
     Ok(out)
+}
+
+fn ts_secs(s: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0)
+}
+
+pub fn nudge_idle_teams(
+    conn: &mut Connection,
+    after_secs: i64,
+    now_secs: Option<i64>,
+) -> rusqlite::Result<Vec<Value>> {
+    let now = now_secs.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let mut written: Vec<Value> = Vec::new();
+
+    // Active teams (goal shared, not completed/archived, not forming).
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, COALESCE(g.title, ''), t.state
+         FROM teams t
+         LEFT JOIN goals g ON g.id = t.goal_id
+         WHERE t.state IN ('active','blocked')
+           AND g.state IS NOT NULL AND g.state NOT IN ('achieved','closed')",
+    )?;
+    let teams: Vec<(String, String, String, String)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    for (team_id, team_name, goal_title, team_state) in teams {
+        // Latest event timestamp for this team (any type; the ledger is the
+        // activity clock). MAX over an empty set is NULL -> None.
+        let last_ts: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1",
+            [&team_id],
+            |r| r.get(0),
+        )?;
+        let last_event_secs = last_ts.as_deref().map(ts_secs).unwrap_or(0);
+        let silent_for = if last_event_secs > 0 { now - last_event_secs } else { i64::MAX };
+
+        if silent_for < after_secs {
+            continue; // team is still active — no nudge
+        }
+
+        // Skip if a nudge was already sent recently (within after_secs). This
+        // paces the reminder to roughly one poke per `after_secs` window.
+        let last_nudge: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND type = 'system.nudge'",
+            [&team_id],
+            |r| r.get(0),
+        )?;
+        if let Some(n) = last_nudge {
+            let since = now - ts_secs(&n);
+            if since < after_secs {
+                continue;
+            }
+        }
+
+        let message = if team_state == "blocked" {
+            format!("团队「{team_name}」处于 blocked 状态，目标「{goal_title}」尚未完成。请成员说明阻塞原因，或尽快恢复推进。")
+        } else {
+            format!("团队「{team_name}」的目标「{goal_title}」还未完成。你的任务是否执行完了？没完成请尽快完成，完成请提交产物。")
+        };
+        let payload = json!({
+            "kind": "idle_reminder",
+            "team_name": team_name,
+            "goal_title": goal_title,
+            "silent_for_secs": silent_for,
+            "message": message,
+        });
+        // Write the nudge with an explicit created_at (the test-injectable clock
+        // `now_secs`, or the real one) so pacing can be verified deterministically.
+        let ts = chrono::DateTime::from_timestamp(now, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(crate::events::db_now);
+        db::with_write(conn, |tx| {
+            let seq = events::emit(tx, &team_id, None, "system.nudge", Some(&payload))?;
+            // Overwrite created_at so it reflects the injected clock.
+            tx.execute(
+                "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                params![ts, team_id, seq],
+            )?;
+            Ok(())
+        })?;
+        written.push(json!({
+            "team_id": team_id,
+            "member_id": Value::Null,
+            "type": "system.nudge",
+            "payload": payload,
+        }));
+
+        // Team-lead nudge: a silent team also needs its leads to step in and
+        // coordinate (review progress, approve joins, broadcast decisions).
+        // Separate event type + pacing so a lead reminder is never suppressed by
+        // a member reminder and vice versa.
+        let leads: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT m.id, m.display_name
+                 FROM members m
+                 WHERE m.team_id = ?1 AND m.state NOT IN ('left','denied')
+                   AND (m.is_lead = 1 OR m.id = (SELECT owner_member_id FROM teams WHERE id = ?1))",
+            )?;
+            let rows = stmt.query_map(params![team_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !leads.is_empty() {
+            // Pacing: independent of the member nudge; also `after_secs`.
+            let last_lead_nudge: Option<String> = conn.query_row(
+                "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND type = 'system.nudge_lead'",
+                [&team_id],
+                |r| r.get(0),
+            )?;
+            let lead_due = match last_lead_nudge {
+                Some(n) => now - ts_secs(&n) >= after_secs,
+                None => true,
+            };
+            if lead_due {
+                let lead_names: Vec<&str> = leads.iter().map(|(_, n)| n.as_str()).collect();
+                let lead_msg = if team_state == "blocked" {
+                    format!(
+                        "团队「{team_name}」已静默（blocked 状态），目标「{goal_title}」未完成。你是 team lead（{}），请协调：确认阻塞原因、推进恢复或调整目标。",
+                        lead_names.join("、")
+                    )
+                } else {
+                    format!(
+                        "团队「{team_name}」已静默 {silent} 秒，目标「{goal_title}」未完成。你是 team lead（{}），请协调推进：检查成员进度、审批入队、或广播下一步。",
+                        lead_names.join("、"),
+                        silent = silent_for,
+                    )
+                };
+                let lead_payload = json!({
+                    "kind": "lead_reminder",
+                    "team_name": team_name,
+                    "goal_title": goal_title,
+                    "silent_for_secs": silent_for,
+                    "lead_members": leads,
+                    "message": lead_msg,
+                });
+                db::with_write(conn, |tx| {
+                    let seq = events::emit(tx, &team_id, None, "system.nudge_lead", Some(&lead_payload))?;
+                    tx.execute(
+                        "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                        params![ts, team_id, seq],
+                    )?;
+                    Ok(())
+                })?;
+                written.push(json!({
+                    "team_id": team_id,
+                    "member_id": Value::Null,
+                    "type": "system.nudge_lead",
+                    "payload": lead_payload,
+                }));
+            }
+        }
+    }
+
+    Ok(written)
 }
 
 /// The machine hostname (best-effort; fallback "unknown").
@@ -3795,5 +3965,114 @@ mod tests {
 
     fn as_lead_invite_permitted(team: &TeamRow, actor: &MemberRow) -> bool {
         team.owner_member_id.as_deref() == Some(actor.id.as_str())
+    }
+
+    fn seed_active_goal(conn: &Connection, team_id: &str, goal_id: &str, goal_state: &str) {
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES (?1, '目标团队', 'm1', ?2, 'active', 'tok', 'now', 'now')",
+            params![team_id, goal_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO goals (id, team_id, title, body, state, created_at, updated_at)
+             VALUES (?1, ?2, '完成产品', NULL, ?3, 'now', 'now')",
+            params![goal_id, team_id, goal_state],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES ('m1', ?1, 's:owner', '老板', 'owner', 'active', 'now', 0)",
+            params![team_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn nudge_fires_for_silent_active_team() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        // No events at all -> team is maximally silent -> member + lead nudges.
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert_eq!(written.len(), 2, "member nudge + lead nudge");
+        let member = written.iter().find(|e| e["type"] == "system.nudge").unwrap();
+        let lead = written.iter().find(|e| e["type"] == "system.nudge_lead").unwrap();
+        assert_eq!(member["team_id"], "t1");
+        let msg = member["payload"]["message"].as_str().unwrap();
+        assert!(msg.contains("目标「完成产品」"), "message should mention the goal: {msg}");
+        let lmsg = lead["payload"]["message"].as_str().unwrap();
+        assert!(lmsg.contains("team lead"), "lead message should target the lead: {lmsg}");
+        assert!(lmsg.contains("老板"), "lead message should name the lead member");
+    }
+
+    #[test]
+    fn nudge_respects_recent_activity() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        // A recent ledger event (progress) means the team is not silent.
+        conn.execute(
+            "INSERT INTO events (team_id, member_id, seq, type, payload_json, created_at)
+             VALUES ('t1', 'm1', 1, 'progress.published', NULL, ?1)",
+            params!["2026-08-31T00:00:00+00:00"],
+        )
+        .unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(written.is_empty(), "recent activity must suppress the nudge");
+    }
+
+    #[test]
+    fn nudge_paces_itself_no_spam() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        let first = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert_eq!(first.len(), 2, "member + lead nudges on first poke");
+
+        // Immediately re-running with the same clock must not write again
+        // (the pacing window prevents one nudge per tick).
+        let second = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(second.is_empty(), "no spam: a second nudge is suppressed within the window");
+
+        // After `after_secs` pass, it may nudge again.
+        let third = nudge_idle_teams(&mut conn, 300, Some(10_000 + 300)).unwrap();
+        assert_eq!(third.len(), 2, "a later tick may nudge again");
+    }
+
+    #[test]
+    fn nudge_skips_achieved_and_forming_teams() {
+        let mut conn = test_conn();
+        // achieved goal -> no nudge
+        seed_active_goal(&conn, "t1", "g1", "achieved");
+        // forming team (no goal shared yet) -> no nudge
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t2', '招募中', 'm1', NULL, 'forming', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        assert!(written.is_empty(), "achieved/forming teams must not be nudged");
+    }
+
+    #[test]
+    fn nudge_lead_includes_co_lead_members() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+        // promote a co-lead
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES ('m2', 't1', 's:colead', '副手', 'contributor', 'active', 'now', 1)",
+            [],
+        )
+        .unwrap();
+
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        let lead = written.iter().find(|e| e["type"] == "system.nudge_lead").unwrap();
+        let leads = lead["payload"]["lead_members"].as_array().unwrap();
+        let names: Vec<&str> = leads.iter().filter_map(|m| m[1].as_str()).collect();
+        assert!(names.contains(&"老板"), "owner should be a lead");
+        assert!(names.contains(&"副手"), "co-lead should be a lead");
     }
 }
