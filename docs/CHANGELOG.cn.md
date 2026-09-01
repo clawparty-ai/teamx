@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2 — 2026-09-02
+
+### teamx 空间改为项目级（`<cwd>/.teamx`），修复多会话证书混乱
+
+- **根因**：旧设计把邀请函/mTLS 证书放在全局 `~/.teamx/letters/`，插件用模块级常量
+  解析服务器地址；同服务器多份邀请函时证书选择不确定（readdir 顺序而非最新），
+  且 `discoverServerUrl` 与 `letterMtls` 启发式不一致导致 URL/证书错配。
+  详见 `docs/29-teamx-project-scoped-issue.cn.md`。
+- **修复**：Rust `teamx_home()` 默认 `<cwd>/.teamx`（`TEAMX_HOME` 覆盖）；插件
+  `TEAMX_SERVER_URL`/`TEAMX_HOME` 改为按 cwd 解析；全部工具传 `context.directory`；
+  `team import`/`git setup` 强制本地落盘项目 `letters/`；session→directory 映射支撑后台任务。
+- **行为变化**：每个 workspace（opencode 启动目录）拥有独立的 `.teamx/` 空间，
+  一项目一身份；本地 DB/CA/instance/serve/tunnels 均随项目。
+- 服务器部署固定 `TEAMX_HOME` 保留 CA；本地与云服务器二进制已更新并端到端验证。
+
 ## 0.4.1 — 2026-09-01
 
 ### grill-doc 允许早于团队创建运行（去除 owner 前置条件）
