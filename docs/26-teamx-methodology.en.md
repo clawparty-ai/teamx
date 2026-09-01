@@ -158,7 +158,75 @@ After parsing TEAM.md, `team create` generates a per-member `AGENTS.md` (merging
 
 ---
 
-## 4. Creating Your TEAM.md Interactively with grill-doc
+## 4. Organizational Process Assets: Collaboration Is Not Just Results, It's a Depositable Process
+
+The biggest waste in team collaboration is "what was done cannot be reused." From the start, teamx treats collaboration as a **process asset**: it doesn't just preserve final artifacts, it fully preserves the process that produced them, so every collaboration accumulates knowledge for the next one.
+
+### 4.1 The ledger: an auditable collaboration timeline
+
+teamx maintains an **append-only event ledger** for every team. Every significant thing that happens is written as an event:
+
+- **Team lifecycle**: creation, goal set/shared/achieved/closed, state changes;
+- **Member dynamics**: join requests, approvals/rejections, role selection and changes, co-lead promotion, leaving;
+- **Collaboration content**: progress reports, decision broadcasts, clarifying questions and answers, fact-request reports;
+- **Documents and activity**: document state transitions (created/reviewed/approved/...), member session activity heartbeats.
+
+Every event carries a stable `seq`, the originating member, and a timestamp. The ledger is **append-only** — history is never rewritten or deleted, only extended. This means:
+
+- **Auditable**: at any time you can answer "what actually happened in the team, who did what and when";
+- **Replayable**: starting from an empty team and replaying events by `seq` rebuilds the full team state;
+- **Reviewable**: after a meeting or a goal is reached, the ledger reconstructs the whole decision and execution process.
+
+### 4.2 Artifact files: reusable knowledge assets
+
+Beyond the ledger, teamx deposits collaboration knowledge into **repository files**:
+
+| Asset | Location | Content |
+|---|---|---|
+| Team contract | `.teamx/TEAM.md` | Team definition: background, goals, member profiles, doc contracts |
+| Member job description | `.teamx/members/<key>/AGENTS.md` | Each member's "who I am, what I do, what I deliver" |
+| Design session record | `docs/design/<topic>.md` | The complete design decision tree produced by grill-doc |
+| Architecture decision records | `docs/adr/*.md` | Major, hard-to-reverse technical decisions and rationale |
+| Glossary | `CONTEXT.md` | Short definitions of project-specific terms |
+| Invitations/certificates | `.teamx/letters/` | Member admission credentials and mTLS material |
+
+All of these go into Git and are versioned with the repository. **Organizational process assets = event ledger (process) + artifact files (knowledge).** Whether you change members, switch models, or restart a similar project months later, you continue from the previous assets instead of starting from zero.
+
+---
+
+## 5. Cost and Time: Making Collaboration Measurable and Manageable
+
+AI collaboration is not free: tokens cost money, time costs money. teamx believes **unmeasurable collaboration cannot be managed**, so it turns "who, on which goal, spent how much time and how many tokens" into a clear record.
+
+### 5.1 Time records: who worked when
+
+Every teamx ledger event carries a timestamp, and member session activity is periodically mirrored into the ledger (`session.idle` heartbeats). Combined, these produce a complete **member activity timeline**:
+
+- Which member was working in which time window;
+- How much time passed from team start to goal achievement;
+- When a goal fell silent (no events for a long time) — which is exactly what the server-side nudge reminder is based on.
+
+### 5.2 Token cost: attribution by goal and member
+
+Precise token consumption is provided by each model platform (or opencode's usage statistics). teamx's value is **collaboration attribution**: because every collaboration event is attributed to a specific **goal, member, and time window**, platform usage bills can be **attributed to teams, goals, and members**:
+
+- How many tokens and how much time did this goal cost in total?
+- Which member/role consumed the most?
+- Which design discussion round was the most expensive? Which direction was "expensive trial and error"?
+
+### 5.3 Management uses
+
+Put these records to work for enterprise-level management:
+
+- **Cost management**: account token spend by goal, member, and time window; identify high-cost, low-output stages;
+- **Time planning**: estimate time budgets for subsequent tasks from historical activity timelines; spot long-silent goals and intervene early (nudge);
+- **Review**: after a goal is achieved or abandoned, replay the event ledger and artifact files to review decision quality, collaboration efficiency, and cost structure — forming the basis for the next round of improvement.
+
+> **Status note**: the event ledger, activity heartbeats, time records, and nudge reminders are implemented capabilities in teamx today; precise token counting currently relies on model-platform usage statistics, with teamx providing the goal/member/time attribution framework. The two together enable cost management and review.
+
+---
+
+## 6. Creating Your TEAM.md Interactively with grill-doc
 
 Writing TEAM.md by hand is easy; *deciding how to structure the team* is not: how many members? What roles? Where are the duty boundaries? Do we need document contracts? How should document states flow? These are exactly what **grill-doc (Design Session)** excels at.
 
@@ -229,7 +297,7 @@ When complete, `.teamx/TEAM.md` is a fully considered team contract, ready for `
 
 ---
 
-## 5. From TEAM.md to a Running Team
+## 7. From TEAM.md to a Running Team
 
 When `.teamx/TEAM.md` exists, `teamx team create` performs the whole bootstrap automatically:
 
@@ -250,7 +318,7 @@ After you distribute the invitations and the owner approves the imports, collabo
 
 ---
 
-## 6. FAQ
+## 8. FAQ
 
 **Where does TEAM.md live?**
 At `.teamx/TEAM.md` in the project root — the default location `team create` checks.
@@ -269,6 +337,12 @@ No. You can write it by hand or with any editor. grill-doc's value is in helping
 
 **What is the relationship between TEAM.md and AGENTS.md?**
 TEAM.md is the team-level contract; `team create` generates a per-member `AGENTS.md` as the "team contract + personal job description" merge, so each AI session knows who it is, what to do, and what to deliver.
+
+**Are collaboration process and intermediate artifacts preserved?**
+Yes. teamx's event ledger is append-only and records every collaboration event (with seq, member, and timestamp) — auditable and replayable; TEAM.md, per-member AGENTS.md, design records, ADRs, and the glossary are versioned in Git. Together they form reusable organizational process assets.
+
+**Can token cost and collaboration time be managed?**
+Yes. The event ledger plus member activity heartbeats provide a complete time record (who, when, how long, when silent), with nudge reminders for time-based intervention; token consumption is tracked by the model platform, and teamx provides the goal/member/time attribution framework — supporting cost management, time planning, and review.
 
 ---
 
