@@ -146,6 +146,17 @@ impl MemberPanelApp {
 
     // ---- import ----
 
+    /// Open a native file dialog to pick an invitation letter file. Returns the
+    /// chosen path (or None if cancelled). Filters to common letter extensions.
+    fn pick_letter_file() -> Option<String> {
+        rfd::FileDialog::new()
+            .set_title("选择 teamx 邀请函")
+            .add_filter("Invitation letter", &["json", "txt"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+            .map(|p| p.display().to_string())
+    }
+
     fn do_import(&mut self) {
         let letter = self.letter_input.trim().to_string();
         if letter.is_empty() {
@@ -366,6 +377,24 @@ impl eframe::App for MemberPanelApp {
                                 .desired_width(f32::INFINITY)
                                 .hint_text("teamx-inv:v1:... 或 /path/to/letter.json"),
                         );
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new("选择文件…").size(12.0).color(style_fg()),
+                                ).fill(card_bg()).corner_radius(6.0))
+                                .clicked()
+                            {
+                                if let Some(path) = Self::pick_letter_file() {
+                                    self.letter_input = path;
+                                    self.log.push("→ 已选择邀请函文件".to_string());
+                                }
+                            }
+                            ui.label(
+                                egui::RichText::new("也可以直接粘贴 base64 或文件路径")
+                                    .size(11.0)
+                                    .color(style_muted()),
+                            );
+                        });
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("显示名").size(12.0).color(style_fg()));
                             ui.add(
