@@ -701,9 +701,16 @@ pub enum TaskCmd {
         /// assignee member id (a specific member)
         #[arg(long)]
         assignee: Option<String>,
-        /// assignee role key (assign to every active member of a role)
+        /// assignee role key (assign to a role; with --mode bid (default for
+        /// --role) role members compete to claim; --mode broadcast gives every
+        /// role member their own instance)
         #[arg(long)]
         role: Option<String>,
+        /// delegation mode: direct (fixed assignee), bid (role members compete),
+        /// broadcast (every role member gets a copy). Default: direct when
+        /// --assignee given, else bid.
+        #[arg(long, value_parser = ["direct", "bid", "broadcast"])]
+        mode: Option<String>,
         /// executor kind: either (default, human or agent may do it),
         /// agent (must be done by an AI), or human (must be done by a person)
         #[arg(long, default_value = "either", value_parser = ["either", "agent", "human"])]
@@ -802,6 +809,30 @@ pub enum TaskCmd {
         id: String,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Retract a claimed task (return it to the open bid pool). The user who
+    /// claimed it may retract their own; a lead may retract any task. The task
+    /// goes back to `assigned` and is re-broadcast so role members can claim
+    /// again.
+    Retract {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Re-broadcast a task so role members can claim it again (team lead).
+    /// No-op if the task is already open (`assigned` with no claimer).
+    ReBid {
+        /// task id
+        #[arg(value_name = "ID")]
+        id: String,
         #[arg(long)]
         session: String,
         #[arg(long)]

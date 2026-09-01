@@ -44,6 +44,7 @@
   "toast.task_done": "#{seq} ✅ Task \"{title}\" completed — awaiting lead verification",
   "toast.task_help_requested": "#{seq} 🆘 Task \"{title}\" needs help: {reason}",
   "toast.task_verified": "#{seq} 🔒 Task \"{title}\" verified",
+  "toast.task_rebid": "#{seq} 🔄 Task \"{title}\" reopened (role {role}) — claim it",
   "toast.task_nudge": "#{seq} ⏰ You have open tasks: {message}",
   "task_prompt_human": "📋 teamx: You have a task that MUST be done by a HUMAN. Run teamx_task_list to see details and remind the user; this is a human task — you MUST NOT do it yourself. When the user finishes, report with teamx_task_done.",
   "task_prompt_either": "📋 teamx: You have an either task (human or agent may do it); the agent has started. If you want to handle it yourself, tell the agent to stop and take over; otherwise let the agent finish and report with teamx_task_done.",

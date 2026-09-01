@@ -52,6 +52,14 @@ pub struct DocMeta {
     pub executor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// Task delegation mode: `direct` (fixed assignee), `bid` (role members
+    /// compete; assignee is set when claimed), or `broadcast` (each role member
+    /// gets their own instance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assign_mode: Option<String>,
+    /// For `bid`/`broadcast`: the role key the task was dispatched to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_role: Option<String>,
 }
 
 /// One state transition recorded in `.meta.json`.
@@ -242,7 +250,7 @@ pub fn classify_event(event: &str) -> DocEventKind {
     match event {
         "doc.created" => DocEventKind::Created,
         "doc.updated" => DocEventKind::Updated,
-        "doc.rejected" | "doc.reopened" => DocEventKind::Backward,
+        "doc.rejected" | "doc.reopened" | "doc.retracted" => DocEventKind::Backward,
         // Task-lifecycle events: forward moves along the taskx state flow.
         // `doc.help_requested` is a notification-only interrupt — it does not
         // advance state (handled by cmd_task before apply_event), so here it
@@ -544,6 +552,8 @@ mod tests {
             assignee: None,
             executor: None,
             priority: None,
+            assign_mode: None,
+            assignee_role: None,
         };
         meta.save(&p).unwrap();
         let loaded = DocMeta::load(&p).unwrap();
@@ -607,5 +617,28 @@ mod tests {
         // backward: reject done -> assigned
         let m6 = apply_event(&spec, &m4, "lead", "m-0", "doc.rejected", Some("assigned"), 7).unwrap();
         assert_eq!(m6.state, "assigned");
+    }
+
+    #[test]
+    fn taskx_retract_returns_claimed_to_assigned() {
+        let spec = builtin_taskx_spec();
+        let meta = DocMeta {
+            doc: "taskx".into(),
+            id: "t1".into(),
+            state: "claimed".into(),
+            owner: "lead".into(),
+            assignee: Some("m-1".into()),
+            assign_mode: Some("bid".into()),
+            assignee_role: Some("reviewer".into()),
+            ..Default::default()
+        };
+        // claimed -> assigned via retract (backward)
+        let next = apply_event(&spec, &meta, "lead", "m-0", "doc.retracted", Some("assigned"), 10).unwrap();
+        assert_eq!(next.state, "assigned");
+        // retract is classified as Backward
+        assert!(matches!(classify_event("doc.retracted"), DocEventKind::Backward));
+        // a non-approver may not retract
+        let err = apply_event(&spec, &meta, "ui-dev", "m-9", "doc.retracted", Some("assigned"), 11).unwrap_err();
+        assert!(err.contains("may not reject/reopen"), "{err}");
     }
 }

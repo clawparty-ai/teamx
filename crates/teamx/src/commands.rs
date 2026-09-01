@@ -750,76 +750,142 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
     let taskx_dir = docs_root.join(crate::doc_flow::BUILTIN_TASKX);
 
     match cmd {
-        TaskCmd::Create { title, assignee, role, executor, priority, id, detail, no_push, session, team } => {
+        TaskCmd::Create { title, assignee, role, mode, executor, priority, id, detail, no_push, session, team } => {
             let (actor, team) = resolve_actor(conn, session, team.as_deref())?;
             // Only a lead (owner or co-lead) may create tasks.
             ensure_owner(conn, &actor, &team)?;
 
-            // Resolve the assignee: explicit member id > role > error.
-            let assignee_id: Option<String> = if let Some(aid) = assignee {
-                let m = member_by_id(conn, aid)?;
-                if m.team_id != team.id {
-                    return err(format!("assignee member {aid} is not in team {}", team.id));
+            // Determine delegation mode:
+            //   --assignee given          -> direct (fixed assignee)
+            //   --mode bid / --role (no assignee) -> bid (role competes; assignee empty)
+            //   --mode broadcast          -> one instance per role member
+            //   --mode direct without assignee -> error
+            let assign_mode = match (mode.as_deref(), assignee.is_some(), role.is_some()) {
+                (Some("broadcast"), _, true) => "broadcast".to_string(),
+                (Some("bid"), _, true) => "bid".to_string(),
+                (Some("direct"), true, _) => "direct".to_string(),
+                (Some("direct"), false, _) => {
+                    return err("task create --mode direct requires --assignee <member_id>")
                 }
-                Some(m.id)
-            } else if let Some(role_key) = role {
-                // Role assignment: pick the first active member of that role.
-                let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
-                let found = members
-                    .iter()
-                    .find(|m| m.state != "left" && m.state != "denied" && m.role.as_deref() == Some(role_key.as_str()))
-                    .map(|m| m.id.clone());
-                found
-            } else {
-                return err("task create requires --assignee <member_id> or --role <role>");
+                (Some(m), _, _) => {
+                    return err(format!("unknown mode `{m}` (valid: direct, bid, broadcast)"))
+                }
+                (None, true, _) => "direct".to_string(),
+                (None, false, true) => "bid".to_string(), // --role defaults to bid
+                (None, false, false) => {
+                    return err("task create requires --assignee <member_id> or --role <role>")
+                }
             };
-            let assignee_id = assignee_id.unwrap_or_default();
 
-            // Doc id: explicit, else a short slug from the title.
-            let doc_id = id.clone().unwrap_or_else(|| slugify(title));
-            if !crate::teamfile::is_safe_key_segment(&doc_id) {
-                return err(format!("task id `{doc_id}` is not a safe identifier (no `/`, `..`, or control chars)"));
+            // Resolve the target members for this task:
+            //   direct   -> the single assignee
+            //   bid      -> the role key is kept; assignee is set when claimed
+            //   broadcast-> every active member of the role (one instance each)
+            let role_key = role.as_deref();
+            let mut create_targets: Vec<(String, Option<String>)> = Vec::new(); // (member_id, per-instance id)
+            match assign_mode.as_str() {
+                "broadcast" => {
+                    let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
+                    let role_members: Vec<String> = members
+                        .iter()
+                        .filter(|m| m.state != "left" && m.state != "denied" && m.role.as_deref() == role_key)
+                        .map(|m| m.id.clone())
+                        .collect();
+                    if role_members.is_empty() {
+                        return err(format!("no active members with role `{role_key:?}` for broadcast"));
+                    }
+                    for mid in role_members {
+                        create_targets.push((mid.clone(), None));
+                    }
+                }
+                _ => {
+                    // direct: explicit assignee; bid: no assignee yet.
+                    let aid = if let Some(aid) = assignee {
+                        let m = member_by_id(conn, aid)?;
+                        if m.team_id != team.id {
+                            return err(format!("assignee member {aid} is not in team {}", team.id));
+                        }
+                        Some(m.id)
+                    } else {
+                        None // bid: assignee chosen on claim
+                    };
+                    create_targets.push((aid.unwrap_or_default(), None));
+                }
             }
 
-            // Build the doc.created payload for the taskx type.
-            let payload = json!({
-                "doc": crate::doc_flow::BUILTIN_TASKX,
-                "id": doc_id,
-                "title": title,
-                "detail": detail,
-                "assignee_member_id": assignee_id,
-                "executor": executor,
-                "priority": priority,
-                "assignee_role": role,
-            });
-            let out = cmd_publish_doc(
-                conn,
-                "doc.created",
-                Some(&payload.to_string()),
-                if assignee_id.is_empty() { None } else { Some(&assignee_id) },
-                session.as_str(),
-                Some(&team.id),
-            )?;
+            // Doc id base.
+            let base_id = id.clone().unwrap_or_else(|| slugify(title));
+            if !crate::teamfile::is_safe_key_segment(&base_id) {
+                return err(format!("task id `{base_id}` is not a safe identifier (no `/`, `..`, or control chars)"));
+            }
 
-            // Write the task document body (content in git).
-            std::fs::create_dir_all(&taskx_dir).map_err(|e| AppError(format!("mkdir {taskx_dir:?}: {e}")))?;
-            let md_path = taskx_dir.join(format!("{doc_id}.md"));
-            if !md_path.exists() {
-                let body = build_task_md(title, detail.as_deref(), executor, priority, assignee_id.as_str());
-                std::fs::write(&md_path, body).map_err(|e| AppError(format!("write {md_path:?}: {e}")))?;
+            // Create one (or N for broadcast) taskx instances.
+            let mut created: Vec<Value> = Vec::new();
+            let instance_ids: Vec<String> = if assign_mode == "broadcast" {
+                create_targets
+                    .iter()
+                    .map(|(mid, _)| {
+                        // stable suffix: member id short hash, fallback index
+                        let suffix = mid.chars().take(8).collect::<String>();
+                        format!("{base_id}@{suffix}")
+                    })
+                    .collect()
+            } else {
+                vec![base_id.clone()]
+            };
+
+            for (i, (mid, _)) in create_targets.iter().enumerate() {
+                let doc_id = instance_ids.get(i).cloned().unwrap_or_else(|| base_id.clone());
+                let payload = json!({
+                    "doc": crate::doc_flow::BUILTIN_TASKX,
+                    "id": doc_id,
+                    "title": title,
+                    "detail": detail,
+                    "assignee_member_id": if assign_mode == "bid" { "" } else { mid },
+                    "assignee_role": role_key,
+                    "assign_mode": assign_mode,
+                    "executor": executor,
+                    "priority": priority,
+                });
+                let out = cmd_publish_doc(
+                    conn,
+                    "doc.created",
+                    Some(&payload.to_string()),
+                    // For bid, no directed assignee at creation (role-wide broadcast
+                    // via reactions / plugin role matching); for direct/broadcast,
+                    // direct the notification to the target member.
+                    if assign_mode == "bid" || mid.is_empty() {
+                        None
+                    } else {
+                        Some(mid)
+                    },
+                    session.as_str(),
+                    Some(&team.id),
+                )?;
+                created.push(out);
+                // Write the task document body (content in git).
+                let md_path = taskx_dir.join(format!("{doc_id}.md"));
+                if !md_path.exists() {
+                    let body = build_task_md(title, detail.as_deref(), executor, priority, mid);
+                    std::fs::write(&md_path, body).map_err(|e| AppError(format!("write {md_path:?}: {e}")))?;
+                }
             }
 
             if !no_push {
                 auto_git_commit(&cwd, &format!("teamx task: {title}"))?;
             }
-            Ok(out)
+            Ok(json!({
+                "ok": true,
+                "mode": assign_mode,
+                "role": role_key,
+                "created": created.len(),
+                "instances": instance_ids,
+            }))
         }
         TaskCmd::Ack { id, session, team } => {
             Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.acknowledged", id, Some("acked"), json!({}))?)
         }
-        TaskCmd::Claim { id, session, team } => {
-            Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.claimed", id, Some("claimed"), json!({}))?)
-        }
+        TaskCmd::Claim { id, session, team } => task_claim(conn, id, session.as_str(), team.as_deref()),
         TaskCmd::Update { id, progress, session, team } => {
             Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.updated", id, None, json!({ "note": progress }))?)
         }
@@ -835,6 +901,8 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
         TaskCmd::Reject { id, reason, session, team } => {
             Ok(task_doc_event(conn, cmd, session.as_str(), team.as_deref(), "doc.rejected", id, Some("assigned"), json!({ "note": reason }))?)
         }
+        TaskCmd::Retract { id, session, team } => task_retract(conn, id, session.as_str(), team.as_deref()),
+        TaskCmd::ReBid { id, session, team } => task_rebid(conn, id, session.as_str(), team.as_deref()),
         TaskCmd::List { mine, state, assignee, executor, session, team } => {
             let my_id = if *mine {
                 let sess = session.as_deref().ok_or_else(|| {
@@ -849,6 +917,167 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
         }
         TaskCmd::Log { id, session: _session, team: _team } => task_log(conn, &docs_root, id),
     }
+}
+
+/// Claim a bid task: the actor becomes the assignee (first-come-first-served).
+/// Only members whose role matches the task's `assignee_role` (or the lead) may
+/// claim; a task that is already claimed is rejected.
+fn task_claim(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, crate::doc_flow::BUILTIN_TASKX, id);
+    let meta = crate::doc_flow::DocMeta::load(&meta_path)
+        .map_err(|e| AppError(format!("load task {id}: {e}")))?;
+
+    // Must be an open bid task.
+    if meta.assign_mode.as_deref() == Some("direct") || meta.assign_mode.as_deref() == Some("broadcast") {
+        return err(format!("task {id} is {mode} mode; claim is only for bid tasks", mode = meta.assign_mode.unwrap_or_default()));
+    }
+    if meta.state != "assigned" {
+        return err(format!("task {id} is in state `{}`; only open tasks can be claimed", meta.state));
+    }
+    if meta.assignee.is_some() {
+        return err(format!("task {id} is already claimed by member {}", meta.assignee.as_deref().unwrap_or("?")));
+    }
+    // Role gate: a member may only claim tasks dispatched to their role (or a lead may claim anything).
+    let is_lead = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
+    if let Some(role) = meta.assignee_role.as_deref() {
+        let role_ok = actor.role.as_deref() == Some(role);
+        if !role_ok && !is_lead {
+            return err(format!(
+                "member {} (role {:?}) may not claim task {id}: it is dispatched to role `{role}`",
+                actor.display_name, actor.role
+            ));
+        }
+    }
+
+    // Write the claim: assignee = actor.
+    let payload = json!({
+        "doc": crate::doc_flow::BUILTIN_TASKX,
+        "id": id,
+        "to": "claimed",
+        "assignee_member_id": actor.id,
+        "note": format!("claimed by {}", actor.display_name),
+    });
+    let out = cmd_publish_doc(
+        conn,
+        "doc.claimed",
+        Some(&payload.to_string()),
+        Some(&actor.id),
+        session,
+        Some(&team.id),
+    )?;
+    auto_git_commit(&cwd, &format!("teamx task {id}: claimed"))?;
+    Ok(out)
+}
+
+/// Retract a claimed bid task: return it to the open pool (`assigned`, assignee
+/// cleared). Permission: the member who claimed it may retract their own; a
+/// lead may retract any task. After retraction the task is re-broadcast so role
+/// members can claim again (no blacklist — anyone may re-claim).
+fn task_retract(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, crate::doc_flow::BUILTIN_TASKX, id);
+    let meta = crate::doc_flow::DocMeta::load(&meta_path)
+        .map_err(|e| AppError(format!("load task {id}: {e}")))?;
+
+    // Permission: the claimer may retract their own claim; a lead may retract any.
+    let is_lead = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
+    let is_claimer = meta.assignee.as_deref() == Some(actor.id.as_str());
+    if !is_lead && !is_claimer {
+        return err(format!(
+            "member {} may not retract task {id}: only the claimer or a lead may retract",
+            actor.display_name
+        ));
+    }
+    if meta.state != "claimed" {
+        return err(format!("task {id} is in state `{}`; only a claimed task can be retracted", meta.state));
+    }
+
+    // Move claimed -> assigned via a backward doc event, clearing the assignee.
+    let payload = json!({
+        "doc": crate::doc_flow::BUILTIN_TASKX,
+        "id": id,
+        "to": "assigned",
+        "note": format!("retracted by {}", actor.display_name),
+        "assignee_member_id": "", // clear the claim
+    });
+    let out = cmd_publish_doc(
+        conn,
+        "doc.retracted",
+        Some(&payload.to_string()),
+        None,
+        session,
+        Some(&team.id),
+    )?;
+
+    // Re-broadcast to the role so other members can claim (best-effort).
+    if let Some(role) = meta.assignee_role.as_deref() {
+        broadcast_role_rebid(conn, &team, role, id)?;
+    }
+    auto_git_commit(&cwd, &format!("teamx task {id}: retracted"))?;
+    Ok(out)
+}
+
+/// Re-broadcast a task so role members can claim it again (team lead only).
+/// No-op if the task is already open (`assigned` with no claimer).
+fn task_rebid(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let docs_root = cwd.join(".teamx").join("docs");
+    let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, crate::doc_flow::BUILTIN_TASKX, id);
+    let meta = crate::doc_flow::DocMeta::load(&meta_path)
+        .map_err(|e| AppError(format!("load task {id}: {e}")))?;
+    if meta.state != "assigned" || meta.assignee.is_some() {
+        return err(format!("task {id} is not open for bidding (state `{}`); retract or wait first", meta.state));
+    }
+    let role = meta.assignee_role.clone().unwrap_or_default();
+    broadcast_role_rebid(conn, &team, &role, id)?;
+    Ok(json!({
+        "ok": true,
+        "task": id,
+        "role": role,
+        "note": format!("re-broadcast to role `{role}` for claim"),
+    }))
+}
+
+/// Broadcast a `doc.rebid` notification to every active member of `role`, so
+/// their plugins see the task is claimable again. Best-effort: returns the
+/// number of members notified.
+fn broadcast_role_rebid(conn: &mut Connection, team: &TeamRow, role: &str, id: &str) -> Result<usize> {
+    let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
+    let mut n = 0usize;
+    for m in members {
+        if m.state == "left" || m.state == "denied" || m.state == "pending" {
+            continue;
+        }
+        if m.role.as_deref() != Some(role) {
+            continue;
+        }
+        let nseq = db::with_write(conn, |tx| {
+            emit_json(
+                tx,
+                &team.id,
+                None,
+                "doc.rebid",
+                json!({
+                    "doc": crate::doc_flow::BUILTIN_TASKX,
+                    "id": id,
+                    "assignee_role": role,
+                    "assignee_member_id": m.id,
+                    "note": format!("task {id} is open for claim (role {role})"),
+                }),
+            )
+        })
+        .map_err(|e| AppError(format!("rebid event: {e}")))?;
+        let _ = nseq;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Shared handler for task lifecycle events: build the doc payload, call the
@@ -3335,6 +3564,7 @@ fn cmd_publish_doc(
         "doc.help_requested",
         "doc.done",
         "doc.verified",
+        "doc.retracted",
     ];
     if !KNOWN_DOC_EVENTS.contains(&publish_type) {
         return err(format!(
@@ -3393,6 +3623,8 @@ fn cmd_publish_doc(
         assignee: None,
         executor: None,
         priority: None,
+        assign_mode: None,
+        assignee_role: None,
     });
 
     // Validate + compute the next meta (pure — no side effects). A failed
@@ -3401,9 +3633,17 @@ fn cmd_publish_doc(
     let actor_label = format!("{} ({})", actor.display_name, actor_role);
     // taskx: the assignee member may advance their own task's state (ack/claim/
     // update/done) even though the doc owner/approver role is "lead". We pass a
-    // synthetic role that `can_advance` accepts when the actor is the assignee.
+    // synthetic role that `can_advance` accepts when:
+    //   - the actor IS the assignee, or
+    //   - this is a bid task and the actor's role matches assignee_role
+    //     (they are claiming / working it), or
+    //   - the actor is a lead (impersonating "lead" grants advance).
+    let is_lead_actor = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
+    let role_match = doc_key == crate::doc_flow::BUILTIN_TASKX
+        && meta.assignee_role.as_deref().is_some()
+        && actor.role.as_deref() == meta.assignee_role.as_deref();
     let effective_role = if doc_key == crate::doc_flow::BUILTIN_TASKX
-        && meta.assignee.as_deref() == Some(actor.id.as_str())
+        && (meta.assignee.as_deref() == Some(actor.id.as_str()) || role_match || is_lead_actor)
     {
         // "lead" is in the approvers list, so impersonating it grants advance.
         "lead".to_string()
@@ -3471,6 +3711,9 @@ fn cmd_publish_doc(
         if let Some(a) = payload.get("assignee_member_id").and_then(|v| v.as_str()) {
             if !a.is_empty() {
                 persisted.assignee = Some(a.to_string());
+            } else {
+                // empty assignee clears the current claim (e.g. retract)
+                persisted.assignee = None;
             }
         }
         if let Some(e) = payload.get("executor").and_then(|v| v.as_str()) {
@@ -3478,6 +3721,12 @@ fn cmd_publish_doc(
         }
         if let Some(p) = payload.get("priority").and_then(|v| v.as_str()) {
             persisted.priority = Some(p.to_string());
+        }
+        if let Some(m) = payload.get("assign_mode").and_then(|v| v.as_str()) {
+            persisted.assign_mode = Some(m.to_string());
+        }
+        if let Some(r) = payload.get("assignee_role").and_then(|v| v.as_str()) {
+            persisted.assignee_role = Some(r.to_string());
         }
     }
     persisted
