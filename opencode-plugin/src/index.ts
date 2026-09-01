@@ -121,6 +121,46 @@ function summarizeEvent(e: SyncEvent): string {
       return t("toast.role_updated", { seq: String(seq), label: s("label"), updated_by: s("updated_by") })
     case "loopx.progress":
       return t("toast.loopx_progress", { seq: String(seq) })
+    // taskx (built-in task doc type): assigned / acked / done / help / verified /
+    // task.nudge. `doc.created` with doc=taskx is a task assignment.
+    case "doc.created":
+    case "doc.claimed":
+    case "doc.acknowledged":
+    case "doc.done":
+    case "doc.verified":
+    case "doc.rejected":
+    case "doc.help_requested": {
+      if (p["doc"] !== "taskx") {
+        // fall through to the default renderer for other doc types
+        return msg
+          ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
+          : t("toast.default_no_msg", { seq: String(seq), type: t_ })
+      }
+      const title = s("title")
+      const tid = s("id")
+      const kind = t_.replace("doc.", "")
+      if (kind === "created") {
+        return t("toast.task_assigned", {
+          seq: String(seq),
+          title: title || tid,
+          id: tid,
+          executor: String(p["executor"] ?? "agent"),
+        })
+      }
+      if (kind === "done") return t("toast.task_done", { seq: String(seq), title: title || tid })
+      if (kind === "help_requested") {
+        return t("toast.task_help_requested", { seq: String(seq), title: title || tid, reason: shorten(s("note")) })
+      }
+      if (kind === "verified") return t("toast.task_verified", { seq: String(seq), title: title || tid })
+      if (kind === "acknowledged") return t("toast.task_acknowledged", { seq: String(seq), title: title || tid })
+      return msg
+        ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
+        : t("toast.default_no_msg", { seq: String(seq), type: t_ })
+    }
+    case "task.nudge": {
+      const body = msg ? shorten(msg) : ""
+      return t("toast.task_nudge", { seq: String(seq), message: body })
+    }
     case "system.nudge": {
       // Server-side idle-team reminder: "your task isn't done — finish or
       // submit". Surfaced loudly so the member knows the team is waiting.
@@ -250,7 +290,23 @@ export const Teamx: Plugin = async ({ client }) => {
     const r = await runCli(["sync", "--no-advance", "--session", key])
     if (!r.ok || !r.data) return
     const data = r.data as unknown as SyncData
-    setDigest(sessionID, summarize(data))
+    // My open tasks (taskx) — injected into the digest so the agent sees its
+    // TODO without an explicit `task list` call. Human tasks are flagged so the
+    // model knows to surface them to the user rather than auto-execute.
+    let digest = summarize(data)
+    const tasks = await runCli(["task", "list", "--mine", "--json", "--session", key])
+    if (tasks.ok && tasks.data?.tasks && Array.isArray((tasks.data as { tasks?: unknown[] }).tasks)) {
+      const open = ((tasks.data as { tasks: { id: string; title: string; state: string; executor?: string }[] }).tasks).filter(
+        (tt) => tt.state !== "done" && tt.state !== "verified",
+      )
+      if (open.length > 0) {
+        const lines = open.map(
+          (tt) => `  ${tt.executor === "human" ? "👤" : "🤖"} [${tt.state}] ${tt.title} (task ${tt.id})`,
+        )
+        digest += `\n${t("digest.tasks_header", { count: String(open.length) })}\n${lines.join("\n")}`
+      }
+    }
+    setDigest(sessionID, digest)
     const events = Array.isArray(data.new_events) ? data.new_events : []
     if (events.length === 0) return
     const seqs = events.map((e) => e.seq ?? 0).filter((s) => s > 0)
@@ -297,6 +353,20 @@ export const Teamx: Plugin = async ({ client }) => {
         .appendPrompt({ body: { text: t("nudge_lead_prompt") } })
         .catch(() => {})
     }
+    // Auto-acknowledge taskx assignments to this member (automatic receipt).
+    // A `doc.created` with doc=taskx and assignee_member_id == me means the lead
+    // assigned us a task; record receipt immediately (no user action needed).
+    const myId = myMemberId(data)
+    const newTasks = fresh.filter(
+      (e) => e.type === "doc.created" && e.payload?.doc === "taskx" && e.payload?.assignee_member_id === myId,
+    )
+    for (const t of newTasks) {
+      const tid = t.payload?.id as string | undefined
+      if (!tid) continue
+      await runCli(["task", "ack", tid, "--session", sessionKey(instance, sessionID)]).catch(() => {})
+      log("info", "auto-acked task", { sessionID, task: tid })
+    }
+
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
     // carrying `assignee_member_id == my_member_id` is a task for us; every
     // other broadcast (unassigned, or another member's task) is informational.
@@ -311,8 +381,14 @@ export const Teamx: Plugin = async ({ client }) => {
       const directive = fresh.find(
         (e) => e.payload?.assignee_member_id === myMemberId(data) && (e.seq ?? 0) > lastExecuted,
       )
-      const summary = directive ? summarizeEvent(directive) : ""
-      await triggerAutoExecute(sessionID, summary).catch(() => {})
+      // A human-executor task must NOT auto-execute: it needs a person. Surface
+      // it to the user instead of letting the agent run it.
+      if (directive?.payload?.doc === "taskx" && directive?.payload?.executor === "human") {
+        await client.tui.appendPrompt({ body: { text: t("task_prompt_human") } }).catch(() => {})
+      } else {
+        const summary = directive ? summarizeEvent(directive) : ""
+        await triggerAutoExecute(sessionID, summary).catch(() => {})
+      }
     }
   }
 

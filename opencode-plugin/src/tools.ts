@@ -598,6 +598,135 @@ export const tools = {
     },
   }),
 
+  teamx_task_create: tool({
+    description:
+      "Create a team task (team lead). Tasks are teamx documents (taskx type): " +
+      "content in git, state machine in .meta.json. Assign to a specific member " +
+      "(--assignee) or a role (--role). executor=human marks a task that needs a " +
+      "human, agent marks one the AI can do. Optionally set --priority.",
+    args: {
+      title: tool.schema.string().describe("task title"),
+      assignee: tool.schema.string().optional().describe("assignee member id"),
+      role: tool.schema.string().optional().describe("assignee role key (e.g. reviewer)"),
+      executor: tool.schema.enum(["agent", "human"]).optional().describe("executor kind (default agent)"),
+      priority: tool.schema.enum(["high", "medium", "low"]).optional().describe("priority (default medium)"),
+      id: tool.schema.string().optional().describe("task id (default: slug of title)"),
+      detail: tool.schema.string().optional().describe("task detail / background"),
+      no_push: tool.schema.boolean().optional().describe("do not auto git commit+push"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, [
+        "task", "create", args.title,
+        ...opt("--assignee", args.assignee),
+        ...opt("--role", args.role),
+        ...(args.executor ? ["--executor", args.executor] : []),
+        ...(args.priority ? ["--priority", args.priority] : []),
+        ...opt("--id", args.id),
+        ...opt("--detail", args.detail),
+        ...(args.no_push ? ["--no-push"] : []),
+      ])
+    },
+  }),
+
+  teamx_task_ack: tool({
+    description:
+      "Acknowledge a task assigned to you (auto-issued by the plugin on assignee sessions; " +
+      "call manually only when needed). Records doc.acknowledged.",
+    args: { id: tool.schema.string().describe("task id") },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "ack", args.id])
+    },
+  }),
+
+  teamx_task_claim: tool({
+    description: "Claim a task (optional for small tasks). Records doc.claimed.",
+    args: { id: tool.schema.string().describe("task id") },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "claim", args.id])
+    },
+  }),
+
+  teamx_task_update: tool({
+    description: "Record progress on a task. Records doc.updated.",
+    args: {
+      id: tool.schema.string().describe("task id"),
+      progress: tool.schema.string().describe("progress note"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "update", args.id, "--progress", args.progress])
+    },
+  }),
+
+  teamx_task_help: tool({
+    description:
+      "Request help on a task (notification to the lead; the task stays in_progress). " +
+      "Records doc.help_requested.",
+    args: {
+      id: tool.schema.string().describe("task id"),
+      reason: tool.schema.string().describe("what you need help with"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "help", args.id, "--reason", args.reason])
+    },
+  }),
+
+  teamx_task_done: tool({
+    description: "Mark a task done (completion candidate; the lead verifies). Records doc.done.",
+    args: {
+      id: tool.schema.string().describe("task id"),
+      result: tool.schema.string().optional().describe("result / deliverable summary"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "done", args.id, ...opt("--result", args.result)])
+    },
+  }),
+
+  teamx_task_verify: tool({
+    description: "Verify a completed task (team lead) — closes the loop. Records doc.verified.",
+    args: { id: tool.schema.string().describe("task id") },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "verify", args.id])
+    },
+  }),
+
+  teamx_task_reject: tool({
+    description: "Reject a task back to work (team lead), with a reason. Records doc.rejected.",
+    args: {
+      id: tool.schema.string().describe("task id"),
+      reason: tool.schema.string().describe("rejection reason"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "reject", args.id, "--reason", args.reason])
+    },
+  }),
+
+  teamx_task_list: tool({
+    description:
+      "List tasks (all, or filtered). --mine shows tasks assigned to the current member. " +
+      "Useful for the agent to see its open tasks / TODO.",
+    args: {
+      mine: tool.schema.boolean().optional().describe("only tasks assigned to the current member"),
+      state: tool.schema.string().optional().describe("filter by state (assigned/acked/claimed/in_progress/done/verified)"),
+      executor: tool.schema.enum(["agent", "human"]).optional().describe("filter by executor kind"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, [
+        "task", "list",
+        ...(args.mine ? ["--mine"] : []),
+        ...opt("--state", args.state),
+        ...(args.executor ? ["--executor", args.executor] : []),
+      ])
+    },
+  }),
+
+  teamx_task_log: tool({
+    description: "Show a task's full audit history (ledger events + meta transitions).",
+    args: { id: tool.schema.string().describe("task id") },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, ["task", "log", args.id])
+    },
+  }),
+
   teamx_loopx_report: tool({
     description:
       "Snapshot the loopx stage progress for a bound project and publish it to the team ledger as a loopx.progress event. " +
