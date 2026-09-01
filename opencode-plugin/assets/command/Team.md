@@ -10,6 +10,7 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 - `leave` → teamx_leave（离开团队；owner 不能离开，请用 destroy）
 - `status` → teamx_status（查看当前团队完整状态）
 - `sync` → teamx_sync（拉取最新团队事件）
+- `start` → 启动 grill-doc 设计会话，交互式创建/改进团队的 .teamx/TEAM.md（owner 主导，产出团队契约后可用 team create 一键启动团队）
 - `goal set <title> [body]` → teamx_set_goal（owner 起草目标）
 - `goal share` → teamx_share_goal（owner 共享目标，启动执行）
 - `goal close` → teamx_close_goal（owner 验证并关闭目标）

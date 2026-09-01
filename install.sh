@@ -158,7 +158,7 @@ for cmd in Team team-create team-join team-status team-sync \
            team-role-approve team-role-deny team-role-update \
            team-invite team-import team-invite-list team-invite-revoke \
            team-state team-ask team-respond team-publish team-archive \
-           team-grill \
+           team-grill team-start \
            team-leave team-destroy \
            team-tunnel team-tunnel-expose team-tunnel-list team-tunnel-status team-tunnel-close \
            team-tunnel-forward \
