@@ -166,4 +166,4 @@ Local (single-machine, CLI-only) mode relies on a self-reported `session_key`, w
 
 ## License
 
-MIT
+Proprietary — All Rights Reserved. Copyright (c) 2026 caishu97. See [LICENSE](LICENSE).
