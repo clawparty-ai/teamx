@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 — 2026-09-01
+
+### grill-doc 允许早于团队创建运行（去除 owner 前置条件）
+
+grill-doc 是收集需求过程，现在**可以先于团队存在而运行**（pre-team 模式）：
+
+- `protocols/grill-with-docs.md`：启动不再要求「已入队且为 team owner」——
+  `teamx_sync` 改为尽力而为；未入队时进入 pre-team 设计会话（记录写入 Git，
+  不发布 ledger 事件），已入队且为 owner 时按团队内会话继续。
+- pre-team 模式下跳过团队 ledger 能力：Fact Request 委派与决策广播仅在团队
+  存在时使用，否则回退到本地调查或直接询问 owner。
+- 记录 schema 与 ledger payload 结构不变，`protocol_version` 保持 1（向后兼容，
+  已有 v1 记录可正常 resume）。
+- 重新生成 `/team-grill` 命令资产与 DSH skill 适配器；`/team start` 同步更新。
+- 更新 `docs/22/23/27` 文档与协议资产测试。
+
+验证：`node scripts/generate-grill-protocol.mjs --check` 无 drift；
+`node tests/protocol-assets.test.mjs` 通过；dsh-plugin typecheck 通过。
+
 ## 0.4.0 — 2026-08-30
 
 ### 合并 grill-with-docs（owner 主导设计会话）到企业版

@@ -9,11 +9,11 @@ User arguments: $ARGUMENTS
 
 # Team Start: Design Your Team's TEAM.md
 
-Run an owner-led grill-doc (Design Session) that turns "how should our team be structured" from a vague idea into a usable **`.teamx/TEAM.md`** team contract. The design session itself does not implement code, commit, or push.
+Run a human-owner-led grill-doc (Design Session) that turns "how should our team be structured" from a vague idea into a usable **`.teamx/TEAM.md`** team contract. The design session itself does not implement code, commit, or push. It typically runs before the team is created (requirements gathering precedes team creation) and can also improve an existing team's contract.
 
 ## 1. Start
 
-1. Call `teamx_sync` and verify that the current member is the team owner. If ownership cannot be verified, explain that only the owner can run this session and stop.
+1. Call `teamx_sync` best-effort to detect team context. `/team start` designs the team's TEAM.md and is allowed to run **before a team exists**: if the session is not in any team yet, treat the `teamx_sync` error as expected and proceed as a pre-team design session (no team ledger, no event publishing) instead of stopping; if it is the owner, continue as an in-team session.
 2. Fix the output path of this design session to **`.teamx/TEAM.md`**: `/team start` always designs the team's TEAM.md.
    - If `.teamx/TEAM.md` already exists, the user wants to **redesign / improve** the existing contract — continue from its content, append or revise, never discard history;
    - if it does not exist, this is a fresh design.

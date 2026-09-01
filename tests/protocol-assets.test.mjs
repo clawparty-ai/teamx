@@ -18,7 +18,7 @@ const protocol = read("protocols", "grill-with-docs.md")
 const hash = createHash("sha256").update(protocol.replace(/\r\n/g, "\n")).digest("hex")
 
 for (const invariant of [
-  "Call `teamx_sync` and verify that the current member is the team owner",
+  "grill-doc is human-owner-led and may run before a team exists",
   "Only the owner settles decisions",
   "The Design Session itself does not implement code",
   "the human owner explicitly confirms Shared Understanding",

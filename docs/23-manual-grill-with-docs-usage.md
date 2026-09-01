@@ -14,9 +14,9 @@
 ## 使用前提
 
 1. 已安装 Teamx 及对应的 OpenCode 或 DSH 插件。
-2. 当前会话已加入一个 Teamx team。
-3. 当前成员是该 team 的 owner。成员可以承担事实调查，但不能代替 owner 启动或完成 Design Session。
-4. 建议先共享团队 goal，以便所有参与者看到相同的目标和协作事件。
+2. grill-doc 是 human-owner 主导的收集需求过程，**可以早于团队存在而运行**：团队尚未创建时，以 pre-team 设计会话运行（记录写入 Git，不发布 ledger 事件）；团队已存在时，由 team owner 在团队内运行。
+3. 团队内运行时，事实调查可由成员承担（Fact Request），但最终决定仍由 human owner 做出。
+4. 建议团队内运行时先共享团队 goal，以便所有参与者看到相同的目标和协作事件。
 
 ## 在 OpenCode 中使用
 
@@ -64,13 +64,13 @@ DSH 通过自然语言选择运行时 Skill，不提供单独的 slash command�
 docs/design/order-cancellation.md 中的设计会话。
 ```
 
-OpenCode 和 DSH 使用同一份规范协议，因此 owner 权限、问题轮次、事实调查和完成条件保持一致。
+OpenCode 和 DSH 使用同一份规范协议，因此 human-owner 主导、问题轮次、事实调查和完成条件保持一致。
 
 ## 一次会话如何进行
 
 ### 1. 建立设计树
 
-工作流先同步 Teamx 状态、确认 owner 身份，再读取仓库中能够安全发现的事实。所有尚未确定的选择会获得稳定编号，例如 `DQ-0001`。
+工作流先尽力同步 Teamx 状态（团队尚未创建时进入 pre-team 模式），确认 human-owner 身份，再读取仓库中能够安全发现的事实。所有尚未确定的选择会获得稳定编号，例如 `DQ-0001`。
 
 问题之间可以存在依赖。只有前置问题已经解决的节点才会进入当前 Frontier。
 
@@ -125,9 +125,9 @@ Teamx ledger 只保存协作事件和文档引用，Git 中的文件才是持久
 
 ## 常见问题
 
-### 提示当前成员不是 owner
+### 团队未创建或当前不是 owner
 
-切换到 team owner 的会话，或先检查 `/team-status`。成员可以完成 Fact Request，但不能替 owner 做设计决定。
+grill-doc 允许在团队创建前运行（pre-team），不需要先建队。若你希望使用团队 ledger 的 Fact Request 委派与决策广播，需要先创建/加入团队并成为 owner，或切换到 owner 会话。成员可以完成 Fact Request，但不能替 owner 做设计决定。
 
 ### 找不到恢复记录
 

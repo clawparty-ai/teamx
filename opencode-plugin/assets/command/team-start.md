@@ -9,11 +9,11 @@ agent: teamx
 
 # Team Start: Design Your Team's TEAM.md
 
-运行 owner 主导的 grill-doc（Design Session），把"我们这个团队该怎么组"从模糊想法展开成一份可用的 **`.teamx/TEAM.md`** 团队契约。设计会话本身不实现代码、不提交、不推送。
+运行 human-owner 主导的 grill-doc（Design Session），把"我们这个团队该怎么组"从模糊想法展开成一份可用的 **`.teamx/TEAM.md`** 团队契约。设计会话本身不实现代码、不提交、不推送。它通常发生在团队创建之前（收集需求先于建队），也可用于改进已建团队的契约。
 
 ## 1. 启动
 
-1. 先调用 `teamx_sync`，确认当前成员是 team owner。若非 owner，说明只有 owner 可以启动本会话并停止。
+1. 先调用 `teamx_sync`（尽力而为）以检测团队上下文。`/team start` 用于设计团队的 TEAM.md，**允许早于团队存在而运行**：若尚未加入任何 team，`teamx_sync` 的报错属预期，直接进入 pre-team 设计会话（无团队 ledger，不发布事件）而不是停止；若已是 owner，则按团队内会话继续。
 2. 固定本次设计会话的输出路径为 **`.teamx/TEAM.md`**：`/team start` 总是设计团队的 TEAM.md。
    - 若 `.teamx/TEAM.md` 已存在，说明用户要**重新设计/改进**现有团队契约——以现有内容为起点继续，追加或修订，不要丢弃历史；
    - 若不存在，这是全新设计。

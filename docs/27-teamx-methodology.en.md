@@ -230,11 +230,11 @@ Put these records to work for enterprise-level management:
 
 Writing TEAM.md by hand is easy; *deciding how to structure the team* is not: how many members? What roles? Where are the duty boundaries? Do we need document contracts? How should document states flow? These are exactly what **grill-doc (Design Session)** excels at.
 
-grill-doc is an owner-led interactive design session: it expands your idea into a *design tree*, asks every decision round by round with a concrete recommendation, and settles the conclusions into durable documents. Using grill-doc to design your TEAM.md gives you not an empty template, but **a team contract that has been thought through, with explicit trade-offs, ready to use**.
+grill-doc is a human-owner-led interactive design session: it expands your idea into a *design tree*, asks every decision round by round with a concrete recommendation, and settles the conclusions into durable documents. Using grill-doc to design your TEAM.md gives you not an empty template, but **a team contract that has been thought through, with explicit trade-offs, ready to use**. It typically runs before the team is created (requirements gathering precedes team creation) and can also improve an existing team's contract.
 
 ### 4.1 Start a session
 
-In the team owner's opencode session, the most direct way is `/team start` — it is purpose-built for designing the team's TEAM.md and automatically binds the output to `.teamx/TEAM.md`:
+The most direct way is `/team start` — it is purpose-built for designing the team's TEAM.md, automatically binds the output to `.teamx/TEAM.md`, and is allowed to run before a team exists:
 
 ```text
 /team start
@@ -250,7 +250,7 @@ Key points:
 
 - `/team start` always targets `.teamx/TEAM.md` — when the session completes, `TEAM.md` is the artifact; if it already exists, the session continues from and improves it without discarding history;
 - `--doc .teamx/TEAM.md` also binds the Design Session Record directly to TEAM.md's final location;
-- grill-doc first syncs team state, verifies the owner identity, then reads facts it can discover safely from the repository;
+- grill-doc first syncs team state best-effort (pre-team mode when no team exists yet), verifies the human-owner identity, then reads facts it can discover safely from the repository;
 - without `--doc`, the record defaults to `docs/design/<topic-slug>.md`.
 
 ### 4.2 What the design tree asks

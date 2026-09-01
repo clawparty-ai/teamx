@@ -9,6 +9,13 @@ This runbook verifies the owner-led design workflow across OpenCode and DSH. Use
 - Share a goal so both participants can synchronize.
 - Confirm that the repository has no existing `docs/design/manual-grill.md`.
 
+## Pre-team flow (requirements gathering before team creation)
+
+1. In a fresh opencode session that is not yet a member of any team, run `/team start` (or `/team-grill Design the team contract --doc docs/design/manual-grill.md`).
+2. Confirm the workflow does not require an existing team: `teamx_sync` may error with "not a member of any team"; the workflow treats that as expected, proceeds as a pre-team design session, and writes the Design Session Record.
+3. Confirm the workflow skips team-ledger publishing (no Fact Request delegation, no decision broadcasts) while pre-team, and falls back to local investigation or direct owner questions for missing facts.
+4. Complete the pre-team session, then confirm `.teamx/TEAM.md` is produced and usable by `teamx team create`.
+
 ## OpenCode owner flow
 
 1. In the owner session, run `/team-grill Design a durable notification retry policy --doc docs/design/manual-grill.md`.

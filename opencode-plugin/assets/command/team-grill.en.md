@@ -3,7 +3,7 @@ description: Run an owner-led Teamx design interview and preserve decisions in r
 agent: teamx
 ---
 
-<!-- Generated from protocols/grill-with-docs.md; protocol v1; sha256 e5e346976383db7c85bded8c433cc38afc97da9c3e3b1c51eec864f8877bbae5; do not edit. -->
+<!-- Generated from protocols/grill-with-docs.md; protocol v1; sha256 a9d84fce05ea3803ef2b82f21a33e8c35bda5207f7b1243dcdf53652ca02e5e5; do not edit. -->
 
 Run the Teamx grill-with-docs protocol for the explicit arguments below. Treat them as the topic and options for Start or Resume.
 
@@ -11,11 +11,11 @@ User arguments: $ARGUMENTS
 
 # Teamx Grill with Docs Protocol
 
-Run an owner-led Design Session that turns an uncertain plan into settled decisions and durable Git artifacts. Use the user's current language throughout.
+Run a human-owner-led Design Session that turns an uncertain plan into settled decisions and durable Git artifacts. Use the user's current language throughout. The session may run before a team exists (requirements gathering precedes team creation); when a team exists, it runs inside that team.
 
 ## 1. Start or Resume
 
-1. Call `teamx_sync` and verify that the current member is the team owner. If ownership cannot be verified, explain that only the owner can run the session and stop.
+1. Call `teamx_sync` best-effort to detect team context. grill-doc is human-owner-led and may run before a team exists. If the session is a team owner, run inside that team; if it is not a member or owner yet, treat the `teamx_sync` error as expected and run as a pre-team design session (no team ledger available) instead of stopping.
 2. Parse the explicit invocation:
    - a topic starts a new session;
    - `--doc <path>` uses that file as the Design Session Record;
@@ -24,7 +24,7 @@ Run an owner-led Design Session that turns an uncertain plan into settled decisi
 3. For a new session without `--doc`, create `docs/design/<slug>.md`. Never select a record by fuzzy title or modification time.
 4. Initialize or validate the record using the schema below. Bind this conversation to that one path.
 
-Completion criterion: an owner identity and exactly one Design Session Record path are established before deliberation begins.
+Completion criterion: a human-owner identity and exactly one Design Session Record path are established before deliberation begins. When a team exists, the owner identity is the team owner; otherwise it is the human leading the session.
 
 ## 2. Build the Design Tree
 
@@ -32,7 +32,7 @@ Completion criterion: an owner identity and exactly one Design Session Record pa
 2. Model every unresolved choice as a stable Design Question (`DQ-0001`, `DQ-0002`, ...), including dependencies between questions.
 3. Compute the Frontier: every unresolved Design Question whose prerequisites are settled.
 4. When facts are missing, either investigate locally or create a self-contained Fact Request (`FR-0001`, `FR-0002`, ...) for a suitable member. A Fact Request states the question, constraints, required evidence, and expected output without assuming the member can read the same workspace.
-5. Publish a delegated Fact Request with `teamx_publish` type `update`, the target member as `assignee`, and the structured payload below. Other Frontier questions continue while the request is pending.
+5. When a team exists, publish a delegated Fact Request with `teamx_publish` type `update`, the target member as `assignee`, and the structured payload below. Without a team (pre-team), fall back to local investigation or asking the owner for the missing facts. Other Frontier questions continue while a request is pending.
 
 Completion criterion: every unresolved choice is represented in the tree, and every Frontier question has enough verified context to ask or an explicit pending Fact Request.
 
@@ -56,7 +56,7 @@ Completion criterion: every question in the current Frontier has been presented 
 2. Update the Design Session Record immediately with settled decisions, evidence, the recomputed Frontier, and remaining branches.
 3. When a project-specific term is settled, update the root `CONTEXT.md` immediately. Keep it a glossary: short definitions without implementation details.
 4. Create an ADR under `docs/adr/` only when the decision is hard to reverse, surprising without context, and the result of a genuine trade-off.
-5. Announce a recorded decision with `teamx_publish` type `decision` and a payload pointing to its Artifact. The broadcast announces the Decision Record; it is not the record itself.
+5. When a team exists, announce a recorded decision with `teamx_publish` type `decision` and a payload pointing to its Artifact. The broadcast announces the Decision Record; it is not the record itself. Pre-team sessions skip the broadcast and rely on the durable artifacts.
 6. Recompute the Design Tree and begin the next round when the Frontier is non-empty.
 
 Completion criterion: every owner answer is reflected in the durable artifacts, and the next Frontier exactly matches the remaining dependency tree.
@@ -80,7 +80,7 @@ Completion requires all of the following:
 4. the Design Session Record, glossary, and required ADRs agree;
 5. the human owner explicitly confirms Shared Understanding.
 
-After confirmation, set the record status to `completed` and publish a final `decision` broadcast pointing to the completed artifacts. Report that implementation may now begin. The Design Session itself does not implement code, run unrelated system commands, commit, or push.
+After confirmation, set the record status to `completed` and, when a team exists, publish a final `decision` broadcast pointing to the completed artifacts. Report that implementation may now begin. The Design Session itself does not implement code, run unrelated system commands, commit, or push.
 
 ## Design Session Record
 

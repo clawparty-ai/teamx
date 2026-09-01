@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.1 — 2026-09-01
+
+### grill-doc may run before a team exists (owner prerequisite removed)
+
+grill-doc is a requirements-gathering process and can now run **before a team
+is created** (pre-team mode):
+
+- `protocols/grill-with-docs.md`: starting no longer requires "already a team
+  member and owner" — `teamx_sync` is best-effort; a non-member session enters
+  a pre-team design session (record written to Git, no ledger events), while an
+  owner session continues as an in-team session.
+- Pre-team mode skips team-ledger capabilities: Fact Request delegation and
+  decision broadcasts are used only when a team exists, otherwise falling back
+  to local investigation or direct owner questions.
+- Record schema and ledger payloads are unchanged; `protocol_version` stays 1
+  (backward compatible, existing v1 records resume normally).
+- Regenerated the `/team-grill` command assets and the DSH skill adapter;
+  `/team start` updated to match.
+- Updated docs `22/23/27` and the protocol-assets test.
+
+Verification: `node scripts/generate-grill-protocol.mjs --check` shows no drift;
+`node tests/protocol-assets.test.mjs` passes; dsh-plugin typecheck passes.
+
 ## 0.2.0 — 2026-08-30
 
 Teamx 0.2.0 grows from a shared-goal state machine into a full network collaboration platform: managed Git over mTLS, a transparent tun0 proxy, an owner-led design-review workflow, desktop GUI, and user-scoped tunnel isolation.
