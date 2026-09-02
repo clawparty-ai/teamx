@@ -22,28 +22,31 @@ test("登录：token 设 cookie 并进入 Dashboard（默认视图）", async ({
   await expect(page.locator("#dashOnline")).toHaveText(/\/ 2/)
 })
 
-test("Dashboard 无外部网络时降级 SVG 渲染，节点可见", async ({ page }) => {
+test("Dashboard 地图模式渲染 Leaflet 容器 + 成员标记", async ({ page }) => {
   const ctx = page.context()
-  await blockExternal(ctx)
+  await blockExternal(ctx) // 阻止外部瓦片/CDN，但本地 /leaflet.js 同源可加载
   await page.goto(tokenUrl, { waitUntil: "networkidle" })
-  await expect(page.locator("#dashSvgFallback")).toBeVisible({ timeout: 15000 })
-  const text = await page.locator("#dashSvgFallback").textContent()
-  expect(text).toContain("bob")
-  expect(text).toContain("UIe2e")
+  await expect(page.locator("#dashMap.leaflet-container")).toBeVisible({ timeout: 15000 })
+  await expect(page.locator("#dashMap .map-pin").first()).toBeVisible()
 })
 
-test("地图/拓扑模式切换", async ({ page }) => {
+test("地图/拓扑模式切换（顶栏，Dashboard 激活时显示）", async ({ page }) => {
   const ctx = page.context()
   await blockExternal(ctx)
   await page.goto(tokenUrl, { waitUntil: "networkidle" })
-  // topology mode: the SVG fallback renders the server-member ring
-  await page.locator('button[data-dmode="topo"]').click()
-  await expect(page.locator('button[data-dmode="topo"]')).toHaveClass(/active/)
+  // Dashboard 激活时顶栏切换可见
+  await expect(page.locator("#dashModeToggle")).toBeVisible()
+  await expect(page.locator("#dashModeToggle button[data-dmode='map']")).toHaveClass(/active/)
+  // 拓扑模式：SVG 环形视图
+  await page.locator('#dashModeToggle button[data-dmode="topo"]').click()
   await expect(page.locator("#dashSvgFallback")).toBeVisible()
-  // back to map mode
-  await page.locator('button[data-dmode="map"]').click()
-  await expect(page.locator('button[data-dmode="map"]')).toHaveClass(/active/)
-  await expect(page.locator("#dashSvgFallback")).toBeVisible()
+  await expect(page.locator("#dashModeToggle button[data-dmode='topo']")).toHaveClass(/active/)
+  // 切回地图
+  await page.locator('#dashModeToggle button[data-dmode="map"]').click()
+  await expect(page.locator("#dashMap.leaflet-container")).toBeVisible()
+  // 离开 Dashboard 时切换隐藏
+  await page.locator('nav button[data-view="cost"]').click()
+  await expect(page.locator("#dashModeToggle")).toBeHidden()
 })
 
 test("视图切换：KanBan / Cost / Timeline / Members（Goal 按 mockup 隐藏）", async ({ page }) => {

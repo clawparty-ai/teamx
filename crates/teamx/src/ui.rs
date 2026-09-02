@@ -42,6 +42,12 @@ use crate::pki;
 static XTERM_JS: &str = include_str!("assets/xterm.min.js");
 static XTERM_CSS: &str = include_str!("assets/xterm.css");
 
+/// Leaflet vendored for the Dashboard map (no external CDN dependency), so the
+/// map library always loads even where unpkg is unreachable; only the tile
+/// servers (Gaode → Esri → OSM) require the network.
+static LEAFLET_JS: &str = include_str!("assets/leaflet.min.js");
+static LEAFLET_CSS: &str = include_str!("assets/leaflet.css");
+
 /// Launch the dashboard. Blocks until the server stops (Ctrl+C / kill).
 pub fn ui(cmd: &UiCmd) -> Result<(), String> {
     let db_path = cmd.db.clone().unwrap_or_else(crate::db::default_db_path);
@@ -124,6 +130,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         .route("/members-live", get(index))
         .route("/xterm.js", get(xterm_js))
         .route("/xterm.css", get(xterm_css))
+        .route("/leaflet.js", get(leaflet_js))
+        .route("/leaflet.css", get(leaflet_css))
         .route("/api/teams", get(api_teams))
         .route("/api/goal", get(api_goal))
         .route("/api/members", get(api_members))
@@ -202,6 +210,7 @@ fn page_html() -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f8f8f8">
 <title>Teamx Enterprise</title>
+<link rel="stylesheet" href="/leaflet.css">
 <style>
   :root {
     --primary: #4A90E5;
@@ -600,6 +609,10 @@ fn page_html() -> String {
     <label>Goal <select id="goal"><option value="">All</option></select></label>
   </div>
   <div class="toolbar-right">
+    <div class="view-toggle" id="dashModeToggle" style="display:none" aria-label="切换 Dashboard 视图">
+      <button type="button" data-dmode="map" class="active">🗺 地图</button>
+      <button type="button" data-dmode="topo">🕸 拓扑</button>
+    </div>
     <div class="view-toggle" id="tlViewToggle" style="display:none">
       <button type="button" data-tlmode="gantt">Gantt</button>
       <button type="button" data-tlmode="fishbone" class="active">Fishbone</button>
@@ -643,10 +656,6 @@ fn page_html() -> String {
       <div class="card"><div class="card-icon blue">🖥</div><div><div class="card-label">活跃会话</div><div class="card-value" id="dashSessions">–</div></div></div>
       <div class="card"><div class="card-icon blue">🔧</div><div><div class="card-label">正在执行工具</div><div class="card-value" id="dashTools">–</div></div></div>
       <div class="card"><div class="card-icon blue">💰</div><div><div class="card-label">总成本</div><div class="card-value" id="dashCost">–</div></div></div>
-    </div>
-    <div class="dash-mode" id="dashModeToggle">
-      <button type="button" class="btn active" data-dmode="map">🗺 地图</button>
-      <button type="button" class="btn" data-dmode="topo">🕸 拓扑</button>
     </div>
     <div class="dash-canvas" id="dashCanvas">
       <div id="dashMap"></div>
@@ -757,6 +766,7 @@ fn page_html() -> String {
     </div>
   </div>
 </div>
+<script src="/leaflet.js"></script>
 <script>
 // ---- theme toggle ----
 const html = document.documentElement
@@ -876,85 +886,64 @@ const BASEMAPS = [
   { name: "OSM", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", sub: "abc" },
 ]
 let dashLeaflet = null
-function ensureLeaflet() {
-  return new Promise((resolve) => {
-    if (window.L) return resolve(true)
-    const s = document.createElement("script")
-    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    s.onload = () => resolve(!!window.L)
-    s.onerror = () => resolve(false)
-    document.head.appendChild(s)
-  })
+let dashTile = null
+let dashMarkers = null
+let dashBaseIdx = 0
+function dashPinColor(n) {
+  if (n.kind === "server") return "#4A90E5"
+  const s = dashStat(n.state)
+  return s === "offline" ? "#8b949e" : s === "busy" ? "#f0a020" : "#3fb950"
 }
-let dashLeafFail = false
+function addBasemap() {
+  if (!dashLeaflet) return
+  if (dashTile) dashTile.remove()
+  const b = BASEMAPS[Math.min(dashBaseIdx, BASEMAPS.length - 1)]
+  const layer = L.tileLayer(b.url, { maxZoom: 19, subdomains: b.sub })
+  layer.on("tileerror", () => { if (dashBaseIdx < BASEMAPS.length - 1) { dashBaseIdx += 1; addBasemap() } })
+  layer.addTo(dashLeaflet)
+  dashTile = layer
+}
 function applyDashMode() {
+  if (dashMode === "topo") renderDashTopo()
+  else renderDashMap()
+}
+// Real map mode (Leaflet, vendored locally): Gaode tiles (works in mainland
+// China) -> Esri -> OSM failover, exactly like the mockup. Without leaflet
+// (should not happen — it is vendored) we degrade to the SVG topology.
+function renderDashMap() {
   const mapEl = document.getElementById("dashMap")
   const topoEl = document.getElementById("dashTopo")
   const svgF = document.getElementById("dashSvgFallback")
-  if (!mapEl || !topoEl) return
-  // Both "map" and "topology" modes render into the self-contained SVG node
-  // view (geo-positioned when coordinates are configured, ring layout
-  // otherwise). No external Leaflet/map tiles are required, so the Dashboard
-  // always renders something even fully offline.
-  mapEl.style.display = "none"
-  topoEl.style.display = "none"
-  if (svgF) svgF.style.display = ""
-  if (dashMode === "topo") renderDashTopo()
-  else renderDashSvg()
-}
-async function renderDashMap() {
-  const mapEl = document.getElementById("dashMap")
-  const topoEl = document.getElementById("dashTopo")
+  const emptyEl = document.getElementById("dashEmpty")
   if (!mapEl) return
-  const hasLeaf = await ensureLeaflet()
-  if (!hasLeaf) {
-    // No Leaflet reachable — degrade to the self-contained SVG renderer.
-    dashLeafFail = true
-    if (dashMode !== "map") return applyDashMode()
-    if (mapEl) mapEl.style.display = "none"
-    if (topoEl) topoEl.style.display = "none"
-    renderDashSvg()
-    return
-  }
-  if (dashMode !== "map") return
-  try {
-    if (dashLeaflet) dashLeaflet.remove()
+  if (topoEl) topoEl.style.display = "none"
+  if (emptyEl) emptyEl.style.display = "none"
+  if (!window.L) { mapEl.style.display = "none"; if (svgF) svgF.style.display = ""; renderDashSvg(); return }
+  mapEl.style.display = ""
+  if (svgF) svgF.style.display = "none"
+  if (mapEl.clientWidth === 0) return // container hidden (view not active yet)
+  if (!dashLeaflet) {
     dashLeaflet = L.map(mapEl).setView([34.5, 108.5], 4)
-    let baseIdx = 0
-    function addBase() {
-      const b = BASEMAPS[baseIdx]
-      const layer = L.tileLayer(b.url.replace("{s}", (s) => b.sub[(s + Math.floor(Math.random() * 4)) % 4]), {
-        maxZoom: 18, attribution: "&copy; " + b.name, subdomains: b.sub.split(""),
-      })
-      layer.on("tileerror", () => {
-        if (baseIdx < BASEMAPS.length - 1) { baseIdx += 1; dashLeaflet.remove(); addBase() }
-      })
-      layer.addTo(dashLeaflet)
-    }
-    addBase()
-    let shown = 0
-    for (const n of dashData.nodes || []) {
-      if (n.lat == null || n.lng == null) continue
-      const dot = n.kind === "server" ? "dot-blue" : dashStat(n.state) === "offline" ? "dot-gray" : n.state === "busy" ? "dot-orange" : "dot-green"
-      const color = { "dot-green": "#3fb950", "dot-orange": "#f0a020", "dot-gray": "#8b949e", "dot-blue": "#4A90E5" }[dot] || "#4A90E5"
-      const icon = L.divIcon({ className: "map-pin", html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${n.kind === "server" ? "S" : (n.member_name || "?")[0].toUpperCase()}</div>` })
-      const role = n.role ? ` <span class="tn-role">(${esc(n.role)})</span>` : ""
-      const live = (n.live || []).map((l) => `<div>${l.icon} ${esc(l.text)}</div>`).join("")
-      L.marker([n.lat, n.lng], { icon }).addTo(dashLeaflet).bindPopup(`<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}<br>${live}${n.cost ? "<br>成本 " + fmtCost(n.cost) : ""}`)
-      shown += 1
-    }
-    if (shown === 0) {
-      dashLeaflet.remove(); dashLeaflet = null
-      if (mapEl) mapEl.style.display = "none"
-      if (topoEl) topoEl.style.display = "none"
-      if (emptyEl) emptyEl.style.display = "flex"
-    }
-  } catch (e) {
-    // Leaflet init failed — fall back to the SVG renderer.
-    if (mapEl) mapEl.style.display = "none"
-    if (topoEl) topoEl.style.display = "none"
-    renderDashSvg()
+    addBasemap()
+    dashMarkers = L.layerGroup().addTo(dashLeaflet)
+    setTimeout(() => dashLeaflet && dashLeaflet.invalidateSize(), 80)
   }
+  if (dashTile && dashTile._map !== dashLeaflet) addBasemap()
+  dashMarkers.clearLayers()
+  const nodes = (dashData.nodes || []).filter((n) => n.lat != null && n.lng != null)
+  for (const n of nodes) {
+    const letter = n.kind === "server" ? "S" : (n.member_name || "?")[0].toUpperCase()
+    const color = dashPinColor(n)
+    const icon = L.divIcon({ className: "map-pin", html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${letter}</div>` })
+    const role = n.role ? ` <span class="tn-role">(${esc(n.role)})</span>` : ""
+    const live = (n.live || []).map((l) => `<div>${l.icon} ${esc(l.text)}</div>`).join("")
+    const costHtml = n.cost ? "<br>成本 " + fmtCost(n.cost) : ""
+    L.marker([n.lat, n.lng], { icon }).addTo(dashMarkers).bindPopup(
+      `<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}` +
+        `<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}${live}${costHtml}`
+    )
+  }
+  if (nodes.length) dashLeaflet.fitBounds(L.latLngBounds(nodes.map((n) => [n.lat, n.lng])).pad(0.4), { maxZoom: 9 })
 }
 // SVG fallback map + topology share a node renderer.
 function renderDashSvg() {
@@ -1043,13 +1032,17 @@ function showView(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
   $(".container").classList.toggle("full-width", DASH_DATA_VIEWS.has(name))
-  $("#tlViewToggle").style.display = name === "timeline" ? "" : "none"
+  // Dashboard 地图/拓扑切换与 Timeline 甘特/鱼骨切换都位于顶栏时间选择器旁，
+  // 仅在对应视图激活时显示（对齐 mockup）。
+  const dashToggle = $("#dashModeToggle")
+  const tlToggle = $("#tlViewToggle")
+  if (dashToggle) dashToggle.style.display = name === "dashboard" ? "" : "none"
+  if (tlToggle) tlToggle.style.display = name === "timeline" ? "" : "none"
   if (name === "dashboard") refreshDashboard()
   if (name === "timeline") renderTimeline()
   if (name === "cost") renderCost()
   if (name === "kanban") renderKanban()
   if (name === "members") renderMembers()
-  if (name === "goal") renderGoal()
 }
 $$("nav button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)))
 
@@ -2389,6 +2382,24 @@ async fn xterm_css() -> impl IntoResponse {
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/css")],
         XTERM_CSS,
+    )
+}
+
+/// Serve the vendored Leaflet JS (Dashboard map).
+async fn leaflet_js() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/javascript")],
+        LEAFLET_JS,
+    )
+}
+
+/// Serve the vendored Leaflet CSS (Dashboard map).
+async fn leaflet_css() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/css")],
+        LEAFLET_CSS,
     )
 }
 
