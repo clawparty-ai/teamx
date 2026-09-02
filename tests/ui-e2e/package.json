@@ -1,0 +1,11 @@
+{
+  "name": "teamx-ui-e2e",
+  "private": true,
+  "description": "Playwright browser tests for the teamx analytics dashboard",
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  },
+  "scripts": {
+    "test": "playwright test"
+  }
+}

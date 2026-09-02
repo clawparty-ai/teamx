@@ -866,12 +866,7 @@ function setText(id, v) { const el = document.getElementById(id); if (el) el.tex
 function setDashMode(mode) {
   dashMode = mode
   $$("#dashModeToggle button").forEach((b) => b.classList.toggle("active", b.dataset.dmode === mode))
-  const mapEl = document.getElementById("dashMap")
-  const topoEl = document.getElementById("dashTopo")
-  if (mapEl) mapEl.style.display = mode === "map" ? "" : "none"
-  if (topoEl) topoEl.style.display = mode === "topo" ? "" : "none"
-  if (mode === "map") renderDashMap()
-  else renderDashTopo()
+  applyDashMode()
 }
 // Map: use Leaflet when the CDN is reachable; otherwise degrade to an SVG
 // dot view (no external dependency). Basemap providers follow the mockup:
@@ -893,15 +888,27 @@ function ensureLeaflet() {
   })
 }
 let dashLeafFail = false
+function applyDashMode() {
+  const mapEl = document.getElementById("dashMap")
+  const topoEl = document.getElementById("dashTopo")
+  const svgF = document.getElementById("dashSvgFallback")
+  if (!mapEl || !topoEl) return
+  mapEl.style.display = dashMode === "map" ? "" : "none"
+  topoEl.style.display = dashMode === "topo" ? "" : "none"
+  if (svgF) svgF.style.display = dashMode === "topo" ? "" : "none"
+  if (dashMode === "topo") renderDashTopo()
+  else if (window.L || dashLeaflet || !dashLeafFail) renderDashMap()
+  else renderDashSvg()
+}
 async function renderDashMap() {
   const mapEl = document.getElementById("dashMap")
   const topoEl = document.getElementById("dashTopo")
-  const emptyEl = document.getElementById("dashEmpty")
   if (!mapEl) return
   const hasLeaf = await ensureLeaflet()
   if (!hasLeaf) {
     // No Leaflet reachable — degrade to the self-contained SVG renderer.
     dashLeafFail = true
+    if (dashMode !== "map") return applyDashMode()
     if (mapEl) mapEl.style.display = "none"
     if (topoEl) topoEl.style.display = "none"
     renderDashSvg()
@@ -1014,13 +1021,7 @@ async function refreshDashboard() {
     dashData = { nodes: [] }
   }
   dashSummary()
-  if (dashMode === "map") {
-    if (window.L || dashLeaflet) renderDashMap()
-    else if (dashLeafFail) renderDashSvg()
-    else renderDashMap()
-  } else {
-    renderDashTopo()
-  }
+  applyDashMode()
 }
 $$("#dashModeToggle").forEach((el) => el && el.addEventListener("click", (e) => {
   const b = e.target.closest("button[data-dmode]"); if (b) setDashMode(b.dataset.dmode)
@@ -2135,7 +2136,7 @@ async function boot() {
     await refreshGoalSelect()
     // Standalone live-monitor route (/members-live) opens directly on Members.
     if (location.pathname.endsWith("/members-live")) showView("members")
-    else refreshDashboard()
+    else showView("dashboard")
   } catch (e) {
     document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
   }
@@ -2401,13 +2402,13 @@ struct HashMap0 {
     window: Option<i64>,
 }
 
-/// Guard the API routes: requires the cookie, else 401.
+/// Guard the API routes: requires the cookie, else 401 (styled page).
 #[allow(clippy::result_large_err)]
 fn guard(state: &S, headers: &axum::http::HeaderMap) -> Result<(), axum::response::Response> {
     if authorized(state, headers.get(header::COOKIE).and_then(|v| v.to_str().ok())) {
         Ok(())
     } else {
-        Err(Html(unauthorized_html()).into_response())
+        Err((StatusCode::UNAUTHORIZED, Html(unauthorized_html())).into_response())
     }
 }
 
@@ -3318,7 +3319,7 @@ fn dash_nodes(
                AND m.state NOT IN ('left','denied','pending') AND t.state NOT IN ('destroyed')
              ORDER BY m.display_name"
         };
-        if let Ok(mut stmt) = c.prepare(&sql) {
+        if let Ok(mut stmt) = c.prepare(sql) {
             let rows = if members_all_teams {
                 stmt.query_map([], row_dash_member)
             } else {
@@ -3362,9 +3363,7 @@ fn dash_nodes(
         // busy = has active sessions; online = fresh presence; offline otherwise.
         let state = if p.is_some() && sessions > 0 {
             "busy"
-        } else if p.is_some() {
-            "online"
-        } else if db_state == "active" {
+        } else if p.is_some() || db_state == "active" {
             "online"
         } else {
             "offline"
@@ -3408,8 +3407,9 @@ async fn api_map(State(state): State<S>, Query(params): Query<HashMap0>, headers
         return r;
     }
     let (from, to, _, _) = extract_filters(&params);
+    let team = params.team.as_deref().filter(|s| !s.is_empty());
     let c = lock(&state);
-    Json(dash_nodes(&c, params.team.as_deref(), from, to, false)).into_response()
+    Json(dash_nodes(&c, team, from, to, false)).into_response()
 }
 
 /// `/api/topology` — Dashboard topology-mode server/nodes/links.
@@ -3418,8 +3418,9 @@ async fn api_topology(State(state): State<S>, Query(params): Query<HashMap0>, he
         return r;
     }
     let (from, to, _, _) = extract_filters(&params);
+    let team = params.team.as_deref().filter(|s| !s.is_empty());
     let c = lock(&state);
-    let map = dash_nodes(&c, params.team.as_deref(), from, to, false);
+    let map = dash_nodes(&c, team, from, to, false);
     let nodes = map.get("nodes").cloned().unwrap_or(json!([]));
     let nodes_arr = nodes.as_array().cloned().unwrap_or_default();
     let server = nodes_arr
@@ -3455,7 +3456,7 @@ mod tests {
     use super::*;
 
     fn test_conn() -> Connection {
-        let mut c = Connection::open_in_memory().unwrap();
+        let c = Connection::open_in_memory().unwrap();
         crate::db::migrate(&c).unwrap();
         // Minimal rows for the dashboard queries.
         c.execute(
@@ -3528,7 +3529,7 @@ mod tests {
 
     #[test]
     fn members_absent_from_team_are_excluded() {
-        let mut c = test_conn();
+        let c = test_conn();
         c.execute(
             "INSERT INTO teams (id, name, state, invite_token, created_at, updated_at)
              VALUES ('t2', 'Team Two', 'active', 'tok2', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",

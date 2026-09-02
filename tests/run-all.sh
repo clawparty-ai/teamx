@@ -110,4 +110,20 @@ else
 fi
 
 echo
+echo "== 15/16 UI API test =="
+if command -v sqlite3 >/dev/null 2>&1 && [ -x target/debug/teamx ]; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/ui-api-test.sh
+else
+  echo "sqlite3 or debug binary missing; skipping ui-api test"
+fi
+
+echo
+echo "== 16/16 UI e2e (Playwright) test =="
+if [ "${TEAMX_RUN_UI_E2E:-0}" = "1" ] && command -v bun >/dev/null 2>&1; then
+  (cd tests/ui-e2e && TEAMX_BIN="$ROOT/target/debug/teamx" npx playwright test)
+else
+  echo "set TEAMX_RUN_UI_E2E=1 (needs Chrome + bun) to run UI e2e; skipping"
+fi
+
+echo
 echo "ALL TEST SUITES PASSED"
