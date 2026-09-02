@@ -4,7 +4,7 @@ import {
   myMemberIds,
   assignedToMe,
   shouldAutoExecute,
-} from "/Users/caishu/github/teamx/opencode-plugin/src/index"
+} from "../../opencode-plugin/src/index"
 
 // Helpers to build minimal sync-like data
 const ownerData = { teams: [{ team: { my_role: "owner", my_member_id: "owner-1" } }], new_events: [] }
