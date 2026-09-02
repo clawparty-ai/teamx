@@ -1172,9 +1172,9 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
                 create_targets
                     .iter()
                     .map(|(mid, _)| {
-                        // stable suffix: member id short hash, fallback index
-                        let suffix = mid.chars().take(8).collect::<String>();
-                        format!("{base_id}@{suffix}")
+                        // Full member id as suffix: UUIDs are unique and
+                        // filesystem-safe (no 8-char truncation collision).
+                        format!("{base_id}@{mid}")
                     })
                     .collect()
             } else {
@@ -1269,54 +1269,130 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
 /// Claim a bid task: the actor becomes the assignee (first-come-first-served).
 /// Only members whose role matches the task's `assignee_role` (or the lead) may
 /// claim; a task that is already claimed is rejected.
+///
+/// Concurrency: `with_task_lock` holds an exclusive flock on a temp-dir lock
+/// file (keyed by the meta path) across the read-validate-write, so two
+/// processes (member sessions) racing to claim the same task cannot both pass
+/// the "unclaimed" check (TOCTOU-safe on unix).
 fn task_claim(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
     let (actor, team) = resolve_actor(conn, session, team_opt)?;
     let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
     let docs_root = cwd.join(".teamx").join("docs");
     let meta_path = crate::doc_flow::DocMeta::meta_path(&docs_root, crate::doc_flow::BUILTIN_TASKX, id);
-    let meta = crate::doc_flow::DocMeta::load(&meta_path)
-        .map_err(|e| AppError(format!("load task {id}: {e}")))?;
 
-    // Must be an open bid task.
-    if meta.assign_mode.as_deref() == Some("direct") || meta.assign_mode.as_deref() == Some("broadcast") {
-        return err(format!("task {id} is {mode} mode; claim is only for bid tasks", mode = meta.assign_mode.unwrap_or_default()));
-    }
-    if meta.state != "assigned" {
-        return err(format!("task {id} is in state `{}`; only open tasks can be claimed", meta.state));
-    }
-    if meta.assignee.is_some() {
-        return err(format!("task {id} is already claimed by member {}", meta.assignee.as_deref().unwrap_or("?")));
-    }
-    // Role gate: a member may only claim tasks dispatched to their role (or a lead may claim anything).
-    let is_lead = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
-    if let Some(role) = meta.assignee_role.as_deref() {
-        let role_ok = actor.role.as_deref() == Some(role);
-        if !role_ok && !is_lead {
-            return err(format!(
-                "member {} (role {:?}) may not claim task {id}: it is dispatched to role `{role}`",
-                actor.display_name, actor.role
-            ));
+    with_task_lock(&meta_path, || {
+        let meta = crate::doc_flow::DocMeta::load(&meta_path)
+            .map_err(|e| AppError(format!("load task {id}: {e}")))?;
+
+        // Must be an open bid task.
+        if meta.assign_mode.as_deref() == Some("direct") || meta.assign_mode.as_deref() == Some("broadcast") {
+            return err(format!("task {id} is {mode} mode; claim is only for bid tasks", mode = meta.assign_mode.unwrap_or_default()));
         }
-    }
+        if meta.state != "assigned" {
+            return err(format!("task {id} is in state `{}`; only open tasks can be claimed", meta.state));
+        }
+        if meta.assignee.is_some() {
+            return err(format!("task {id} is already claimed by member {}", meta.assignee.as_deref().unwrap_or("?")));
+        }
+        // Role gate: a member may only claim tasks dispatched to their role (or a lead may claim anything).
+        let is_lead = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
+        if let Some(role) = meta.assignee_role.as_deref() {
+            let role_ok = actor.role.as_deref() == Some(role);
+            if !role_ok && !is_lead {
+                return err(format!(
+                    "member {} (role {:?}) may not claim task {id}: it is dispatched to role `{role}`",
+                    actor.display_name, actor.role
+                ));
+            }
+        }
 
-    // Write the claim: assignee = actor.
-    let payload = json!({
-        "doc": crate::doc_flow::BUILTIN_TASKX,
-        "id": id,
-        "to": "claimed",
-        "assignee_member_id": actor.id,
-        "note": format!("claimed by {}", actor.display_name),
-    });
-    let out = cmd_publish_doc(
-        conn,
-        "doc.claimed",
-        Some(&payload.to_string()),
-        Some(&actor.id),
-        session,
-        Some(&team.id),
-    )?;
-    auto_git_commit(&cwd, &format!("teamx task {id}: claimed"))?;
-    Ok(out)
+        // Write the claim: assignee = actor.
+        let payload = json!({
+            "doc": crate::doc_flow::BUILTIN_TASKX,
+            "id": id,
+            "to": "claimed",
+            "assignee_member_id": actor.id,
+            "note": format!("claimed by {}", actor.display_name),
+        });
+        let out = cmd_publish_doc(
+            conn,
+            "doc.claimed",
+            Some(&payload.to_string()),
+            Some(&actor.id),
+            session,
+            Some(&team.id),
+        )?;
+        auto_git_commit(&cwd, &format!("teamx task {id}: claimed"))?;
+        Ok(out)
+    })
+}
+
+/// Hold an exclusive advisory lock on a lock file while `f` runs. Used to
+/// serialize read-validate-write of a taskx `.meta.json` across processes
+/// (e.g. concurrent `task claim` from two member sessions).
+///
+/// The lock file lives in the OS temp dir (deterministically named from the
+/// meta path) so it is never committed into the team's shared git repo by
+/// `auto_git_commit`'s `git add -A`, and needs no cleanup.
+///
+/// Scope: this only serializes callers that go through this helper (the
+/// `task claim` CLI/plugin path). A direct `publish doc.claimed` bypasses the
+/// lock; on Windows (no flock) claims are best-effort — the DB transaction
+/// still serializes the ledger write, but the meta-file read-validate-write
+/// TOCTOU window is not eliminated there.
+fn with_task_lock<T>(meta_path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let lock_path = task_lock_path(meta_path);
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        let mut fh = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| AppError(format!("open lock {}: {e}", lock_path.display())))?;
+        // SAFETY: flock is async-signal-safe; the fd is valid for the duration of f.
+        let rc = unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&fh), libc::LOCK_EX) };
+        if rc != 0 {
+            return err(format!("flock {}: {}", lock_path.display(), std::io::Error::last_os_error()));
+        }
+        // Keep the fd alive (and the lock held) until f completes.
+        let _ = fh.write_all(b"");
+        let result = f();
+        // SAFETY: unlock is best-effort; the fd closes right after anyway.
+        unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&fh), libc::LOCK_UN) };
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: no flock primitive available — claims are best-effort here.
+        // The SQLite write transaction still serializes the ledger insert, but
+        // the read-validate-write window on `.meta.json` is NOT atomic, so two
+        // racing claims could both pass the "unclaimed" check.
+        let _ = &lock_path;
+        f()
+    }
+}
+
+/// Deterministic temp-dir lock file name for a task meta path, so two
+/// processes on the same machine race on the SAME lock file (FNV-1a over the
+/// canonical meta path, not `DefaultHasher`, whose algorithm may change
+/// between Rust releases and break cross-version mutual exclusion).
+fn task_lock_path(meta_path: &std::path::Path) -> std::path::PathBuf {
+    let canonical = meta_path
+        .canonicalize()
+        .unwrap_or_else(|_| meta_path.to_path_buf());
+    // FNV-1a 64-bit over the path bytes.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in canonical.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let name = meta_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "task".to_string());
+    std::env::temp_dir().join(format!("teamx-task-{name}-{hash:016x}.lock"))
 }
 
 /// Retract a claimed bid task: return it to the open pool (`assigned`, assignee
@@ -1392,39 +1468,31 @@ fn task_rebid(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&
     }))
 }
 
-/// Broadcast a `doc.rebid` notification to every active member of `role`, so
-/// their plugins see the task is claimable again. Best-effort: returns the
-/// number of members notified.
+/// Broadcast a `doc.rebid` notification so the role's members see the task is
+/// claimable again. Emits ONE undirected event (no assignee_member_id) so every
+/// role member's plugin sees the open task and the auto-claim path fires —
+/// without waking them all to auto-execute the same task (no thundering herd).
 fn broadcast_role_rebid(conn: &mut Connection, team: &TeamRow, role: &str, id: &str) -> Result<usize> {
-    let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
-    let mut n = 0usize;
-    for m in members {
-        if m.state == "left" || m.state == "denied" || m.state == "pending" {
-            continue;
-        }
-        if m.role.as_deref() != Some(role) {
-            continue;
-        }
-        let nseq = db::with_write(conn, |tx| {
-            emit_json(
-                tx,
-                &team.id,
-                None,
-                "doc.rebid",
-                json!({
-                    "doc": crate::doc_flow::BUILTIN_TASKX,
-                    "id": id,
-                    "assignee_role": role,
-                    "assignee_member_id": m.id,
-                    "note": format!("task {id} is open for claim (role {role})"),
-                }),
-            )
-        })
-        .map_err(|e| AppError(format!("rebid event: {e}")))?;
-        let _ = nseq;
-        n += 1;
-    }
-    Ok(n)
+    // Emit ONE undirected `doc.rebid` (no assignee_member_id) so every role
+    // member's plugin sees the task is open again and the auto-claim path
+    // fires (undirected → no auto-execute thundering herd on the same task).
+    let nseq = db::with_write(conn, |tx| {
+        emit_json(
+            tx,
+            &team.id,
+            None,
+            "doc.rebid",
+            json!({
+                "doc": crate::doc_flow::BUILTIN_TASKX,
+                "id": id,
+                "assignee_role": role,
+                "note": format!("task {id} is open for claim (role {role})"),
+            }),
+        )
+    })
+    .map_err(|e| AppError(format!("rebid event: {e}")))?;
+    let _ = nseq;
+    Ok(1)
 }
 
 /// Shared handler for task lifecycle events: build the doc payload, call the
@@ -1585,11 +1653,18 @@ fn auto_git_commit(cwd: &std::path::Path, message: &str) -> Result<()> {
         .arg(cwd)
         .args(["add", "-A"])
         .status();
-    let _ = std::process::Command::new("git")
+    let commit = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["commit", "-m", message])
         .status();
+    if let Ok(st) = commit {
+        if !st.success() {
+            // e.g. not a git repo, or nothing to commit — surface it so the
+            // team knows the task change may not be in the shared repo yet.
+            eprintln!("teamx: git commit failed ({st}); task state may not be pushed");
+        }
+    }
     // Only push when a remote exists (avoids hanging credential prompts).
     let has_remote = std::process::Command::new("git")
         .arg("-C")
@@ -4068,14 +4143,24 @@ fn cmd_publish_doc(
     //     (they are claiming / working it), or
     //   - the actor is a lead (impersonating "lead" grants advance).
     let is_lead_actor = team.owner_member_id.as_deref() == Some(actor.id.as_str()) || actor.is_lead;
-    let role_match = doc_key == crate::doc_flow::BUILTIN_TASKX
+    // A role member may advance a bid task ONLY to claim it (assignee empty,
+    // event == doc.claimed). For all other events they must be the assignee
+    // (or a lead). This prevents a same-role member from done/verify/retract
+    // someone else's broadcast/direct/bid task (authorization bypass).
+    let role_claim_only = doc_key == crate::doc_flow::BUILTIN_TASKX
+        && meta.assign_mode.as_deref() == Some("bid")
+        && meta.assignee.is_none()
+        && publish_type == "doc.claimed"
         && meta.assignee_role.as_deref().is_some()
         && actor.role.as_deref() == meta.assignee_role.as_deref();
     let effective_role = if doc_key == crate::doc_flow::BUILTIN_TASKX
-        && (meta.assignee.as_deref() == Some(actor.id.as_str()) || role_match || is_lead_actor)
+        && (meta.assignee.as_deref() == Some(actor.id.as_str()) || role_claim_only || is_lead_actor)
     {
-        // "lead" is in the approvers list, so impersonating it grants advance.
-        "lead".to_string()
+        // Impersonate a spec role that `can_advance` accepts. Prefer "lead"
+        // (the built-in taskx approver); when a team overrode `_spec/taskx.json`
+        // and removed it, resolve any approver/owner so the assignee keeps the
+        // right to advance their own task.
+        crate::doc_flow::assignee_advance_role(&spec)
     } else {
         actor_role.to_string()
     };
@@ -4083,6 +4168,15 @@ fn cmd_publish_doc(
     // advance the state machine (a task stays in_progress while blocked). We
     // record it in meta history with an unchanged state.
     let next = if publish_type == "doc.help_requested" {
+        // Permission gate (M1): only the assignee or a lead may raise a help
+        // request on a task — prevents notification spam on others' tasks.
+        let is_assignee = meta.assignee.as_deref() == Some(actor.id.as_str());
+        if doc_key == crate::doc_flow::BUILTIN_TASKX && !is_assignee && !is_lead_actor {
+            return err(format!(
+                "member {} may not raise help on task {doc_id}: only the assignee or a lead may",
+                actor.display_name
+            ));
+        }
         let mut m = meta.clone();
         let now = crate::events::db_now();
         m.updated_at = now.clone();
@@ -4094,6 +4188,42 @@ fn cmd_publish_doc(
         });
         m
     } else {
+        // taskx command-layer gates. The assignee is impersonated as "lead" so
+        // they can ack/update/done their own task — but that impersonation must
+        // NOT extend to lead-only lifecycle actions (verify/reject), otherwise
+        // an assignee could self-verify and skip the lead's acceptance loop.
+        if doc_key == crate::doc_flow::BUILTIN_TASKX {
+            let is_assignee = meta.assignee.as_deref() == Some(actor.id.as_str());
+            // HIGH-2: closing the loop (verify) or sending it back (reject) is
+            // the team lead's job — not the assignee's self-service.
+            if (publish_type == "doc.verified" || publish_type == "doc.rejected") && !is_lead_actor {
+                return err(format!(
+                    "member {} may not {} task {doc_id}: only a team lead may {}",
+                    actor.display_name,
+                    if publish_type == "doc.verified" { "verify" } else { "reject" },
+                    if publish_type == "doc.verified" { "verify" } else { "reject" },
+                ));
+            }
+            // MEDIUM-3: writing progress (doc.updated) belongs to the assignee
+            // or a lead; a same-role member must not scribble on others' tasks.
+            if publish_type == "doc.updated" && !is_assignee && !is_lead_actor {
+                return err(format!(
+                    "member {} may not update task {doc_id}: only the assignee or a lead may record progress",
+                    actor.display_name
+                ));
+            }
+        }
+        // L3: verify must come from `done` (a lead cannot mark a task verified
+        // that was never completed).
+        if doc_key == crate::doc_flow::BUILTIN_TASKX
+            && publish_type == "doc.verified"
+            && meta.state != "done"
+        {
+            return err(format!(
+                "task {doc_id} is in state `{}`; only a `done` task can be verified",
+                meta.state
+            ));
+        }
         crate::doc_flow::apply_event(
             &spec,
             &meta,
@@ -4121,7 +4251,20 @@ fn cmd_publish_doc(
         if let Some(aid) = assignee_opt {
             payload["assignee_member_id"] = json!(aid);
         }
-        emit_json(tx, &team.id, Some(&actor.id), publish_type, payload.clone())
+        // A bid task's assignee is empty at create/retract time: strip the
+        // empty string from the EVENT payload so consumers (the opencode
+        // plugin) see `null`/absent and treat the task as claimable (H3). The
+        // original payload is kept untouched — the empty string remains
+        // meaningful for meta persistence below (clears the claim on retract).
+        let mut event_payload = payload.clone();
+        if let Some(a) = event_payload.get("assignee_member_id").and_then(|v| v.as_str()) {
+            if a.is_empty() {
+                let _ = event_payload
+                    .as_object_mut()
+                    .map(|o| o.remove("assignee_member_id"));
+            }
+        }
+        emit_json(tx, &team.id, Some(&actor.id), publish_type, event_payload)
     })
     .map_err(|e| AppError(format!("doc publish failed: {e}")))?;
 
@@ -5247,5 +5390,340 @@ mod tests {
         let written = nudge_open_tasks(&mut conn, 300, Some(10_000), Some(&taskx)).unwrap();
         assert!(written.is_empty(), "done/unassigned tasks must not be nudged");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // taskx command-layer E2E tests. These drive cmd_task / task_claim /
+    // task_retract / task_doc_event over a scratch workdir, so they change the
+    // process cwd. A static mutex serializes them against each other; no other
+    // test in this crate reads current_dir, so parallel tests are unaffected.
+    // -----------------------------------------------------------------------
+
+    static TASK_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A scratch workdir whose cwd is current for the lifetime of `f`.
+    /// Restores the original cwd and removes the temp dir afterwards.
+    fn with_task_cwd<F: FnOnce(&std::path::Path)>(f: F) {
+        let _guard = TASK_CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::current_dir().expect("current_dir");
+        let dir = std::env::temp_dir().join(format!("teamx-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".teamx").join("docs")).expect("mkdir .teamx/docs");
+        // A real git repo keeps auto_git_commit quiet (commits succeed).
+        let _ = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&dir)
+            .status();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["config", "user.email", "test@example.com"])
+            .status();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["config", "user.name", "test"])
+            .status();
+        std::env::set_current_dir(&dir).expect("set cwd to scratch dir");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&dir)));
+        let _ = std::env::set_current_dir(&original);
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(p) = result {
+            std::panic::resume_unwind(p);
+        }
+    }
+
+    /// Seed a team + owner + active role members (id, session, display name).
+    fn seed_task_team(
+        conn: &Connection,
+        team_id: &str,
+        owner_id: &str,
+        owner_session: &str,
+        role_members: &[(&str, &str)],
+    ) {
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES (?1, '任务团队', ?2, NULL, 'active', 'tok', 'now', 'now')",
+            params![team_id, owner_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+             VALUES (?1, ?2, ?3, '老板', 'owner', 'active', 'now', 1)",
+            params![owner_id, team_id, owner_session],
+        )
+        .unwrap();
+        for (i, (mid, sess)) in role_members.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at, is_lead)
+                 VALUES (?1, ?2, ?3, ?4, 'ui-dev', 'active', 'now', 0)",
+                params![mid, team_id, sess, format!("成员{i}")],
+            )
+            .unwrap();
+        }
+    }
+
+    fn read_meta(docs_root: &std::path::Path, id: &str) -> crate::doc_flow::DocMeta {
+        crate::doc_flow::DocMeta::load(&crate::doc_flow::DocMeta::meta_path(
+            docs_root,
+            crate::doc_flow::BUILTIN_TASKX,
+            id,
+        ))
+        .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_task(
+        conn: &mut Connection,
+        team: &str,
+        session: &str,
+        title: &str,
+        id: &str,
+        mode: &str,
+        role: Option<&str>,
+        assignee: Option<&str>,
+    ) {
+        use crate::cli::TaskCmd;
+        let out = cmd_task(
+            conn,
+            &TaskCmd::Create {
+                title: title.to_string(),
+                assignee: assignee.map(|s| s.to_string()),
+                role: role.map(|s| s.to_string()),
+                mode: Some(mode.to_string()),
+                executor: "either".to_string(),
+                priority: "medium".to_string(),
+                id: Some(id.to_string()),
+                detail: None,
+                no_push: true,
+                session: session.to_string(),
+                team: Some(team.to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(out["ok"], true, "create {mode} task {title}: {out}");
+    }
+
+    /// Run a single task lifecycle command (the variant carries id/session/team).
+    fn run_task(conn: &mut Connection, variant: crate::cli::TaskCmd) -> Result<Value> {
+        cmd_task(conn, &variant)
+    }
+
+    /// CRITICAL-1 regression: retract MUST clear the assignee so another role
+    /// member can re-claim the task (bid pool is open again).
+    #[test]
+    fn taskx_bid_retract_clears_assignee_for_reclaim() {
+        with_task_cwd(|dir| {
+            let mut conn = test_conn();
+            let team = "t-bid";
+            seed_task_team(
+                &conn,
+                team,
+                "m-owner",
+                "s:owner",
+                &[("m-ui-1", "s:ui1"), ("m-ui-2", "s:ui2")],
+            );
+            create_task(&mut conn, team, "s:owner", "修首页 bug", "t1", "bid", Some("ui-dev"), None);
+
+            // Claim by ui-1.
+            task_claim(&mut conn, "t1", "s:ui1", Some(team)).unwrap();
+            let m = read_meta(&dir.join(".teamx/docs"), "t1");
+            assert_eq!(m.state, "claimed");
+            assert_eq!(m.assignee.as_deref(), Some("m-ui-1"));
+
+            // Retract by the claimer -> assignee must be cleared (regression).
+            task_retract(&mut conn, "t1", "s:ui1", Some(team)).unwrap();
+            let m = read_meta(&dir.join(".teamx/docs"), "t1");
+            assert_eq!(m.state, "assigned", "retract returns the task to the open pool");
+            assert_eq!(m.assignee, None, "retract MUST clear the assignee (CRITICAL-1)");
+
+            // A different role member can now claim.
+            task_claim(&mut conn, "t1", "s:ui2", Some(team)).unwrap();
+            let m = read_meta(&dir.join(".teamx/docs"), "t1");
+            assert_eq!(m.state, "claimed");
+            assert_eq!(m.assignee.as_deref(), Some("m-ui-2"), "second member re-claims after retract");
+        });
+    }
+
+    /// HIGH-2: an assignee must NOT be able to verify their own task — only a
+    /// team lead may close the acceptance loop.
+    #[test]
+    fn taskx_assignee_cannot_self_verify() {
+        with_task_cwd(|dir| {
+            let mut conn = test_conn();
+            let team = "t-vfy";
+            seed_task_team(
+                &conn,
+                team,
+                "m-owner",
+                "s:owner",
+                &[("m-ui-1", "s:ui1"), ("m-ui-2", "s:ui2")],
+            );
+            // direct task assigned to m-ui-1
+            create_task(&mut conn, team, "s:owner", "做登录页", "t1", "direct", None, Some("m-ui-1"));
+
+            // assignee marks done (allowed — advancing their own task)
+            run_task(
+                &mut conn,
+                crate::cli::TaskCmd::Done {
+                    id: "t1".to_string(),
+                    result: Some("完成".to_string()),
+                    session: "s:ui1".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap();
+
+            // assignee self-verify must FAIL
+            let err = run_task(
+                &mut conn,
+                crate::cli::TaskCmd::Verify {
+                    id: "t1".to_string(),
+                    session: "s:ui1".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap_err();
+            assert!(err.0.contains("only a team lead"), "assignee self-verify denied: {err}");
+
+            // team lead verify succeeds and closes the loop
+            run_task(
+                &mut conn,
+                crate::cli::TaskCmd::Verify {
+                    id: "t1".to_string(),
+                    session: "s:owner".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap();
+            let m = read_meta(&dir.join(".teamx/docs"), "t1");
+            assert_eq!(m.state, "verified", "lead verify closes the loop");
+        });
+    }
+
+    /// MEDIUM-3: a same-role member who is NOT the assignee cannot write
+    /// progress (doc.updated) on someone else's task; the assignee can.
+    #[test]
+    fn taskx_update_requires_assignee_or_lead() {
+        with_task_cwd(|dir| {
+            let mut conn = test_conn();
+            let team = "t-upd";
+            seed_task_team(
+                &conn,
+                team,
+                "m-owner",
+                "s:owner",
+                &[("m-ui-1", "s:ui1"), ("m-ui-2", "s:ui2")],
+            );
+            // broadcast gives each role member their own instance; m-ui-2 must
+            // not update m-ui-1's copy.
+            create_task(&mut conn, team, "s:owner", "全员测试", "bcast", "broadcast", Some("ui-dev"), None);
+
+            let err = run_task(
+                &mut conn,
+                crate::cli::TaskCmd::Update {
+                    id: "bcast@m-ui-1".to_string(),
+                    progress: "我来插话".to_string(),
+                    session: "s:ui2".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.0.contains("only the assignee or a lead"),
+                "non-assignee update denied: {err}"
+            );
+
+            // the instance's own assignee can update.
+            run_task(
+                &mut conn,
+                crate::cli::TaskCmd::Update {
+                    id: "bcast@m-ui-1".to_string(),
+                    progress: "进展更新".to_string(),
+                    session: "s:ui1".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap();
+            let m = read_meta(&dir.join(".teamx/docs"), "bcast@m-ui-1");
+            assert_eq!(m.state, "assigned");
+        });
+    }
+
+    /// LOW-4: broadcast instances are keyed by the FULL member id (no
+    /// 8-char truncation), and each member works their own instance.
+    #[test]
+    fn taskx_broadcast_uses_full_member_id_instances() {
+        with_task_cwd(|dir| {
+            let mut conn = test_conn();
+            let team = "t-bc";
+            seed_task_team(
+                &conn,
+                team,
+                "m-owner",
+                "s:owner",
+                &[("member-aaaaaaaa-ui1", "s:ui1"), ("member-bbbbbbbb-ui2", "s:ui2")],
+            );
+            let out = cmd_task(
+                &mut conn,
+                &crate::cli::TaskCmd::Create {
+                    title: "全员回归".to_string(),
+                    assignee: None,
+                    role: Some("ui-dev".to_string()),
+                    mode: Some("broadcast".to_string()),
+                    executor: "either".to_string(),
+                    priority: "medium".to_string(),
+                    id: Some("reg".to_string()),
+                    detail: None,
+                    no_push: true,
+                    session: "s:owner".to_string(),
+                    team: Some(team.to_string()),
+                },
+            )
+            .unwrap();
+            let instances = out["instances"].as_array().unwrap().clone();
+            assert_eq!(instances.len(), 2, "one instance per role member");
+            let ids: Vec<String> = instances.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+            assert!(
+                ids.contains(&"reg@member-aaaaaaaa-ui1".to_string())
+                    && ids.contains(&"reg@member-bbbbbbbb-ui2".to_string()),
+                "instance ids use the FULL member id, not an 8-char truncation: {ids:?}"
+            );
+
+            // Each member can advance (done) their OWN instance.
+            for (member, sess) in [("member-aaaaaaaa-ui1", "s:ui1"), ("member-bbbbbbbb-ui2", "s:ui2")] {
+                let id = format!("reg@{member}");
+                run_task(
+                    &mut conn,
+                    crate::cli::TaskCmd::Done {
+                        id: id.clone(),
+                        result: Some("搞定".to_string()),
+                        session: sess.to_string(),
+                        team: Some(team.to_string()),
+                    },
+                )
+                .unwrap();
+                let m = read_meta(&dir.join(".teamx/docs"), &id);
+                assert_eq!(m.state, "done", "{id} advanced by its own assignee");
+            }
+        });
+    }
+
+    /// LOW-5: the claim lock lives in the temp dir (never committed to the
+    /// team repo) and is deterministic per meta path.
+    #[test]
+    fn task_lock_path_is_temp_and_deterministic() {
+        let meta = std::path::Path::new("/proj/.teamx/docs/taskx/t1.meta.json");
+        let l1 = task_lock_path(meta);
+        let l2 = task_lock_path(meta);
+        assert_eq!(l1, l2, "deterministic per meta path");
+        let tmp = std::env::temp_dir();
+        assert!(
+            l1.starts_with(&tmp),
+            "lock file must live in temp dir, not the repo: {}",
+            l1.display()
+        );
+        let other = std::path::Path::new("/proj/.teamx/docs/taskx/t2.meta.json");
+        assert_ne!(l1, task_lock_path(other), "different tasks must not share a lock");
     }
 }

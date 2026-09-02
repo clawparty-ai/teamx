@@ -194,6 +194,26 @@ pub fn can_advance(spec: &DocSpec, role: &str) -> bool {
     role == spec.owner || spec.approvers.iter().any(|a| a == role)
 }
 
+/// The role an assignee should impersonate to advance their OWN task.
+///
+/// The built-in `taskx` spec has `owner: "lead"` + approvers `["lead","owner"]`,
+/// so an assignee advancing ack/update/done impersonates `"lead"` and passes
+/// `can_advance`. A team MAY override `_spec/taskx.json` (e.g. change the
+/// approvers/owner); in that case impersonating a role the spec no longer
+/// accepts would silently strip the assignee of advance rights. Resolve the
+/// impersonation role from the ACTUAL spec: prefer `lead` when still listed,
+/// otherwise the first approver, otherwise the owner — always a role
+/// `can_advance` accepts.
+pub fn assignee_advance_role(spec: &DocSpec) -> String {
+    if spec.owner == "lead" || spec.approvers.iter().any(|a| a == "lead") {
+        return "lead".to_string();
+    }
+    if let Some(a) = spec.approvers.first() {
+        return a.clone();
+    }
+    spec.owner.clone()
+}
+
 /// Validate a state transition `from -> to` against the declared `状态流`.
 ///
 /// * Both states must exist in the chain;
@@ -420,6 +440,30 @@ mod tests {
         assert!(can_advance(&spec, "owner")); // role literally named owner
         assert!(!can_advance(&spec, "ui-dev"));
         assert!(!can_advance(&spec, "pm2"));
+    }
+
+    #[test]
+    fn assignee_advance_role_follows_the_actual_spec() {
+        // Built-in-like spec: "lead" present -> impersonate "lead".
+        let mut spec = spec_for(TEAM, "requirements");
+        spec.owner = "lead".to_string();
+        spec.approvers = vec!["lead".to_string(), "owner".to_string()];
+        assert_eq!(assignee_advance_role(&spec), "lead");
+
+        // Team overrode the spec and removed "lead" from approvers -> fall back
+        // to the first approver, which can_advance accepts.
+        let mut overridden = spec.clone();
+        overridden.owner = "team-lead".to_string();
+        overridden.approvers = vec!["reviewer".to_string()];
+        let resolved = assignee_advance_role(&overridden);
+        assert_eq!(resolved, "reviewer");
+        assert!(can_advance(&overridden, &resolved), "resolved role must advance");
+
+        // No approvers -> the owner is the only advance role.
+        let mut owner_only = spec.clone();
+        owner_only.approvers = Vec::new();
+        let resolved_owner = assignee_advance_role(&owner_only);
+        assert!(can_advance(&owner_only, &resolved_owner), "owner fallback must advance");
     }
 
     #[test]

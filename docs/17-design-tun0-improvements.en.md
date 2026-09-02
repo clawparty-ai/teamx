@@ -2,7 +2,7 @@
 
 > Status: **design proposal (to be implemented after confirmation)**
 > Related: `docs/09-design-tun0.en.md`, `docs/15-design-transparent-proxy.en.md`,
-> `docs/16-code-review-transparent-proxy.en.md`
+> `docs/review/16-code-review-transparent-proxy.en.md`
 > Date: 2026-08-24
 
 This document analyzes the three structural issues flagged as

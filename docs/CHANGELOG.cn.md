@@ -214,6 +214,8 @@ A single local SOCKS5 port can now pick which `proxy exit` each CONNECT target u
 
 ## 0.1.1 — 2026-08-22
 
+修复全部高/中优先级发现（见 `docs/review/code-review-codex-0817.md`）：
+
 ### Tunnel WS keep-alive + auto-reconnect
 
 Long-idle tunnel WebSockets (`/tunnel` provider + `/tunnel/forward` consumer) were silently dropped by NAT/middleboxes, leaving stale registered tunnels and half-open connections — proxy flows then failed with `SOCKS5 (5) Connection refused` / `curl: (97)` until both processes were manually restarted.
