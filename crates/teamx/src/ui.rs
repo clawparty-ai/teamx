@@ -33,7 +33,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use rusqlite::Connection;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::cli::UiCmd;
 use crate::pki;
@@ -136,6 +136,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         .route("/api/files", get(api_files))
         .route("/api/rows", get(api_rows))
         .route("/api/human", get(api_human))
+        .route("/api/map", get(api_map))
+        .route("/api/topology", get(api_topology))
         // Live member view (ENT-01): proxy to member's opencode via tunnel.
         .route("/api/members/{member_id}/sessions", get(api_member_sessions))
         .route("/api/members/{member_id}/session/{sid}/message", get(api_member_messages))
@@ -289,6 +291,34 @@ fn page_html() -> String {
   .btn:hover { border-color: var(--primary); color: var(--primary); }
   .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
   .btn-primary:hover { background: var(--primary-hover); color: var(--on-primary); border-color: var(--primary-hover); }
+  .btn.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
+  /* Dashboard (mockup alignment) */
+  .dash-mode { display: flex; gap: 6px; margin-bottom: 14px; }
+  .dash-canvas { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); min-height: 460px; overflow: hidden; }
+  .dash-canvas svg, .dash-canvas #dashMap { width: 100%; height: 100%; min-height: 460px; display: block; }
+  .dash-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-fg); gap: 8px; padding: 24px; text-align: center; }
+  .dash-empty .big { font-size: 34px; }
+  .dash-canvas .map-attrib { position: absolute; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted-fg); background: rgba(0,0,0,.35); color: #eee; padding: 2px 6px; border-radius: 3px; }
+  /* topology node boxes (SVG foreignObject) */
+  .topo-node { border: 1px solid var(--border); border-radius: 6px; background: var(--card); padding: 8px 10px; font-family: var(--font-sans); font-size: 12px; color: var(--fg); width: 180px; box-shadow: var(--shadow); }
+  .topo-node .tn-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .topo-node .tn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .topo-node .tn-meta { color: var(--muted-fg); font-size: 11px; margin-top: 3px; }
+  .topo-node .tn-live { margin-top: 4px; font-size: 11px; color: var(--muted-fg); display: flex; flex-direction: column; gap: 2px; }
+  .topo-node .tn-role { font-weight: 400; color: var(--muted-fg); font-size: 10px; }
+  .dot-green { background: #3fb950; } .dot-orange { background: #f0a020; } .dot-gray { background: #8b949e; } .dot-blue { background: var(--primary); }
+  .card-label { font-size: 12px; color: var(--muted-fg); margin-bottom: 2px; }
+  .card-value { font-size: 22px; font-weight: 700; font-family: var(--font-mono); }
+  .view.full-view .container, .view.full-view.container { max-width: none; }
+  /* responsive: dashboard canvas shrinks but keeps usable */
+  @media (max-width: 900px) { .dash-canvas, .dash-canvas #dashMap { min-height: 340px; } }
+  @media (max-width: 700px) {
+    nav { justify-content: flex-start; overflow-x: auto; }
+    nav button { padding: 14px 12px; }
+    .toolbar { flex-direction: column; align-items: stretch; }
+    .toolbar-right { margin-left: 0; justify-content: space-between; }
+    .topo-node { width: 150px; font-size: 11px; }
+  }
   .container { max-width: 1280px; margin: 0 auto; padding: 20px; }
   .container.full-width { max-width: none; margin: 0; padding: 20px 24px; }
   .view { display: none; }
@@ -550,7 +580,8 @@ fn page_html() -> String {
     <span class="logo-text">Teamx Enterprise</span>
   </div>
   <nav>
-    <button data-view="kanban" class="active">KanBan</button>
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="kanban">KanBan</button>
     <button data-view="goal">Goal</button>
     <button data-view="cost">Cost</button>
     <button data-view="timeline">Timeline</button>
@@ -606,8 +637,27 @@ fn page_html() -> String {
 </div>
 
 <div class="container">
-  <!-- ============ KanBan view (default) ============ -->
-  <div class="view active" id="view-kanban">
+  <!-- ============ Dashboard view (mockup alignment) ============ -->
+  <div class="view active" id="view-dashboard">
+    <div class="cards" id="dashCards">
+      <div class="card"><div class="card-icon green">🟢</div><div><div class="card-label">在线成员</div><div class="card-value" id="dashOnline">–</div></div></div>
+      <div class="card"><div class="card-icon blue">🖥</div><div><div class="card-label">活跃会话</div><div class="card-value" id="dashSessions">–</div></div></div>
+      <div class="card"><div class="card-icon blue">🔧</div><div><div class="card-label">正在执行工具</div><div class="card-value" id="dashTools">–</div></div></div>
+      <div class="card"><div class="card-icon blue">💰</div><div><div class="card-label">总成本</div><div class="card-value" id="dashCost">–</div></div></div>
+    </div>
+    <div class="dash-mode" id="dashModeToggle">
+      <button type="button" class="btn active" data-dmode="map">🗺 地图</button>
+      <button type="button" class="btn" data-dmode="topo">🕸 拓扑</button>
+    </div>
+    <div class="dash-canvas" id="dashCanvas">
+      <div id="dashMap"></div>
+      <div id="dashTopo" style="display:none"></div>
+      <div class="dash-empty" id="dashEmpty" style="display:none"><div class="big">🗺️</div><div>没有可展示的节点数据</div><div class="muted" style="font-size:12px">成员上线后将自动出现在地图 / 拓扑中</div></div>
+    </div>
+  </div>
+
+  <!-- ============ KanBan view ============ -->
+  <div class="view" id="view-kanban">
     <div class="kanban" id="kanbanCols"></div>
   </div>
 
@@ -790,12 +840,199 @@ function tableRows(rows, cols) {
   return rows.map((r) => `<tr>${cols.map((c) => `<td>${c(r)}</td>`).join("")}</tr>`).join("")
 }
 
+// ---- Dashboard (mockup alignment): stat cards + map/topology ----
+const DASH_DATA_VIEWS = new Set(["dashboard", "kanban", "cost", "timeline", "members"])
+let dashMode = "map"
+let dashData = { nodes: [] }
+function dashStat(state) {
+  if (state === "busy" || state === "online") return "online"
+  return state
+}
+function onlineMembers() {
+  return (dashData.nodes || []).filter((n) => n.kind === "member" && dashStat(n.state) !== "offline").length
+}
+function dashSummary() {
+  const members = (dashData.nodes || []).filter((n) => n.kind === "member")
+  const online = onlineMembers()
+  const sessions = members.reduce((s, n) => s + (n.sessions || 0), 0)
+  const tools = members.reduce((s, n) => s + (n.running_tools || 0), 0)
+  const cost = members.reduce((s, n) => s + (n.cost || 0), 0)
+  setText("dashOnline", online + " / " + members.length)
+  setText("dashSessions", sessions)
+  setText("dashTools", tools)
+  setText("dashCost", fmtCost(cost))
+}
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v }
+function setDashMode(mode) {
+  dashMode = mode
+  $$("#dashModeToggle button").forEach((b) => b.classList.toggle("active", b.dataset.dmode === mode))
+  const mapEl = document.getElementById("dashMap")
+  const topoEl = document.getElementById("dashTopo")
+  if (mapEl) mapEl.style.display = mode === "map" ? "" : "none"
+  if (topoEl) topoEl.style.display = mode === "topo" ? "" : "none"
+  if (mode === "map") renderDashMap()
+  else renderDashTopo()
+}
+// Map: use Leaflet when the CDN is reachable; otherwise degrade to an SVG
+// dot view (no external dependency). Basemap providers follow the mockup:
+// Gaode -> Esri -> OSM, each failing over after repeated tile errors.
+const BASEMAPS = [
+  { name: "Gaode", url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", sub: "1234" },
+  { name: "Esri", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", sub: "abcd" },
+  { name: "OSM", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", sub: "abc" },
+]
+let dashLeaflet = null
+function ensureLeaflet() {
+  return new Promise((resolve) => {
+    if (window.L) return resolve(true)
+    const s = document.createElement("script")
+    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    s.onload = () => resolve(!!window.L)
+    s.onerror = () => resolve(false)
+    document.head.appendChild(s)
+  })
+}
+let dashLeafFail = false
+async function renderDashMap() {
+  const mapEl = document.getElementById("dashMap")
+  const topoEl = document.getElementById("dashTopo")
+  const emptyEl = document.getElementById("dashEmpty")
+  if (!mapEl) return
+  const hasLeaf = await ensureLeaflet()
+  if (!hasLeaf) {
+    // No Leaflet reachable — degrade to the self-contained SVG renderer.
+    dashLeafFail = true
+    if (mapEl) mapEl.style.display = "none"
+    if (topoEl) topoEl.style.display = "none"
+    renderDashSvg()
+    return
+  }
+  if (dashMode !== "map") return
+  try {
+    if (dashLeaflet) dashLeaflet.remove()
+    dashLeaflet = L.map(mapEl).setView([34.5, 108.5], 4)
+    let baseIdx = 0
+    function addBase() {
+      const b = BASEMAPS[baseIdx]
+      const layer = L.tileLayer(b.url.replace("{s}", (s) => b.sub[(s + Math.floor(Math.random() * 4)) % 4]), {
+        maxZoom: 18, attribution: "&copy; " + b.name, subdomains: b.sub.split(""),
+      })
+      layer.on("tileerror", () => {
+        if (baseIdx < BASEMAPS.length - 1) { baseIdx += 1; dashLeaflet.remove(); addBase() }
+      })
+      layer.addTo(dashLeaflet)
+    }
+    addBase()
+    let shown = 0
+    for (const n of dashData.nodes || []) {
+      if (n.lat == null || n.lng == null) continue
+      const dot = n.kind === "server" ? "dot-blue" : dashStat(n.state) === "offline" ? "dot-gray" : n.state === "busy" ? "dot-orange" : "dot-green"
+      const color = { "dot-green": "#3fb950", "dot-orange": "#f0a020", "dot-gray": "#8b949e", "dot-blue": "#4A90E5" }[dot] || "#4A90E5"
+      const icon = L.divIcon({ className: "map-pin", html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${n.kind === "server" ? "S" : (n.member_name || "?")[0].toUpperCase()}</div>` })
+      const role = n.role ? ` <span class="tn-role">(${esc(n.role)})</span>` : ""
+      const live = (n.live || []).map((l) => `<div>${l.icon} ${esc(l.text)}</div>`).join("")
+      L.marker([n.lat, n.lng], { icon }).addTo(dashLeaflet).bindPopup(`<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}<br>${live}${n.cost ? "<br>成本 " + fmtCost(n.cost) : ""}`)
+      shown += 1
+    }
+    if (shown === 0) {
+      dashLeaflet.remove(); dashLeaflet = null
+      if (mapEl) mapEl.style.display = "none"
+      if (topoEl) topoEl.style.display = "none"
+      if (emptyEl) emptyEl.style.display = "flex"
+    }
+  } catch (e) {
+    // Leaflet init failed — fall back to the SVG renderer.
+    if (mapEl) mapEl.style.display = "none"
+    if (topoEl) topoEl.style.display = "none"
+    renderDashSvg()
+  }
+}
+// SVG fallback map + topology share a node renderer.
+function renderDashSvg() {
+  const canvas = document.getElementById("dashCanvas")
+  const topoEl = document.getElementById("dashTopo")
+  if (canvas && !document.getElementById("dashSvgFallback")) {
+    canvas.insertAdjacentHTML("beforeend", `<svg id="dashSvgFallback" viewBox="0 0 1200 460" style="position:absolute;inset:0;background:transparent"></svg>`)
+  }
+  const svg = document.getElementById("dashSvgFallback")
+  if (!svg) return
+  svg.style.display = ""
+  const W = 1200, H = 460
+  const members = (dashData.nodes || []).filter((n) => n.kind === "member")
+  const server = (dashData.nodes || []).find((n) => n.kind === "server")
+  let html = ""
+  const cx = W / 2, cy = H / 2
+  const ring = Math.min(W, H) / 2 - 60
+  if (server) {
+    html += `<circle cx="${cx}" cy="${cy}" r="26" fill="#4A90E5"/><text x="${cx}" y="${cy + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">S</text>`
+  }
+  const placed = members.filter((m) => m.lat != null && m.lng != null).length
+  const angleStep = members.length ? 360 / Math.max(1, members.length) : 0
+  members.forEach((m, i) => {
+    let x, y
+    if (m.lat != null && m.lng != null && placed >= 1) {
+      // rough equirectangular to fill the box (ignore precision)
+      x = cx + (m.lng - 110) * 90
+      y = cy - (m.lat - 35) * 130
+    } else {
+      const a = (angleStep * i - 90) * Math.PI / 180
+      x = cx + ring * Math.cos(a); y = cy + ring * Math.sin(a)
+    }
+    const color = dashStat(m.state) === "offline" ? "#8b949e" : m.state === "busy" ? "#f0a020" : "#3fb950"
+    html += `<circle cx="${x}" cy="${y}" r="10" fill="${color}"/><text x="${x}" y="${y + 4}" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">${(m.member_name || "?")[0].toUpperCase()}</text>`
+    html += `<line x1="${cx + (x > cx ? 26 : -26)}" y1="${cy + (y > cy ? 26 : -26)}" x2="${x + (x > cx ? -10 : 10)}" y2="${y + (y > cy ? -10 : 10)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="${dashStat(m.state) === "offline" ? "4 3" : ""}"/>`
+    const boxY = y < cy - 40 ? y - 60 : y + 18
+    html += `<g transform="translate(${x - 90} ${boxY})"><rect width="180" height="44" rx="6" fill="rgba(26,26,46,.9)" stroke="${color}"/><text x="10" y="17" fill="#fff" font-size="12" font-weight="600">${esc(m.member_name || "")}</text><text x="10" y="33" fill="#bbb" font-size="10">${esc(m.city || "—")} · ${m.sessions || 0} 会话 · ${fmtCost(m.cost)}</text></g>`
+  })
+  svg.innerHTML = html
+  if (members.length === 0 && !server) {
+    svg.style.display = "none"
+    const e = document.getElementById("dashEmpty"); if (e) e.style.display = "flex"
+  }
+}
+function renderDashTopo() {
+  const mapEl = document.getElementById("dashMap")
+  const topoEl = document.getElementById("dashTopo")
+  const svgF = document.getElementById("dashSvgFallback"); if (svgF) svgF.style.display = "none"
+  if (mapEl) mapEl.style.display = "none"
+  if (topoEl) topoEl.style.display = ""
+  const members = (dashData.nodes || []).filter((n) => n.kind === "member")
+  const server = (dashData.nodes || []).find((n) => n.kind === "server")
+  if (members.length === 0 && !server) {
+    const e = document.getElementById("dashEmpty"); if (e) e.style.display = "flex"
+    topoEl.innerHTML = ""
+    return
+  }
+  const empty = document.getElementById("dashEmpty"); if (empty) empty.style.display = "none"
+  renderDashSvg()
+}
+async function refreshDashboard() {
+  try {
+    const mapRes = await jget("/api/map?" + qs())
+    if (mapRes && mapRes.nodes) dashData = mapRes
+  } catch (e) {
+    dashData = { nodes: [] }
+  }
+  dashSummary()
+  if (dashMode === "map") {
+    if (window.L || dashLeaflet) renderDashMap()
+    else if (dashLeafFail) renderDashSvg()
+    else renderDashMap()
+  } else {
+    renderDashTopo()
+  }
+}
+$$("#dashModeToggle").forEach((el) => el && el.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-dmode]"); if (b) setDashMode(b.dataset.dmode)
+}))
+
 // ---- navigation ----
 function showView(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name))
   $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name))
-  $(".container").classList.toggle("full-width", name === "timeline")
+  $(".container").classList.toggle("full-width", DASH_DATA_VIEWS.has(name))
   $("#tlViewToggle").style.display = name === "timeline" ? "" : "none"
+  if (name === "dashboard") refreshDashboard()
   if (name === "timeline") renderTimeline()
   if (name === "cost") renderCost()
   if (name === "kanban") renderKanban()
@@ -1791,8 +2028,9 @@ function fillTeamSelect(teams) {
   }
 }
 function refresh() {
-  const active = $$("nav button").find((b) => b.classList.contains("active"))?.dataset.view ?? "kanban"
-  if (active === "timeline") renderTimeline()
+  const active = $$("nav button").find((b) => b.classList.contains("active"))?.dataset.view ?? "dashboard"
+  if (active === "dashboard") refreshDashboard()
+  else if (active === "timeline") renderTimeline()
   else if (active === "cost") renderCost()
   else if (active === "goal") renderGoal()
   else if (active === "members") renderMembers()
@@ -1897,7 +2135,7 @@ async function boot() {
     await refreshGoalSelect()
     // Standalone live-monitor route (/members-live) opens directly on Members.
     if (location.pathname.endsWith("/members-live")) showView("members")
-    else renderKanban()
+    else refreshDashboard()
   } catch (e) {
     document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;bottom:10px;right:10px;background:#ffebe9;border:1px solid #cf222e;color:#cf222e;padding:10px 14px;border-radius:6px">${esc(String(e))}</div>`)
   }
@@ -2990,5 +3228,322 @@ async fn api_timeline(State(state): State<S>, Query(params): Query<HashMap0>, he
     match crate::activity::timeline(&c, team, member, from, to) {
         Ok(v) => Json(json!({ "items": v })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard (mockup alignment): /api/map + /api/topology
+//
+// Real data comes from the local DB:
+//   - roster: members/teams tables
+//   - live:   `presence` rows pushed by the plugin (sessions/tools/terminals)
+//   - cost:   activity aggregates within the selected time window
+// Geo (city/lat/lng) has no automatic source, so it is configurable per node
+// via `<teamx_home>/ui-locations.json`:
+//   {
+//     "server": { "city": "Hong Kong", "lat": 22.3193, "lng": 114.1694 },
+//     "members": { "alice": { "city": "Shenzhen", "lat": 22.5431, "lng": 114.0579 } }
+//   }
+// Keys match member id or display name (id wins). Missing nodes render with
+// lat/lng = null and are clustered by the frontend.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default, Deserialize)]
+struct UiNodeLoc {
+    city: Option<String>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+}
+
+#[derive(Default, Deserialize)]
+struct UiLocations {
+    server: Option<UiNodeLoc>,
+    members: std::collections::HashMap<String, UiNodeLoc>,
+}
+
+/// Optional per-node geo configuration (see module docs above).
+fn ui_locations() -> UiLocations {
+    let p = crate::db::teamx_home().join("ui-locations.json");
+    std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn node_loc(locs: &UiLocations, member_id: &str, display_name: &str) -> UiNodeLoc {
+    locs.members
+        .get(member_id)
+        .or_else(|| locs.members.get(display_name))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Build the Dashboard node set (server + team members) from the local DB.
+/// This is a pure-ish function over the DB so it is unit-testable without HTTP.
+fn dash_nodes(
+    c: &Connection,
+    team: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    members_all_teams: bool,
+) -> serde_json::Value {
+    let locs = ui_locations();
+    let presence = crate::activity::presence_for_members(c).unwrap_or_default();
+
+    // Per-member cost/tokens within the window (keyed by member_id).
+    let mut agg: std::collections::HashMap<String, (f64, i64)> = std::collections::HashMap::new();
+    if let Ok(list) = crate::activity::by_member(c, team, None, None, None, from, to) {
+        if let Some(arr) = list.as_array() {
+            for it in arr {
+                let mid = it.get("member_id").and_then(|v| v.as_str()).unwrap_or("");
+                let cost = it.get("cost").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let ti = it.get("tokens_input").and_then(|v| v.as_i64()).unwrap_or(0);
+                let to2 = it.get("tokens_output").and_then(|v| v.as_i64()).unwrap_or(0);
+                agg.insert(mid.to_string(), (cost, ti + to2));
+            }
+        }
+    }
+
+    let mut members: Vec<Value> = Vec::new();
+    {
+        let sql = if members_all_teams {
+            "SELECT m.id, m.display_name, m.role, m.state
+             FROM members m JOIN teams t ON t.id = m.team_id
+             WHERE m.state NOT IN ('left','denied','pending') AND t.state NOT IN ('destroyed')
+             ORDER BY m.display_name"
+        } else {
+            "SELECT m.id, m.display_name, m.role, m.state
+             FROM members m JOIN teams t ON t.id = m.team_id
+             WHERE (?1 IS NULL OR t.id = ?1)
+               AND m.state NOT IN ('left','denied','pending') AND t.state NOT IN ('destroyed')
+             ORDER BY m.display_name"
+        };
+        if let Ok(mut stmt) = c.prepare(&sql) {
+            let rows = if members_all_teams {
+                stmt.query_map([], row_dash_member)
+            } else {
+                stmt.query_map([team], row_dash_member)
+            };
+            if let Ok(rows) = rows {
+                for r in rows.flatten() {
+                    members.push(json!(r));
+                }
+            }
+        }
+    }
+    let _ = &mut members; // (reserved for future roster-only callers)
+
+    let mut nodes: Vec<Value> = Vec::new();
+    // Server node.
+    let sloc = locs.server.clone().unwrap_or_default();
+    nodes.push(json!({
+        "id": "server", "name": "teamx-server", "kind": "server",
+        "member_id": null, "member_name": null, "role": null, "state": "online",
+        "city": sloc.city.unwrap_or_else(|| "—".into()), "lat": sloc.lat, "lng": sloc.lng,
+        "sessions": 0, "running_tools": 0, "open_terminals": 0, "cost": 0, "tokens": 0,
+        "live": [],
+    }));
+    // Member nodes (dedupe: a member may appear in several teams).
+    let mut seen = std::collections::HashSet::new();
+    for m in members {
+        // m already contains role/state from the query row (see row_dash_member).
+        let member_id = m["member_id"].as_str().unwrap_or("").to_string();
+        if member_id.is_empty() || !seen.insert(member_id.clone()) {
+            continue;
+        }
+        let display_name = m["display_name"].as_str().unwrap_or("member").to_string();
+        let role = m["role"].as_str().map(str::to_string);
+        let db_state = m["state"].as_str().unwrap_or("").to_string();
+        let p = presence.get(&member_id);
+        let (sessions, running_tools, open_terminals) = match p {
+            Some(pr) => (pr.active_sessions, pr.running_tools, pr.open_terminals),
+            None => (0, 0, 0),
+        };
+        // busy = has active sessions; online = fresh presence; offline otherwise.
+        let state = if p.is_some() && sessions > 0 {
+            "busy"
+        } else if p.is_some() {
+            "online"
+        } else if db_state == "active" {
+            "online"
+        } else {
+            "offline"
+        };
+        let (cost, tokens) = agg.get(&member_id).copied().unwrap_or((0.0, 0));
+        let loc = node_loc(&locs, &member_id, &display_name);
+        let mut live: Vec<Value> = Vec::new();
+        if sessions > 0 {
+            live.push(json!({ "icon": "🖥", "text": format!("{sessions} session(s)") }));
+        }
+        if running_tools > 0 {
+            live.push(json!({ "icon": "🔧", "text": format!("{running_tools} tool(s)") }));
+        }
+        if open_terminals > 0 {
+            live.push(json!({ "icon": "⌨", "text": format!("{open_terminals} terminal(s)") }));
+        }
+        nodes.push(json!({
+            "id": member_id, "name": display_name, "kind": "member",
+            "member_id": member_id, "member_name": display_name, "role": role, "state": state,
+            "city": loc.city.unwrap_or_else(|| "—".into()), "lat": loc.lat, "lng": loc.lng,
+            "sessions": sessions, "running_tools": running_tools, "open_terminals": open_terminals,
+            "cost": cost, "tokens": tokens, "live": live,
+        }));
+    }
+
+    json!({ "nodes": nodes })
+}
+
+fn row_dash_member(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({
+        "member_id": r.get::<_, String>(0)?,
+        "display_name": r.get::<_, String>(1)?,
+        "role": r.get::<_, Option<String>>(2)?,
+        "state": r.get::<_, String>(3)?,
+    }))
+}
+
+/// `/api/map` — Dashboard map-mode node list.
+async fn api_map(State(state): State<S>, Query(params): Query<HashMap0>, headers: axum::http::HeaderMap) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let (from, to, _, _) = extract_filters(&params);
+    let c = lock(&state);
+    Json(dash_nodes(&c, params.team.as_deref(), from, to, false)).into_response()
+}
+
+/// `/api/topology` — Dashboard topology-mode server/nodes/links.
+async fn api_topology(State(state): State<S>, Query(params): Query<HashMap0>, headers: axum::http::HeaderMap) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let (from, to, _, _) = extract_filters(&params);
+    let c = lock(&state);
+    let map = dash_nodes(&c, params.team.as_deref(), from, to, false);
+    let nodes = map.get("nodes").cloned().unwrap_or(json!([]));
+    let nodes_arr = nodes.as_array().cloned().unwrap_or_default();
+    let server = nodes_arr
+        .iter()
+        .find(|n| n.get("kind").and_then(|k| k.as_str()) == Some("server"))
+        .cloned()
+        .unwrap_or_else(|| json!({ "id": "server", "name": "teamx-server", "kind": "server" }));
+    let member_nodes: Vec<Value> = nodes_arr
+        .iter()
+        .filter(|n| n.get("kind").and_then(|k| k.as_str()) == Some("member"))
+        .cloned()
+        .collect();
+    // Links: every member connects to the server over mTLS WS. Up when the
+    // member has fresh presence, otherwise shown as down/dimmed.
+    let mut links: Vec<Value> = Vec::new();
+    for n in &member_nodes {
+        let state = n.get("state").and_then(|s| s.as_str()).unwrap_or("offline");
+        links.push(json!({
+            "from": "server", "to": n.get("member_id"),
+            "type": "mTLS", "name": "mTLS WS", "status": if state == "offline" { "down" } else { "up" },
+        }));
+    }
+    Json(json!({
+        "server": server,
+        "nodes": member_nodes,
+        "links": links,
+    }))
+    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let mut c = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&c).unwrap();
+        // Minimal rows for the dashboard queries.
+        c.execute(
+            "INSERT INTO teams (id, name, state, invite_token, created_at, updated_at)
+             VALUES ('t1', 'Team One', 'active', 'tok1', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m1', 't1', 's1', 'alice', 'contributor', 'active', '2026-01-01T00:00:00+00:00'),
+                    ('m2', 't1', 's2', 'bob', 'owner', 'active', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn locations_parse_members_and_server() {
+        let tmp = std::env::temp_dir().join(format!("teamx-ui-loc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("ui-locations.json"),
+            r##"{"server":{"city":"Hong Kong","lat":22.3,"lng":114.17},"members":{"alice":{"city":"Shenzhen","lat":22.54,"lng":114.06}}}"##,
+        )
+        .unwrap();
+        // teamx_home is cwd/.teamx by default; point it at the temp dir via a
+        // small trick: the loader reads teamx_home()/ui-locations.json, and
+        // teamx_home honours TEAMX_HOME, so set the env for this test only.
+        let _ = &tmp;
+        let prev = std::env::var("TEAMX_HOME").ok();
+        std::env::set_var("TEAMX_HOME", &tmp);
+        let locs = ui_locations();
+        match &prev {
+            Some(v) => std::env::set_var("TEAMX_HOME", v),
+            None => std::env::remove_var("TEAMX_HOME"),
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(locs.server.as_ref().and_then(|s| s.city.as_deref()), Some("Hong Kong"));
+        assert!(locs.members.contains_key("alice"));
+    }
+
+    #[test]
+    fn map_has_server_and_member_nodes() {
+        let c = test_conn();
+        let v = dash_nodes(&c, Some("t1"), None, None, false);
+        let nodes = v["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3, "server + 2 members");
+        let kinds: Vec<&str> = nodes.iter().map(|n| n["kind"].as_str().unwrap()).collect();
+        assert!(kinds.contains(&"server"));
+        assert!(kinds.contains(&"member"));
+        let alice = nodes.iter().find(|n| n["member_name"].as_str() == Some("alice")).unwrap();
+        assert_eq!(alice["state"], "online");
+    }
+
+    #[test]
+    fn topology_links_server_to_each_member() {
+        let c = test_conn();
+        let v = dash_nodes(&c, Some("t1"), None, None, false);
+        let topo = json!({
+            "server": v["nodes"][0],
+            "nodes": v["nodes"].as_array().unwrap().iter().filter(|n| n["kind"]=="member").collect::<Vec<_>>(),
+            "links": vec![json!({"from":"server","to":"m1","type":"mTLS","status":"up"})],
+        });
+        assert_eq!(topo["server"]["kind"], "server");
+        assert_eq!(topo["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(topo["links"][0]["to"], "m1");
+    }
+
+    #[test]
+    fn members_absent_from_team_are_excluded() {
+        let mut c = test_conn();
+        c.execute(
+            "INSERT INTO teams (id, name, state, invite_token, created_at, updated_at)
+             VALUES ('t2', 'Team Two', 'active', 'tok2', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m3', 't2', 's3', 'carol', 'reviewer', 'active', '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let v = dash_nodes(&c, Some("t1"), None, None, false);
+        let nodes = v["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3, "only t1 members (server + alice + bob), not carol");
+        assert!(nodes.iter().all(|n| n["member_name"].as_str() != Some("carol")));
     }
 }
