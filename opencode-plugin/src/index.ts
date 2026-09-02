@@ -33,13 +33,61 @@ const AUTO_EXECUTE = process.env.TEAMX_AUTO_EXECUTE !== "0"
 type MemberRow = { display_name?: string; role?: string | null; state?: string }
 type QuestionRow = { state?: string; question?: string }
 type TeamBlock = {
-  team?: { name?: string; state?: string; my_role?: string; my_member_id?: string; my_is_lead?: boolean }
+  team?: {
+    id?: string
+    name?: string
+    state?: string
+    my_role?: string
+    my_member_id?: string
+    my_is_lead?: boolean
+  }
   goal?: { title?: string; state?: string } | null
   members?: MemberRow[]
   questions?: QuestionRow[]
 }
-type SyncEvent = { seq?: number; type?: string; member_id?: string; payload?: Record<string, unknown> }
+type SyncEvent = {
+  seq?: number
+  type?: string
+  member_id?: string
+  team_id?: string
+  payload?: Record<string, unknown>
+}
 type SyncData = { teams?: TeamBlock[]; new_events?: SyncEvent[] }
+
+/** A session's per-team context (a session may belong to several teams). */
+type TeamCtx = {
+  id?: string
+  memberId?: string
+  role?: string
+  isLead?: boolean
+}
+
+/** Resolve the session's context in EVERY team it belongs to. */
+function myTeamCtxs(data: SyncData): TeamCtx[] {
+  return (data?.teams ?? []).map((t) => ({
+    id: t.team?.id,
+    memberId: t.team?.my_member_id,
+    role: t.team?.my_role,
+    isLead: t.team?.my_is_lead === true || t.team?.my_role === "owner",
+  }))
+}
+
+/**
+ * The session's context in the team that emitted `e` (matched by `team_id`).
+ * Falls back to the first team when the event carries no `team_id` (older sync
+ * payloads / unit tests) so directed-task matching never misses events from a
+ * non-first team membership.
+ */
+function myTeamForEvent(data: SyncData, e: SyncEvent): TeamCtx | undefined {
+  const ctxs = myTeamCtxs(data)
+  if (ctxs.length === 0) return undefined
+  const tid = e.team_id
+  if (tid) {
+    const hit = ctxs.find((c) => c.id === tid)
+    if (hit) return hit
+  }
+  return ctxs[0]
+}
 
 /** Truncate a string to a short single-line snippet. */
 function shorten(s: string, max = 40): string {
@@ -207,25 +255,40 @@ function summarize(data: SyncData): string {
   return parts.join("\n")
 }
 
-/** True if the sync data shows this session is a team lead (auto-execute excluded). */
+/** True if the sync data shows this session is a team lead in ANY team (auto-execute excluded). */
 export function isOwnerSession(data: SyncData): boolean {
   return (data?.teams ?? []).some((t) => t.team?.my_role === "owner" || t.team?.my_is_lead === true)
 }
 
-/** The member id of the current session, from the sync response. */
+/** All member ids the session has across its teams. */
+export function myMemberIds(data: SyncData): string[] {
+  return myTeamCtxs(data)
+    .map((c) => c.memberId)
+    .filter((x): x is string => !!x)
+}
+
+/**
+ * The member id of the current session. When the session belongs to several
+ * teams this returns the FIRST team's id for backward compatibility; use
+ * `myMemberIds` / `myTeamForEvent` for team-aware matching.
+ */
 export function myMemberId(data: SyncData): string | undefined {
   return data?.teams?.[0]?.team?.my_member_id
 }
 
 /**
- * Whether a broadcast event is a DIRECTED task assignment to the current
- * session. Any publish carrying `assignee_member_id` that matches our member id
- * is a task for us (regardless of publish type); everything else (unassigned
- * broadcasts, other people's tasks) is informational only.
+ * Whether an event is a DIRECTED task assignment to the current session. A
+ * publish carrying `assignee_member_id` that matches OUR member id in the
+ * event's team is a task for us (regardless of publish type); everything else
+ * (unassigned broadcasts, other people's tasks) is informational only.
  */
-export function assignedToMe(events: SyncEvent[], myId: string | undefined): boolean {
-  if (!myId) return false
-  return events.some((e) => e.payload?.assignee_member_id === myId)
+export function assignedToMe(data: SyncData, events: SyncEvent[]): boolean {
+  if ((data?.teams?.length ?? 0) === 0) return false
+  return events.some((e) => {
+    const ctx = myTeamForEvent(data, e)
+    const aid = e.payload?.assignee_member_id
+    return !!ctx?.memberId && typeof aid === "string" && aid === ctx.memberId
+  })
 }
 
 /** Whether an auto-execute should fire for the current refresh. */
@@ -234,14 +297,20 @@ export function shouldAutoExecute(opts: {
   events: SyncEvent[]
   lastExecutedSeq: number
 }): boolean {
-  if (!AUTO_EXECUTE || isOwnerSession(opts.data)) return false
-  const myId = myMemberId(opts.data)
-  if (!myId) return false
+  if (!AUTO_EXECUTE) return false
+  if ((opts.data?.teams?.length ?? 0) === 0) return false
   // A directed task NEWER than the last seq we already executed on triggers a
-  // fresh auto-execute (so a member can be re-woken for later tasks).
-  return opts.events.some(
-    (e) => e.payload?.assignee_member_id === myId && (e.seq ?? 0) > opts.lastExecutedSeq,
-  )
+  // fresh auto-execute (so a member can be re-woken for later tasks). The
+  // owner/lead exemption and the assignee match are both evaluated per team
+  // (via the event's team_id), so a session that leads one team but works as a
+  // regular member in another still auto-executes the latter's tasks.
+  return opts.events.some((e) => {
+    if ((e.seq ?? 0) <= opts.lastExecutedSeq) return false
+    const ctx = myTeamForEvent(opts.data, e)
+    if (!ctx?.memberId || ctx.isLead) return false
+    const aid = e.payload?.assignee_member_id
+    return typeof aid === "string" && aid === ctx.memberId
+  })
 }
 
 export const Teamx: Plugin = async ({ client }) => {
@@ -361,13 +430,15 @@ export const Teamx: Plugin = async ({ client }) => {
         .catch(() => {})
     }
     // Auto-acknowledge taskx assignments to this member (automatic receipt).
-    // A `doc.created` with doc=taskx and assignee_member_id == me means the lead
-    // assigned us a task; record receipt immediately (no user action needed).
-    const myId = myMemberId(data)
-    const myRole = (data?.teams ?? []).find((t) => t.team?.my_member_id === myId)?.team?.my_role
-    const newTasks = fresh.filter(
-      (e) => e.type === "doc.created" && e.payload?.doc === "taskx" && e.payload?.assignee_member_id === myId,
-    )
+    // A `doc.created` with doc=taskx and assignee_member_id == me (IN THAT
+    // EVENT'S TEAM) means the lead assigned us a task; record receipt
+    // immediately. Matching is team-aware so a multi-team session never misses
+    // a task from a non-first team.
+    const newTasks = fresh.filter((e) => {
+      if (e.type !== "doc.created" || e.payload?.doc !== "taskx") return false
+      const ctx = myTeamForEvent(data, e)
+      return !!ctx?.memberId && e.payload?.assignee_member_id === ctx.memberId
+    })
     for (const t of newTasks) {
       const tid = t.payload?.id as string | undefined
       if (!tid) continue
@@ -375,23 +446,23 @@ export const Teamx: Plugin = async ({ client }) => {
       log("info", "auto-acked task", { sessionID, task: tid })
     }
 
-    // Bid tasks: auto-claim when the task is dispatched to our role and no one
-    // has claimed it yet. This covers fresh `doc.created` (bid, assignee empty)
-    // and re-opened tasks (`doc.retracted` / `doc.rebid`). The agent represents
-    // the user session, so it claims on their behalf; the user can retract.
-    const bidOpen = fresh.filter(
-      (e) =>
-        e.payload?.doc === "taskx" &&
-        (e.type === "doc.created" || e.type === "doc.retracted" || e.type === "doc.rebid") &&
-        e.payload?.assignee_member_id == null &&
-        e.payload?.assignee_role != null &&
-        e.payload?.assignee_role === myRole,
-    )
+    // Bid tasks: auto-claim when the task is dispatched to OUR ROLE IN THE
+    // EVENT'S TEAM and no one has claimed it yet. This covers fresh
+    // `doc.created` (bid, assignee empty) and re-opened tasks (`doc.retracted`
+    // / `doc.rebid`). The agent represents the user session, so it claims on
+    // their behalf; the user can retract.
+    const bidOpen = fresh.filter((e) => {
+      if (e.payload?.doc !== "taskx") return false
+      if (!(e.type === "doc.created" || e.type === "doc.retracted" || e.type === "doc.rebid")) return false
+      if (e.payload?.assignee_member_id != null) return false
+      const ctx = myTeamForEvent(data, e)
+      return !!ctx?.role && e.payload?.assignee_role != null && e.payload?.assignee_role === ctx.role
+    })
     for (const t of bidOpen) {
       const tid = t.payload?.id as string | undefined
       if (!tid) continue
       await runCli(["task", "claim", tid, "--session", sessionKey(instance, sessionID)]).catch(() => {})
-      log("info", "auto-claimed bid task", { sessionID, task: tid, role: myRole })
+      log("info", "auto-claimed bid task", { sessionID, task: tid, role: myTeamForEvent(data, t)?.role })
     }
 
     // Auto-execute ONLY for directed tasks assigned to this member. A publish
@@ -405,9 +476,11 @@ export const Teamx: Plugin = async ({ client }) => {
     })
     if (shouldRun) {
       autoExecutedSeq.set(sessionID, maxSeq)
-      const directive = fresh.find(
-        (e) => e.payload?.assignee_member_id === myMemberId(data) && (e.seq ?? 0) > lastExecuted,
-      )
+      const directive = fresh.find((e) => {
+        if ((e.seq ?? 0) <= lastExecuted) return false
+        const ctx = myTeamForEvent(data, e)
+        return !!ctx?.memberId && e.payload?.assignee_member_id === ctx.memberId
+      })
       const isTask = directive?.payload?.doc === "taskx"
       const taskExecutor = isTask ? (directive?.payload?.executor as string | undefined) ?? "either" : undefined
       // A human-executor task must NOT auto-execute: it needs a person. Surface
