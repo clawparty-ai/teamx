@@ -582,7 +582,6 @@ fn page_html() -> String {
   <nav>
     <button data-view="dashboard" class="active">Dashboard</button>
     <button data-view="kanban">KanBan</button>
-    <button data-view="goal">Goal</button>
     <button data-view="cost">Cost</button>
     <button data-view="timeline">Timeline</button>
     <button data-view="members">Members</button>
@@ -893,11 +892,14 @@ function applyDashMode() {
   const topoEl = document.getElementById("dashTopo")
   const svgF = document.getElementById("dashSvgFallback")
   if (!mapEl || !topoEl) return
-  mapEl.style.display = dashMode === "map" ? "" : "none"
-  topoEl.style.display = dashMode === "topo" ? "" : "none"
-  if (svgF) svgF.style.display = dashMode === "topo" ? "" : "none"
+  // Both "map" and "topology" modes render into the self-contained SVG node
+  // view (geo-positioned when coordinates are configured, ring layout
+  // otherwise). No external Leaflet/map tiles are required, so the Dashboard
+  // always renders something even fully offline.
+  mapEl.style.display = "none"
+  topoEl.style.display = "none"
+  if (svgF) svgF.style.display = ""
   if (dashMode === "topo") renderDashTopo()
-  else if (window.L || dashLeaflet || !dashLeafFail) renderDashMap()
   else renderDashSvg()
 }
 async function renderDashMap() {
@@ -970,6 +972,15 @@ function renderDashSvg() {
   let html = ""
   const cx = W / 2, cy = H / 2
   const ring = Math.min(W, H) / 2 - 60
+  // Map mode draws a light lat/lng graticule so the geo view reads as a map
+  // even without external tile servers.
+  if (dashMode === "map") {
+    html += `<g stroke="rgba(128,128,128,.12)" stroke-width="1">`
+    for (let gx = 0; gx <= W; gx += 120) html += `<line x1="${gx}" y1="0" x2="${gx}" y2="${H}"/>`
+    for (let gy = 0; gy <= H; gy += 92) html += `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}"/>`
+    html += `</g>`
+    html += `<text x="16" y="24" fill="var(--muted-fg)" font-size="12" opacity=".6">节点坐标视图（配置经纬度后按地理位置分布；无外部地图瓦片依赖）</text>`
+  }
   if (server) {
     html += `<circle cx="${cx}" cy="${cy}" r="26" fill="#4A90E5"/><text x="${cx}" y="${cy + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">S</text>`
   }
@@ -1808,7 +1819,9 @@ async function loadMemberLive(memberId, displayName) {
   // Fetch the member's opencode sessions through the ui proxy.
   try {
     const resp = await fetch(`/api/members/${encodeURIComponent(memberId)}/sessions`)
-    const data = await resp.json()
+    if (!resp.ok) throw new Error("HTTP " + resp.status)
+    const text = await resp.text()
+    const data = JSON.parse(text || "{}")
     const sessions = (data.data ?? data.sessions ?? []).map((s, i) => ({
       id: s.id ?? "ses_" + i,
       title: s.title || ("session " + (i + 1)),
@@ -1820,8 +1833,12 @@ async function loadMemberLive(memberId, displayName) {
     renderSessions(sessions)
     startLivePolling(memberId, sessions)
   } catch (e) {
-    $("#mliveSessionTitle").textContent = "无法连接该成员的 opencode（未注册隧道？）"
-    $("#mtab-live").innerHTML = `<div class="muted">${esc(String(e))}</div>`
+    // Member unreachable or the tunnel returned non-JSON (offline / no
+    // `opencode serve` registered). Show a friendly hint, never a raw parser
+    // error.
+    console.debug("member live load failed", e)
+    $("#mliveSessionTitle").textContent = "该成员当前离线（未注册隧道）"
+    $("#mtab-live").innerHTML = `<div class="muted">无法连接该成员的 opencode —— 成员离线或未注册隧道（opencode-&lt;member&gt;）。上线后可自动恢复。</div>`
   }
 }
 

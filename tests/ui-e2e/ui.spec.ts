@@ -46,9 +46,11 @@ test("地图/拓扑模式切换", async ({ page }) => {
   await expect(page.locator("#dashSvgFallback")).toBeVisible()
 })
 
-test("视图切换：KanBan / Goal / Cost / Timeline / Members", async ({ page }) => {
+test("视图切换：KanBan / Cost / Timeline / Members（Goal 按 mockup 隐藏）", async ({ page }) => {
   await page.goto(tokenUrl, { waitUntil: "networkidle" })
-  for (const v of ["kanban", "goal", "cost", "timeline", "members"]) {
+  // Goal 不应出现在导航（mockup 隐藏）
+  await expect(page.locator('nav button[data-view="goal"]')).toHaveCount(0)
+  for (const v of ["kanban", "cost", "timeline", "members"]) {
     await page.locator(`nav button[data-view="${v}"]`).click()
     await expect(page.locator(`#view-${v}`)).toBeVisible()
     await expect(page.locator(`nav button[data-view="${v}"]`)).toHaveClass(/active/)
