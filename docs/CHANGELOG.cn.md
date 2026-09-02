@@ -109,7 +109,7 @@ Teamx 0.2.0 从「共享目标状态机」成长为一个完整的网络协作�
 
 ### 代码审查修复
 
-修复全部高/中优先级发现（见 `docs/code-review-codex-0817.md`）：
+修复全部高/中优先级发现（见 `docs/review/code-review-codex-0817.md`）：
 
 - **跨团队读取绕过**（安全）：非成员不再能读取任意团队的 invite token、成员、角色或事件。
 - **pending 成员不能 publish**（鉴权）。

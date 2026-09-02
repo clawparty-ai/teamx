@@ -109,7 +109,7 @@ Members join via one-time invitation letters containing mTLS client certificates
 
 ### Code Review Fixes
 
-Fixed all high/medium priority findings (see `docs/code-review-codex-0817.md`):
+Fixed all high/medium priority findings (see `docs/review/code-review-codex-0817.md`):
 
 - **Cross-team read bypass** (security): non-members can no longer read invite tokens, members, roles, or events of arbitrary teams.
 - **Pending members cannot publish** (authorization).

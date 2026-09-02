@@ -1,7 +1,7 @@
 # 17 — tun0 改进设计：Watchdog / AsyncFd / Bridge 异步化
 
 > 状态：**设计提案（待确认后实施）**
-> 关联：`docs/09-design-tun0.cn.md`、`docs/15-design-transparent-proxy.en.md`、`docs/16-code-review-transparent-proxy.en.md`
+> 关联：`docs/09-design-tun0.cn.md`、`docs/15-design-transparent-proxy.en.md`、`docs/review/16-code-review-transparent-proxy.en.md`
 > 日期：2026-08-24
 
 本文分析 code review 中标记为「接受/暂缓」的三个结构性问题，给出根因、
