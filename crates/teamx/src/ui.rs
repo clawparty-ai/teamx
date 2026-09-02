@@ -877,14 +877,23 @@ function setDashMode(mode) {
   $$("#dashModeToggle button").forEach((b) => b.classList.toggle("active", b.dataset.dmode === mode))
   applyDashMode()
 }
-// Map: use Leaflet when the CDN is reachable; otherwise degrade to an SVG
-// dot view (no external dependency). Basemap providers follow the mockup:
-// Gaode -> Esri -> OSM, each failing over after repeated tile errors.
-const BASEMAPS = [
-  { name: "Gaode", url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", sub: "1234" },
-  { name: "Esri", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", sub: "abcd" },
-  { name: "OSM", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", sub: "abc" },
-]
+// Map basemap providers. Follow the mockup: mainland China uses Gaode (高德
+// 地图, GCJ-02 — webrd tiles load without an API key and are reachable from
+// China, while OSM/Esri are often blocked there); outside China use Leaflet
+// with OSM/Esri first. The provider list is ordered by the user's region and
+// each entry auto-fails over to the next on tile errors.
+const BM_GAODE = { name: "高德地图", url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", sub: "1234" }
+const BM_ESRI = { name: "Esri 街道图", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", sub: "abc" }
+const BM_OSM = { name: "OpenStreetMap", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", sub: "abc" }
+const CN_TZ = new Set(["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Macau", "Asia/Chongqing", "Asia/Harbin", "Asia/Urumqi", "Asia/Kashgar"])
+function isChinaUser() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (CN_TZ.has(tz)) return true
+  } catch { /* ignore */ }
+  return /^zh/i.test((navigator.language || "") + "-" + (navigator.languages || []).join(","))
+}
+const dashBasemaps = isChinaUser() ? [BM_GAODE, BM_ESRI, BM_OSM] : [BM_OSM, BM_ESRI, BM_GAODE]
 let dashLeaflet = null
 let dashTile = null
 let dashMarkers = null
@@ -897,9 +906,9 @@ function dashPinColor(n) {
 function addBasemap() {
   if (!dashLeaflet) return
   if (dashTile) dashTile.remove()
-  const b = BASEMAPS[Math.min(dashBaseIdx, BASEMAPS.length - 1)]
+  const b = dashBasemaps[Math.min(dashBaseIdx, dashBasemaps.length - 1)]
   const layer = L.tileLayer(b.url, { maxZoom: 19, subdomains: b.sub })
-  layer.on("tileerror", () => { if (dashBaseIdx < BASEMAPS.length - 1) { dashBaseIdx += 1; addBasemap() } })
+  layer.on("tileerror", () => { if (dashBaseIdx < dashBasemaps.length - 1) { dashBaseIdx += 1; addBasemap() } })
   layer.addTo(dashLeaflet)
   dashTile = layer
 }
