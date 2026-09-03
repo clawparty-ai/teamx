@@ -25,7 +25,7 @@ pub fn page_html() -> String {
     <span class="logo-text">Teamx Console</span>
   </div>
   <nav>
-    <button data-view="teams" class="active">Teams</button>
+    <button data-view="teams" class="active">Members</button>
     <button data-view="tasks">My Tasks</button>
     <button data-view="events">Events</button>
     <button data-view="cloud">Cloud</button>
@@ -253,16 +253,17 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-text .who { color:var(--muted-fg); font-size:12px; }
 .copy-btn { font-size:12px; padding:3px 10px; }
 .cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
-/* ---------- Teams + tunnel dock (open-iframes on the right) ---------- */
+/* ---------- Members + tunnel dock (open-iframes on the right) ---------- */
 .view-teams-layout { display:flex; align-items:flex-start; gap:16px; }
 .tl-left { flex:1; min-width:0; }
-.tl-right { display:none; width:min(760px, 58%); min-width:420px; }
+.tl-right { display:none; flex:0 0 75%; }
+.view-teams-layout.has-dock .tl-left { flex:0 0 25%; min-width:340px; }
 .view-teams-layout.has-dock .tl-right { display:block; }
 .dock-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:14px; overflow:hidden; }
 .dock-head { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--muted); border-bottom:1px solid var(--border); font-size:12.5px; font-weight:600; }
 .dock-head .dh-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dock-head .dh-kind { flex-shrink:0; }
-.dock-card iframe { display:block; width:100%; height:460px; border:0; background:#fff; }
+.dock-card iframe { display:block; width:100%; height:76vh; min-height:480px; border:0; background:#fff; }
 .btn-mini { font-size:12px; padding:3px 10px; }
 .btn-mini.busy { opacity:.7; }
 .tun-chip { display:inline-flex; align-items:center; gap:4px; background:var(--muted); border:1px solid var(--border); border-radius:12px; padding:2px 8px; margin:2px 4px 2px 0; font-size:11.5px; color:var(--fg); }

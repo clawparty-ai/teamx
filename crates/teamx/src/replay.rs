@@ -598,7 +598,12 @@ mod tests {
             "localhost:1",
         );
         let mut r = CaptureStore::open(&db).unwrap();
-        let port = 19001u16;
+        // Use an ephemeral free port: local `teamx console` auto-forwards and
+        // other services may occupy fixed low ports (e.g. 19001).
+        let port = {
+            let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            l.local_addr().unwrap().port()
+        };
         let serve = tokio::spawn(async move {
             let _ = serve_flow(&mut r, 1, port).await;
         });

@@ -19,7 +19,7 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Path, State,
     },
-    http::{header, HeaderMap, Method, Request, Response, StatusCode, Uri},
+    http::{header, HeaderMap, Method, Request, Response, StatusCode},
     response::{Html, IntoResponse},
     routing::{delete, get, post},
     Json, Router,
@@ -441,6 +441,17 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     // never blocks. (A dropped Child on Unix does not terminate the process.)
     drop(child);
 
+    // Probe whether the mapped service speaks TLS (e.g. a tunnelled `teamx
+    // ui` https dashboard) so the registered node embeds correctly.
+    let is_tls = {
+        let home = ctx.home.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("runtime: {e}"))?;
+        rt.block_on(is_tls_server(&home, "127.0.0.1", port))
+    };
+
     // Register a `tun-*` cloud node so the proxy can embed it.
     let node_id = format!("tun-{}", crate::console_data::slugify(name));
     let kind = if name.contains("ttyd") {
@@ -450,7 +461,8 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     } else {
         "web"
     };
-    let url = format!("http://127.0.0.1:{port}");
+    let scheme = if is_tls { "https" } else { "http" };
+    let url = format!("{scheme}://127.0.0.1:{port}");
     let mut cfg = cfg;
     if let Some(n) = cfg.nodes.iter_mut().find(|n| n.id == node_id) {
         n.name = name.to_string();
@@ -494,25 +506,29 @@ fn port_open(port: u16) -> bool {
 // Cloud reverse proxy (same-origin iframe + WebSocket relay)
 // ---------------------------------------------------------------------------
 
-/// Parse a node URL into (host, port). Only http(s) loopback is allowed.
-fn target_addr(url: &str) -> Result<(String, u16), String> {
+/// Parse a node URL into (host, port, tls). Loopback only; https is allowed so
+/// e.g. a tunnelled `teamx ui` (self-signed) can be embedded same-origin.
+fn target_addr(url: &str) -> Result<(String, u16, bool), String> {
     let trimmed = url.trim();
-    let rest = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .ok_or_else(|| "cloud node url must start with http://".to_string())?;
-    if rest.starts_with("https://") {
-        return Err("https cloud targets are not proxied (use plain http local ports)".to_string());
-    }
+    let (tls, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        (false, r)
+    } else {
+        return Err("cloud node url must start with http:// or https://".to_string());
+    };
     let hostport = rest.split('/').next().unwrap_or("");
     let (host, port) = match hostport.rsplit_once(':') {
         Some((h, p)) => (
             h.to_string(),
             p.parse::<u16>().map_err(|_| format!("bad port in {url}"))?,
         ),
-        None => (hostport.to_string(), 80),
+        None => (hostport.to_string(), if tls { 443 } else { 80 }),
     };
-    Ok((host, port))
+    if host != "127.0.0.1" && !host.eq_ignore_ascii_case("localhost") {
+        return Err(format!("cloud node url must be loopback, got `{host}`"));
+    }
+    Ok((host, port, tls))
 }
 
 /// Strip the `/api/cloud/{id}` prefix from a request path; the remainder is
@@ -560,13 +576,11 @@ async fn api_cloud_http(
         Some(n) => n.clone(),
         None => return err_json(StatusCode::NOT_FOUND, format!("cloud node `{id}` not found")),
     };
-    let (host, port) = match target_addr(&node.url) {
+    let (host, port, tls) = match target_addr(&node.url) {
         Ok(a) => a,
         Err(e) => return err_json(StatusCode::BAD_REQUEST, e),
     };
-    let method = request.method().clone();
-    let uri = request.uri().clone();
-    http_proxy(method, uri, &rest, host, port, request).await
+    http_proxy(rest, host, port, tls, &state.ctx.home, request).await
 }
 
 /// WebSocket relay for terminal apps (ttyd) embedded under
@@ -585,10 +599,16 @@ async fn api_cloud_ws(
         Some(n) => n.clone(),
         None => return err_json(StatusCode::NOT_FOUND, format!("cloud node `{id}` not found")),
     };
-    let (host, port) = match target_addr(&node.url) {
+    let (host, port, tls) = match target_addr(&node.url) {
         Ok(a) => a,
         Err(e) => return err_json(StatusCode::BAD_REQUEST, e),
     };
+    if tls {
+        return err_json(
+            StatusCode::BAD_REQUEST,
+            "WebSocket relay for https cloud nodes is not supported yet".to_string(),
+        );
+    }
     ws.on_upgrade(move |socket| ws_relay(socket, host, port, "/ws".to_string()))
         .into_response()
 }
@@ -602,41 +622,142 @@ fn proxy_path(rest: &str, query: Option<&str>) -> String {
 }
 
 async fn http_proxy(
-    method: Method,
-    uri: Uri,
-    rest: &str,
+    rest: String,
     host: String,
     port: u16,
+    tls: bool,
+    home: &std::path::Path,
     request: Request<Body>,
 ) -> axum::response::Response {
-    let path = proxy_path(rest, uri.query());
+    let method = request.method().clone();
+    let path = proxy_path(&rest, request.uri().query());
     let body = match body_to_bytes(request.into_body(), 8 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return err_json(StatusCode::BAD_REQUEST, "request body too large".to_string()),
     };
-    let response_body = match tcp_http_roundtrip(&host, port, &method, &path, &body).await {
+    let result = if tls {
+        tls_http_roundtrip(home, &host, port, &method, &path, &body).await
+    } else {
+        plain_http_roundtrip(&host, port, &method, &path, &body).await
+    };
+    let response_body = match result {
         Ok(b) => b,
         Err(e) => return err_json(StatusCode::BAD_GATEWAY, format!("proxy to {host}:{port}: {e}")),
     };
     split_response(response_body)
 }
 
-/// One HTTP/1.1 exchange against the loopback target with `Connection: close`.
-/// Reads the full head, then the body according to Content-Length when present
-/// (falling back to reading until EOF with a short grace period, since some
-/// local servers ignore `Connection: close` and would otherwise hang forever).
-async fn tcp_http_roundtrip(
+/// Plain-TCP HTTP/1.1 exchange against the loopback target.
+async fn plain_http_roundtrip(
     host: &str,
     port: u16,
     method: &Method,
     path: &str,
     body: &Bytes,
 ) -> Result<Vec<u8>, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
     let addr = format!("{host}:{port}");
-    let mut tcp = tokio::net::TcpStream::connect(&addr)
+    let tcp = TcpStream::connect(&addr)
         .await
         .map_err(|e| format!("connect {addr}: {e}"))?;
+    http_exchange(tcp, host, method, path, body).await
+}
+
+/// TLS HTTP/1.1 exchange against a loopback https service (self-signed by the
+/// workspace's teamx CA, so we trust the CA from the imported letters).
+async fn tls_http_roundtrip(
+    home: &std::path::Path,
+    host: &str,
+    port: u16,
+    method: &Method,
+    path: &str,
+    body: &Bytes,
+) -> Result<Vec<u8>, String> {
+    use tokio::net::TcpStream;
+    use tokio_rustls::TlsConnector;
+
+    let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| format!("connect {addr}: {e}"))?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|e| format!("invalid server name {host}: {e}"))?;
+    let connector = TlsConnector::from(loopback_tls_client(home)?);
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| format!("tls handshake with {host}:{port}: {e}"))?;
+    http_exchange(tls, host, method, path, body).await
+}
+
+/// Build a rustls client that trusts the workspace's letter CAs (used for
+/// loopback https services such as the tunnelled `teamx ui`).
+fn loopback_tls_client(home: &std::path::Path) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    use rustls::ClientConfig;
+    let mut roots = rustls::RootCertStore::empty();
+    let letters = home.join("letters");
+    if !letters.is_dir() {
+        return Err("no workspace letters to trust the https service".to_string());
+    }
+    let mut found = 0u32;
+    if let Ok(entries) = std::fs::read_dir(&letters) {
+        for e in entries.flatten() {
+            let ca_path = e.path().join("ca.crt");
+            if !ca_path.is_file() {
+                continue;
+            }
+            if let Ok(pem) = std::fs::read(&ca_path) {
+                let mut pem = pem.as_slice();
+                for cert in rustls_pemfile::certs(&mut pem).flatten() {
+                    if roots.add(cert).is_ok() {
+                        found += 1;
+                    }
+                }
+            }
+        }
+    }
+    if found == 0 {
+        return Err("no CA found in workspace letters to verify the https service".to_string());
+    }
+    Ok(std::sync::Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
+}
+
+/// Best-effort probe: does the loopback port speak TLS (https)?
+async fn is_tls_server(home: &std::path::Path, host: &str, port: u16) -> bool {
+    use tokio_rustls::TlsConnector;
+    let Ok(config) = loopback_tls_client(home) else { return false };
+    let Ok(tcp) = tokio::net::TcpStream::connect(format!("{host}:{port}")).await else {
+        return false;
+    };
+    let Ok(name) = rustls::pki_types::ServerName::try_from(host.to_string()) else {
+        return false;
+    };
+    let connector = TlsConnector::from(config);
+    tokio::time::timeout(std::time::Duration::from_millis(700), connector.connect(name, tcp))
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
+}
+
+/// One HTTP/1.1 exchange over a connected (plain or TLS) stream, with
+/// `Connection: close`. Reads the full head, then the body according to
+/// Content-Length when present (falling back to reading until EOF with a
+/// short grace period, since some local servers ignore `Connection: close`).
+async fn http_exchange<S>(
+    mut io: S,
+    host: &str,
+    method: &Method,
+    path: &str,
+    body: &Bytes,
+) -> Result<Vec<u8>, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let head = match method.as_str() {
         "POST" | "PUT" | "PATCH" => format!(
             "{} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -645,15 +766,15 @@ async fn tcp_http_roundtrip(
         ),
         _ => format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
     };
-    tcp.write_all(head.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+    io.write_all(head.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
     if !body.is_empty() && method != Method::GET {
-        tcp.write_all(body).await.map_err(|e| format!("write body: {e}"))?;
+        io.write_all(body).await.map_err(|e| format!("write body: {e}"))?;
     }
     // Response head (up to \r\n\r\n).
     let mut raw = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        let res = tokio::time::timeout(std::time::Duration::from_secs(8), tcp.read(&mut byte)).await;
+        let res = tokio::time::timeout(std::time::Duration::from_secs(8), io.read(&mut byte)).await;
         match res {
             Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
             Ok(Ok(_)) => {
@@ -682,7 +803,7 @@ async fn tcp_http_roundtrip(
         let mut rest = vec![0u8; n];
         let mut read = 0;
         while read < n {
-            let got = tcp.read(&mut rest[read..]).await.map_err(|e| format!("read body: {e}"))?;
+            let got = io.read(&mut rest[read..]).await.map_err(|e| format!("read body: {e}"))?;
             if got == 0 {
                 break;
             }
@@ -695,7 +816,7 @@ async fn tcp_http_roundtrip(
         let mut rest = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(3), tcp.read(&mut buf)).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), io.read(&mut buf)).await {
                 Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                 Ok(Ok(n)) => rest.extend_from_slice(&buf[..n]),
             }

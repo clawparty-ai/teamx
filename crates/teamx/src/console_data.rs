@@ -181,7 +181,10 @@ fn require_local_session(ctx: &Ctx) -> Result<String, String> {
 pub fn fetch_panel(ctx: &Ctx, id: &str) -> RunOut {
     match id {
         "teams" => {
-            let res = teams_status(ctx);
+            let res = teams_status(ctx).map(|mut data| {
+                attach_my(ctx, &mut data);
+                data
+            });
             finish("teamx team status", ctx.server_url().is_some(), res)
         }
         "events" => {
@@ -330,18 +333,14 @@ fn local_member_id(home: &Path, session: &str) -> Option<String> {
     .ok()
 }
 
-/// Resolve `{ id, name, role, state, is_lead }` for the current member.
-fn resolve_me(ctx: &Ctx) -> Result<Value, String> {
-    let id = self_member_id(ctx).ok_or_else(|| {
-        "cannot identify the current member (no invitation letter / local session)".to_string()
-    })?;
-    // Look the display name up in the team the member belongs to.
-    let status = team_status(ctx)?;
-    let teams = status.get("teams").and_then(Value::as_array).cloned().unwrap_or_default();
-    for team in &teams {
+/// Find `{ id, name, role, state, is_lead }` for the member `id` inside a
+/// `team.status` document (first team that has them).
+fn find_me_in(status: &Value, id: &str) -> Option<Value> {
+    let teams = status.get("teams")?.as_array()?;
+    for team in teams {
         if let Some(members) = team.get("members").and_then(Value::as_array) {
             if let Some(m) = members.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(&id)) {
-                return Ok(json!({
+                return Some(json!({
                     "id": id,
                     "name": m.get("display_name").and_then(Value::as_str).unwrap_or(&id),
                     "role": m.get("role").and_then(Value::as_str).unwrap_or(""),
@@ -351,7 +350,45 @@ fn resolve_me(ctx: &Ctx) -> Result<Value, String> {
             }
         }
     }
-    Ok(json!({ "id": id, "name": id, "role": "", "state": "", "is_lead": false }))
+    None
+}
+
+/// Attach `my` ({role,state,is_lead,name}) to each team object of a
+/// `team.status` result so the Teams view summary cards are populated.
+fn attach_my(ctx: &Ctx, data: &mut Value) {
+    let Some(id) = self_member_id(ctx) else { return };
+    let Some(teams) = data.get("teams").cloned() else { return };
+    let Some(arr) = teams.as_array() else { return };
+    for (i, team) in arr.iter().enumerate() {
+        let mine = team
+            .get("members")
+            .and_then(Value::as_array)
+            .map(|members| members.iter().any(|m| m.get("id").and_then(Value::as_str) == Some(&id)))
+            .unwrap_or(false);
+        if mine {
+            if let Some(me) = find_me_in(data, &id) {
+                if let Some(obj) = data
+                    .get_mut("teams")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|t| t.get_mut(i))
+                    .and_then(Value::as_object_mut)
+                {
+                    obj.insert("my".to_string(), me);
+                }
+            }
+        }
+    }
+}
+
+/// Resolve `{ id, name, role, state, is_lead }` for the current member.
+fn resolve_me(ctx: &Ctx) -> Result<Value, String> {
+    let id = self_member_id(ctx).ok_or_else(|| {
+        "cannot identify the current member (no invitation letter / local session)".to_string()
+    })?;
+    let status = team_status(ctx)?;
+    find_me_in(&status, &id).ok_or_else(|| {
+        "current member was not found in any team's member list (yet)".to_string()
+    })
 }
 
 /// Fetch "me" as a panel-style result (used by `/api/me`).
