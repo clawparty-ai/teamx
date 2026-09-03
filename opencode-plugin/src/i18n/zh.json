@@ -39,6 +39,7 @@
   "digest.open_questions": "  待答问题: {list}",
   "digest.new_events": "新事件({count}): {list}",
   "digest.tasks_header": "我的任务（{count} 个未完成）:",
+  "digest.unread_nudge": "⚠️ 团队静默提醒（离线/重启期间未读）— 待办：",
   "toast.task_assigned": "#{seq} 📋 新任务「{title}」已分派给你（task {id}，{executor} 执行）",
   "toast.task_acknowledged": "#{seq} 任务「{title}」已回执",
   "toast.task_done": "#{seq} ✅ 任务「{title}」已完成，待 lead 验收",

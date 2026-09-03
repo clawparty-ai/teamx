@@ -8,6 +8,8 @@
 //   TEAMX_POLL_INTERVAL (ms, default 15000; 0 disables polling).
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import {
   dirOfSession,
   getDigest,
@@ -20,6 +22,7 @@ import {
   serverUrlFor,
   sessionKey,
   setDigest,
+  teamxDir,
 } from "./client"
 import { tools } from "./tools"
 import { maybeAutoClone } from "./autoclone"
@@ -563,7 +566,34 @@ export const Teamx: Plugin = async ({ client }) => {
     }
   }
 
-  async function refreshDigest(sessionID: string): Promise<void> {
+  // ---------------------------------------------------------------------------
+// Persisted "last surfaced nudge" cursor (per workspace). Survives opencode
+// restarts so offline/restart nudges are surfaced exactly once.
+// ---------------------------------------------------------------------------
+function nudgeCursorFile(cwd: string): string {
+  return join(teamxDir(cwd), "nudge-cursor")
+}
+
+function readNudgeCursor(cwd: string): number {
+  try {
+    const raw = readFileSync(nudgeCursorFile(cwd), "utf8").trim()
+    const n = Number(raw)
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function writeNudgeCursor(cwd: string, seq: number): void {
+  try {
+    mkdirSync(teamxDir(cwd), { recursive: true })
+    writeFileSync(nudgeCursorFile(cwd), String(seq))
+  } catch {
+    // best-effort
+  }
+}
+
+async function refreshDigest(sessionID: string): Promise<void> {
     const key = sk(sessionID)
     const cwd = dirOfSession(sessionID)
     const r = await runCli(["sync", "--no-advance", "--session", key], { cwd })
@@ -604,22 +634,31 @@ export const Teamx: Plugin = async ({ client }) => {
     // heartbeats never block real events, but only toast notable ones.
     if (maxSeq > lastNotified) notifiedSeq.set(sessionID, maxSeq)
     const fresh = notableEvents(events).filter((e) => (e.seq ?? 0) > lastNotified)
-    // First refresh after the process (re)started: the watermark was reset, so
-    // the normal path would silently skip everything to avoid spamming a
-    // backlog. Idle-team nudges are important enough to surface ONCE here —
-    // otherwise a worker whose opencode restarted right before a nudge would
-    // never see "your team is waiting".
-    if (lastNotified < 0) {
-      const notableNow = notableEvents(events)
-      if (notableNow.some((e) => e.type === "system.nudge")) {
-        await client.tui.appendPrompt({ body: { text: t("nudge_prompt") } }).catch(() => {})
-      }
-      if (notableNow.some((e) => e.type === "system.nudge_lead")) {
-        await client.tui.appendPrompt({ body: { text: t("nudge_lead_prompt") } }).catch(() => {})
-      }
-      return
+
+    // Persisted nudge cursor: nudges that arrived while this member was
+    // offline / while opencode was (re)started are surfaced once — appended to
+    // the digest as a TODO reminder AND appended as a prompt. The cursor is
+    // stored per workspace, so a restart never loses "you have an unread team
+    // nudge".
+    const cursor = readNudgeCursor(cwd)
+    const unreadNudges = notableEvents(events).filter(
+      (e) =>
+        (e.type === "system.nudge" || e.type === "system.nudge_lead") &&
+        (e.seq ?? 0) > cursor,
+    )
+    if (unreadNudges.length > 0) {
+      const newest = unreadNudges[unreadNudges.length - 1]
+      digest = digest + "\n\n" + t("digest.unread_nudge") + "\n" + summarizeEvent(newest)
+      setDigest(sessionID, digest)
+      const promptText =
+        newest.type === "system.nudge_lead" ? t("nudge_lead_prompt") : t("nudge_prompt")
+      await client.tui.appendPrompt({ body: { text: promptText } }).catch(() => {})
+      writeNudgeCursor(cwd, newest.seq ?? maxSeq)
     }
-    if (fresh.length === 0) return
+
+    // First refresh after the process (re)started: skip the toast backlog
+    // (anti-spam) — unread nudges were already handled above.
+    if (lastNotified < 0 || fresh.length === 0) return
     const first = fresh[0]
     const last = fresh[fresh.length - 1]
     const lines = fresh.map(summarizeEvent).slice(0, 3)
@@ -639,23 +678,8 @@ export const Teamx: Plugin = async ({ client }) => {
         .appendPrompt({ body: { text: t("question_prompt") } })
         .catch(() => {})
     }
-    // Idle-team nudge: the server reminded us the goal is still unfinished.
-    // Append a prompt so the member (human or agent) is actually woken and
-    // prompted to either finish or submit what they have.
-    const hasNudge = fresh.some((e) => e.type === "system.nudge")
-    if (hasNudge) {
-      await client.tui
-        .appendPrompt({ body: { text: t("nudge_prompt") } })
-        .catch(() => {})
-    }
-    // Lead nudge: the team is silent and needs the team lead to coordinate.
-    // A lead (owner/co-lead) gets a coordination prompt, not a "submit" one.
-    const hasLeadNudge = fresh.some((e) => e.type === "system.nudge_lead")
-    if (hasLeadNudge) {
-      await client.tui
-        .appendPrompt({ body: { text: t("nudge_lead_prompt") } })
-        .catch(() => {})
-    }
+    // (nudge / nudge_lead prompts are handled by the persisted cursor above,
+    // covering both realtime arrivals and offline/restart backlog.)
     // Auto-acknowledge taskx assignments to this member (automatic receipt).
     // A `doc.created` with doc=taskx and assignee_member_id == me (IN THAT
     // EVENT'S TEAM) means the lead assigned us a task; record receipt

@@ -39,6 +39,7 @@
   "digest.open_questions": "  Open questions: {list}",
   "digest.new_events": "New events ({count}): {list}",
   "digest.tasks_header": "My tasks ({count} open):",
+  "digest.unread_nudge": "⚠️ Unread team nudge (missed while offline/restarting) — TODO:",
   "toast.task_assigned": "#{seq} 📋 New task \"{title}\" assigned to you (task {id}, executor: {executor})",
   "toast.task_acknowledged": "#{seq} Task \"{title}\" acknowledged",
   "toast.task_done": "#{seq} ✅ Task \"{title}\" completed — awaiting lead verification",
