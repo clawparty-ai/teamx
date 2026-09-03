@@ -44,13 +44,8 @@ pub fn page_html() -> String {
 </div>
 <div class="container">
   <div class="view active" id="view-teams">
-    <div class="view-teams-layout" id="teamsLayout">
-      <div class="tl-left">
-        <div class="cards" id="teamCards"></div>
-        <div id="teamBody"></div>
-      </div>
-      <div class="tl-right" id="tunDock"></div>
-    </div>
+    <div class="cards" id="teamCards"></div>
+    <div id="teamBody"></div>
   </div>
   <div class="view" id="view-tasks">
     <section class="panel"><h2>Tasks assigned to me <span class="count" id="taskCount"></span></h2>
@@ -418,38 +413,17 @@ async function loadTeams(){
       const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
       const j=await r.json().catch(()=>({}));
       if(!r.ok || !j.ok){ alert("自动 forward 失败："+(j.error||("HTTP "+r.status))); return; }
-      if(kind==="ttyd"){
-        // ttyd uses relative URLs, so it embeds reliably in the side dock.
-        addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
-        b.textContent="✓ "+kind;
-      } else {
-        // headless (opencode SPA) and web (teamx-ui) pages use absolute paths /
-        // their own auth and break inside a sub-path iframe — open the real
-        // address in a new tab instead (self-signed cert warning once).
-        const url=(j.url||"").replace(/^http:\/\//i,"https://");
-        window.open(url, "_blank");
-        b.textContent="✓ "+kind;
-      }
+      // All kinds open in a NEW tab at the real local address: ttyd/headless
+      // are plain http, web (teamx-ui) is https — use the URL exactly as the
+      // server recorded it (self-signed cert warning once for https).
+      window.open(j.url, "_blank");
+      b.textContent="✓ "+kind;
     } catch(e){ alert("自动 forward 失败："+e); }
     finally{ b.disabled=false; b.classList.remove("busy"); }
   }));
 }
 
-/* ---------- iframe dock on the right of Teams ---------- */
-function syncDock(){
-  const cards=$("#tunDock").querySelectorAll(".dock-card").length;
-  $("#teamsLayout").classList.toggle("has-dock", cards>0);
-  if(!cards) $("#tunDock").innerHTML="";
-}
-function addDock(o){
-  const wrap=document.createElement("div"); wrap.className="dock-card";
-  wrap.innerHTML=`<div class="dock-head"><span class="dh-title">${esc(o.title)}</span><span class="dh-kind badge running">${esc(o.kind)}</span>
-    <a class="btn btn-mini" target="_blank" href="${esc(o.proxy)}" title="在新标签页打开">↗</a>
-    <button class="btn btn-mini dock-close" title="关闭">✕</button></div><iframe src="${esc(o.proxy)}"></iframe>`;
-  wrap.querySelector(".dock-close").addEventListener("click",()=>{ wrap.remove(); syncDock(); });
-  $("#tunDock").appendChild(wrap);
-  syncDock();
-}
+/* ---------- iframe dock removed: all "Open" actions use a new browser tab ---------- */
 
 /* ---------- My Tasks ---------- */
 async function loadTasks(){
