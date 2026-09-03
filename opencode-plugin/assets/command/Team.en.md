@@ -36,6 +36,7 @@ teamx team collaboration command. Route and execute based on the following subco
 - `tunnel close <name>` → teamx_tunnel_close (close a tunnel)
 - `serve start [--port]` / `serve status` / `serve stop` → teamx_serve_start / teamx_serve_status / teamx_serve_stop (start/query/stop local serve within opencode, network mode)
 - `serve token <member>` → teamx_serve_token (generate/rotate member connection token, owner)
+- `console` / `console status` / `console stop` → teamx_console / teamx_console_status / teamx_console_stop (open the member web console teamx console; opens the browser automatically)
 - `help` → list the above subcommands
 
 Call teamx_sync first, then route to the corresponding tool based on the subcommand in $ARGUMENTS and execute.

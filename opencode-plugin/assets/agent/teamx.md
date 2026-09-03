@@ -42,6 +42,7 @@ permission:
 | `tunnel close <name>` | teamx_tunnel_close | 关闭隧道 |
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | 在 opencode 内启动/查询/停止本地 serve（网络模式，owner） |
 | `serve token <member>` | teamx_serve_token | 生成/轮换成员连接 token（owner） |
+| `console` / `console status` / `console stop` | teamx_console / teamx_console_status / teamx_console_stop | 打开/查询/停止成员 Web 控制台（teamx console，自动开浏览器） |
 | `help` | - | 列出子命令 |
 
 ## 核心工具

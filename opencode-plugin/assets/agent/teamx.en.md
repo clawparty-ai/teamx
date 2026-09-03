@@ -42,6 +42,7 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 | `tunnel close <name>` | teamx_tunnel_close | Close a tunnel |
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | Start/query/stop local server in opencode (network mode, owner) |
 | `serve token <member>` | teamx_serve_token | Generate/rotate member connection token (owner) |
+| `console` / `console status` / `console stop` | teamx_console / teamx_console_status / teamx_console_stop | Open/query/stop the member web console (teamx console; opens the browser) |
 | `help` | - | List subcommands |
 
 ## Core Tools

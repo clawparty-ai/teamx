@@ -4,6 +4,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { instanceId, markMember, noteSessionDir, runCli, renderResult, serverUrlFor, sessionKey } from "./client"
 import { serveStart, serveStatus, serveStop } from "./serve"
+import { consoleStart, consoleStatus, consoleStop, openBrowser } from "./console"
 
 type ToolCtx = { sessionID: string; directory: string }
 
@@ -804,6 +805,38 @@ export const tools = {
     async execute(_args, context: ToolCtx) {
       // Superseded by mTLS invitation letters (I1) — kept for compatibility.
       return "teamx: identity is now mTLS client certificates (see teamx_team_invite); token auth is deprecated."
+    },
+  }),
+
+  teamx_console: tool({
+    description:
+      "Start the member web console (`teamx console`) for the current workspace and open it in the browser. " +
+      "Idempotent: if already running it just re-opens the existing URL. Returns the https://127.0.0.1:<port>/?token=… address.",
+    args: {
+      port: tool.schema.number().optional().describe("bind port (default 9528)"),
+      open: tool.schema.boolean().optional().describe("open the default browser (default true)"),
+    },
+    async execute(args, context: ToolCtx) {
+      noteSessionDir(context.sessionID, context.directory)
+      const st = await consoleStart({ port: args.port, cwd: context.directory })
+      if (st.running && st.url && args.open !== false) openBrowser(st.url)
+      return JSON.stringify(st, null, 2)
+    },
+  }),
+
+  teamx_console_status: tool({
+    description: "Show whether the workspace member console (`teamx console`) is running, plus its URL and PID.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return JSON.stringify(consoleStatus(context.directory), null, 2)
+    },
+  }),
+
+  teamx_console_stop: tool({
+    description: "Stop the workspace member console (`teamx console`) subprocess, if running.",
+    args: {},
+    async execute(_args, context: ToolCtx) {
+      return JSON.stringify(await consoleStop(context.directory), null, 2)
     },
   }),
 
