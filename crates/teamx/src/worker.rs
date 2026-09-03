@@ -96,7 +96,9 @@ fn poll_once(
     cooldown: Duration,
     last_run_at: &mut Instant,
 ) -> Result<bool, String> {
-    let inbox = rpc(url, "team.inbox", serde_json::json!({ "ack": false }))?;
+    let mut inbox = rpc(url, "team.inbox", serde_json::json!({ "ack": false }))?;
+    // run_rpc returns the `{ok, data}` envelope; unwrap to the payload.
+    inbox = inbox.get("data").cloned().unwrap_or(inbox);
     let tasks = inbox.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
     let questions = inbox.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
     let nudges = inbox
