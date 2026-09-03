@@ -132,7 +132,15 @@ async function autoClaimLetter(cwd: string): Promise<boolean> {
 
 /** Resolve the teamx binary name (override via TEAMX_BIN). */
 export function teamxBin(): string {
-  return process.env.TEAMX_BIN ?? "teamx"
+  if (process.env.TEAMX_BIN) return process.env.TEAMX_BIN
+  // Prefer the user-local install (holds the newest `teamx` with `console`);
+  // a Homebrew formula install may be older and lack newer subcommands.
+  const home = process.env.HOME ?? ""
+  if (home) {
+    const local = join(home, ".local", "bin", "teamx")
+    if (existsSync(local)) return local
+  }
+  return "teamx"
 }
 
 /** Stable per-workspace instance id, persisted at `<cwd>/.teamx/instance.json`. */
