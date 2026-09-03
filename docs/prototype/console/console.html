@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teamx Console</title>
+<style>
+  :root {
+    --primary: #4A90E5; --primary-hover: #357ABD; --primary-light: #EBF3FC; --on-primary: #FFFFFF;
+    --secondary: #67C23A; --accent: #E6A23C; --danger: #F56C6C;
+    --bg: #f8f8f8; --fg: #333333; --card: #FFFFFF; --card-fg: #333333;
+    --muted: #F2F6FC; --muted-fg: #909399; --border: #EBEEF5; --ring: #4A90E5; --radius: 4px;
+    --shadow: 0 2px 4px 0 rgba(214, 228, 241, 0.7); --shadow-hover: 0 4px 12px rgba(214, 228, 241, 0.9);
+    --font-sans: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "SF Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --transition: 200ms ease;
+  }
+  .dark {
+    --primary: #5B9EF0; --primary-hover: #7BB3F5; --primary-light: #1A2A3A; --on-primary: #FFFFFF;
+    --secondary: #67C23A; --accent: #E6A23C; --danger: #F56C6C;
+    --bg: #1A1A2E; --fg: #E0E0E0; --card: #22223A; --card-fg: #E0E0E0;
+    --muted: #2A2A40; --muted-fg: #909399; --border: #333355; --ring: #5B9EF0;
+    --shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.3); --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; }
+  header { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; height: 60px; padding: 0 20px; background: var(--card); border-bottom: 1px solid var(--border); box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  header .logo { display: flex; align-items: center; gap: 10px; margin-right: 24px; flex-shrink: 0; }
+  header .logo .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #4A90E5, #357ABD); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  header .logo-text { font-size: 16px; font-weight: 600; color: var(--primary); letter-spacing: 0.02em; }
+  nav { display: flex; gap: 0; flex: 1; justify-content: center; }
+  nav button { background: none; border: none; font: inherit; font-size: 14px; font-weight: 500; color: var(--muted-fg); padding: 18px 18px; border-bottom: 2px solid transparent; cursor: pointer; transition: color var(--transition), border-color var(--transition); }
+  nav button:hover { color: var(--primary); }
+  nav button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  nav button:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .header-right .user-info { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #666; }
+  .header-right .user-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+  .theme-toggle { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; transition: all var(--transition); }
+  .theme-toggle:hover { border-color: var(--primary); color: var(--primary); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 20px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .toolbar .ws { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted-fg); font-family: var(--font-mono); }
+  .toolbar .ws b { color: var(--fg); font-weight: 600; }
+  .toolbar-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  .btn-primary:hover { background: var(--primary-hover); color: var(--on-primary); border-color: var(--primary-hover); }
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  .view { display: none; }
+  .view.active { display: block; animation: fadein 200ms ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  .card { background: var(--card); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); transition: box-shadow var(--transition); display: flex; align-items: center; gap: 16px; }
+  .card:hover { box-shadow: var(--shadow-hover); }
+  .card-icon { width: 46px; height: 46px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 21px; flex-shrink: 0; }
+  .card-icon.blue { background: #EBF5FF; color: #4A90E5; }
+  .card-icon.green { background: #E8F8E8; color: #67C23A; }
+  .card-icon.orange { background: #FDF0E0; color: #E6A23C; }
+  .card-icon.purple { background: #F0E8FF; color: #9B59B6; }
+  .card-body { flex: 1; min-width: 0; }
+  .card .label { font-size: 13px; color: var(--muted-fg); margin-bottom: 4px; }
+  .card .value { font-size: 23px; font-weight: 600; color: var(--fg); line-height: 1.2; }
+  section.panel { background: var(--card); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--fg); }
+  h2 .count { font-family: var(--font-mono); font-weight: 500; color: var(--muted-fg); margin-left: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr { transition: background var(--transition); }
+  tbody tr:hover { background: var(--muted); }
+  th { color: var(--muted-fg); font-weight: 600; font-size: 12px; background: var(--muted); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap; }
+  .badge.proposed, .badge.blocked { background: #FDF6EC; color: #E6A23C; }
+  .badge.shared, .badge.in_progress, .badge.active, .badge.running { background: #EBF5FF; color: #4A90E5; }
+  .badge.achieved, .badge.completed, .badge.closed, .badge.done { background: #E8F8E8; color: #67C23A; }
+  .badge.refining, .badge.review { background: #F0E8FF; color: #9B59B6; }
+  .badge.owner, .badge.lead { background: #EBF5FF; color: #4A90E5; }
+  .badge.contributor, .badge.searcher, .badge.extractor, .badge.kb-engineer { background: #E8F8E8; color: #67C23A; }
+  .badge.reviewer { background: #F0E8FF; color: #9B59B6; }
+  .badge.observer { background: #FDF0E0; color: #E6A23C; }
+  .badge.idle, .badge.pending, .badge.open { background: #F2F6FC; color: #909399; }
+  .badge.waiting, .badge.high { background: #FDF6EC; color: #E6A23C; }
+  .badge.left, .badge.medium { background: #FDE8E8; color: #F56C6C; }
+  .badge.low { background: #E8F8E8; color: #67C23A; }
+  .team-hero { display: flex; align-items: center; gap: 16px; }
+  .team-hero .th-main { flex: 1; min-width: 0; }
+  .team-hero .th-title { font-size: 18px; font-weight: 700; color: var(--fg); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .team-hero .th-goal { font-size: 13px; color: var(--muted-fg); margin-top: 4px; }
+  .member-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--muted); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; font-size: 12.5px; margin: 3px 6px 3px 0; }
+  .member-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.online { background: #67C23A; }
+  .dot.idle { background: #909399; }
+  .dot.waiting { background: #E6A23C; }
+  .ev-list { list-style: none; margin: 0; padding: 0; }
+  .ev-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .ev-item:last-child { border-bottom: none; }
+  .ev-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-fg); flex-shrink: 0; padding-top: 2px; width: 130px; }
+  .ev-kind { flex-shrink: 0; min-width: 86px; }
+  .ev-text { flex: 1; min-width: 0; word-break: break-word; color: var(--fg); font-size: 13px; }
+  .ev-text .who { color: var(--muted-fg); font-size: 12px; }
+  .mono { font-family: var(--font-mono); }
+  .copy-btn { font-size: 12px; padding: 3px 10px; }
+  .tunnel-name { font-weight: 600; }
+  .cmd-line { font-family: var(--font-mono); font-size: 12px; background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin-top: 8px; word-break: break-all; color: var(--fg); display: none; }
+  .muted { color: var(--muted-fg); font-size: 12px; }
+  .readonly-note { display: flex; align-items: center; gap: 8px; background: var(--primary-light); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; font-size: 12.5px; color: var(--primary); margin-bottom: 16px; }
+  .loading { color: var(--muted-fg); font-size: 13px; padding: 20px; text-align: center; }
+  /* cloud view */
+  .cloud-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+  @media (max-width: 1000px) { .cloud-layout { grid-template-columns: 1fr; } }
+  .node-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition); }
+  .node-card:hover { border-color: var(--primary); box-shadow: var(--shadow-hover); }
+  .node-card.sel { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(74,144,229,0.15); }
+  .node-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 13.5px; }
+  .node-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-fg); margin-top: 4px; word-break: break-all; }
+  .iframe-wrap { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); position: relative; }
+  .iframe-wrap iframe { width: 100%; height: calc(100vh - 210px); min-height: 520px; border: 0; display: block; }
+  .iframe-empty { padding: 60px 20px; text-align: center; color: var(--muted-fg); }
+  .iframe-empty .big { font-size: 34px; margin-bottom: 8px; }
+  .node-add { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .node-add input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); }
+  .status-line { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .status-line .src { font-family: var(--font-mono); font-size: 12px; color: var(--muted-fg); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <div class="logo-icon">Tx</div>
+    <span class="logo-text">Teamx Console</span>
+  </div>
+  <nav>
+    <button data-view="teams" class="active">Teams</button>
+    <button data-view="tasks">My Tasks</button>
+    <button data-view="events">Events</button>
+    <button data-view="tunnels">Tunnels</button>
+    <button data-view="cloud">Cloud</button>
+  </nav>
+  <div class="header-right">
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
+    <div class="user-info">
+      <div class="user-avatar">M</div>
+      <span>Member</span>
+    </div>
+  </div>
+</header>
+<div class="toolbar">
+  <div class="ws">workspace <b id="wsPath">~/Desktop/nano激光/deliver/用研/.teamx</b></div>
+  <div class="toolbar-right">
+    <span class="muted" id="lastRun">—</span>
+    <button class="btn" id="refreshBtn">⟳ Refresh</button>
+  </div>
+</div>
+<div class="container">
+  <div class="readonly-note">🔒 只读工作台：每次查看都会调用一次当前工作空间的 teamx CLI（与命令行看到的信息一致）。MVP 不做任何写操作。</div>
+
+  <!-- ============ Teams view ============ -->
+  <div class="view active" id="view-teams">
+    <div class="cards" id="teamCards"></div>
+    <div id="teamList"></div>
+  </div>
+
+  <!-- ============ My Tasks view ============ -->
+  <div class="view" id="view-tasks">
+    <section class="panel">
+      <h2>Tasks assigned to me <span class="count" id="taskCount">0</span></h2>
+      <table>
+        <thead><tr><th>Title</th><th>State</th><th>Priority</th><th>Executor</th><th>Updated</th></tr></thead>
+        <tbody id="taskRows"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- ============ Events view ============ -->
+  <div class="view" id="view-events">
+    <section class="panel">
+      <h2>Recent team events <span class="count" id="evCount">0</span></h2>
+      <ul class="ev-list" id="evList"></ul>
+    </section>
+  </div>
+
+  <!-- ============ Tunnels view ============ -->
+  <div class="view" id="view-tunnels">
+    <section class="panel">
+      <h2>Tunnels I can reach <span class="count" id="tunCount">0</span></h2>
+      <div class="muted" style="margin-bottom:12px">点击「复制 forward」后在本机执行，即可把对应服务映射到本地端口，再在 Cloud 页 iframe 打开。</div>
+      <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>Public port</th><th>Provider</th><th>Forward</th></tr></thead>
+        <tbody id="tunnelRows"></tbody>
+      </table>
+      <div class="cmd-line" id="cmdLine"></div>
+    </section>
+  </div>
+
+  <!-- ============ Cloud view ============ -->
+  <div class="view" id="view-cloud">
+    <div class="cloud-layout">
+      <div>
+        <section class="panel" style="margin-bottom:0">
+          <h2>Cloud nodes</h2>
+          <div id="nodeList"></div>
+          <div class="node-add">
+            <input id="nodeName" placeholder="name, e.g. caicai headless" style="width:130px">
+            <input id="nodeUrl" placeholder="http://127.0.0.1:19041" style="flex:1;min-width:150px">
+            <button class="btn btn-primary" id="addNodeBtn">+ Add</button>
+          </div>
+        </section>
+      </div>
+      <div class="iframe-wrap" id="iframeWrap">
+        <div class="iframe-empty" id="iframeEmpty">
+          <div class="big">🖥️</div>
+          <div>选择一个云节点入口，iframe 内嵌其本地已映射页面<br><span class="muted">headless 需要先 Add project → ~/work 才能建会话</span></div>
+        </div>
+        <iframe id="nodeFrame" style="display:none"></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=(s)=>(document.querySelector(s));
+const $$=(s)=>(Array.from(document.querySelectorAll(s)));
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const badge=(s)=>{const b=s||"idle";return `<span class="badge ${esc(b)}">${esc(b)}</span>`};
+
+/* ---------- theme (reuse teamx ui behavior) ---------- */
+const themeKey="teamx-console-theme";
+function applyTheme(){const d=document.body.classList.contains("dark");$("#themeToggle").textContent=d?"☀️":"🌙"}
+const saved=localStorage.getItem(themeKey);
+if(saved==="dark")document.body.classList.add("dark");
+applyTheme();
+$("#themeToggle").addEventListener("click",()=>{document.body.classList.toggle("dark");localStorage.setItem(themeKey,document.body.classList.contains("dark")?"dark":"light");applyTheme()});
+
+/* ---------- mock data (prototype only; real data = teamx CLI output) ---------- */
+const MOCK={
+  teams:{ myTeams:1, goal:"in_progress", myRole:"contributor",
+    teams:[{
+      id:"powernano", name:"powernano", state:"active",
+      goal:{ title:"云端 opencode 成员节点 + lead 远程可访问（3 节点）", state:"in_progress" },
+      my:{ role:"contributor", state:"active" },
+      members:[
+        {display_name:"caishu(lead)", role:"lead", state:"active", you:false},
+        {display_name:"caicai-worker", role:"kb-engineer", state:"active", you:false},
+        {display_name:"zhongm-worker", role:"searcher", state:"active", you:false},
+        {display_name:"zhaoz-worker", role:"extractor", state:"active", you:false},
+        {display_name:"caicai", role:"contributor", state:"active", you:true}
+      ]
+    }]
+  },
+  tasks:[
+    {id:"task-12", title:"首尔节点 ttyd 改为 opencode attach 单 server 模式", state:"in_progress", priority:"high", executor:"agent", updated:"2026-09-03 12:10"},
+    {id:"task-9", title:"验证 lead 可访问三个 worker 节点 headless Web", state:"open", priority:"medium", executor:"agent", updated:"2026-09-02 18:44"},
+    {id:"task-7", title:"web UI 需先 Add project ~/work 才能创建 session", state:"done", priority:"medium", executor:"agent", updated:"2026-09-02 15:02"}
+  ],
+  events:[
+    {at:"2026-09-03 12:30", kind:"decision", who:"caishu(lead)", text:"member console 流程定为：需求分析 → 设计 → HTML 原型 → 开发；MVP 只读五面板，品牌 Teamx Console。"},
+    {at:"2026-09-03 11:58", kind:"update", who:"caishu(lead)", text:"东京/首尔已按单 server + attach 模式改造完成，headless 隧道 opencode-zhongm / opencode-zhaoz 上线。"},
+    {at:"2026-09-03 11:02", kind:"progress", who:"caicai-worker", text:"美国节点 headless + ttyd 经 tunnel 映射本地 19034/19033 验证通过（页面 + API 均 200）。"},
+    {at:"2026-09-03 09:47", kind:"achieved", who:"caicai-worker", text:"云端 opencode headless 单 server 部署达成，提交候选。"},
+    {at:"2026-09-02 18:40", kind:"decision", who:"caishu(lead)", text:"去掉 serve 口令；安全由 per-user 隧道 ACL 承担。"}
+  ],
+  tunnels:[
+    {name:"ttyd-caicai", kind:"ttyd", local_port:7682, provider:"caicai-worker", public_port:19033},
+    {name:"opencode-caicai", kind:"headless", local_port:4199, provider:"caicai-worker", public_port:19034},
+    {name:"ttyd-zhongm", kind:"ttyd", local_port:7681, provider:"zhongm-worker", public_port:19031},
+    {name:"opencode-zhongm", kind:"headless", local_port:4199, provider:"zhongm-worker", public_port:19041},
+    {name:"ttyd-zhaoz", kind:"ttyd", local_port:7683, provider:"zhaoz-worker", public_port:19032},
+    {name:"opencode-zhaoz", kind:"headless", local_port:4199, provider:"zhaoz-worker", public_port:19042}
+  ],
+  cloud:[
+    {id:"caicai-headless", name:"caicai · headless", kind:"headless", url:"http://127.0.0.1:19034"},
+    {id:"caicai-ttyd", name:"caicai · ttyd", kind:"ttyd", url:"http://127.0.0.1:19033"},
+    {id:"zhongm-headless", name:"zhongm · headless", kind:"headless", url:"http://127.0.0.1:19041"},
+    {id:"zhaoz-headless", name:"zhaoz · headless", kind:"headless", url:"http://127.0.0.1:19042"}
+  ]
+};
+
+/* ---------- mock fetch (prototype only: jget interception) ---------- */
+async function jget(path){
+  await new Promise(r=>setTimeout(r,180)); // simulate click→CLI latency
+  if(path.startsWith("/api/panels/teams"))return MOCK.teams;
+  if(path.startsWith("/api/panels/tasks"))return MOCK.tasks;
+  if(path.startsWith("/api/panels/events"))return MOCK.events;
+  if(path.startsWith("/api/panels/tunnels"))return MOCK.tunnels;
+  if(path.startsWith("/api/cloud"))return MOCK.cloud;
+  return [];
+}
+
+/* ---------- view switching ---------- */
+let currentView="teams";
+function showView(name){
+  currentView=name;
+  $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===name));
+  $$(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name));
+  renderView(name);
+}
+function renderView(name){
+  if(name==="teams")loadTeams();
+  else if(name==="tasks")loadTasks();
+  else if(name==="events")loadEvents();
+  else if(name==="tunnels")loadTunnels();
+  else if(name==="cloud")loadCloud();
+}
+$$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
+$("#refreshBtn").addEventListener("click",()=>renderView(currentView));
+
+/* ---------- Teams ---------- */
+async function loadTeams(){
+  $("#teamCards").innerHTML=`<div class="loading">loading …</div>`;
+  const d=await jget("/api/panels/teams");
+  $("#lastRun").textContent="✓ teamx … "+new Date().toLocaleTimeString();
+  const t=d.teams[0];
+  $("#teamCards").innerHTML=[
+    card("blue","👥",`My teams <span class="muted" style="font-weight:400">/ ${d.myTeams}</span>`,d.myTeams),
+    card("orange","🎯",`Goal · ${t.goal.state}`,esc(t.goal.title).slice(0,24)+"…"),
+    card("green","🧩",`My role`,d.myRole),
+    card("purple","🟢",`My state`,t.my.state)
+  ].join("");
+  $("#teamList").innerHTML=`
+  <section class="panel">
+    <div class="team-hero">
+      <div class="card-icon blue" style="width:52px;height:52px;font-size:24px">👥</div>
+      <div class="th-main">
+        <div class="th-title">${esc(t.name)} ${badge(t.state)} ${badge(d.myRole)}</div>
+        <div class="th-goal">🎯 ${esc(t.goal.title)} ${badge(t.goal.state)}</div>
+      </div>
+    </div>
+    <h2 style="margin-top:16px">Members <span class="count">${t.members.length}</span></h2>
+    <div>${t.members.map(m=>`
+      <span class="member-chip"><span class="dot ${esc(m.state)}"></span>${esc(m.display_name)} ${m.you?'<b>· you</b>':''} ${badge(m.role)}</span>`).join("")}
+    </div>
+  </section>`;
+}
+function card(color,icon,label,value){return `<div class="card"><div class="card-icon ${color}">${icon}</div><div class="card-body"><div class="label">${label}</div><div class="value">${esc(value)}</div></div></div>`}
+
+/* ---------- My Tasks ---------- */
+async function loadTasks(){
+  $("#taskRows").innerHTML=`<tr><td colspan="5" class="loading">loading …</td></tr>`;
+  const d=await jget("/api/panels/tasks");
+  $("#lastRun").textContent="✓ teamx task list "+new Date().toLocaleTimeString();
+  $("#taskCount").textContent=d.length;
+  $("#taskRows").innerHTML=d.map(x=>`
+    <tr>
+      <td>${esc(x.title)}</td>
+      <td>${badge(x.state)}</td>
+      <td>${badge(x.priority)}</td>
+      <td>${esc(x.executor)}</td>
+      <td class="mono" style="font-size:12px;color:var(--muted-fg)">${esc(x.updated)}</td>
+    </tr>`).join("")||`<tr><td colspan="5" class="muted">没有分派给你的任务。</td></tr>`;
+}
+
+/* ---------- Events ---------- */
+const evKindClass={decision:"refining",update:"in_progress",progress:"in_progress",achieved:"achieved",blocked:"blocked",resumed:"active"};
+async function loadEvents(){
+  $("#evList").innerHTML=`<li class="loading">loading …</li>`;
+  const d=await jget("/api/panels/events");
+  $("#lastRun").textContent="✓ teamx events "+new Date().toLocaleTimeString();
+  $("#evCount").textContent=d.length;
+  $("#evList").innerHTML=d.map(e=>`
+    <li class="ev-item">
+      <span class="ev-time">${esc(e.at)}</span>
+      <span class="ev-kind">${badge(evKindClass[e.kind]||e.kind)}</span>
+      <div class="ev-text">${esc(e.text)} <span class="who">— ${esc(e.who)}</span></div>
+    </li>`).join("")||`<li class="muted">暂无事件。</li>`;
+}
+
+/* ---------- Tunnels ---------- */
+async function loadTunnels(){
+  $("#tunnelRows").innerHTML=`<tr><td colspan="5" class="loading">loading …</td></tr>`;
+  const d=await jget("/api/panels/tunnels");
+  $("#lastRun").textContent="✓ teamx tunnel list "+new Date().toLocaleTimeString();
+  $("#tunCount").textContent=d.length;
+  $("#cmdLine").style.display="none";
+  $("#tunnelRows").innerHTML=d.map(x=>`
+    <tr>
+      <td><span class="tunnel-name">${esc(x.name)}</span></td>
+      <td>${badge(x.kind==="headless"?"active":"open")}<span class="muted" style="margin-left:4px">${esc(x.kind)}</span></td>
+      <td class="mono">${x.public_port}</td>
+      <td>${esc(x.provider)}</td>
+      <td><button class="btn copy-btn" data-name="${esc(x.name)}" data-port="${x.public_port}">复制 forward</button></td>
+    </tr>`).join("");
+  $$(".copy-btn").forEach(b=>b.addEventListener("click",()=>{
+    const cmd=`teamx tunnel forward ${b.dataset.name} --local-port ${b.dataset.port} --session <my-session>`;
+    $("#cmdLine").textContent=cmd; $("#cmdLine").style.display="block";
+    if(navigator.clipboard)navigator.clipboard.writeText(cmd);
+  }));
+}
+
+/* ---------- Cloud (iframe) ---------- */
+function loadCloud(){
+  renderNodes();
+}
+function renderNodes(){
+  const nodes=MOCK.cloud;
+  $("#nodeList").innerHTML=nodes.map(n=>`
+    <div class="node-card ${n.id===selNode?'sel':''}" data-node="${esc(n.id)}">
+      <div class="node-title"><span>${esc(n.name)}</span>${badge(n.kind)}</div>
+      <div class="node-url">${esc(n.url)}</div>
+    </div>`).join("");
+  $$("#nodeList .node-card").forEach(c=>c.addEventListener("click",()=>{selNode=c.dataset.node;renderNodes();openNode(selNode)}));
+  if(selNode)openNode(selNode);
+}
+let selNode="";
+function openNode(id){
+  const n=MOCK.cloud.find(x=>x.id===id); if(!n)return;
+  const frame=$("#nodeFrame"), empty=$("#iframeEmpty");
+  frame.style.display="none"; empty.style.display="";
+  empty.innerHTML=`<div class="big">🖥️</div><div>加载 ${esc(n.name)} …<br><span class="muted">真实实现走 /api/cloud/${esc(n.id)}/ 同源反代（剥离 X-Frame-Options）</span></div>`;
+  // Prototype note: 真实浏览器只允许 http/https 资源进 iframe，且受 XFO/CSP 限制。
+  // 原型不直接代理；生产里 iframe.src = "/api/cloud/"+id+"/" 即可同源内嵌。
+  frame.src=n.url;
+  frame.onload=()=>{empty.style.display="none";frame.style.display="block"};
+}
+$("#addNodeBtn").addEventListener("click",()=>{
+  const name=$("#nodeName").value.trim(), url=$("#nodeUrl").value.trim();
+  if(!name||!url){alert("请输入 name 与本地 URL");return}
+  MOCK.cloud.push({id:name.toLowerCase().replace(/\s+/g,"-"),name,kind:url.includes("ttyd")?"ttyd":"headless",url});
+  $("#nodeName").value="";$("#nodeUrl").value="";
+  renderNodes();
+});
+
+/* ---------- token gate (mirror ui behavior) ---------- */
+(function(){
+  const ok=/[?&]token=[^&]+/.test(location.search)||localStorage.getItem("teamx-console-token");
+  if(!ok){location.href="index.html";return}
+  const m=location.search.match(/[?&]token=([^&]+)/);
+  if(m)localStorage.setItem("teamx-console-token",m[1]);
+})();
+
+/* boot: load the default view */
+loadTeams();
+</script>
+</body>
+</html>
