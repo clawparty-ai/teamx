@@ -21,7 +21,7 @@ use axum::{
     },
     http::{header, HeaderMap, Method, Request, Response, StatusCode, Uri},
     response::{Html, IntoResponse},
-    routing::{delete, get},
+    routing::{delete, get, post},
     Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -96,6 +96,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/api/cloud/{id}/", get(api_cloud_proxy_root))
         .route("/api/cloud/{id}/ws", get(api_cloud_ws))
         .route("/api/cloud/{id}/{*path}", get(api_cloud_proxy_rest))
+        .route("/api/tunnels/forward", post(api_tunnel_forward))
         .fallback(not_found_page)
         .with_state(state);
 
@@ -328,6 +329,165 @@ async fn api_cloud_delete(
         return err_json(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     (StatusCode::OK, Json(cfg)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel auto-forward ("View"/"Open" from the Teams members list)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct TunFwdReq {
+    name: String,
+}
+
+/// `POST /api/tunnels/forward` — start a local `teamx tunnel forward` for a
+/// teammate's tunnel (idempotent) and register a loopback cloud node so the
+/// Teams view can iframe it through `/api/cloud/{node_id}/`.
+async fn api_tunnel_forward(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(req): Json<TunFwdReq>,
+) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return err_json(StatusCode::BAD_REQUEST, "tunnel name required".to_string());
+    }
+    let ctx = state.ctx.clone();
+    let res = tokio::task::spawn_blocking(move || start_tunnel_forward(&ctx, &name))
+        .await
+        .unwrap_or_else(|_| Err("forward task panicked".to_string()));
+    match res {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => err_json(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Spawn (or reuse) a local forward for `name`; returns JSON describing the
+/// listening port and the cloud node to embed.
+fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, String> {
+    use std::net::TcpListener;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let cfg = crate::console_data::load_config(&ctx.config_path);
+    // Reuse an already-running forward (recorded as a `tun-*` node).
+    for n in &cfg.nodes {
+        if n.id.starts_with("tun-") && n.name == name {
+            if let Some(port) = local_port_of(&n.url) {
+                if port_open(port) {
+                    return Ok(serde_json::json!({
+                        "ok": true, "already": true, "name": name,
+                        "local_port": port, "node_id": n.id, "url": n.url,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Pick a free local port (probe by binding, then release).
+    let mut port = 0u16;
+    for candidate in 19001u16..19400 {
+        if TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
+            port = candidate;
+            break;
+        }
+    }
+    if port == 0 {
+        return Err("no free local port in 19001-19399".to_string());
+    }
+
+    // Spawn `teamx tunnel forward <name> --local-port <port> --session <s>`.
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let session = ctx.session_or("console").to_string();
+    let mut cmd = Command::new(&exe);
+    cmd.args([
+        "tunnel",
+        "forward",
+        name,
+        "--local-port",
+        &port.to_string(),
+        "--session",
+        &session,
+    ])
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    if let Some(url) = ctx.server_url() {
+        cmd.env("TEAMX_SERVER_URL", url);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn tunnel forward: {e}"))?;
+
+    // Wait until the local port actually accepts connections (~4s max).
+    let mut up = false;
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(100));
+        if port_open(port) {
+            up = true;
+            break;
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+    }
+    if !up {
+        let _ = child.kill();
+        return Err(format!(
+            "tunnel forward for `{name}` did not come up (is the binary current? is the tunnel exposed?)"
+        ));
+    }
+    // Detach: the child outlives this call; keep stdout/stderr empty so it
+    // never blocks. (A dropped Child on Unix does not terminate the process.)
+    drop(child);
+
+    // Register a `tun-*` cloud node so the proxy can embed it.
+    let node_id = format!("tun-{}", crate::console_data::slugify(name));
+    let kind = if name.contains("ttyd") {
+        "ttyd"
+    } else if name.contains("opencode") {
+        "headless"
+    } else {
+        "web"
+    };
+    let url = format!("http://127.0.0.1:{port}");
+    let mut cfg = cfg;
+    if let Some(n) = cfg.nodes.iter_mut().find(|n| n.id == node_id) {
+        n.name = name.to_string();
+        n.kind = kind.to_string();
+        n.url = url.clone();
+    } else {
+        cfg.nodes.push(crate::console_data::CloudNode {
+            id: node_id.clone(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            url: url.clone(),
+        });
+    }
+    crate::console_data::save_config(&ctx.config_path, &cfg)
+        .map_err(|e| format!("save cloud node: {e}"))?;
+
+    Ok(serde_json::json!({
+        "ok": true, "already": false, "name": name,
+        "local_port": port, "node_id": node_id, "url": url,
+    }))
+}
+
+fn local_port_of(url: &str) -> Option<u16> {
+    let rest = url.strip_prefix("http://")?;
+    let hostport = rest.split('/').next()?;
+    let (_, p) = hostport.rsplit_once(':')?;
+    p.parse().ok()
+}
+
+fn port_open(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(250),
+    )
+    .is_ok()
 }
 
 // ---------------------------------------------------------------------------

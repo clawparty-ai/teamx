@@ -28,7 +28,6 @@ pub fn page_html() -> String {
     <button data-view="teams" class="active">Teams</button>
     <button data-view="tasks">My Tasks</button>
     <button data-view="events">Events</button>
-    <button data-view="tunnels">Tunnels</button>
     <button data-view="cloud">Cloud</button>
   </nav>
   <div class="header-right">
@@ -44,7 +43,15 @@ pub fn page_html() -> String {
   </div>
 </div>
 <div class="container">
-  <div class="view active" id="view-teams"><div class="cards" id="teamCards"></div><div id="teamBody"></div></div>
+  <div class="view active" id="view-teams">
+    <div class="view-teams-layout" id="teamsLayout">
+      <div class="tl-left">
+        <div class="cards" id="teamCards"></div>
+        <div id="teamBody"></div>
+      </div>
+      <div class="tl-right" id="tunDock"></div>
+    </div>
+  </div>
   <div class="view" id="view-tasks">
     <section class="panel"><h2>Tasks assigned to me <span class="count" id="taskCount"></span></h2>
       <table><thead><tr><th>Title</th><th>State</th><th>Priority</th><th>Updated</th></tr></thead><tbody id="taskRows"></tbody></table>
@@ -53,12 +60,6 @@ pub fn page_html() -> String {
   <div class="view" id="view-events">
     <section class="panel"><h2>Recent team events <span class="count" id="evCount"></span></h2>
       <ul class="ev-list" id="evList"></ul></section>
-  </div>
-  <div class="view" id="view-tunnels">
-    <section class="panel"><h2>Tunnels I can reach <span class="count" id="tunCount"></span></h2>
-      <div class="muted" style="margin-bottom:10px">每个隧道先在终端执行「复制」的 forward 命令映射到本地，再去 Cloud 页 iframe 打开。</div>
-      <table><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Provider</th><th></th></tr></thead><tbody id="tunnelRows"></tbody></table>
-      <div class="cmd-line" id="cmdLine"></div></section>
   </div>
   <div class="view" id="view-cloud">
     <div class="cloud-layout">
@@ -252,6 +253,21 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-text .who { color:var(--muted-fg); font-size:12px; }
 .copy-btn { font-size:12px; padding:3px 10px; }
 .cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
+/* ---------- Teams + tunnel dock (open-iframes on the right) ---------- */
+.view-teams-layout { display:flex; align-items:flex-start; gap:16px; }
+.tl-left { flex:1; min-width:0; }
+.tl-right { display:none; width:min(760px, 58%); min-width:420px; }
+.view-teams-layout.has-dock .tl-right { display:block; }
+.dock-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:14px; overflow:hidden; }
+.dock-head { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--muted); border-bottom:1px solid var(--border); font-size:12.5px; font-weight:600; }
+.dock-head .dh-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dock-head .dh-kind { flex-shrink:0; }
+.dock-card iframe { display:block; width:100%; height:460px; border:0; background:#fff; }
+.btn-mini { font-size:12px; padding:3px 10px; }
+.btn-mini.busy { opacity:.7; }
+.tun-chip { display:inline-flex; align-items:center; gap:4px; background:var(--muted); border:1px solid var(--border); border-radius:12px; padding:2px 8px; margin:2px 4px 2px 0; font-size:11.5px; color:var(--fg); }
+.tun-chip .dot { width:7px; height:7px; border-radius:50%; background:#67C23A; }
+.empty-hint { color:var(--muted-fg); font-size:13px; padding:10px 0; }
 .cloud-layout { display:grid; grid-template-columns:320px 1fr; gap:16px; }
 @media (max-width:1000px){ .cloud-layout { grid-template-columns:1fr; } }
 .node-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-bottom:10px; cursor:pointer; transition:border-color var(--transition),box-shadow var(--transition); }
@@ -309,7 +325,7 @@ let currentView="teams";
 function showView(name){ currentView=name; $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===name)); $$(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name)); renderView(name); }
 async function renderView(name){
   if(name==="teams") loadTeams(); else if(name==="tasks") loadTasks();
-  else if(name==="events") loadEvents(); else if(name==="tunnels") loadTunnels(); else if(name==="cloud") loadCloud();
+  else if(name==="events") loadEvents(); else if(name==="cloud") loadCloud();
 }
 $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
@@ -323,28 +339,83 @@ function setLast(p){ $("#lastRun").textContent = p.ok?("✓ "+p.cmd+" ["+p.mode+
 function errBox(p){ return `<div class="errorbox"><b>命令未成功</b><br><span class="mono">${esc(p.cmd||"")}</span><br>${esc(p.error||"unknown error")}</div>`; }
 function rawPre(label,v){ return `<section class="panel"><h2>${esc(label)} <span class="muted">(raw)</span></h2><pre class="raw">${esc(typeof v==="string"?v:JSON.stringify(v,null,2))}</pre></section>`; }
 
-/* ---------- Teams ---------- */
+/* ---------- Teams (+ per-member tunnel open dock) ---------- */
+const kindOf=(name)=>(name||"").includes("ttyd")?"ttyd":((name||"").includes("opencode")?"headless":"web");
 async function loadTeams(){
   $("#teamBody").innerHTML=`<div class="loading">loading …</div>`;
-  const p=await panel("teams"); setLast(p);
+  const [p, pt] = await Promise.all([panel("teams"), panel("tunnels")]);
+  if(p.ok) setLast(p); else if(pt.ok) setLast(pt);
   const teams=(p.ok&&p.data&&p.data.teams)||[];
+  const tuns=[];
+  if(pt.ok){
+    const d=pt.data;
+    if(d&&Array.isArray(d.tunnels)) tuns.push(...d.tunnels);
+    else if(Array.isArray(d)) tuns.push(...d);
+  }
+  // tunnel provider -> list
+  const byMember=new Map();
+  for(const t of tuns){
+    const k=t.provider_member_id||"_";
+    if(!byMember.has(k)) byMember.set(k,[]);
+    byMember.get(k).push(t);
+  }
   $("#teamCards").innerHTML=[
     `<div class="card"><div class="card-icon blue">👥</div><div class="card-body"><div class="label">My teams</div><div class="value">${teams.length}</div></div></div>`,
     `<div class="card"><div class="card-icon orange">🎯</div><div class="card-body"><div class="label">Goal state</div><div class="value">${esc((teams[0]&&teams[0].goal&&teams[0].goal.state)||"—")}</div></div></div>`,
     `<div class="card"><div class="card-icon green">🧩</div><div class="card-body"><div class="label">My role</div><div class="value">${esc((teams[0]&&teams[0].my&&teams[0].my.role)||"—")}</div></div></div>`,
-    `<div class="card"><div class="card-icon purple">🟢</div><div class="card-body"><div class="label">My state</div><div class="value">${esc((teams[0]&&teams[0].my&&teams[0].my.state)||"—")}</div></div></div>`
+    `<div class="card"><div class="card-icon purple">🟢</div><div class="card-body"><div class="label">Tunnels</div><div class="value">${tuns.length}</div></div></div>`
   ].join("");
-  if(!p.ok){ $("#teamBody").innerHTML=errBox(p); return; }
+  if(!p.ok && !pt.ok){ $("#teamBody").innerHTML=(p.error?errBox(p):errBox(pt)); return; }
   $("#teamBody").innerHTML = teams.map(t=>{
     const g=t.goal||{}; const members=t.members||[];
+    const table=members.map(m=>{
+      const mt=byMember.get(m.id)||[];
+      return `<tr>
+        <td>${esc(m.display_name)}</td>
+        <td>${badge(m.role)}</td>
+        <td>${badge(m.state)}</td>
+        <td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td>
+        <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
+        <td>${mt.length?mt.map(x=>`<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">▶ ${esc(kindOf(x.name))}</button>`).join(" "):'<span class="muted">—</span>'}</td>
+      </tr>`;
+    }).join("");
     return `<section class="panel">
-      <h2>${esc(t.name||t.team&&t.team.name||"(team)")} ${badge(t.state||(t.team&&t.team.state))} ${g.title?`<span class="muted" style="font-weight:400">— ${esc(g.title)}</span>`:""}</h2>
-      ${g.title?`<div style="margin-bottom:12px">${badge(g.state)} <span class="muted">goal</span></div>`:""}
-      <div class="muted" style="margin-bottom:8px">Members · ${members.length}</div>
-      <table><thead><tr><th>Member</th><th>Role</th><th>State</th><th>Online</th></tr></thead><tbody>
-        ${members.map(m=>`<tr><td>${esc(m.display_name)}</td><td>${badge(m.role)}</td><td>${badge(m.state)}</td><td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td></tr>`).join("")||`<tr><td colspan=4 class="muted">no members</td></tr>`}
+      <h2>${esc(t.name||(t.team&&t.team.name)||"(team)")} ${badge(t.state||(t.team&&t.team.state))} ${g.title?`<span class="muted" style="font-weight:400">— ${esc(g.title)}</span>`:""}</h2>
+      ${g.title?`<div style="margin-bottom:10px">${badge(g.state)} <span class="muted">goal</span></div>`:""}
+      <table><thead><tr><th>Member</th><th>Role</th><th>State</th><th>Online</th><th>Tunnels</th><th>Open</th></tr></thead><tbody>
+        ${table||`<tr><td colspan=6 class="muted">no members</td></tr>`}
       </tbody></table></section>`;
   }).join("") || `<section class="panel"><div class="muted">你尚未加入任何团队。</div></section>`;
+
+  // attach open handlers
+  $$("#teamBody button[data-name]").forEach(b=>b.addEventListener("click",async ()=>{
+    const name=b.dataset.name, member=b.dataset.member, kind=b.dataset.kind;
+    b.disabled=true; b.classList.add("busy"); b.textContent="forwarding…";
+    try{
+      const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok || !j.ok){ alert("自动 forward 失败："+(j.error||("HTTP "+r.status))); return; }
+      addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
+      b.textContent="✓ "+kind;
+    } catch(e){ alert("自动 forward 失败："+e); }
+    finally{ b.disabled=false; b.classList.remove("busy"); }
+  }));
+}
+
+/* ---------- iframe dock on the right of Teams ---------- */
+function syncDock(){
+  const cards=$("#tunDock").querySelectorAll(".dock-card").length;
+  $("#teamsLayout").classList.toggle("has-dock", cards>0);
+  if(!cards) $("#tunDock").innerHTML="";
+}
+function addDock(o){
+  const wrap=document.createElement("div"); wrap.className="dock-card";
+  wrap.innerHTML=`<div class="dock-head"><span class="dh-title">${esc(o.title)}</span><span class="dh-kind badge running">${esc(o.kind)}</span>
+    <a class="btn btn-mini" target="_blank" href="${esc(o.direct)}" title="在新标签页打开">↗</a>
+    <button class="btn btn-mini dock-close" title="关闭">✕</button></div><iframe src="${esc(o.proxy)}"></iframe>`;
+  wrap.querySelector(".dock-close").addEventListener("click",()=>{ wrap.remove(); syncDock(); });
+  $("#tunDock").appendChild(wrap);
+  syncDock();
 }
 
 /* ---------- My Tasks ---------- */
@@ -383,27 +454,6 @@ function summarize(e,pl){
   const keys=["text","title","name","detail"];
   for(const k of keys){ if(pl&&pl[k]) return String(pl[k]); }
   try{ return JSON.stringify(pl).slice(0,120); }catch(_){ return e.type; }
-}
-
-/* ---------- Tunnels ---------- */
-async function loadTunnels(){
-  $("#tunnelRows").innerHTML=`<tr><td colspan=5 class="loading">loading …</td></tr>`;
-  const p=await panel("tunnels"); setLast(p);
-  if(!p.ok){ $("#tunnelRows").innerHTML=""; const host=$("#view-tunnels .panel"); host.insertAdjacentHTML("afterbegin",errBox(p)); return; }
-  let arr=[]; const d=p.data;
-  if(d&&Array.isArray(d.tunnels)) arr=d.tunnels; else if(Array.isArray(d)) arr=d;
-  $("#tunCount").textContent=arr.length;
-  $("#cmdLine").style.display="none";
-  $("#tunnelRows").innerHTML = arr.map(x=>{
-    const name=x.name||""; const target=x.target_port||x.port||""; const provider=x.provider_member_id||"";
-    const kind = name.startsWith("ttyd")?"ttyd":name.startsWith("opencode")?"headless":"tunnel";
-    return `<tr><td class="tunnel-name">${esc(name)}</td><td>${badge(kind==="headless"?"running":kind==="ttyd"?"active":"open")}<span class="muted"> ${esc(kind)}</span></td><td class="mono">${esc(target)}</td><td class="mono" style="font-size:12px">${esc(provider.slice(0,8))}…</td><td><button class="btn copy-btn" data-name="${esc(name)}">复制 forward</button></td></tr>`;
-  }).join("")||`<tr><td colspan=5 class="muted">当前团队没有已暴露的隧道（或项目模式下无服务器）。</td></tr>`;
-  $$(".copy-btn").forEach(b=>b.addEventListener("click",()=>{
-    const cmd=`teamx tunnel forward ${b.dataset.name} --session <your-session>`;
-    $("#cmdLine").textContent=cmd; $("#cmdLine").style.display="block";
-    if(navigator.clipboard)navigator.clipboard.writeText(cmd);
-  }));
 }
 
 /* ---------- Cloud (iframe via console reverse proxy) ---------- */
