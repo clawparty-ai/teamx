@@ -188,6 +188,19 @@ pub fn create_repo(
     // Grant admin permission to the creator
     grant_permission(conn, &id, created_by, PERM_ADMIN, created_by)?;
 
+    // Auto-grant write to every other active team member so a repo created
+    // after members joined stays collaborative without manual grants.
+    if let Ok(mut members) = conn.prepare(
+        "SELECT id FROM members WHERE team_id = ?1 AND state = 'active' AND id != ?2",
+    ) {
+        let rows = members.query_map(params![team_id, created_by], |r| r.get::<_, String>(0));
+        if let Ok(iter) = rows {
+            for m in iter.flatten() {
+                let _ = grant_permission(conn, &id, &m, PERM_WRITE, created_by);
+            }
+        }
+    }
+
     Ok(GitRepo {
         id,
         team_id: team_id.to_string(),

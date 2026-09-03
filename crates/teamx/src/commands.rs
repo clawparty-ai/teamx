@@ -2452,13 +2452,13 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
     })
     .map_err(|e| AppError(format!("decision failed: {e}")))?;
 
-    // Auto-grant read access to all team git repos on approval, so the member
-    // can immediately `git clone` (feature: import → approve → clone).
+    // Auto-grant write access to all team git repos on approval so the member
+    // can `git clone` AND `git push` immediately (feature: import → approve).
     let mut granted_repos: Vec<String> = Vec::new();
     if approve {
         if let Ok(repos) = crate::git_service::list_repos(conn, &team.id) {
             for r in repos {
-                let _ = crate::git_service::grant_permission(conn, &r.id, &target.id, crate::git_service::PERM_READ, &actor.id);
+                let _ = crate::git_service::grant_permission(conn, &r.id, &target.id, crate::git_service::PERM_WRITE, &actor.id);
                 granted_repos.push(r.name);
             }
         }
@@ -3241,13 +3241,13 @@ fn claim_invitation(
         .map_err(|e| AppError(format!("import failed: {e}")))?;
     }
 
-    // Auto-approve grants the same git repo read access the owner would grant
-    // via `team approve` (feature: import -> approve -> clone).
+    // Auto-approve grants the same git repo WRITE access the owner would
+    // grant via `team approve`, so the member can clone AND push immediately.
     let mut granted_repos: Vec<String> = Vec::new();
     if auto_approve {
         if let Ok(repos) = crate::git_service::list_repos(conn, &team_id) {
             for r in repos {
-                let _ = crate::git_service::grant_permission(conn, &r.id, &member_id, crate::git_service::PERM_READ, &member_id);
+                let _ = crate::git_service::grant_permission(conn, &r.id, &member_id, crate::git_service::PERM_WRITE, &member_id);
                 granted_repos.push(r.name);
             }
         }
