@@ -2,7 +2,18 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "teamx", version, about = "teamx - shared-goal team collaboration state kernel")]
+#[command(
+    name = "teamx",
+    version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (commit ",
+        env!("TEAMX_BUILD_COMMIT"),
+        ", built ",
+        env!("TEAMX_BUILD_TIME"),
+        ")"
+    ),
+    about = "teamx - shared-goal team collaboration state kernel"
+)]
 pub struct Cli {
     /// SQLite database path (default: ~/.teamx/teamx.db, or $TEAMX_DB)
     #[arg(long, global = true)]
