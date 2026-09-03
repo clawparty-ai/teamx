@@ -434,7 +434,7 @@ function syncDock(){
 function addDock(o){
   const wrap=document.createElement("div"); wrap.className="dock-card";
   wrap.innerHTML=`<div class="dock-head"><span class="dh-title">${esc(o.title)}</span><span class="dh-kind badge running">${esc(o.kind)}</span>
-    <a class="btn btn-mini" target="_blank" href="${esc(o.direct)}" title="在新标签页打开">↗</a>
+    <a class="btn btn-mini" target="_blank" href="${esc(o.proxy)}" title="在新标签页打开">↗</a>
     <button class="btn btn-mini dock-close" title="关闭">✕</button></div><iframe src="${esc(o.proxy)}"></iframe>`;
   wrap.querySelector(".dock-close").addEventListener("click",()=>{ wrap.remove(); syncDock(); });
   $("#tunDock").appendChild(wrap);

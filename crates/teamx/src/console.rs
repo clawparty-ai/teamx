@@ -635,16 +635,27 @@ async fn http_proxy(
         Ok(b) => b,
         Err(_) => return err_json(StatusCode::BAD_REQUEST, "request body too large".to_string()),
     };
-    let result = if tls {
-        tls_http_roundtrip(home, &host, port, &method, &path, &body).await
+    let raw = if tls {
+        match tls_http_roundtrip(home, &host, port, &method, &path, &body).await {
+            Ok(b) => b,
+            Err(e) => return err_json(StatusCode::BAD_GATEWAY, format!("proxy to {host}:{port}: {e}")),
+        }
     } else {
-        plain_http_roundtrip(&host, port, &method, &path, &body).await
+        // Plain HTTP first; if the reply is not a valid HTTP response the
+        // service is probably a TLS one (e.g. a tunnelled `teamx ui`) whose
+        // port was recorded before the TLS probe succeeded — retry over TLS.
+        match plain_http_roundtrip(&host, port, &method, &path, &body).await {
+            Ok(b) if b.starts_with(b"HTTP/") => b,
+            _ => match tls_http_roundtrip(home, &host, port, &method, &path, &body).await {
+                Ok(b) => b,
+                Err(e) => return err_json(
+                    StatusCode::BAD_GATEWAY,
+                    format!("proxy to {host}:{port} (http then https): {e}"),
+                ),
+            },
+        }
     };
-    let response_body = match result {
-        Ok(b) => b,
-        Err(e) => return err_json(StatusCode::BAD_GATEWAY, format!("proxy to {host}:{port}: {e}")),
-    };
-    split_response(response_body)
+    split_response(raw)
 }
 
 /// Plain-TCP HTTP/1.1 exchange against the loopback target.
@@ -737,7 +748,9 @@ async fn is_tls_server(home: &std::path::Path, host: &str, port: u16) -> bool {
         return false;
     };
     let connector = TlsConnector::from(config);
-    tokio::time::timeout(std::time::Duration::from_millis(700), connector.connect(name, tcp))
+    // Through a tunnel the remote TLS server may be far away; give the probe
+    // enough time so a https service is not mis-recorded as http.
+    tokio::time::timeout(std::time::Duration::from_millis(2500), connector.connect(name, tcp))
         .await
         .map(|r| r.is_ok())
         .unwrap_or(false)
