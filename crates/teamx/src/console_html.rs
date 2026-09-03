@@ -92,48 +92,70 @@ pub fn page_html() -> String {
 }
 
 /// Login page (brand Teamx Console).
+/// Login page — mirrors the `teamx ui` login (same layout/CSS), branded
+/// "Teamx Console". No extra hint text.
 pub fn login_html() -> String {
-    format!(
-        r#"<!doctype html>
+    r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login | Teamx Console</title>
 <style>
-{css}
-body {{ display:flex; min-height:100vh; flex-direction:column; }}
-header {{ position:static; }}
-.main {{ flex:1; display:flex; align-items:center; justify-content:center; padding:40px 20px; }}
-.card {{ max-width:420px; width:100%; background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:40px 44px; text-align:center; }}
-.card h1 {{ font-size:20px; font-weight:600; margin:0 0 6px; }}
-.subtitle {{ font-size:13px; color:var(--muted-fg); margin-bottom:26px; }}
-.form {{ display:flex; flex-direction:column; gap:12px; }}
-.input {{ font-family:var(--font-mono); }}
-.note {{ margin-top:16px; font-size:12px; color:var(--muted-fg); line-height:1.7; }}
-</style></head>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif; background: #f8f8f8; color: #333; min-height: 100vh; display: flex; flex-direction: column; }
+  header { height: 60px; background: #fff; border-bottom: 1px solid #EBEEF5; display: flex; align-items: center; padding: 0 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #4A90E5, #357ABD); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; }
+  .logo-text { font-size: 16px; font-weight: 600; color: #4A90E5; }
+  .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }
+  .card { background: #fff; border-radius: 4px; box-shadow: 0 2px 4px 0 rgba(214,228,241,0.7); padding: 48px 56px; text-align: center; max-width: 420px; width: 100%; }
+  .icon { width: 72px; height: 72px; margin: 0 auto 20px; background: #EBF5FF; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .icon svg { width: 36px; height: 36px; color: #4A90E5; }
+  h1 { font-size: 20px; font-weight: 600; color: #333; margin-bottom: 6px; }
+  .subtitle { font-size: 14px; color: #909399; margin-bottom: 28px; }
+  .form { display: flex; flex-direction: column; gap: 14px; }
+  .input { width: 100%; padding: 10px 14px; border: 1px solid #EBEEF5; border-radius: 4px; font-size: 14px; font-family: "SF Mono", "Fira Code", monospace; color: #333; background: #fff; outline: none; transition: border-color 200ms; }
+  .input:focus { border-color: #4A90E5; box-shadow: 0 0 0 2px rgba(74,144,229,0.15); }
+  .input::placeholder { color: #C0C4CC; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+  .btn { width: 100%; padding: 10px 0; border: none; border-radius: 4px; background: #4A90E5; color: #fff; font-size: 15px; font-weight: 500; cursor: pointer; transition: background 200ms; }
+  .btn:hover { background: #357ABD; }
+  .btn:active { background: #2A6AA0; }
+  .error { font-size: 13px; color: #F56C6C; margin-top: 4px; display: none; }
+</style>
+</head>
 <body>
 <header>
-  <div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Console</span></div>
-</header>
-<div class="main"><div class="card">
-  <h1>Teamx Console</h1>
-  <div class="subtitle">Member workspace · enter your access token to login</div>
-  <div class="form">
-    <input class="input" id="tokenInput" placeholder="Paste token here…" autofocus autocomplete="off" spellcheck="false">
-    <button class="btn btn-primary" id="loginBtn">Login</button>
-    <div class="error" id="errMsg" style="display:none">Invalid token, please try again.</div>
+  <div class="logo">
+    <div class="logo-icon">Tx</div>
+    <span class="logo-text">Teamx Console</span>
   </div>
-  <div class="note">启动 `teamx console` 时终端会打印一次性 token（每次启动不同）。<br>console 只读展示当前工作空间（.teamx）里的团队信息。</div>
-</div></div>
+</header>
+<div class="main">
+  <div class="card">
+    <div class="icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </svg>
+    </div>
+    <h1>Teamx Console</h1>
+    <p class="subtitle">Enter your access token to login</p>
+    <div class="form">
+      <input class="input" id="tokenInput" type="text" placeholder="Paste token here..." autofocus autocomplete="off" spellcheck="false">
+      <button class="btn" id="loginBtn">Login</button>
+      <div class="error" id="errMsg">Invalid token, please try again.</div>
+    </div>
+  </div>
+</div>
 <script>
-(function(){{
-  var b=document.getElementById("loginBtn"),i=document.getElementById("tokenInput"),e=document.getElementById("errMsg");
-  function go(){{ var t=i.value.trim(); if(!t){{i.focus();return}} e.style.display="none"; b.disabled=true; b.textContent="Logging in…"; location.href="/?token="+encodeURIComponent(t); }}
-  b.addEventListener("click",go); i.addEventListener("keydown",function(ev){{ if(ev.key==="Enter")go(); }});
-}})();
+const btn=document.getElementById("loginBtn"),inp=document.getElementById("tokenInput"),err=document.getElementById("errMsg");
+function doLogin(){const t=inp.value.trim();if(!t){inp.focus();return}err.style.display="none";btn.textContent="Logging in...";btn.disabled=true;window.location.href="/?token="+encodeURIComponent(t)}
+btn.addEventListener("click",doLogin);inp.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()});
 </script>
-</body></html>"#,
-        css = CSS
-    )
+</body>
+</html>"#
+    .to_string()
 }
 
 /// Unauthorized page (401).

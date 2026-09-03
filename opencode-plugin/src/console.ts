@@ -170,14 +170,14 @@ export async function consoleStart(opts: { port?: number; cwd?: string }): Promi
 
   const decoder = new TextDecoder()
   let buf = ""
-  let url = ""
+  let token = ""
   const deadline = Date.now() + 15_000
-  while (Date.now() < deadline && !url) {
+  while (Date.now() < deadline && !token) {
     const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true as boolean }))
     if (done) break
     if (value) buf += decoder.decode(value, { stream: true })
-    const m = buf.match(/open:\s+(https?:\/\/\S+)/)
-    if (m) url = m[1]
+    const m = buf.match(/token=([0-9a-fA-F]{16,})/)
+    if (m) token = m[1]
   }
 
   // Drain stderr in the background so a chatty console never blocks.
@@ -193,7 +193,7 @@ export async function consoleStart(opts: { port?: number; cwd?: string }): Promi
     }
   })()
 
-  if (!url) {
+  if (!token) {
     try {
       proc.kill()
     } catch {
@@ -204,6 +204,9 @@ export async function consoleStart(opts: { port?: number; cwd?: string }): Promi
       error: "teamx console 启动超时或未输出 token（本机 teamx 二进制可能不含 console 命令）",
     }
   }
+  // Build the URL explicitly (loopback + the port we actually bound), so the
+  // browser always opens `https://127.0.0.1:<port>/?token=...`.
+  const url = `https://127.0.0.1:${port}/?token=${token}`
 
   writeRecord(cwd, { pid: proc.pid, port, url, started_at: new Date().toISOString() })
   return { running: true, pid: proc.pid, port, url, started_at: new Date().toISOString() }
