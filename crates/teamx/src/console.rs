@@ -373,30 +373,65 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     use std::time::Duration;
 
     let cfg = crate::console_data::load_config(&ctx.config_path);
-    // Reuse an already-running forward (recorded as a `tun-*` node).
+    // TLS probe (may run over a far-away tunnel; keep the timeout generous).
+    let probe = |port: u16| -> bool {
+        let home = ctx.home.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok();
+        rt.map(|r| r.block_on(is_tls_server(&home, "127.0.0.1", port)))
+            .unwrap_or(false)
+    };
+
+    // Reuse an already-running forward (recorded as a `tun-*` node), but
+    // re-probe the scheme so a stale `http` record is corrected to `https`
+    // for TLS services (e.g. teamx-ui).
+    let mut existing: Option<(String, u16, String)> = None;
     for n in &cfg.nodes {
         if n.id.starts_with("tun-") && n.name == name {
             if let Some(port) = local_port_of(&n.url) {
                 if port_open(port) {
-                    return Ok(serde_json::json!({
-                        "ok": true, "already": true, "name": name,
-                        "local_port": port, "node_id": n.id, "url": n.url,
-                    }));
+                    existing = Some((n.id.clone(), port, n.url.clone()));
+                    break;
                 }
             }
         }
     }
-
-    // Pick a free local port (probe by binding, then release).
-    let mut port = 0u16;
-    for candidate in 19001u16..19400 {
-        if TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
-            port = candidate;
-            break;
+    let reused = existing.is_some();
+    let (node_id, port, _orig_url) = match existing {
+        Some(e) => e,
+        None => {
+            // Pick a free local port (probe by binding, then release).
+            let mut port = 0u16;
+            for candidate in 19001u16..19400 {
+                if TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
+                    port = candidate;
+                    break;
+                }
+            }
+            if port == 0 {
+                return Err("no free local port in 19001-19399".to_string());
+            }
+            ("".to_string(), port, String::new())
         }
-    }
-    if port == 0 {
-        return Err("no free local port in 19001-19399".to_string());
+    };
+
+    if reused {
+        let is_tls = probe(port);
+        let scheme = if is_tls { "https" } else { "http" };
+        let url = format!("{scheme}://127.0.0.1:{port}");
+        let mut cfg = cfg;
+        if let Some(n) = cfg.nodes.iter_mut().find(|n| n.id == node_id) {
+            if n.url != url {
+                n.url = url.clone();
+                let _ = crate::console_data::save_config(&ctx.config_path, &cfg);
+            }
+        }
+        return Ok(serde_json::json!({
+            "ok": true, "already": true, "name": name,
+            "local_port": port, "node_id": node_id, "url": url,
+        }));
     }
 
     // Spawn `teamx tunnel forward <name> --local-port <port> --session <s>`.
@@ -442,15 +477,8 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     drop(child);
 
     // Probe whether the mapped service speaks TLS (e.g. a tunnelled `teamx
-    // ui` https dashboard) so the registered node embeds correctly.
-    let is_tls = {
-        let home = ctx.home.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("runtime: {e}"))?;
-        rt.block_on(is_tls_server(&home, "127.0.0.1", port))
-    };
+    // ui` https dashboard) so the registered node records the right scheme.
+    let is_tls = probe(port);
 
     // Register a `tun-*` cloud node so the proxy can embed it.
     let node_id = format!("tun-{}", crate::console_data::slugify(name));
@@ -486,7 +514,9 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
 }
 
 fn local_port_of(url: &str) -> Option<u16> {
-    let rest = url.strip_prefix("http://")?;
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
     let hostport = rest.split('/').next()?;
     let (_, p) = hostport.rsplit_once(':')?;
     p.parse().ok()

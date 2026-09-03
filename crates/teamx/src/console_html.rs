@@ -418,8 +418,17 @@ async function loadTeams(){
       const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
       const j=await r.json().catch(()=>({}));
       if(!r.ok || !j.ok){ alert("自动 forward 失败："+(j.error||("HTTP "+r.status))); return; }
-      addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
-      b.textContent="✓ "+kind;
+      if(kind==="web"){
+        // Web services (e.g. teamx-ui) use absolute paths / their own auth, so
+        // they cannot live inside a sub-path iframe: open the real address in
+        // a new tab instead (browser will warn about the self-signed cert once).
+        let url=(j.url||"").replace(/^http:\/\//i,"https://");
+        window.open(url, "_blank");
+        b.textContent="✓ "+kind;
+      } else {
+        addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
+        b.textContent="✓ "+kind;
+      }
     } catch(e){ alert("自动 forward 失败："+e); }
     finally{ b.disabled=false; b.classList.remove("busy"); }
   }));
