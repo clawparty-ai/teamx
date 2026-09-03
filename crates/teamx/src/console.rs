@@ -369,14 +369,24 @@ async fn api_tunnel_forward(
     }
 }
 
-/// Spawn (or reuse) a local forward for `name`; returns JSON describing the
-/// listening port and the cloud node to embed.
+/// This session's spawned forwards: tunnel name -> local port. Reuse is only
+/// trusted from here — never from the on-disk node list, whose recorded ports
+/// may have been reused by a different tunnel in a later session.
+static SESSION_FORWARDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, u16>>,
+> = std::sync::OnceLock::new();
+
+fn session_forwards() -> &'static std::sync::Mutex<std::collections::HashMap<String, u16>> {
+    SESSION_FORWARDS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Spawn (or reuse from THIS session) a local forward for `name`; returns JSON
+/// describing the listening port and the node record.
 fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, String> {
     use std::net::TcpListener;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    let cfg = crate::console_data::load_config(&ctx.config_path);
     // TLS probe (may run over a far-away tunnel; keep the timeout generous).
     let probe = |port: u16| -> bool {
         let home = ctx.home.clone();
@@ -388,23 +398,16 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
             .unwrap_or(false)
     };
 
-    // Reuse an already-running forward (recorded as a `tun-*` node), but
-    // re-probe the scheme so a stale `http` record is corrected to `https`
-    // for TLS services (e.g. teamx-ui).
-    let mut existing: Option<(String, u16, String)> = None;
-    for n in &cfg.nodes {
-        if n.id.starts_with("tun-") && n.name == name {
-            if let Some(port) = local_port_of(&n.url) {
-                if port_open(port) {
-                    existing = Some((n.id.clone(), port, n.url.clone()));
-                    break;
-                }
-            }
-        }
-    }
-    let reused = existing.is_some();
-    let (node_id, port, _orig_url) = match existing {
-        Some(e) => e,
+    // Reuse only a forward THIS session spawned and that is still listening.
+    let reused_port = session_forwards()
+        .lock()
+        .unwrap()
+        .get(name)
+        .copied()
+        .filter(|&p| port_open(p));
+
+    let port = match reused_port {
+        Some(p) => p,
         None => {
             // Pick a free local port (probe by binding, then release).
             let mut port = 0u16;
@@ -417,25 +420,13 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
             if port == 0 {
                 return Err("no free local port in 19001-19399".to_string());
             }
-            ("".to_string(), port, String::new())
+            port
         }
     };
 
-    if reused {
+    if reused_port.is_some() {
         let is_tls = probe(port);
-        let scheme = if is_tls { "https" } else { "http" };
-        let url = format!("{scheme}://127.0.0.1:{port}");
-        let mut cfg = cfg;
-        if let Some(n) = cfg.nodes.iter_mut().find(|n| n.id == node_id) {
-            if n.url != url {
-                n.url = url.clone();
-                let _ = crate::console_data::save_config(&ctx.config_path, &cfg);
-            }
-        }
-        return Ok(serde_json::json!({
-            "ok": true, "already": true, "name": name,
-            "local_port": port, "node_id": node_id, "url": url,
-        }));
+        return finish_forward(ctx, name, port, is_tls, true);
     }
 
     // Spawn `teamx tunnel forward <name> --local-port <port> --session <s>`.
@@ -482,11 +473,21 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     // never blocks. (A dropped Child on Unix does not terminate the process.)
     drop(child);
 
-    // Probe whether the mapped service speaks TLS (e.g. a tunnelled `teamx
-    // ui` https dashboard) so the registered node records the right scheme.
-    let is_tls = probe(port);
+    // Remember it for reuse within this session (authoritative).
+    session_forwards().lock().unwrap().insert(name.to_string(), port);
 
-    // Register a `tun-*` cloud node so the proxy can embed it.
+    let is_tls = probe(port);
+    finish_forward(ctx, name, port, is_tls, false)
+}
+
+/// Compute/record the `tun-*` node for a running forward and return the JSON.
+fn finish_forward(
+    ctx: &Ctx,
+    name: &str,
+    port: u16,
+    is_tls: bool,
+    already: bool,
+) -> Result<serde_json::Value, String> {
     let node_id = format!("tun-{}", crate::console_data::slugify(name));
     let kind = if name.contains("ttyd") {
         "ttyd"
@@ -497,7 +498,7 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     };
     let scheme = if is_tls { "https" } else { "http" };
     let url = format!("{scheme}://127.0.0.1:{port}");
-    let mut cfg = cfg;
+    let mut cfg = crate::console_data::load_config(&ctx.config_path);
     if let Some(n) = cfg.nodes.iter_mut().find(|n| n.id == node_id) {
         n.name = name.to_string();
         n.kind = kind.to_string();
@@ -512,20 +513,10 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
     }
     crate::console_data::save_config(&ctx.config_path, &cfg)
         .map_err(|e| format!("save cloud node: {e}"))?;
-
     Ok(serde_json::json!({
-        "ok": true, "already": false, "name": name,
+        "ok": true, "already": already, "name": name,
         "local_port": port, "node_id": node_id, "url": url,
     }))
-}
-
-fn local_port_of(url: &str) -> Option<u16> {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))?;
-    let hostport = rest.split('/').next()?;
-    let (_, p) = hostport.rsplit_once(':')?;
-    p.parse().ok()
 }
 
 fn port_open(port: u16) -> bool {
