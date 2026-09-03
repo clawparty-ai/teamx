@@ -183,6 +183,11 @@ pub enum Command {
     /// cloud opencode nodes. Reads the same data the teamx CLI sees.
     Console(ConsoleCmd),
 
+    /// Always-on node worker (autonomous): polls the unified inbox and runs
+    /// headless `opencode run` turns so a member node progresses tasks even
+    /// without an attached TUI. Dry-run unless TEAMX_WORKER_ENABLED=1.
+    Worker(WorkerCmd),
+
     /// SOCKS5 outbound proxy (network mode): a local SOCKS5 port on member-a
     /// tunnels traffic through the team server to member-b's proxy exit.
     #[command(subcommand)]
@@ -430,6 +435,27 @@ pub struct ConsoleCmd {
     /// the workspace's imported invitation letter)
     #[arg(long)]
     pub server_url: Option<String>,
+}
+
+
+/// `teamx worker` — autonomous node executor.
+#[derive(Args, Debug, Clone)]
+pub struct WorkerCmd {
+    /// poll interval in seconds
+    #[arg(long, default_value_t = 60)]
+    pub interval: u64,
+    /// minimum seconds between actual opencode turns (nudge throttle)
+    #[arg(long, default_value_t = 600)]
+    pub cooldown: u64,
+    /// only poll once (useful for dry-run / debugging)
+    #[arg(long)]
+    pub once: bool,
+    /// teamx server URL (default: TEAMX_SERVER_URL or letter)
+    #[arg(long)]
+    pub server_url: Option<String>,
+    /// opencode binary to run headless turns (default: opencode)
+    #[arg(long)]
+    pub opencode: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -28,6 +28,16 @@ fn main() {
         }
         return;
     }
+    if let Command::Worker(wc) = &cli.command {
+        match teamx::worker::run(wc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Command::Console(cc) = &cli.command {
         match teamx::console::run(cc) {
             Ok(()) => {}

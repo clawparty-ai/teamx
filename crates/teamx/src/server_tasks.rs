@@ -424,8 +424,8 @@ fn log(conn: &mut Connection, team_id: &str, _member_id: &str, args: &Value) -> 
     let _ = load_task(conn, team_id, id)?;
     let mut stmt = conn
         .prepare(
-            "SELECT seq, member_id, type, payload, created_at FROM events
-             WHERE team_id = ?1 AND payload LIKE ?2 ORDER BY seq",
+            "SELECT seq, member_id, type, payload_json, created_at FROM events
+             WHERE team_id = ?1 AND payload_json LIKE ?2 ORDER BY seq",
         )
         .map_err(|e| format!("db: {e}"))?;
     let needle = format!("%\"task\": \"{id}\"%");
@@ -588,7 +588,7 @@ fn inbox_read(
     let nudges: Vec<Value> = {
         let mut stmt = conn
             .prepare(
-                "SELECT seq, type, payload, created_at FROM events
+                "SELECT seq, type, payload_json, created_at FROM events
                  WHERE team_id = ?1 AND type IN ('system.nudge','system.nudge_lead') AND seq > ?2
                  ORDER BY seq",
             )

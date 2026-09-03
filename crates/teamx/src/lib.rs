@@ -64,6 +64,7 @@ pub mod replay_cli;
 pub mod tls_parse;
 pub mod ui;
 pub mod console;
+pub mod worker;
 pub mod console_data;
 pub mod console_html;
 
