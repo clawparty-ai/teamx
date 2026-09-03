@@ -44,7 +44,6 @@ pub fn page_html() -> String {
   </div>
 </div>
 <div class="container">
-  <div class="readonly-note">🔒 只读工作台：点一下调一次 teamx CLI/RPC（与命令行信息一致）。MVP 不做任何写操作。</div>
   <div class="view active" id="view-teams"><div class="cards" id="teamCards"></div><div id="teamBody"></div></div>
   <div class="view" id="view-tasks">
     <section class="panel"><h2>Tasks assigned to me <span class="count" id="taskCount"></span></h2>
@@ -208,7 +207,7 @@ nav button.active { color:var(--primary); border-bottom-color:var(--primary); fo
 .ws { font-size:12.5px; color:var(--muted-fg); font-family:var(--font-mono); }
 .ws b { color:var(--fg); font-weight:600; }
 .toolbar-right { margin-left:auto; display:flex; gap:10px; align-items:center; }
-.container { max-width:1200px; margin:0 auto; padding:20px; }
+.container { width:100%; padding:20px 24px; }
 .view { display:none; }
 .view.active { display:block; animation:fadein 200ms ease; }
 @keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
@@ -240,7 +239,6 @@ th { color:var(--muted-fg); font-weight:600; font-size:12px; background:var(--mu
 .badge.low { background:#E8F8E8; color:#67C23A; }
 .muted { color:var(--muted-fg); font-size:12px; }
 .mono { font-family:var(--font-mono); }
-.readonly-note { display:flex; align-items:center; gap:8px; background:var(--primary-light); border:1px solid var(--border); border-radius:var(--radius); padding:8px 12px; font-size:12.5px; color:var(--primary); margin-bottom:16px; }
 .loading { color:var(--muted-fg); font-size:13px; padding:20px; text-align:center; }
 .errorbox { background:#FDE8E8; color:#c0392b; border:1px solid var(--border); border-radius:var(--radius); padding:14px; font-size:13px; margin-bottom:16px; }
 .errorbox .mono { font-family:var(--font-mono); font-size:12px; word-break:break-all; }
