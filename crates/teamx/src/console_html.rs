@@ -418,15 +418,16 @@ async function loadTeams(){
       const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
       const j=await r.json().catch(()=>({}));
       if(!r.ok || !j.ok){ alert("自动 forward 失败："+(j.error||("HTTP "+r.status))); return; }
-      if(kind==="web"){
-        // Web services (e.g. teamx-ui) use absolute paths / their own auth, so
-        // they cannot live inside a sub-path iframe: open the real address in
-        // a new tab instead (browser will warn about the self-signed cert once).
-        let url=(j.url||"").replace(/^http:\/\//i,"https://");
-        window.open(url, "_blank");
+      if(kind==="ttyd"){
+        // ttyd uses relative URLs, so it embeds reliably in the side dock.
+        addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
         b.textContent="✓ "+kind;
       } else {
-        addDock({ title: member+" · "+name, kind, proxy:"/api/cloud/"+encodeURIComponent(j.node_id)+"/", direct:j.url });
+        // headless (opencode SPA) and web (teamx-ui) pages use absolute paths /
+        // their own auth and break inside a sub-path iframe — open the real
+        // address in a new tab instead (self-signed cert warning once).
+        const url=(j.url||"").replace(/^http:\/\//i,"https://");
+        window.open(url, "_blank");
         b.textContent="✓ "+kind;
       }
     } catch(e){ alert("自动 forward 失败："+e); }
