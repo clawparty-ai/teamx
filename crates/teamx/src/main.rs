@@ -28,6 +28,16 @@ fn main() {
         }
         return;
     }
+    if let Command::Console(cc) = &cli.command {
+        match teamx::console::run(cc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // `teamx gui` is a desktop tray app (L1); it manages child processes and
     // does not open the DB itself. Requires the `gui` feature.
     #[cfg(feature = "gui")]

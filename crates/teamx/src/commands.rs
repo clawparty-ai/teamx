@@ -504,6 +504,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Ui(_) => {
             return err("`teamx ui` must be run as its own process")
         }
+        // `teamx console` is a long-running member web console (handled in main).
+        Command::Console(_) => {
+            return err("`teamx console` must be run as its own process")
+        }
         Command::Cert(c) => match c {
             CertCmd::Init => cmd_cert_init()?,
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,

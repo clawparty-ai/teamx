@@ -164,6 +164,11 @@ pub enum Command {
     /// Web dashboard (enterprise): activity analytics UI (HTTPS + token, owner only)
     Ui(UiCmd),
 
+    /// Member web console (local, view-only): a workspace-scoped browser
+    /// console that shows the member's teams/tasks/events/tunnels and embeds
+    /// cloud opencode nodes. Reads the same data the teamx CLI sees.
+    Console(ConsoleCmd),
+
     /// SOCKS5 outbound proxy (network mode): a local SOCKS5 port on member-a
     /// tunnels traffic through the team server to member-b's proxy exit.
     #[command(subcommand)]
@@ -384,6 +389,33 @@ pub enum DnsCmd {
         #[arg(long)]
         exit: Option<String>,
     },
+}
+
+/// `teamx console` — member web console (local HTTPS + token, view-only).
+///
+/// Runs in a workspace: its data source is whatever `teamx` sees from that
+/// directory (project-scoped `.teamx` DB in project mode, or the teamx server
+/// over mTLS in network mode). The served pages reuse the owner dashboard
+/// (`teamx ui`) look & feel but are branded "Teamx Console".
+#[derive(Args, Debug, Clone)]
+pub struct ConsoleCmd {
+    /// bind address
+    #[arg(long, default_value = "127.0.0.1")]
+    pub addr: String,
+    /// bind port
+    #[arg(long, default_value_t = 9528)]
+    pub port: u16,
+    /// optional actor session key (project mode). When absent the console
+    /// picks the workspace's single local member session, or requires it.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// cloud-node list file (default: <teamx_home>/console.json)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    /// teamx server URL override (default: TEAMX_SERVER_URL, else the URL in
+    /// the workspace's imported invitation letter)
+    #[arg(long)]
+    pub server_url: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
