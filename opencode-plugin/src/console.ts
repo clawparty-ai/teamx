@@ -4,6 +4,7 @@
 // open the default browser at that URL (`/team console`).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { createServer } from "node:net"
 import { join } from "node:path"
 import { teamxBin, teamxDir } from "./client"
 
@@ -98,17 +99,52 @@ export function openBrowser(url: string): void {
   }
 }
 
+/** Is a TCP port free on 127.0.0.1 right now? */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createServer()
+    srv.unref()
+    srv.on("error", () => resolve(false))
+    srv.listen(port, "127.0.0.1", () => {
+      srv.close(() => resolve(true))
+    })
+  })
+}
+
+/** An OS-assigned free port (high random range). */
+function ephemeralPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.unref()
+    srv.on("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address() as { port: number }
+      srv.close(() => resolve(addr.port))
+    })
+  })
+}
+
 /**
  * Start a local `teamx console` subprocess for the workspace (idempotent).
  * Waits up to ~15s for the startup line that carries the one-time token URL,
  * then records it so `status`/`stop` and re-open work without re-spawning.
+ *
+ * Port: the preferred port (9528, or an explicit `port`) is used when free;
+ * otherwise a high random free port is chosen and the browser is opened there.
  */
 export async function consoleStart(opts: { port?: number; cwd?: string }): Promise<ConsoleStatus> {
   const cwd = opts.cwd ?? process.cwd()
   const current = consoleStatus(cwd)
   if (current.running) return current
 
-  const port = opts.port ?? 9528
+  const preferred = opts.port ?? 9528
+  let port = preferred
+  if (!(await isPortFree(port))) {
+    if (opts.port !== undefined) {
+      return { running: false, error: `端口 ${port} 已被占用，请换一个或先停掉占用进程` }
+    }
+    port = await ephemeralPort()
+  }
   const configPath = join(teamxDir(cwd), "console.json")
   const args = ["console", "--port", String(port), "--config", configPath]
 
