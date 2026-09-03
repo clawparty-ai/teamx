@@ -44,6 +44,7 @@ use crate::commands;
 use crate::pki;
 
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 type Db = Mutex<rusqlite::Connection>;
 
@@ -993,6 +994,69 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             return Err(format!("member `{member_id}` is not a member of team {tid}"));
         }
         return crate::server_tasks::rpc(method, args, conn, &tid, &member_id);
+    }
+
+    // `team.force_leave` — owner/co-lead retires a stale member seat (e.g. an
+    // old non-user-bound worker) by marking it `left`.
+    if method == "team.force_leave" {
+        let tid = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("team.force_leave: member has no active team".to_string()),
+                    _ => return Err("team.force_leave requires `team` (member in several teams)".to_string()),
+                }
+            }
+        };
+        let lead: bool = conn
+            .query_row(
+                "SELECT t.owner_member_id = ?1 OR m.is_lead = 1
+                 FROM teams t JOIN members m ON m.team_id = t.id
+                 WHERE t.id = ?2 AND m.id = ?1",
+                params![&member_id, &tid],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        if !lead {
+            return Err("team.force_leave: only the team owner or a co-lead may retire members".to_string());
+        }
+        let target = s("member_id").ok_or_else(|| "team.force_leave requires `member_id`".to_string())?;
+        let display: Option<String> = conn
+            .query_row(
+                "SELECT display_name FROM members WHERE team_id = ?1 AND id = ?2",
+                params![&tid, target],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if display.is_none() {
+            return Err(format!("member `{target}` is not in team {tid}"));
+        }
+        let now = crate::db::now();
+        crate::db::with_write(conn, |tx| {
+            tx.execute(
+                "UPDATE members SET state = 'left', left_at = ?1 WHERE team_id = ?2 AND id = ?3",
+                params![now, &tid, target],
+            )?;
+            crate::events::emit(
+                tx,
+                &tid,
+                Some(&member_id),
+                "member.left",
+                Some(&json!({
+                    "display_name": display,
+                    "by": "team.force_leave",
+                    "member_id": target,
+                })),
+            )?;
+            Ok(())
+        })
+        .map_err(|e: rusqlite::Error| format!("db: {e}"))?;
+        return Ok(json!({ "ok": true, "member_id": target, "team": tid, "state": "left" }));
     }
 
     // Tunnel registry operations: the server's in-memory registry is the only
