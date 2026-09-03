@@ -2,7 +2,7 @@
 
 > 前置：需求分析见 [31-member-console-requirements.cn.md](31-member-console-requirements.cn.md)
 > 流程第 2 步：设计文档 → 之后为第 3 步 HTML 原型 → 第 4 步开发
-> 状态：**设计（待评审）**
+> 状态：**已实现**（commit `b5dcf3b`：`teamx console` + 五面板 + Cloud 反代）
 > 目标读者：维护者 / 实现者
 
 ---
@@ -209,3 +209,34 @@ fn run_panel(id: &str) -> Result<PanelOutput, String>
 1. 原型 HTML（第 3 步）：静态 mock 五面板 + Teamx Console 品牌 → 评审观感；
 2. 开发 S1–S4：console 可真实显示成员信息；
 3. 开发 S5–S6：Cloud iframe + 打磨 → 真机验证（东京/首尔/美国入口）。
+
+## 13. 实现与验证（第 4 步，commit `b5dcf3b`）
+
+实现拆分（复用 ui.rs 的服务/样式思路）：
+
+- `console.rs`：HTTPS+token 服务、登录/401/404（品牌 Teamx Console）、五面板 API、
+  `.teamx/console.json` 增删、Cloud 同源反代（`/api/cloud/{id}/*`）与 `/ws` 中继；
+- `console_data.rs`：模式解析（网络 mTLS RPC / 本地 CLI 子进程）、面板白名单命令、云节点配置与校验；
+- `console_html.rs`：单页前端（布局/主题与 teamx ui 一致，JS 无外部依赖）。
+
+使用：
+
+```bash
+cd <member 工作空间>        # 例如个人 用研 目录（含 .teamx letters）
+teamx console               # 网络模式自动发现 server；项目模式读本地 DB
+# 打开 https://127.0.0.1:9528/?token=<终端打印的 token>
+# Cloud 面板：先 teamx tunnel forward ttyd-<user>/opencode-<user> --local-port 1903x
+#           再添加 http://127.0.0.1:1903x 节点即可 iframe 内嵌（ttyd 交互需 /ws 中继）
+```
+
+真机验证（用研 workspace，network 模式）：
+
+- `/login`/`/?token=`/401/404 品牌与鉴权 OK；无 cookie 访问 `/` → 303 `/login`；API 无 cookie → 401；
+- `teams`/`events`/`tunnels` 经 mTLS RPC 返回与 CLI 一致数据（mode=rpc）；`tasks` 走本地 CLI（无 taskx docs 时为空列表）；
+- Cloud：仅允许 127.0.0.1 节点（非回环 400）；反代 ttyd 根页面 200（Content-Length 收包、剥离 XFO/CSP）、子路径/资源正确；`/ws` 升级返回 101；
+- `cargo test -p teamx` 152 全绿；console* 新代码 clippy 零告警；对团队/成员/目标状态无写操作（仅写 `.teamx/console.json`）。
+
+已知限制：
+
+- opencode headless 的 SPA 用绝对路径 `/api/...` 请求，经子路径反代嵌入不完整 → Cloud 面板提供「在新标签页打开」兜底；ttyd 交互嵌入正常；
+- 反代为缓冲式 HTTP（非流式）；SSE 类长连接端点在 MVP 未覆盖。
