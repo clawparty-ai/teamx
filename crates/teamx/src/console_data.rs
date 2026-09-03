@@ -199,13 +199,16 @@ pub fn fetch_panel(ctx: &Ctx, id: &str) -> RunOut {
             finish("teamx tunnel list", ctx.server_url().is_some(), res)
         }
         "tasks" => {
-            // Tasks are `taskx` docs in the workspace (project mode / local
-            // git checkout). The CLI is authoritative; errors surface as-is.
-            let res = match &ctx.session {
-                Some(s) => local_cli(&["task", "list", "--mine", "--session", s]),
-                None => local_cli(&["task", "list"]),
+            // Network mode: server-backed taskx (`task.list` RPC). Project mode:
+            // `taskx` docs in the workspace via the local CLI.
+            let res = match &ctx.mode {
+                Mode::Network(url) => net_rpc(url, "task.list", json!({ "mine": true })),
+                Mode::Local => match &ctx.session {
+                    Some(s) => local_cli(&["task", "list", "--mine", "--session", s]),
+                    None => local_cli(&["task", "list"]),
+                },
             };
-            finish("teamx task list", false, res)
+            finish("teamx task list", ctx.server_url().is_some(), res)
         }
         other => RunOut {
             ok: false,

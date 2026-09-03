@@ -34,6 +34,7 @@ pub mod pki;
 pub mod procwatch;
 pub mod routes;
 pub mod serve;
+pub mod server_tasks;
 pub mod socks5;
 pub mod state;
 pub mod teamfile;

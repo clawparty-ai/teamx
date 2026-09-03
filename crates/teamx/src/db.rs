@@ -322,6 +322,27 @@ CREATE TABLE IF NOT EXISTS git_repo_permissions (
 /// Apply the schema (idempotent) + migrations.
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
+    // taskx (server-backed tasks for network teams, see docs/33-server-taskx-rpc.cn.md).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS taskx (
+           id           TEXT PRIMARY KEY,
+           team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+           title        TEXT NOT NULL,
+           body         TEXT,
+           state        TEXT NOT NULL DEFAULT 'assigned',
+           mode         TEXT NOT NULL DEFAULT 'direct',
+           executor     TEXT NOT NULL DEFAULT 'either',
+           priority     TEXT NOT NULL DEFAULT 'medium',
+           assignee_member_id TEXT,
+           role_key     TEXT,
+           created_by_member_id TEXT NOT NULL,
+           created_at   TEXT NOT NULL,
+           updated_at   TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_taskx_team   ON taskx(team_id);
+         CREATE INDEX IF NOT EXISTS idx_taskx_assign ON taskx(assignee_member_id);
+         CREATE INDEX IF NOT EXISTS idx_taskx_role   ON taskx(role_key);",
+    )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     // v2-era rebuild only applies to legacy DBs that still have the `sessions`

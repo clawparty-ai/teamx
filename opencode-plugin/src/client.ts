@@ -367,7 +367,7 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   // two-token method; top-level commands (publish/ask/respond/events/log/sync)
   // treat every positional as a parameter. Subcommand names are normalized so
   // `member set-state` maps to the RPC method `member.set_state`.
-  const GROUPED = new Set(["team", "goal", "member", "role", "loopx", "tunnel", "activity", "model", "presence"])
+  const GROUPED = new Set(["team", "goal", "member", "role", "loopx", "tunnel", "activity", "model", "presence", "task", "git"])
   const p0 = positional[0] ?? ""
   const p1 = positional[1] ?? ""
   let method: string
@@ -412,6 +412,24 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     "activity.rows": [],
     "model.pricing_sync": [],
     "presence.push": [],
+    // taskx (server-backed tasks, network mode): task.<action>
+    "task.list": [],
+    "task.create": ["title"],
+    "task.ack": ["id"],
+    "task.claim": ["id"],
+    "task.update": ["id"],
+    "task.help": ["id"],
+    "task.done": ["id"],
+    "task.verify": ["id"],
+    "task.reject": ["id"],
+    "task.log": ["id"],
+    // git (server RPC): list is served as `git.repos` server-side.
+    "git.list": [],
+    "git.create": ["name"],
+    "git.delete": ["name"],
+    "git.grant": ["name", "member_id"],
+    "git.permissions": ["name"],
+    "git.bundle": [],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {

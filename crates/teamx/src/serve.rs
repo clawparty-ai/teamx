@@ -970,6 +970,31 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         .map(|(id, _role)| id)
         .ok_or_else(|| format!("no member identity in client certificate CN `{actor_cn}`"))?;
 
+    // taskx (server-backed tasks for network teams). The task's team is the
+    // caller's single team unless `team` is given.
+    if method.starts_with("task.") {
+        let tid = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("task: member has no active team".to_string()),
+                    _ => {
+                        return Err(format!(
+                            "task requires `team` (member belongs to {} teams)",
+                            teams.len()
+                        ))
+                    }
+                }
+            }
+        };
+        if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+            return Err(format!("member `{member_id}` is not a member of team {tid}"));
+        }
+        return crate::server_tasks::rpc(method, args, conn, &tid, &member_id);
+    }
+
     // Tunnel registry operations: the server's in-memory registry is the only
     // source of truth; these bypass the ledger (no events are written).
     // Authorization: the caller must be a member of the tunnel's team. If the
@@ -1158,6 +1183,8 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
     //   - create            -> team owner only
     //   - delete/grant      -> admin permission on the repo
     if method.starts_with("git.") {
+        // Plugin sends `git list`; the server RPC calls this `git.repos`.
+        let method = if method == "git.list" { "git.repos" } else { method };
         return git_dispatch(method, args, conn, &member_id);
     }
 
