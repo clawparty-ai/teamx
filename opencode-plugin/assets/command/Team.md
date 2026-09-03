@@ -38,6 +38,7 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 - `serve token <member>` → teamx_serve_token（生成/轮换成员连接 token，owner）
 - `console` / `console status` / `console stop` → teamx_console / teamx_console_status / teamx_console_stop（打开成员 Web 控制台 teamx console，自动开浏览器）
 - `inbox` → teamx_inbox（我的统一收件箱：任务/提问/未读提醒）
+- ⚠️ 工作区规则：teamx 命令一律从工作区目录（含 `.teamx`）执行；不要在克隆仓库目录内手工运行 `teamx git push/pull`——请使用 `/team git push`（工具自动以工作区+证书身份执行）。
 - `help` → 列出以上子命令
 
 先调用 teamx_sync，然后根据 $ARGUMENTS 中的子命令路由到对应工具并执行。

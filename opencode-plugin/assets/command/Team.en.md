@@ -38,6 +38,7 @@ teamx team collaboration command. Route and execute based on the following subco
 - `serve token <member>` → teamx_serve_token (generate/rotate member connection token, owner)
 - `console` / `console status` / `console stop` → teamx_console / teamx_console_status / teamx_console_stop (open the member web console teamx console; opens the browser automatically)
 - `inbox` → teamx_inbox (show my unified inbox: tasks / questions / nudges)
+- ⚠️ Workspace rule: run teamx commands from the workspace directory (where `.teamx` lives); do not `cd` into a cloned repo to run `teamx git push/pull` — use `/team git push` (the tool runs with the workspace identity).
 - `help` → list the above subcommands
 
 Call teamx_sync first, then route to the corresponding tool based on the subcommand in $ARGUMENTS and execute.

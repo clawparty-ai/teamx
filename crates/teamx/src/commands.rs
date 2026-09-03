@@ -4884,6 +4884,22 @@ fn cmd_cert_ca() -> Result<Value> {
 fn cmd_git(_conn: &mut Connection, cmd: &crate::cli::GitCmd) -> Result<Value> {
     use crate::cli::GitCmd;
 
+    // If no explicit TEAMX_HOME, walk upward from the current directory (which
+    // may be inside a cloned repo) until a `.teamx/letters` store is found, so
+    // `teamx git push/pull` works from inside the repo without mTLS errors.
+    if std::env::var_os("TEAMX_HOME").is_none() {
+        if let Ok(start) = std::env::current_dir() {
+            let mut dir = Some(start.as_path());
+            while let Some(d) = dir {
+                if d.join(".teamx").join("letters").is_dir() {
+                    std::env::set_var("TEAMX_HOME", d.join(".teamx"));
+                    break;
+                }
+                dir = d.parent();
+            }
+        }
+    }
+
     // Local-only commands (commit) don't need a server.
     if let GitCmd::Commit { message, dir } = cmd {
         return crate::git_client::commit(message, dir.as_deref()).map_err(git_err);

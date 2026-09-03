@@ -153,7 +153,8 @@ fn poll_once(
             last_nudge["message"].as_str().unwrap_or("")
         ));
     }
-    prompt.push_str("请勿重复已完成的任务；只做与上面相关的事。");
+    prompt.push_str("请勿重复已完成的任务；只做与上面相关的事。\n");
+    prompt.push_str("执行规则：提交/推送请使用 teamx 工具（如 teamx_git_commit_push），不要在克隆仓库目录内手工运行 teamx/git —— 工具会以工作区目录与你的证书身份执行。");
 
     eprintln!("teamx worker: would run opencode with {} new task(s), {} new question(s)", new_tasks.len(), new_questions.len());
     eprintln!("  prompt: {}", prompt.chars().take(160).collect::<String>());
