@@ -587,11 +587,11 @@ async fn handle_tunnel_forward(mut socket: WebSocket, state: AppState, identity:
             // stay team-scoped.
             for tid in teams {
                 if let Some(t) = tunnels.get(&tid, &nm) {
+                    let owner_ok = commands::is_team_owner(&conn, &mid, &tid);
                     let allowed = match &t.provider_user_id {
                         None => true,
                         Some(pu) => {
-                            cu.as_deref() == Some(pu.as_str())
-                                || commands::is_team_owner(&conn, &tid, &mid).unwrap_or(false)
+                            cu.as_deref() == Some(pu.as_str()) || owner_ok.unwrap_or(false)
                         }
                     };
                     if !allowed {
