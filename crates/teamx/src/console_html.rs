@@ -33,7 +33,7 @@ pub fn page_html() -> String {
   </nav>
   <div class="header-right">
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
-    <div class="user-info"><div class="user-avatar">M</div><span>Member</span></div>
+    <div class="user-info"><div class="user-avatar" id="meAvatar">?</div><span id="meName">Member</span></div>
   </div>
 </header>
 <div class="toolbar">
@@ -290,6 +290,20 @@ $("#themeToggle").addEventListener("click",()=>{document.body.classList.toggle("
 
 $("#wsPath").textContent = window.location.origin.replace(/^https?:\/\//,"") + "  ·  cwd .teamx";
 
+/* ---------- header identity (current workspace member) ---------- */
+async function loadMe(){
+  try {
+    const r=await fetch("/api/me",{cache:"no-store"});
+    if(!r.ok) return;
+    const p=await r.json();
+    if(p.ok && p.data){
+      const name=p.data.name||"Member";
+      $("#meName").textContent=name;
+      $("#meAvatar").textContent=(name.replace(/\(.*\)$/,"").trim()[0]||"?").toUpperCase();
+    }
+  } catch(_){ /* keep Member fallback */ }
+}
+
 /* ---------- panels ---------- */
 let currentView="teams";
 function showView(name){ currentView=name; $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===name)); $$(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name)); renderView(name); }
@@ -422,6 +436,7 @@ $("#addNodeBtn").addEventListener("click",async()=>{
   $("#nodeName").value=""; $("#nodeUrl").value="";
   renderNodes();
 });
+loadMe();
 loadCloud();
 showView("teams");
 "##;

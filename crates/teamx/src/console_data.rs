@@ -254,24 +254,9 @@ fn finish(cmd: &str, is_net: bool, res: Result<Value, String>) -> RunOut {
 }
 
 /// The first team id from `team.status` (used to scope `events`).
+/// The first team id from `team.status` (used to scope `events`).
 fn team_id(ctx: &Ctx) -> Result<String, String> {
-    let status = match &ctx.mode {
-        Mode::Network(url) => {
-            let sess = ctx.session_or("console").to_string();
-            net_rpc(url, "team.status", json!({ "session": sess }))?
-        }
-        Mode::Local => {
-            let sess = require_local_session(ctx)?;
-            local_cli(&["team", "status", "--session", &sess])?
-        }
-    };
-    let teams = status
-        .get("teams")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "team.status returned no `teams`".to_string())?;
-    let first = teams
-        .first()
-        .ok_or_else(|| "you are not a member of any team yet".to_string())?;
+    let first = first_team(ctx)?;
     first
         .get("team")
         .and_then(|t| t.get("id"))
@@ -279,6 +264,116 @@ fn team_id(ctx: &Ctx) -> Result<String, String> {
         .map(str::to_string)
         .or_else(|| first.get("id").and_then(Value::as_str).map(str::to_string))
         .ok_or_else(|| "cannot determine team id from team.status".to_string())
+}
+
+fn team_status(ctx: &Ctx) -> Result<Value, String> {
+    match &ctx.mode {
+        Mode::Network(url) => {
+            let sess = ctx.session_or("console").to_string();
+            net_rpc(url, "team.status", json!({ "session": sess }))
+        }
+        Mode::Local => {
+            let sess = require_local_session(ctx)?;
+            local_cli(&["team", "status", "--session", &sess])
+        }
+    }
+}
+
+fn first_team(ctx: &Ctx) -> Result<Value, String> {
+    let status = team_status(ctx)?;
+    let teams = status
+        .get("teams")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "team.status returned no `teams`".to_string())?;
+    teams
+        .first()
+        .cloned()
+        .ok_or_else(|| "you are not a member of any team yet".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Current member ("me") resolution for the header.
+// ---------------------------------------------------------------------------
+
+/// The current member id: from the client certificate CN (network mode) or
+/// the workspace's local member row (project mode).
+fn self_member_id(ctx: &Ctx) -> Option<String> {
+    match &ctx.mode {
+        Mode::Network(url) => {
+            let mtls = crate::tunnel_client::mtls_for(url)?;
+            let (_, cert) =
+                x509_parser::parse_x509_certificate(mtls.cert.as_ref()).ok()?;
+            let cn = cert.subject().iter_common_name().next()?.as_str().ok()?.to_string();
+            crate::pki::parse_member_cn(&cn).map(|(id, _)| id)
+        }
+        Mode::Local => {
+            let sess = ctx.session.clone().or_else(|| pick_local_session(&ctx.home))?;
+            local_member_id(&ctx.home, &sess)
+        }
+    }
+}
+
+/// Member id for a session in the workspace DB (project mode).
+fn local_member_id(home: &Path, session: &str) -> Option<String> {
+    let db_path = home.join("teamx.db");
+    if !db_path.is_file() {
+        return None;
+    }
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+    let conn = rusqlite::Connection::open_with_flags(&db_path, flags).ok()?;
+    conn.query_row(
+        "SELECT id FROM members WHERE session_key = ?1 AND state NOT IN ('left','denied')
+         ORDER BY joined_at DESC LIMIT 1",
+        [session],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// Resolve `{ id, name, role, state, is_lead }` for the current member.
+fn resolve_me(ctx: &Ctx) -> Result<Value, String> {
+    let id = self_member_id(ctx).ok_or_else(|| {
+        "cannot identify the current member (no invitation letter / local session)".to_string()
+    })?;
+    // Look the display name up in the team the member belongs to.
+    let status = team_status(ctx)?;
+    let teams = status.get("teams").and_then(Value::as_array).cloned().unwrap_or_default();
+    for team in &teams {
+        if let Some(members) = team.get("members").and_then(Value::as_array) {
+            if let Some(m) = members.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(&id)) {
+                return Ok(json!({
+                    "id": id,
+                    "name": m.get("display_name").and_then(Value::as_str).unwrap_or(&id),
+                    "role": m.get("role").and_then(Value::as_str).unwrap_or(""),
+                    "state": m.get("state").and_then(Value::as_str).unwrap_or(""),
+                    "is_lead": m.get("is_lead").and_then(Value::as_bool).unwrap_or(false),
+                }));
+            }
+        }
+    }
+    Ok(json!({ "id": id, "name": id, "role": "", "state": "", "is_lead": false }))
+}
+
+/// Fetch "me" as a panel-style result (used by `/api/me`).
+pub fn fetch_me(ctx: &Ctx) -> RunOut {
+    match resolve_me(ctx) {
+        Ok(data) => RunOut {
+            ok: true,
+            mode: "rpc",
+            cmd: "teamx whoami".to_string(),
+            data: Some(data),
+            error: None,
+            elapsed_ms: 0,
+        },
+        Err(e) => RunOut {
+            ok: false,
+            mode: "rpc",
+            cmd: "teamx whoami".to_string(),
+            error: Some(e),
+            data: None,
+            elapsed_ms: 0,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

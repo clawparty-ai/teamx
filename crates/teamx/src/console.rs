@@ -31,8 +31,8 @@ use serde_json::json;
 
 use crate::cli::ConsoleCmd;
 use crate::console_data::{
-    config_path, fetch_panel, load_config, resolve_mode, save_config, slugify, valid_node_url,
-    Ctx, Mode, RunOut,
+    config_path, fetch_me, fetch_panel, load_config, resolve_mode, save_config, slugify,
+    valid_node_url, Ctx, Mode, RunOut,
 };
 use crate::console_html::{login_html, not_found_html, page_html, unauthorized_html};
 use crate::pki;
@@ -87,6 +87,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/panels/{id}", get(api_panel))
+        .route("/api/me", get(api_me))
         .route("/api/cloud", get(api_cloud_get).post(api_cloud_post))
         .route(
             "/api/cloud/{id}",
@@ -220,6 +221,25 @@ async fn api_panel(
             mode: "",
             cmd: "panel".to_string(),
             error: Some("panel task panicked".to_string()),
+            data: None,
+            elapsed_ms: 0,
+        });
+    (StatusCode::OK, Json(out)).into_response()
+}
+
+/// Header identity: the current workspace member (`/api/me`).
+async fn api_me(State(state): State<S>, headers: HeaderMap) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let ctx = state.ctx.clone();
+    let out: RunOut = tokio::task::spawn_blocking(move || fetch_me(&ctx))
+        .await
+        .unwrap_or_else(|_| RunOut {
+            ok: false,
+            mode: "rpc",
+            cmd: "teamx whoami".to_string(),
+            error: Some("whoami task panicked".to_string()),
             data: None,
             elapsed_ms: 0,
         });
