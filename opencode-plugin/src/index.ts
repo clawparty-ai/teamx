@@ -604,7 +604,22 @@ export const Teamx: Plugin = async ({ client }) => {
     // heartbeats never block real events, but only toast notable ones.
     if (maxSeq > lastNotified) notifiedSeq.set(sessionID, maxSeq)
     const fresh = notableEvents(events).filter((e) => (e.seq ?? 0) > lastNotified)
-    if (lastNotified < 0 || fresh.length === 0) return
+    // First refresh after the process (re)started: the watermark was reset, so
+    // the normal path would silently skip everything to avoid spamming a
+    // backlog. Idle-team nudges are important enough to surface ONCE here —
+    // otherwise a worker whose opencode restarted right before a nudge would
+    // never see "your team is waiting".
+    if (lastNotified < 0) {
+      const notableNow = notableEvents(events)
+      if (notableNow.some((e) => e.type === "system.nudge")) {
+        await client.tui.appendPrompt({ body: { text: t("nudge_prompt") } }).catch(() => {})
+      }
+      if (notableNow.some((e) => e.type === "system.nudge_lead")) {
+        await client.tui.appendPrompt({ body: { text: t("nudge_lead_prompt") } }).catch(() => {})
+      }
+      return
+    }
+    if (fresh.length === 0) return
     const first = fresh[0]
     const last = fresh[fresh.length - 1]
     const lines = fresh.map(summarizeEvent).slice(0, 3)
