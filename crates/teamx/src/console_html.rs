@@ -28,7 +28,6 @@ pub fn page_html() -> String {
     <button data-view="teams" class="active">Members</button>
     <button data-view="tasks">My Tasks</button>
     <button data-view="events">Events</button>
-    <button data-view="cloud">Cloud</button>
   </nav>
   <div class="header-right">
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
@@ -55,25 +54,6 @@ pub fn page_html() -> String {
   <div class="view" id="view-events">
     <section class="panel"><h2>Recent team events <span class="count" id="evCount"></span></h2>
       <ul class="ev-list" id="evList"></ul></section>
-  </div>
-  <div class="view" id="view-cloud">
-    <div class="cloud-layout">
-      <div>
-        <section class="panel" style="margin-bottom:0">
-          <h2>Cloud nodes <span class="muted" id="nodeHint"></span></h2>
-          <div id="nodeList"></div>
-          <div class="node-add">
-            <input id="nodeName" placeholder="name · caicai headless">
-            <input id="nodeUrl" placeholder="http://127.0.0.1:19034">
-            <button class="btn btn-primary" id="addNodeBtn">+ Add</button>
-          </div>
-        </section>
-      </div>
-      <div class="iframe-wrap" id="iframeWrap">
-        <div class="iframe-empty" id="iframeEmpty"><div class="big">🖥️</div><div id="iframeEmptyText">选择一个云节点入口，经 console 反向代理 iframe 内嵌。</div></div>
-        <iframe id="nodeFrame" style="display:none"></iframe>
-      </div>
-    </div>
   </div>
 </div>
 <script>
@@ -270,37 +250,10 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-text .who { color:var(--muted-fg); font-size:12px; }
 .copy-btn { font-size:12px; padding:3px 10px; }
 .cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
-/* ---------- Members + tunnel dock (open-iframes on the right) ---------- */
-.view-teams-layout { display:flex; align-items:flex-start; gap:16px; }
-.tl-left { flex:1; min-width:0; }
-.tl-right { display:none; flex:0 0 75%; }
-.view-teams-layout.has-dock .tl-left { flex:0 0 25%; min-width:340px; }
-.view-teams-layout.has-dock .tl-right { display:block; }
-.dock-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:14px; overflow:hidden; }
-.dock-head { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--muted); border-bottom:1px solid var(--border); font-size:12.5px; font-weight:600; }
-.dock-head .dh-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dock-head .dh-kind { flex-shrink:0; }
-.dock-card iframe { display:block; width:100%; height:76vh; min-height:480px; border:0; background:#fff; }
 .btn-mini { font-size:12px; padding:3px 10px; }
 .btn-mini.busy { opacity:.7; }
 .tun-chip { display:inline-flex; align-items:center; gap:4px; background:var(--muted); border:1px solid var(--border); border-radius:12px; padding:2px 8px; margin:2px 4px 2px 0; font-size:11.5px; color:var(--fg); }
 .tun-chip .dot { width:7px; height:7px; border-radius:50%; background:#67C23A; }
-.empty-hint { color:var(--muted-fg); font-size:13px; padding:10px 0; }
-.cloud-layout { display:grid; grid-template-columns:320px 1fr; gap:16px; }
-@media (max-width:1000px){ .cloud-layout { grid-template-columns:1fr; } }
-.node-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-bottom:10px; cursor:pointer; transition:border-color var(--transition),box-shadow var(--transition); }
-.node-card:hover { border-color:var(--primary); box-shadow:var(--shadow-hover); }
-.node-card.sel { border-color:var(--primary); box-shadow:0 0 0 2px rgba(74,144,229,0.15); }
-.node-title { display:flex; align-items:center; justify-content:space-between; gap:8px; font-weight:600; font-size:13.5px; }
-.node-title .del { color:var(--danger); background:none; border:none; cursor:pointer; font-size:14px; padding:0 4px; }
-.node-url { font-family:var(--font-mono); font-size:11.5px; color:var(--muted-fg); margin-top:4px; word-break:break-all; }
-.node-add { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
-.node-add input { font:inherit; font-size:13px; padding:6px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); color:var(--fg); min-width:0; }
-.node-add input:first-child { width:140px; } .node-add input:nth-child(2){ flex:1; }
-.iframe-wrap { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); position:relative; min-height:520px; }
-.iframe-wrap iframe { width:100%; height:calc(100vh - 230px); min-height:520px; border:0; display:block; }
-.iframe-empty { padding:70px 24px; text-align:center; color:var(--muted-fg); font-size:13px; }
-.iframe-empty .big { font-size:36px; margin-bottom:10px; }
 .btn { padding:6px 14px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); color:var(--fg); font-size:13px; font-weight:500; cursor:pointer; transition:all var(--transition); }
 .btn:hover { border-color:var(--primary); color:var(--primary); }
 .btn-primary { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
@@ -343,7 +296,7 @@ let currentView="teams";
 function showView(name){ currentView=name; $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===name)); $$(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name)); renderView(name); }
 async function renderView(name){
   if(name==="teams") loadTeams(); else if(name==="tasks") loadTasks();
-  else if(name==="events") loadEvents(); else if(name==="cloud") loadCloud();
+  else if(name==="events") loadEvents();
 }
 $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
@@ -423,7 +376,7 @@ async function loadTeams(){
   }));
 }
 
-/* ---------- iframe dock removed: all "Open" actions use a new browser tab ---------- */
+/* ---------- boot ---------- */
 
 /* ---------- My Tasks ---------- */
 async function loadTasks(){
@@ -463,37 +416,6 @@ function summarize(e,pl){
   try{ return JSON.stringify(pl).slice(0,120); }catch(_){ return e.type; }
 }
 
-/* ---------- Cloud (iframe via console reverse proxy) ---------- */
-let nodes=[], selNode="";
-async function loadCloud(){ const r=await fetch("/api/cloud",{cache:"no-store"}); if(r.ok){ const c=await r.json(); nodes=(c.nodes||[]); } renderNodes(); }
-function renderNodes(){
-  $("#nodeHint").textContent = nodes.length?("· "+nodes.length):"";
-  $("#nodeList").innerHTML = nodes.map(n=>`<div class="node-card ${n.id===selNode?"sel":""}" data-node="${esc(n.id)}">
-      <div class="node-title"><span>${esc(n.name)}</span><span><span class="badge running">${esc(n.kind)}</span> <button class="del" title="remove" data-del="${esc(n.id)}">✕</button></span></div>
-      <div class="node-url">${esc(n.url)}</div></div>`).join("") || `<div class="muted" style="padding:8px 0">尚未添加云节点。先 tunnel forward，再添加本地地址。</div>`;
-  $$("#nodeList .node-card").forEach(c=>c.addEventListener("click",(e)=>{ if(e.target.dataset.del) return; selNode=c.dataset.node; renderNodes(); openNode(selNode); }));
-  $$("#nodeList [data-del]").forEach(b=>b.addEventListener("click",async(e)=>{ e.stopPropagation(); const id=b.dataset.del; await fetch("/api/cloud/"+encodeURIComponent(id),{method:"DELETE"}); if(selNode===id)selNode=""; loadCloud(); }));
-  if(selNode) openNode(selNode);
-}
-function openNode(id){
-  const n=nodes.find(x=>x.id===id); if(!n) return;
-  const frame=$("#nodeFrame"), empty=$("#iframeEmpty");
-  empty.style.display=""; frame.style.display="none";
-  $("#iframeEmptyText").innerHTML=`加载 ${esc(n.name)} …<br><span class="muted">经 console 同源反代 /api/cloud/${esc(n.id)}/（剥离 X-Frame-Options）</span><br><br><a class="btn" target="_blank" href="${esc(n.url)}">在新标签页打开</a>`;
-  frame.src="/api/cloud/"+encodeURIComponent(n.id)+"/";
-  frame.onload=()=>{ empty.style.display="none"; frame.style.display="block"; };
-  frame.onerror=()=>{ empty.style.display=""; $("#iframeEmptyText").textContent="代理加载失败，请确认该端口已 tunnel forward 到本机。"+n.url; };
-}
-$("#addNodeBtn").addEventListener("click",async()=>{
-  const name=$("#nodeName").value.trim(), url=$("#nodeUrl").value.trim();
-  if(!name||!url){ alert("请输入 name 与本地 URL"); return; }
-  const r=await fetch("/api/cloud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,url})});
-  if(!r.ok){ alert("添加失败: "+await r.text()); return; }
-  const c=await r.json(); nodes=c.nodes||nodes;
-  $("#nodeName").value=""; $("#nodeUrl").value="";
-  renderNodes();
-});
 loadMe();
-loadCloud();
 showView("teams");
 "##;
