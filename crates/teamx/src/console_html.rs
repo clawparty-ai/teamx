@@ -396,9 +396,10 @@ async function loadEvents(){
   $("#evList").innerHTML=`<li class="loading">loading …</li>`;
   const p=await panel("events"); setLast(p);
   if(!p.ok){ $("#evList").innerHTML=""; const host=$("#view-events .panel"); host.insertAdjacentHTML("afterbegin",errBox(p)); return; }
-  let evs=[]; const d=p.data;
-  if(d&&Array.isArray(d.events)) evs=d.events; else if(Array.isArray(d)) evs=d;
-  evs=evs.slice(0,80);
+  const d = p.data
+  let evs = (d && Array.isArray(d.events)) ? d.events : (Array.isArray(d) ? d : [])
+  // Newest first (the backend returns chronological order).
+  evs = evs.slice(0, 80).reverse()
   $("#evCount").textContent=evs.length;
   $("#evList").innerHTML = evs.map(e=>{
     const kind=(e.type||e.kind||"").replace(/^[a-z]+\./,"");
