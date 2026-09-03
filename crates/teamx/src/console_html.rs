@@ -338,7 +338,8 @@ async function loadTeams(){
   ].join("");
   if(!p.ok && !pt.ok){ $("#teamBody").innerHTML=(p.error?errBox(p):errBox(pt)); return; }
   $("#teamBody").innerHTML = teams.map(t=>{
-    const g=t.goal||{}; const members=t.members||[];
+    const g=t.goal||{};
+    const members=(t.members||[]).filter(m=>m.state!=="left"&&m.state!=="denied");
     const table=members.map(m=>{
       const mt=byMember.get(m.id)||[];
       return `<tr>

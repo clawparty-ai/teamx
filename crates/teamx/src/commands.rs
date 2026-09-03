@@ -2539,7 +2539,12 @@ fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
 
 fn team_status_json(conn: &Connection, team: &TeamRow) -> Result<Value> {
     let goal = team_goal(conn, &team.id)?;
-    let members = members_for_team(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
+    // Show only live members: left/denied seats are history (visible in log).
+    let members = members_for_team(conn, &team.id)
+        .map_err(|e| AppError(format!("db error: {e}")))?
+        .into_iter()
+        .filter(|m| m.state != "left" && m.state != "denied")
+        .collect::<Vec<_>>();
     let questions = open_questions(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
     let roles = roles_json(conn, &team.id).map_err(|e| AppError(format!("db error: {e}")))?;
     let recent = events::recent(conn, &team.id, 20)
