@@ -116,14 +116,16 @@ teamx 已有两套面向「owner/lead」的界面：
 6. **云节点集成**：经 tunnel 映射到本地后可用 iframe 内嵌（headless / ttyd）。
 7. **流程**：先需求分析 → 设计文档 → HTML 原型 → 开发。
 
-## 8. 开放问题（供评审确认）
+## 8. 开放问题（已定决策）
 
-1. 命令名：`teamx console`？还是 `teamx ui-member` / `teamx member-ui`？（本文暂用 `teamx console`）
-2. MVP 面板取舍：先做 **Teams / My Tasks / Events / Tunnels / Cloud(iframe)** 五块是否足够？Goals 与 Repos 放后续？
-3. iframe 限制：如 headless Web 带 `X-Frame-Options`/CSP 导致无法嵌入，是否接受「console 本地反向代理该端口以嵌入」的方案（会增加一个小代理）？
-4. Cloud 节点入口配置保存位置：沿用 `.teamx/console.json`（项目级）还是用户级 `~/.config/teamx/console.json`？
-5. 是否在 MVP 中提供「一键复制 tunnel forward 命令」的只读辅助（不代执行）？
-6. 登录失败/401 页面与登录页文案是否直接复制 teamx ui 但把品牌换成 Teamx Console？
+| # | 问题 | 决策 |
+|---|---|---|
+| 1 | 命令名 | **`teamx console`** |
+| 2 | MVP 面板 | 先做五面板 **Teams / My Tasks / Events / Tunnels / Cloud(iframe)**，Goals/Repos 等后续迭代 |
+| 3 | iframe 限制 | 接受 **console 本地反向代理**方案：为云节点入口做一层同源代理，必要时剥离 `X-Frame-Options`/CSP 限制以便 iframe 嵌入 |
+| 4 | Cloud 入口配置 | **项目级** `.teamx/console.json` |
+| 5 | 复制 forward 命令 | 提供只读辅助（"一键复制"按钮，不代执行） |
+| 6 | 登录/401/404 页 | 直接复用 teamx ui 的页面与文案，仅品牌改为 Teamx Console |
 
 ## 9. 验收标准（草案）
 
