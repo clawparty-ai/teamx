@@ -112,7 +112,11 @@ export async function serveStart(opts: { addr?: string; port?: number; db?: stri
   const proc = Bun.spawn([teamxBin(), ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...(process.env as Record<string, string>), TEAMX_HOME: teamxDir(cwd) },
+    env: {
+      ...(process.env as Record<string, string>),
+      TEAMX_HOME: teamxDir(cwd),
+      TEAMX_PARENT_PID: String(process.pid),
+    },
   })
 
   const rec: ServeRecord = {

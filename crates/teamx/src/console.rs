@@ -42,6 +42,10 @@ const COOKIE: &str = "teamx_console_token";
 
 /// Entry point. Blocks until the server stops.
 pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
+    // When launched by the opencode plugin, exit (and clean up tunnel
+    // forwards) as soon as opencode goes away.
+    crate::procwatch::spawn_parent_monitor();
+
     let home = crate::db::teamx_home();
     let token = format!(
         "{}{}",
@@ -453,6 +457,8 @@ fn start_tunnel_forward(ctx: &Ctx, name: &str) -> Result<serde_json::Value, Stri
         cmd.env("TEAMX_SERVER_URL", url);
     }
     let mut child = cmd.spawn().map_err(|e| format!("spawn tunnel forward: {e}"))?;
+    // Track it so the parent-death watcher can clean it up with us.
+    crate::procwatch::register_child(child.id());
 
     // Wait until the local port actually accepts connections (~4s max).
     let mut up = false;

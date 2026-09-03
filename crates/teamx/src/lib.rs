@@ -31,6 +31,7 @@ pub mod gui_member_panel;
 pub mod loopx;
 pub mod metrics;
 pub mod pki;
+pub mod procwatch;
 pub mod routes;
 pub mod serve;
 pub mod socks5;

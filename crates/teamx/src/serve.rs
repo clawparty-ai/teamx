@@ -126,6 +126,9 @@ where
 
 /// Entry point for `teamx serve`.
 pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
+    // When launched by the opencode plugin, stop as soon as opencode exits.
+    crate::procwatch::spawn_parent_monitor();
+
     let db_path = cmd.db.clone().unwrap_or_else(crate::db::default_db_path);
     let conn = crate::db::open(&db_path).map_err(|e| format!("cannot open database {db_path:?}: {e}"))?;
     crate::db::migrate(&conn).map_err(|e| format!("schema init failed: {e}"))?;

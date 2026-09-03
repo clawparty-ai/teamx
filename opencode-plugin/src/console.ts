@@ -154,7 +154,11 @@ export async function consoleStart(opts: { port?: number; cwd?: string }): Promi
       cwd,
       stdout: "ignore",
       stderr: "pipe",
-      env: { ...(process.env as Record<string, string>), TEAMX_HOME: teamxDir(cwd) },
+      env: {
+        ...(process.env as Record<string, string>),
+        TEAMX_HOME: teamxDir(cwd),
+        TEAMX_PARENT_PID: String(process.pid),
+      },
     })
   } catch (e) {
     return { running: false, error: `无法启动 teamx console: ${String(e)}` }
