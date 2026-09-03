@@ -542,3 +542,110 @@ mod tests {
         assert!(call(&mut c, "task.claim", "m-w2", json!({"id": id})).is_err());
     }
 }
+
+/// Unified inbox for a member: my open tasks + questions directed at me +
+/// unread nudges since the member's server-side cursor. `ack` advances the
+/// cursor (marks nudges read) after returning them.
+
+/// Read-only part of the inbox (all queries against `&Connection`).
+fn inbox_read(
+    conn: &Connection,
+    team_id: &str,
+    member_id: &str,
+    cursor: i64,
+) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>, i64), String> {
+    let my_role = member_role(conn, team_id, member_id)?.unwrap_or_default();
+    let tasks: Vec<Value> = {
+        let mut stmt = conn
+            .prepare(&format!(
+                "{SELECT_TASK} WHERE team_id = ?1 AND state NOT IN ('done','verified')
+                 AND (assignee_member_id = ?2 OR (assignee_member_id IS NULL AND role_key = ?3))
+                 ORDER BY created_at DESC"
+            ))
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt.query_map(params![team_id, member_id, my_role], row_to_task).map_err(|e| format!("db: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<Value>>>().map_err(|e| format!("db: {e}"))?
+    };
+    let questions: Vec<Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, asker_member_id, question, created_at FROM questions
+                 WHERE team_id = ?1 AND target_member_id = ?2 AND state = 'open'
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt.query_map(params![team_id, member_id], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "asker_member_id": r.get::<_, Option<String>>(1)?,
+                "question": r.get::<_, String>(2)?,
+                "created_at": r.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<Value>>>().map_err(|e| format!("db: {e}"))?
+    };
+    let nudges: Vec<Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, type, payload, created_at FROM events
+                 WHERE team_id = ?1 AND type IN ('system.nudge','system.nudge_lead') AND seq > ?2
+                 ORDER BY seq",
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt.query_map(params![team_id, cursor], |r| {
+            let payload: Option<String> = r.get(2)?;
+            let pv: Value = payload
+                .and_then(|p| serde_json::from_str(&p).ok())
+                .unwrap_or(Value::Null);
+            let msg = pv.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+            Ok(json!({
+                "seq": r.get::<_, i64>(0)?,
+                "type": r.get::<_, String>(1)?,
+                "message": msg,
+                "created_at": r.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<Value>>>().map_err(|e| format!("db: {e}"))?
+    };
+    let last_seq = nudges.iter().map(|n| n["seq"].as_i64().unwrap_or(0)).max().unwrap_or(cursor);
+    Ok((tasks, questions, nudges, last_seq))
+}
+
+pub fn inbox(
+    conn: &mut Connection,
+    team_id: &str,
+    member_id: &str,
+    ack: bool,
+) -> Result<Value, String> {
+    let cursor: i64 = conn
+        .query_row(
+            "SELECT last_seq FROM inbox_cursors WHERE member_id = ?1 AND team_id = ?2",
+            params![member_id, team_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?
+        .unwrap_or(0);
+
+    let (tasks, questions, nudges, last_seq) = inbox_read(conn, team_id, member_id, cursor)?;
+    if ack && last_seq > cursor {
+        crate::db::with_write(conn, |tx| {
+            tx.execute(
+                "INSERT INTO inbox_cursors (member_id, team_id, last_seq)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(member_id, team_id) DO UPDATE SET last_seq = excluded.last_seq",
+                params![member_id, team_id, last_seq],
+            )?;
+            Ok(())
+        })
+        .map_err(|e: rusqlite::Error| format!("db: {e}"))?;
+    }
+    Ok(json!({
+        "tasks": tasks,
+        "questions": questions,
+        "nudges": { "unread": nudges, "unread_count": nudges.len(), "last_seq": last_seq },
+        "acknowledged": ack && last_seq > cursor,
+    }))
+}

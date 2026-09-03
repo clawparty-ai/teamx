@@ -1007,4 +1007,21 @@ export const tools = {
       return tx(context.sessionID, context.directory, ["git", "permissions", args.name, ...opt("--team", args.team)])
     },
   }),
+
+  teamx_inbox: tool({
+    description:
+      "Show the member's unified inbox for the current team: open tasks assigned to me, " +
+      "open questions directed at me, and unread team nudges. Reading the inbox (ack, default) " +
+      "marks nudges as seen so they are not repeated on the next session.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+      ack: tool.schema.boolean().optional().describe("mark nudges as read (default true)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const parts = ["team", "inbox"]
+      if (args.team) parts.push("--team", args.team)
+      if (args.ack !== false) parts.push("--ack")
+      return tx(context.sessionID, context.directory, parts)
+    },
+  }),
 }

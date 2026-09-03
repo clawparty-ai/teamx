@@ -37,6 +37,7 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 - `serve start [--port]` / `serve status` / `serve stop` → teamx_serve_start / teamx_serve_status / teamx_serve_stop（在 opencode 内启动/查询/停止本地 serve，网络模式）
 - `serve token <member>` → teamx_serve_token（生成/轮换成员连接 token，owner）
 - `console` / `console status` / `console stop` → teamx_console / teamx_console_status / teamx_console_stop（打开成员 Web 控制台 teamx console，自动开浏览器）
+- `inbox` → teamx_inbox（我的统一收件箱：任务/提问/未读提醒）
 - `help` → 列出以上子命令
 
 先调用 teamx_sync，然后根据 $ARGUMENTS 中的子命令路由到对应工具并执行。

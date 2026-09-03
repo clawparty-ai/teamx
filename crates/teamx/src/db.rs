@@ -343,6 +343,16 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_taskx_assign ON taskx(assignee_member_id);
          CREATE INDEX IF NOT EXISTS idx_taskx_role   ON taskx(role_key);",
     )?;
+    // Unified per-member inbox: last nudge seq the member has read (server-side
+    // cursor, shared by every session/device of that member).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS inbox_cursors (
+           member_id TEXT NOT NULL,
+           team_id   TEXT NOT NULL,
+           last_seq  INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY (member_id, team_id)
+         );",
+    )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     // v2-era rebuild only applies to legacy DBs that still have the `sessions`

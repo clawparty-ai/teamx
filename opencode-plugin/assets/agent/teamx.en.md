@@ -43,6 +43,7 @@ Users trigger commands via `/team <subcommand>` (or flat aliases `/team-xxx`; ea
 | `serve start [--port]` / `serve status` / `serve stop` | teamx_serve_start / teamx_serve_status / teamx_serve_stop | Start/query/stop local server in opencode (network mode, owner) |
 | `serve token <member>` | teamx_serve_token | Generate/rotate member connection token (owner) |
 | `console` / `console status` / `console stop` | teamx_console / teamx_console_status / teamx_console_stop | Open/query/stop the member web console (teamx console; opens the browser) |
+| `inbox` | teamx_inbox | Show my unified inbox (open tasks / my questions / unread nudges) |
 | `help` | - | List subcommands |
 
 ## Core Tools

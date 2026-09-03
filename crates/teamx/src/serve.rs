@@ -1059,6 +1059,26 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         return Ok(json!({ "ok": true, "member_id": target, "team": tid, "state": "left" }));
     }
 
+    // `team.inbox` — unified per-member inbox (tasks + my questions + unread
+    // nudges). Member's nudge cursor lives server-side (`inbox_cursors`).
+    if method == "team.inbox" {
+        let tid = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("team.inbox: member has no active team".to_string()),
+                    _ => return Err("team.inbox requires `team` (member in several teams)".to_string()),
+                }
+            }
+        };
+        if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+            return Err(format!("member `{member_id}` is not a member of team {tid}"));
+        }
+        return crate::server_tasks::inbox(conn, &tid, &member_id, b("ack"));
+    }
+
     // Tunnel registry operations: the server's in-memory registry is the only
     // source of truth; these bypass the ledger (no events are written).
     // Authorization: the caller must be a member of the tunnel's team. If the
