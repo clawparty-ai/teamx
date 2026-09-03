@@ -21,6 +21,9 @@ pub enum Command {
     /// Initialize the global database
     Init,
 
+    /// Print build info (version / git commit / build time)
+    Version,
+
     /// Team management
     #[command(subcommand)]
     Team(TeamCmd),

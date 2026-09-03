@@ -10,6 +10,7 @@
 
 pub mod activity;
 pub mod broadcast;
+pub mod buildinfo;
 pub mod cli;
 pub mod commands;
 pub mod db;

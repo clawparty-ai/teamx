@@ -38,6 +38,15 @@ fn main() {
         }
         return;
     }
+    // `teamx version` needs no DB: print build metadata and exit.
+    if let Command::Version = &cli.command {
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&teamx::buildinfo::json_value()).unwrap_or_default());
+        } else {
+            print!("{}", teamx::buildinfo::human());
+        }
+        return;
+    }
     // `teamx gui` is a desktop tray app (L1); it manages child processes and
     // does not open the DB itself. Requires the `gui` feature.
     #[cfg(feature = "gui")]

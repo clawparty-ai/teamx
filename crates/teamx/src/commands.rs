@@ -415,6 +415,10 @@ fn emit_json(
 pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
     let out = match &cli.command {
         Command::Init => cmd_init(conn)?,
+        // `teamx version` is handled in main() before the DB opens.
+        Command::Version => {
+            return err("`teamx version` must be run as its own process")
+        }
         Command::Team(t) => match t {
             TeamCmd::Create { name, session, goal_title, goal_body } => {
                 cmd_team_create(conn, name, session, goal_title.as_deref(), goal_body.as_deref())?
