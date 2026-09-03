@@ -14,6 +14,14 @@ async function tx(sessionID: string | undefined, directory: string, args: string
   return renderResult(r)
 }
 
+/** Like `tx` but forces the command to run as a local child process even in
+ *  network mode (used by git operations that act on the local checkout /
+ *  local git config: clone/pull/push/setup/commit…). */
+async function txLocal(sessionID: string | undefined, directory: string, args: string[]): Promise<string> {
+  const r = await txResult(sessionID, directory, args, { forceLocal: true })
+  return renderResult(r)
+}
+
 /** Run a teamx CLI command and return the raw result (for membership marking). */
 async function txResult(
   sessionID: string | undefined,
@@ -890,7 +898,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, context.directory, ["git", "clone", args.repo, ...opt("--directory", args.directory), ...opt("--team", args.team)])
+      return txLocal(context.sessionID, context.directory, ["git", "clone", args.repo, ...opt("--directory", args.directory), ...opt("--team", args.team)])
     },
   }),
 
@@ -905,7 +913,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, context.directory, ["git", "pull", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return txLocal(context.sessionID, context.directory, ["git", "pull", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 
@@ -920,7 +928,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, context.directory, ["git", "push", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return txLocal(context.sessionID, context.directory, ["git", "push", args.repo, ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 
@@ -939,7 +947,7 @@ export const tools = {
       const parts = ["git", "setup"]
       if (args.server) parts.push("--server", args.server)
       if (args.local) parts.push("--local")
-      return tx(context.sessionID, context.directory, parts)
+      return txLocal(context.sessionID, context.directory, parts)
     },
   }),
 
@@ -952,7 +960,7 @@ export const tools = {
       dir: tool.schema.string().optional().describe("working directory (default: current dir)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, context.directory, ["git", "commit", "--message", args.message, ...opt("--dir", args.dir)])
+      return txLocal(context.sessionID, context.directory, ["git", "commit", "--message", args.message, ...opt("--dir", args.dir)])
     },
   }),
 
@@ -969,7 +977,7 @@ export const tools = {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
-      return tx(context.sessionID, context.directory, ["git", "commit-push", "--message", args.message, ...opt("--repo", args.repo), ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
+      return txLocal(context.sessionID, context.directory, ["git", "commit-push", "--message", args.message, ...opt("--repo", args.repo), ...opt("--branch", args.branch), ...opt("--dir", args.dir), ...opt("--team", args.team)])
     },
   }),
 

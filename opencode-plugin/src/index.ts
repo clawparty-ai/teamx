@@ -22,6 +22,7 @@ import {
   setDigest,
 } from "./client"
 import { tools } from "./tools"
+import { maybeAutoClone } from "./autoclone"
 import { connectWs } from "./ws"
 import { collect, initActivity } from "./activity"
 import { t } from "./i18n"
@@ -564,8 +565,16 @@ export const Teamx: Plugin = async ({ client }) => {
 
   async function refreshDigest(sessionID: string): Promise<void> {
     const key = sk(sessionID)
-    const r = await runCli(["sync", "--no-advance", "--session", key], { cwd: dirOfSession(sessionID) })
+    const cwd = dirOfSession(sessionID)
+    const r = await runCli(["sync", "--no-advance", "--session", key], { cwd })
     if (!r.ok || !r.data) return
+    // First-login convenience: auto-clone the team's default git repo into a
+    // fresh network workspace (one-time, opt-out via TEAMX_NO_AUTO_CLONE=1).
+    try {
+      await maybeAutoClone(cwd)
+    } catch {
+      // never block the digest on an optional clone
+    }
     const data = r.data as unknown as SyncData
     // My open tasks (taskx) — injected into the digest so the agent sees its
     // TODO without an explicit `task list` call. Human tasks are flagged so the
