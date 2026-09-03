@@ -1360,7 +1360,91 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
     };
 
     let cli = make(cmd);
-    commands::execute(&cli, conn).map_err(|e| e.to_string())
+    let mut out = commands::execute(&cli, conn).map_err(|e| e.to_string())?;
+    // `team.status` additionally reports the team's auto-created git repo:
+    // whether it exists and what permission the calling member has on it.
+    if method == "team.status" {
+        annotate_git_repos(&mut out, conn, &member_id)?;
+    }
+    Ok(out)
+}
+
+/// Attach `git_repo: { exists, name, id, permission }` to each team of a
+/// `team.status` result (for the certificate-derived calling member).
+fn annotate_git_repos(
+    out: &mut Value,
+    conn: &rusqlite::Connection,
+    member_id: &str,
+) -> Result<(), String> {
+    let Some(teams) = out.get_mut("teams").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    for t in teams {
+        let name = t
+            .get("team")
+            .and_then(|x| x.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| t.get("name").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        let team_id = t
+            .get("team")
+            .and_then(|x| x.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| t.get("id").and_then(Value::as_str))
+            .unwrap_or_default();
+        if name.is_empty() || team_id.is_empty() {
+            continue;
+        }
+        let repo_name = crate::git_service::repo_name_from_team(&name);
+        let status = match crate::git_service::get_repo(conn, team_id, &repo_name)
+            .map_err(|e| format!("git_repo check: {e}"))?
+        {
+            Some(repo) => {
+                let permission = if crate::git_service::check_permission(
+                    conn,
+                    &repo.id,
+                    member_id,
+                    crate::git_service::PERM_ADMIN,
+                )
+                .map_err(|e| format!("git_repo check: {e}"))?
+                {
+                    "admin"
+                } else if crate::git_service::check_permission(
+                    conn,
+                    &repo.id,
+                    member_id,
+                    crate::git_service::PERM_WRITE,
+                )
+                .map_err(|e| format!("git_repo check: {e}"))?
+                {
+                    "write"
+                } else if crate::git_service::check_permission(
+                    conn,
+                    &repo.id,
+                    member_id,
+                    crate::git_service::PERM_READ,
+                )
+                .map_err(|e| format!("git_repo check: {e}"))?
+                {
+                    "read"
+                } else {
+                    "none"
+                };
+                json!({
+                    "exists": true,
+                    "name": repo.name,
+                    "id": repo.id,
+                    "permission": permission,
+                })
+            }
+            None => json!({ "exists": false }),
+        };
+        if let Some(obj) = t.as_object_mut() {
+            obj.insert("git_repo".to_string(), status);
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
