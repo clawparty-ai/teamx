@@ -303,6 +303,64 @@ teamx tunnel forward ttyd --local-port 17681 \
 
 ---
 
+## 6.6 teamx fs：每个工作空间的文件服务（Console 文件浏览器后端）
+
+成员文件服务以 **teamx workspace** 为单元部署（一个 workspace = 一个含 `.teamx` 的项目目录，例如
+`/home/<user>/work`），不是 OS 级服务。它绑定 127.0.0.1 暴露该 workspace 的
+list/read/download/upload，再经 teamx 隧道（`fs-<user>`）给本人 / owner / lead 浏览。
+
+每个 workspace 两个 systemd 单元（示例为 user `zhongm`、工作目录 `/home/zhongm/work`）：
+
+```ini
+# /etc/systemd/system/teamx-fs-zhongm.service
+[Unit]
+Description=teamx fs file service (workspace: zhongm/work)
+After=network-online.target
+[Service]
+Type=simple
+User=zhongm
+WorkingDirectory=/home/zhongm/work
+Environment=HOME=/home/zhongm
+Environment=TEAMX_HOME=/home/zhongm/work/.teamx
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/teamx fs --addr 127.0.0.1 --port 4197
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/tx-expose-fs-zhongm.service
+[Unit]
+Description=teamx tunnel expose: fs-zhongm
+After=network-online.target
+[Service]
+Type=simple
+User=zhongm
+WorkingDirectory=/home/zhongm/work
+Environment=HOME=/home/zhongm
+Environment=TEAMX_HOME=/home/zhongm/work/.teamx
+Environment=TEAMX_SERVER_URL=https://<server>
+ExecStart=/usr/local/bin/teamx tunnel expose fs-zhongm --port 4197 --mode local --server https://<server> --session zhongm
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now teamx-fs-zhongm tx-expose-fs-zhongm
+# 本地验证（lead）：
+teamx tunnel forward fs-zhongm --local-port 19101 --session <me>
+curl "http://127.0.0.1:19101/api/list?path=."   # {"ok":true,"entries":[…]}
+```
+
+API：`GET /api/list?path=`、`GET /api/read?path=`、`GET /api/download?path=`、
+`POST /api/upload?dir=&name=`（body=文件内容）。安全：仅回环绑定 + 隧道 ACL；
+根=该 workspace；拒绝路径穿越与 `.teamx`/`.git`（证书不外泄）。
+> 早期把 fs 建成“每主机一个 OS 级服务”是错误模型——应改为每个 workspace 一套。
+
 ## 7. 日常运维小结
 
 | 操作 | 命令（在对应机器） |
