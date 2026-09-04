@@ -231,3 +231,64 @@ clone 团队与源团队**共用同一 server（一个 ip:port、一个 DB）**�
 - `docs/26-manual-cloud-host-best-practice.cn.md`（节点 workspace 部署模式）
 - `docs/33-server-taskx-rpc.cn.md`（同仓库文档序列）
 - `crates/teamx/src/commands.rs`（`cmd_team_invite`、`cmd_team_create`）
+
+## 13. 使用指南（What & How）
+
+### 13.1 Clone 是什么
+`team clone` 把一支团队「复制」成一支**同构、隔离、可立即开工**的新团队：
+
+- **同构**：新团队拥有和源团队完全相同的成员（同一批人）、角色目录、lead 结构，以及**同名的空 git 仓库**（内容不复制）。
+- **隔离**：新团队是全新的 `team_id`，从零状态起步（`forming`、无 goal、无事件/任务/提问/nudge/隧道历史）。
+- **可立即开工**：clone 完成后，把各自的邀请函分发给成员，导入即可加入新团队并行执行新目标。
+
+**典型场景**：一个 team 同一时间只能跑一个 goal。当「同一批人」要并行开一个新目标时，clone 一支新团队去执行，避免在旧团队上叠加上下文/权限混乱。
+
+### 13.2 前置条件
+- 你是源团队的 **owner 或 co-lead**（`ensure_owner` 校验）。
+- 新团队名**全库唯一**。
+- 源团队的 owner 必须是 `active` 成员（否则 clone 失败）。
+- 有 server 权限（网络模式）或本地团队（本地模式）。
+
+### 13.3 快速上手（本地 CLI）
+```bash
+# 1. 预览（dry-run，不落库）
+teamx team clone --name my-team-v2 --session <my-session>
+
+# 2. 确认执行（返回每张成员邀请函）
+teamx team clone --name my-team-v2 --session <my-session> --yes
+```
+
+输出里 `members[]` 是**每个成员的邀请函**（`letter` 字段，`teamx-inv:v1:<base64>` 单行字符串），`repos[]` 是 clone 出来的空仓库，`team.owner_member_id` 是 clone 团队 owner 座位。
+
+### 13.4 网络模式（RPC）
+```json
+{ "method": "team.clone", "args": { "name": "my-team-v2", "yes": true } }
+```
+- 单团队 owner 可不传 `team`；多团队需传 `team`。
+- `server_url` 不必显式传：serve 会从请求的 `Host` 头推导公网地址写入邀请函（§9.1 A 方案）；也可显式传 `server_url` 覆盖。
+
+### 13.5 分发邀请函 & 成员导入
+clone 返回的每张 `letter` 对应一个成员（含 owner）。**把各自的 letter 发到对应的人/设备**，然后在各自的 workspace 导入：
+
+```bash
+# 成员侧（在独立 workspace 目录下）
+teamx team import "teamx-inv:v1:…" --session <my-session>
+```
+
+- 所有 clone 邀请函 `auto_approve`，导入即 `active`，无需 owner 逐个审批。
+- **同一用户**：clone 保留了源成员的 `user_id` 绑定，所以同一个人在源/clone 两队是同一个「人」（隧道身份打通）。
+- owner 导入后自动获得 clone 仓库的 **ADMIN** 权限；其余成员获得 **WRITE**（§9.2）。
+
+### 13.6 节点接入（worker）
+clone 团队是独立身份，节点上要**另开一套 workspace + 进程组**（不能复用源团队的 `.teamx`）。详见 §8：
+
+- 本地/lead：`mkdir <clone> && cd <clone>` → `team import "<letter>"` → `team console`
+- worker 节点：`/home/<user>/work-<clone>` + 一套端口错开的 systemd 单元（opencode-serve / ttyd / teamx-fs / teamx-worker + 隧道）
+
+### 13.7 注意事项 / FAQ
+- **同名仓库**：clone 的仓库和源仓库同名但**内容为空**（bare），不是 fork 内容。
+- **完全独立**：clone 后源团队不受影响；同一源可 clone 多次（不同 name），互不干扰。
+- **owner 未导入前**：clone 团队 `state=forming`、owner 座位尚未激活，直到 owner 导入其 letter。
+- **无 user 绑定的成员**：letter 不带 `user`，返回里 `note="unbound-seat"`，导入后 owner 可后续补绑 user。
+- **销毁**：不满意可用 `teamx team destroy --team <clone-id>`（owner）。
+- **吊销邀请函**：在 clone 团队里 `invite-list` / `invite-revoke` 管理未使用的邀请函。
