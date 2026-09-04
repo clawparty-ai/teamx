@@ -4742,6 +4742,32 @@ pub fn is_team_owner(conn: &Connection, member_id: &str, team_id: &str) -> rusql
 fn member_json(conn: &Connection, m: &MemberRow) -> Value {
     let ip = crate::db::member_ip(conn, &m.id);
     let online = crate::db::member_online(conn, &m.id);
+    // The person behind this member (a user may own several members).
+    let user: Option<(String, String)> = conn
+        .query_row(
+            "SELECT u.id, u.display_name FROM members m LEFT JOIN users u ON u.id = m.user_id
+             WHERE m.id = ?1",
+            [&m.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    // Lifetime activity totals for this member (tokens in+out+reasoning+cache).
+    let (tokens, cost): (i64, f64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(COALESCE(tokens_input,0)+COALESCE(tokens_output,0)
+                 +COALESCE(tokens_reasoning,0)+COALESCE(tokens_cache_read,0)
+                 +COALESCE(tokens_cache_write,0)),0),
+                    COALESCE(SUM(cost),0)
+             FROM activity WHERE member_id = ?1",
+            [&m.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .unwrap_or((0, 0.0));
     json!({
         "id": m.id,
         "display_name": m.display_name,
@@ -4752,6 +4778,8 @@ fn member_json(conn: &Connection, m: &MemberRow) -> Value {
         "is_lead": m.is_lead,
         "ip": ip,
         "online": online,
+        "user": user.map(|(id, display_name)| json!({ "id": id, "display_name": display_name })),
+        "activity": { "tokens": tokens, "cost": cost },
     })
 }
 

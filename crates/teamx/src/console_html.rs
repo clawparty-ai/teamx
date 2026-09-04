@@ -225,6 +225,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; }
 th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
 tbody tr { transition:background var(--transition); } tbody tr:hover { background:var(--muted); }
 th { color:var(--muted-fg); font-weight:600; font-size:12px; background:var(--muted); }
+tr.user-group td { background:var(--primary-light); color:var(--primary); font-weight:600; font-size:12.5px; letter-spacing:0.02em; }
 .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:12px; font-weight:500; line-height:1.5; white-space:nowrap; }
 .badge.proposed,.badge.blocked,.badge.open { background:#FDF6EC; color:#E6A23C; }
 .badge.shared,.badge.in_progress,.badge.active,.badge.running,.badge.lead { background:#EBF5FF; color:#4A90E5; }
@@ -340,22 +341,42 @@ async function loadTeams(){
   $("#teamBody").innerHTML = teams.map(t=>{
     const g=t.goal||{};
     const members=(t.members||[]).filter(m=>m.state!=="left"&&m.state!=="denied");
-    const table=members.map(m=>{
-      const mt=byMember.get(m.id)||[];
-      return `<tr>
-        <td>${esc(m.display_name)}</td>
-        <td>${badge(m.role)}</td>
-        <td>${badge(m.state)}</td>
-        <td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td>
-        <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-        <td>${mt.length?mt.map(x=>`<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">▶ ${esc(kindOf(x.name))}</button>`).join(" "):'<span class="muted">—</span>'}</td>
-      </tr>`;
-    }).join("");
+    // Group rows by the underlying person ("用户"): a user may hold several
+    // member seats (personal + workers). Groups are sorted by user name.
+    const fmtN=(n)=>{ n=Number(n)||0; return n>=1e9?(n/1e9).toFixed(1)+"B": n>=1e6?(n/1e6).toFixed(1)+"M": n>=1e3?(n/1e3).toFixed(1)+"k": String(n); };
+    const fmt$=(c)=>{ c=Number(c)||0; return "$"+ (c>=1? c.toFixed(2): c.toFixed(4)); };
+    const groups=new Map();
+    for(const m of members){
+      const ukey = (m.user&&m.user.display_name) || "(no user)";
+      if(!groups.has(ukey)) groups.set(ukey,{ name: (m.user&&m.user.display_name)||m.display_name, members: [] });
+      groups.get(ukey).members.push(m);
+    }
+    const groupArr=[...groups.entries()].sort((a,b)=>a[1].name.localeCompare(b[1].name));
+    const rows=[];
+    for(const [,grp] of groupArr){
+      rows.push(`<tr class="user-group"><td colspan="9">👤 ${esc(grp.name)} · ${grp.members.length} seat(s)</td></tr>`);
+      for(const m of grp.members){
+        const mt=byMember.get(m.id)||[];
+        const act=m.activity||{};
+        rows.push(`<tr>
+          <td class="mono" style="font-size:11px;color:var(--muted-fg)">${m.user?esc(m.user.display_name):"—"}</td>
+          <td>${esc(m.display_name)}</td>
+          <td>${badge(m.role)}</td>
+          <td>${badge(m.state)}</td>
+          <td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td>
+          <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
+          <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
+          <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
+          <td>${mt.length?mt.map(x=>`<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">▶ ${esc(kindOf(x.name))}</button>`).join(" "):'<span class="muted">—</span>'}</td>
+        </tr>`);
+      }
+    }
+    const table=rows.join("");
     return `<section class="panel">
       <h2>${esc(t.name||(t.team&&t.team.name)||"(team)")} ${badge(t.state||(t.team&&t.team.state))} ${g.title?`<span class="muted" style="font-weight:400">— ${esc(g.title)}</span>`:""}</h2>
       ${g.title?`<div style="margin-bottom:10px">${badge(g.state)} <span class="muted">goal</span></div>`:""}
-      <table><thead><tr><th>Member</th><th>Role</th><th>State</th><th>Online</th><th>Tunnels</th><th>Open</th></tr></thead><tbody>
-        ${table||`<tr><td colspan=6 class="muted">no members</td></tr>`}
+      <table><thead><tr><th>User</th><th>Member</th><th>Role</th><th>State</th><th>Online</th><th>IP</th><th>Cost</th><th>Tunnels</th><th>Open</th></tr></thead><tbody>
+        ${table||`<tr><td colspan=9 class="muted">no members</td></tr>`}
       </tbody></table></section>`;
   }).join("") || `<section class="panel"><div class="muted">你尚未加入任何团队。</div></section>`;
 
