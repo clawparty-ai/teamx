@@ -372,7 +372,7 @@ async function loadTeams(){
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-          <td>${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):'<span class="muted">—</span>'}</td>
+          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" title="文件浏览器">📁</button> ${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
         </tr>`);
       }
     }
@@ -400,6 +400,10 @@ async function loadTeams(){
       b.textContent="✓ "+kind;
     } catch(e){ alert("自动 forward 失败："+e); }
     finally{ b.disabled=false; b.classList.remove("busy"); }
+  }));
+  // 📁 File browser entry (wired once the node runs `teamx fs`).
+  $$("#teamBody button.fs-btn").forEach(b=>b.addEventListener("click",()=>{
+    alert("文件浏览器即将可用：需节点运行 teamx fs 并经隧道暴露后接入。member="+b.dataset.mid);
   }));
 }
 
