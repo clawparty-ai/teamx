@@ -329,6 +329,8 @@ const $=(s)=>document.querySelector(s);
 const $$=(s)=>Array.from(document.querySelectorAll(s));
 const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const badge=(s)=>{const b=s||"idle";return `<span class="badge ${esc(b)}">${esc(b)}</span>`};
+const fmtN=(n)=>{ n=Number(n)||0; return n>=1e9?(n/1e9).toFixed(1)+"B": n>=1e6?(n/1e6).toFixed(1)+"M": n>=1e3?(n/1e3).toFixed(1)+"k": String(n); };
+const fmt$=(c)=>{ c=Number(c)||0; return "$"+ (c>=1? c.toFixed(2): c.toFixed(4)); };
 const tf=(iso)=>{ if(!iso) return "—"; const d=new Date(iso); return isNaN(d)?iso:d.toLocaleString(); };
 
 /* ---------- theme (same behavior as teamx ui) ---------- */
@@ -412,8 +414,6 @@ async function loadTeams(){
     const members=(t.members||[]).filter(m=>m.state!=="left"&&m.state!=="denied");
     // Group rows by the underlying person ("用户"): a user may hold several
     // member seats (personal + workers). Groups are sorted by user name.
-    const fmtN=(n)=>{ n=Number(n)||0; return n>=1e9?(n/1e9).toFixed(1)+"B": n>=1e6?(n/1e6).toFixed(1)+"M": n>=1e3?(n/1e3).toFixed(1)+"k": String(n); };
-    const fmt$=(c)=>{ c=Number(c)||0; return "$"+ (c>=1? c.toFixed(2): c.toFixed(4)); };
     const groups=new Map();
     for(const m of members){
       const ukey = (m.user&&m.user.display_name) || "(no user)";
