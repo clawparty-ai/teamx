@@ -427,6 +427,9 @@ async function loadTeams(){
       for(const m of grp.members){
         const mt=byMember.get(m.id)||[];
         window.__memTunnels.set(m.id, mt);
+        const me=window.__me||{};
+        const canAdmin=me.is_lead===true||me.role==="owner"||me.role==="admin";
+        const mtOpen=mt.filter(t=> !(t.name&&t.name.startsWith("teamx-ui")) || canAdmin);
         const act=m.activity||{};
         rows.push(`<tr>
           <td class="mono" style="font-size:11px;color:var(--muted-fg)">${m.user?esc(m.user.display_name):"—"}</td>
