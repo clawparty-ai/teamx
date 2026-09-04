@@ -295,9 +295,11 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .fs-preview-empty { color:var(--muted-fg); text-align:center; padding-top:80px; }
 .fs-right pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre-wrap; word-break:break-word; max-height:640px; overflow:auto; }
 .fs-right img { max-width:100%; }
+.md-render { font-size:14px; line-height:1.6; } .md-render h1,.md-render h2,.md-render h3,.md-render h4 { margin:0.5em 0 0.3em; } .md-render p { margin:0.4em 0; } .md-render code { background:var(--muted); padding:1px 4px; border-radius:3px; } .md-render pre { background:var(--muted); padding:10px; border-radius:6px; overflow:auto; }
 .fs-btn-actions { display:flex; gap:6px; align-items:center; }
 .fs-btn-actions .act { font-size:12px; cursor:pointer; color:var(--muted-fg); }
 .fs-btn-actions .act:hover { color:var(--primary); }
+.fs-headbtns .btn-mini { font-size:16px; padding:4px 11px; }
 
 /* overlay dialog inverts the page theme: light page → dark dialog, dark page → light dialog */
 .fs-dialog { color:var(--fg); }
@@ -526,14 +528,13 @@ function renderFs(entries){
     const div=document.createElement("div");
     div.className="fs-row";
     div.innerHTML=`<span class="ic">${icon}</span><span class="nm">${esc(e.name)}</span>`+
-      (isDir?"":`<span class="fs-btn-actions"><span class="act dl" title="下载">⬇</span><span class="act pv" title="预览">👁</span></span>`) +
+      (isDir?"":`<span class="fs-btn-actions"><span class="act dl" title="下载">⬇</span></span>`) +
       `<span class="meta">${meta}</span>`;
     if(isDir){
       div.addEventListener("click",()=>fsLoad(joinPath(FS.path,e.name)));
     } else {
-      div.addEventListener("dblclick",()=>fsPreview(joinPath(FS.path,e.name)));
+      div.addEventListener("click",()=>fsPreview(joinPath(FS.path,e.name)));
       div.querySelector(".dl")?.addEventListener("click",(ev)=>{ev.stopPropagation(); fsDownload(joinPath(FS.path,e.name),e.name);});
-      div.querySelector(".pv")?.addEventListener("click",(ev)=>{ev.stopPropagation(); fsPreview(joinPath(FS.path,e.name));});
     }
     rows.appendChild(div);
   }
@@ -553,7 +554,11 @@ async function fsPreview(path){
     const r=await fetch(fsProxy("/api/read?path=")+encodeURIComponent(path),{cache:"no-store"});
     const d=await r.json();
     if(!d.ok){ pre.innerHTML=`<div class="errorbox">${esc(d.error||"read failed")}</div>`; return; }
-    pre.innerHTML=`<pre>${esc(d.content)}${d.truncated?"\n… (截断)":""}</pre>`;
+    if(/\.(md|markdown)$/i.test(path)){
+      pre.innerHTML=`<div class="md-render">${mdRender(d.content)}</div>`;
+    } else {
+      pre.innerHTML=`<pre>${esc(d.content)}${d.truncated?"\n… (截断)":""}</pre>`;
+    }
   }catch(e){ pre.innerHTML=`<div class="errorbox">${esc(String(e))}</div>`; }
 }
 function fsDownload(path,name){
@@ -561,6 +566,30 @@ function fsDownload(path,name){
   a.href=fsProxy("/api/download?path=")+encodeURIComponent(path);
   if(name) a.download=name;
   document.body.appendChild(a); a.click(); a.remove();
+}
+function mdRender(src){
+  const esc2=(t)=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let lines=(src||"").replace(/\r\n/g,"\n").split("\n");
+  let out=[]; let inCode=false, code=[];
+  const inline=(t)=>esc2(t)
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
+    .replace(/\*([^*]+)\*/g,"<i>$1</i>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+  const flush=()=>{ if(inCode){ out.push("<pre><code>"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; } };
+  for(const ln of lines){
+    if(/^```/.test(ln)){ if(inCode){flush();} else { inCode=true; } continue; }
+    if(inCode){ code.push(ln); continue; }
+    if(/^####\s+/.test(ln)) out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>");
+    else if(/^###\s+/.test(ln)) out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>");
+    else if(/^##\s+/.test(ln)) out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>");
+    else if(/^#\s+/.test(ln)) out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>");
+    else if(/^[-*]\s+/.test(ln)) out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>");
+    else if(/^\s*$/.test(ln)) out.push("");
+    else out.push("<p>"+inline(ln)+"</p>");
+  }
+  flush();
+  return out.join("\n");
 }
 function bindFsOverlay(){
   document.getElementById("fsClose").addEventListener("click",fsCloseOverlay);
