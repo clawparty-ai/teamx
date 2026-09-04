@@ -56,6 +56,23 @@ pub fn page_html() -> String {
       <ul class="ev-list" id="evList"></ul></section>
   </div>
 </div>
+<div class="fs-overlay" id="fsOverlay" style="display:none">
+  <div class="fs-dialog">
+    <div class="fs-head">
+      <span class="fs-title">📁 <span id="fsWho">文件浏览器</span></span>
+      <div class="fs-headbtns">
+        <label class="btn btn-mini">⬆ 上传<input type="file" id="fsFile" style="display:none"></label>
+        <button class="btn btn-mini" id="fsRefresh">⟳</button>
+        <button class="btn btn-mini" id="fsClose">✕</button>
+      </div>
+    </div>
+    <div class="fs-breadcrumb" id="fsCrumb">/</div>
+    <div class="fs-body">
+      <div class="fs-left" id="fsRows"></div>
+      <div class="fs-right" id="fsPreview"><div class="fs-preview-empty">选择文件预览</div></div>
+    </div>
+  </div>
+</div>
 <script>
 {js}
 </script>
@@ -259,6 +276,28 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .btn:hover { border-color:var(--primary); color:var(--primary); }
 .btn-primary { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
 .btn-primary:hover { background:var(--primary-hover); color:var(--on-primary); }
+
+/* ---------- file browser overlay ---------- */
+.fs-overlay { position:fixed; inset:0; background:rgba(20,20,30,.45); z-index:900; display:flex; align-items:center; justify-content:center; padding:24px; }
+.fs-dialog { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-hover); width:min(1100px,96vw); height:min(720px,92vh); display:flex; flex-direction:column; overflow:hidden; }
+.fs-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--muted); border-bottom:1px solid var(--border); }
+.fs-title { flex:1; font-weight:600; font-size:14px; }
+.fs-headbtns { display:flex; gap:8px; }
+.fs-breadcrumb { padding:6px 14px; font-family:var(--font-mono); font-size:12px; color:var(--primary); border-bottom:1px solid var(--border); background:var(--card); }
+.fs-body { flex:1; display:flex; min-height:0; }
+.fs-left { width:46%; min-width:300px; overflow:auto; border-right:1px solid var(--border); }
+.fs-right { flex:1; overflow:auto; padding:12px; background:var(--card); }
+.fs-row { display:flex; align-items:center; gap:10px; padding:6px 12px; border-bottom:1px solid var(--border); font-size:13px; cursor:pointer; }
+.fs-row:hover { background:var(--muted); }
+.fs-row .ic { width:20px; text-align:center; }
+.fs-row .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fs-row .meta { color:var(--muted-fg); font-size:11.5px; font-family:var(--font-mono); }
+.fs-preview-empty { color:var(--muted-fg); text-align:center; padding-top:80px; }
+.fs-right pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre-wrap; word-break:break-word; max-height:640px; overflow:auto; }
+.fs-right img { max-width:100%; }
+.fs-btn-actions { display:flex; gap:6px; align-items:center; }
+.fs-btn-actions .act { font-size:12px; cursor:pointer; color:var(--muted-fg); }
+.fs-btn-actions .act:hover { color:var(--primary); }
 a.btn { text-decoration:none; }
 "#;
 
@@ -331,6 +370,7 @@ async function loadTeams(){
   }
   // tunnel provider -> list
   const byMember=new Map();
+  window.__memTunnels=new Map();
   for(const t of tuns){
     const k=t.provider_member_id||"_";
     if(!byMember.has(k)) byMember.set(k,[]);
@@ -362,6 +402,7 @@ async function loadTeams(){
       rows.push(`<tr class="user-group"><td colspan="9">👤 ${esc(grp.name)} · ${grp.members.length} seat(s)</td></tr>`);
       for(const m of grp.members){
         const mt=byMember.get(m.id)||[];
+        window.__memTunnels.set(m.id, mt);
         const act=m.activity||{};
         rows.push(`<tr>
           <td class="mono" style="font-size:11px;color:var(--muted-fg)">${m.user?esc(m.user.display_name):"—"}</td>
@@ -372,7 +413,7 @@ async function loadTeams(){
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" title="文件浏览器">📁</button> ${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
+          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" data-name="${esc(m.display_name)}" title="文件浏览器">📁</button> ${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
         </tr>`);
       }
     }
@@ -401,13 +442,107 @@ async function loadTeams(){
     } catch(e){ alert("自动 forward 失败："+e); }
     finally{ b.disabled=false; b.classList.remove("busy"); }
   }));
-  // 📁 File browser entry (wired once the node runs `teamx fs`).
+  // 📁 File browser entry.
   $$("#teamBody button.fs-btn").forEach(b=>b.addEventListener("click",()=>{
-    alert("文件浏览器即将可用：需节点运行 teamx fs 并经隧道暴露后接入。member="+b.dataset.mid);
+    fsOpenByMember(b.dataset.mid, b.dataset.name||"member");
   }));
 }
 
 /* ---------- boot ---------- */
+
+/* ---------- File browser overlay (backend: teamx fs via tunnel) ---------- */
+let FS = { nodeId:"", name:"", path:"" };
+const fsProxy=(suffix)=>"/api/cloud/"+encodeURIComponent(FS.nodeId)+suffix;
+function fsFull(rel){
+  if(!rel || rel==="/") return "";
+  return rel.startsWith("/") ? rel.slice(1) : rel;
+}
+function fsCrumbText(){ return "/" + FS.path; }
+async function fsOpenByMember(memberId, display){
+  const tuns = window.__memTunnels.get(memberId) || [];
+  const fs = tuns.find(t => t && t.name && t.name.startsWith("fs-"));
+  if(!fs){ alert("该成员节点未运行 teamx fs（无 fs-* 隧道）"); return; }
+  const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:fs.name})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok || !j.ok){ alert("forward 失败："+(j.error||r.status)); return; }
+  FS.nodeId=j.node_id; FS.name=fs.name; FS.path="";
+  document.getElementById("fsOverlay").style.display="flex";
+  document.getElementById("fsWho").textContent=display+" · "+fs.name;
+  fsLoad("");
+}
+function fsCloseOverlay(){ document.getElementById("fsOverlay").style.display="none"; FS.nodeId=""; }
+async function fsLoad(rel){
+  FS.path = rel || "";
+  document.getElementById("fsCrumb").innerHTML = fsCrumbText();
+  const rows=document.getElementById("fsRows");
+  rows.innerHTML=`<div class="loading">loading …</div>`;
+  try{
+    const r=await fetch(fsProxy("/api/list?path=")+encodeURIComponent(fsFull(rel)),{cache:"no-store"});
+    const d=await r.json();
+    if(!d.ok){ rows.innerHTML=`<div class="errorbox">${esc(d.error||"list failed")}</div>`; return; }
+    renderFs(d.entries||[]);
+  }catch(e){ rows.innerHTML=`<div class="errorbox">${esc(String(e))}</div>`; }
+}
+function renderFs(entries){
+  const rows=document.getElementById("fsRows");
+  if(FS.path){ rows.innerHTML=`<div class="fs-row" data-up="1"><span class="ic">📁</span><span class="nm">..</span></div>`; }
+  else rows.innerHTML="";
+  for(const e of entries){
+    const isDir=e.type==="directory";
+    const icon=isDir?"📁":"📄";
+    const meta=isDir?"":fmtN(e.size)+"B";
+    const div=document.createElement("div");
+    div.className="fs-row";
+    div.innerHTML=`<span class="ic">${icon}</span><span class="nm">${esc(e.name)}</span>`+
+      (isDir?"":`<span class="fs-btn-actions"><span class="act dl" title="下载">⬇</span><span class="act pv" title="预览">👁</span></span>`) +
+      `<span class="meta">${meta}</span>`;
+    if(isDir){
+      div.addEventListener("click",()=>fsLoad(joinPath(FS.path,e.name)));
+    } else {
+      div.addEventListener("dblclick",()=>fsPreview(joinPath(FS.path,e.name)));
+      div.querySelector(".dl")?.addEventListener("click",(ev)=>{ev.stopPropagation(); fsDownload(joinPath(FS.path,e.name),e.name);});
+      div.querySelector(".pv")?.addEventListener("click",(ev)=>{ev.stopPropagation(); fsPreview(joinPath(FS.path,e.name));});
+    }
+    rows.appendChild(div);
+  }
+  const up=rows.querySelector('[data-up="1"]');
+  if(up) up.addEventListener("click",()=>{ const p=FS.path.split("/").filter(Boolean); p.pop(); fsLoad(p.join("/")); });
+}
+function joinPath(base,name){ return [base,name].filter(x=>x && x!=="/").join("/"); }
+async function fsPreview(path){
+  const pre=document.getElementById("fsPreview");
+  const lower=path.toLowerCase();
+  if(/\.(png|jpe?g|gif|webp|svg|bmp)$/.test(lower)){
+    pre.innerHTML=`<img src="${fsProxy("/api/download?path=")}${encodeURIComponent(path)}">`;
+    return;
+  }
+  pre.innerHTML=`<div class="loading">loading …</div>`;
+  try{
+    const r=await fetch(fsProxy("/api/read?path=")+encodeURIComponent(path),{cache:"no-store"});
+    const d=await r.json();
+    if(!d.ok){ pre.innerHTML=`<div class="errorbox">${esc(d.error||"read failed")}</div>`; return; }
+    pre.innerHTML=`<pre>${esc(d.content)}${d.truncated?"\n… (截断)":""}</pre>`;
+  }catch(e){ pre.innerHTML=`<div class="errorbox">${esc(String(e))}</div>`; }
+}
+function fsDownload(path,name){
+  const a=document.createElement("a");
+  a.href=fsProxy("/api/download?path=")+encodeURIComponent(path);
+  if(name) a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function bindFsOverlay(){
+  document.getElementById("fsClose").addEventListener("click",fsCloseOverlay);
+  document.getElementById("fsRefresh").addEventListener("click",()=>fsLoad(FS.path));
+  document.getElementById("fsFile").addEventListener("change",async (ev)=>{
+    const f=ev.target.files[0]; ev.target.value="";
+    if(!f) return;
+    const url=fsProxy("/api/upload?dir=")+encodeURIComponent(fsFull(FS.path)||".")+"&name="+encodeURIComponent(f.name);
+    const r=await fetch(url,{method:"POST",body:f});
+    const d=await r.json().catch(()=>({}));
+    alert(d.ok?("已上传 "+f.name):("上传失败 "+(d.error||r.status)));
+    fsLoad(FS.path);
+  });
+}
 
 /* ---------- My Tasks ---------- */
 async function loadTasks(){
@@ -449,5 +584,6 @@ function summarize(e,pl){
 }
 
 loadMe();
+bindFsOverlay();
 showView("teams");
 "##;
