@@ -427,6 +427,7 @@ async function loadTeams(){
       for(const m of grp.members){
         const mt=byMember.get(m.id)||[];
         window.__memTunnels.set(m.id, mt);
+        window.__memNames=window.__memNames||{}; window.__memNames[m.id]=m.display_name;
         const me=window.__me||{};
         const canAdmin=me.is_lead===true||me.role==="owner"||me.role==="admin";
         // fs-* tunnels are served by the 📁 file browser, not opened as pages.
@@ -442,7 +443,7 @@ async function loadTeams(){
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mtVisible.length?mtVisible.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" data-name="${esc(m.display_name)}" title="文件浏览器">📁</button> ${mtOpen.length?mtOpen.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
+          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" title="文件浏览器">📁</button> ${mtOpen.length?mtOpen.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
         </tr>`);
       }
     }
@@ -456,7 +457,7 @@ async function loadTeams(){
   }).join("") || `<section class="panel"><div class="muted">你尚未加入任何团队。</div></section>`;
 
   // attach open handlers
-  $$("#teamBody button[data-name]").forEach(b=>b.addEventListener("click",async ()=>{
+  $$("#teamBody button[data-kind]").forEach(b=>b.addEventListener("click",async ()=>{
     const name=b.dataset.name, member=b.dataset.member, kind=b.dataset.kind;
     b.disabled=true; b.classList.add("busy"); b.textContent="forwarding…";
     try{
@@ -473,7 +474,7 @@ async function loadTeams(){
   }));
   // 📁 File browser entry.
   $$("#teamBody button.fs-btn").forEach(b=>b.addEventListener("click",()=>{
-    fsOpenByMember(b.dataset.mid, b.dataset.name||"member");
+    fsOpenByMember(b.dataset.mid, (window.__memNames||{})[b.dataset.mid]||"member");
   }));
 }
 
@@ -497,6 +498,7 @@ async function fsOpenByMember(memberId, display){
   FS.nodeId=j.node_id; FS.name=fs.name; FS.path="";
   document.getElementById("fsOverlay").style.display="flex";
   document.getElementById("fsWho").textContent=display+" · "+fs.name;
+  await new Promise(res=>setTimeout(res,600)); // let the forward settle
   fsLoad("");
 }
 function fsCloseOverlay(){ document.getElementById("fsOverlay").style.display="none"; FS.nodeId=""; }
@@ -507,7 +509,8 @@ async function fsLoad(rel){
   rows.innerHTML=`<div class="loading">loading …</div>`;
   try{
     const r=await fetch(fsProxy("/api/list?path=")+encodeURIComponent(fsFull(rel)),{cache:"no-store"});
-    const d=await r.json();
+    const txt=await r.text();
+    let d; try{ d=JSON.parse(txt); }catch(_){ rows.innerHTML=`<div class="errorbox">空/非法响应 (HTTP ${r.status}): ${esc(txt.slice(0,120))}</div>`; return; }
     if(!d.ok){ rows.innerHTML=`<div class="errorbox">${esc(d.error||"list failed")}</div>`; return; }
     renderFs(d.entries||[]);
   }catch(e){ rows.innerHTML=`<div class="errorbox">${esc(String(e))}</div>`; }
