@@ -32,14 +32,14 @@ const outputs = new Map([
   [
     join(root, "opencode-plugin", "assets", "command", "team-grill.en.md"),
     commandAsset({
-      description: "Run an owner-led Teamx design interview and preserve decisions in repository docs",
+      description: "Run a Teamx design interview (any team member can lead) and preserve decisions in repository docs",
       invocation: "Run the Teamx grill-with-docs protocol for the explicit arguments below. Treat them as the topic and options for Start or Resume.\n\nUser arguments: $ARGUMENTS",
     }),
   ],
   [
     join(root, "opencode-plugin", "assets", "command", "team-grill.md"),
     commandAsset({
-      description: "运行 owner 主导的 Teamx 设计访谈，并把决策沉淀到仓库文档",
+      description: "运行 Teamx 设计访谈（任意团队成员均可发起），并把决策沉淀到仓库文档",
       invocation: "按下方 Teamx grill-with-docs 协议处理明确参数，将其作为新建设计主题或恢复选项。全程使用用户当前语言。\n\n用户参数: $ARGUMENTS",
     }),
   ],
@@ -54,8 +54,8 @@ outputs.set(
     `export const TEAMX_GRILL_PROTOCOL_SHA256 = '${sourceHash}'\n\n` +
     `export const TEAMX_GRILL_WITH_DOCS_SKILL: TeamxSkill = {\n` +
     `  name: 'teamx-grill-with-docs',\n` +
-    `  description: 'Owner-led design interview that resolves a design tree and records glossary and architecture decisions',\n` +
-    `  whenToUse: 'When the human owner explicitly asks to grill or stress-test a plan or design and preserve the decisions in repository docs',\n` +
+    `  description: 'Team design interview that resolves a design tree and records glossary and architecture decisions',\n` +
+    `  whenToUse: 'When a team member explicitly asks to grill or stress-test a plan or design and preserve the decisions in repository docs',\n` +
     `  source: 'runtime',\n` +
     `  content: ${JSON.stringify(dshContent)},\n` +
     `}\n`,

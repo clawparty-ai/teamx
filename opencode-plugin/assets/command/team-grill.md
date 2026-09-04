@@ -1,9 +1,9 @@
 ---
-description: 运行 owner 主导的 Teamx 设计访谈，并把决策沉淀到仓库文档
+description: 运行 Teamx 设计访谈（任意团队成员均可发起），并把决策沉淀到仓库文档
 agent: teamx
 ---
 
-<!-- Generated from protocols/grill-with-docs.md; protocol v1; sha256 a9d84fce05ea3803ef2b82f21a33e8c35bda5207f7b1243dcdf53652ca02e5e5; do not edit. -->
+<!-- Generated from protocols/grill-with-docs.md; protocol v1; sha256 fa9396aa88b812fa412ccc66b778964bd7e0314b858d694e52c4c341153b703c; do not edit. -->
 
 按下方 Teamx grill-with-docs 协议处理明确参数，将其作为新建设计主题或恢复选项。全程使用用户当前语言。
 
@@ -11,20 +11,22 @@ agent: teamx
 
 # Teamx Grill with Docs Protocol
 
-Run a human-owner-led Design Session that turns an uncertain plan into settled decisions and durable Git artifacts. Use the user's current language throughout. The session may run before a team exists (requirements gathering precedes team creation); when a team exists, it runs inside that team.
+Run a human-led Design Session that turns an uncertain plan into settled decisions and durable Git artifacts. Use the user's current language throughout. The session may run before a team exists (requirements gathering precedes team creation); when a team exists, it runs inside that team.
+
+> **Who may lead a session**: any team member may start and lead a session inside their team — the teamx team-owner is *not* required. Throughout this protocol, "the owner" refers to the human leading the current session (the person answering the questions and confirming Shared Understanding), not to the teamx team-owner role. The owner identity is recorded in the Design Session Record so a session stays bound to its leader.
 
 ## 1. Start or Resume
 
-1. Call `teamx_sync` best-effort to detect team context. grill-doc is human-owner-led and may run before a team exists. If the session is a team owner, run inside that team; if it is not a member or owner yet, treat the `teamx_sync` error as expected and run as a pre-team design session (no team ledger available) instead of stopping.
+1. Call `teamx_sync` best-effort to detect team context. grill-doc is human-led and may run before a team exists. If the session is a member of a team, run inside that team (any member may lead); if it is not a member of any team yet, treat the `teamx_sync` error as expected and run as a pre-team design session (no team ledger available) instead of stopping.
 2. Parse the explicit invocation:
    - a topic starts a new session;
    - `--doc <path>` uses that file as the Design Session Record;
    - `--resume <path>` resumes that exact record;
-   - reopening a completed record requires explicit owner confirmation.
+   - reopening a completed record requires explicit confirmation by its original session leader.
 3. For a new session without `--doc`, create `docs/design/<slug>.md`. Never select a record by fuzzy title or modification time.
 4. Initialize or validate the record using the schema below. Bind this conversation to that one path.
 
-Completion criterion: a human-owner identity and exactly one Design Session Record path are established before deliberation begins. When a team exists, the owner identity is the team owner; otherwise it is the human leading the session.
+Completion criterion: a human session-leader identity and exactly one Design Session Record path are established before deliberation begins. When a team exists, the session leader is a member of that team (any member may lead); otherwise it is the human leading the session.
 
 ## 2. Build the Design Tree
 
