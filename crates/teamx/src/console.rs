@@ -783,6 +783,21 @@ async fn is_tls_server(home: &std::path::Path, host: &str, port: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Percent-encode a request path for the outgoing HTTP request line (spaces,
+/// unicode, etc.), leaving the query string untouched (appended separately).
+fn pct_path(path: &str) -> String {
+    let mut out = String::new();
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// One HTTP/1.1 exchange over a connected (plain or TLS) stream, with
 /// `Connection: close`. Reads the full head, then the body according to
 /// Content-Length when present (falling back to reading until EOF with a
@@ -798,13 +813,14 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let target = pct_path(path);
     let head = match method.as_str() {
         "POST" | "PUT" | "PATCH" => format!(
-            "{} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "{} {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             method,
             body.len()
         ),
-        _ => format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+        _ => format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
     };
     io.write_all(head.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
     if !body.is_empty() && method != Method::GET {

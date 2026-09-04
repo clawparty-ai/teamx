@@ -2567,7 +2567,7 @@ fn team_status_json(conn: &Connection, team: &TeamRow) -> Result<Value> {
             "owner_member_id": team.owner_member_id,
         },
         "goal": goal.map(|g| json!({ "id": g.id, "title": g.title, "body": g.body, "state": g.state })),
-        "members": members.iter().map(|m| member_json(conn, m)).collect::<Vec<_>>(),
+        "members": members.iter().map(|m| member_json(conn, m, &team.id)).collect::<Vec<_>>(),
         "questions": questions.iter().map(question_json).collect::<Vec<_>>(),
         "roles": roles,
         "recent_events": recent,
@@ -4743,7 +4743,7 @@ pub fn is_team_owner(conn: &Connection, member_id: &str, team_id: &str) -> rusql
     Ok(lead > 0)
 }
 
-fn member_json(conn: &Connection, m: &MemberRow) -> Value {
+fn member_json(conn: &Connection, m: &MemberRow, team_id: &str) -> Value {
     let ip = crate::db::member_ip(conn, &m.id);
     let online = crate::db::member_online(conn, &m.id);
     // The person behind this member (a user may own several members).
@@ -4764,8 +4764,8 @@ fn member_json(conn: &Connection, m: &MemberRow) -> Value {
                  +COALESCE(tokens_reasoning,0)+COALESCE(tokens_cache_read,0)
                  +COALESCE(tokens_cache_write,0)),0),
                     COALESCE(SUM(cost),0)
-             FROM activity WHERE member_id = ?1",
-            [&m.id],
+             FROM activity WHERE member_id = ?1 AND team_id = ?2",
+            params![&m.id, team_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()

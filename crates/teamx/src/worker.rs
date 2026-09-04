@@ -235,8 +235,19 @@ fn poll_once(
     // Remember the session id the first time so later turns share its context.
     if session_id.is_none() {
         if let Ok(list) = rpc_http(opencode_url) {
-            if let Some(id) = list.as_array().and_then(|a| a.first()).and_then(|s| s.get("id")).and_then(Value::as_str) {
-                save_session_id(id);
+            // Pick the most recently updated session (the one we just created).
+            let newest = list.as_array().and_then(|a| {
+                a.iter()
+                    .filter_map(|s| {
+                        Some((
+                            s.get("id").and_then(Value::as_str)?.to_string(),
+                            s.get("time").and_then(|t| t.get("updated")).and_then(Value::as_i64).unwrap_or(0),
+                        ))
+                    })
+                    .max_by_key(|(_id, ts)| *ts)
+            });
+            if let Some((id, _ts)) = newest {
+                save_session_id(&id);
             }
         }
     }
