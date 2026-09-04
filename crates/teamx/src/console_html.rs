@@ -242,7 +242,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; }
 th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
 tbody tr { transition:background var(--transition); } tbody tr:hover { background:var(--muted); }
 th { color:var(--muted-fg); font-weight:600; font-size:12px; background:var(--muted); }
-tr.user-group td { background:var(--primary-light); color:var(--primary); font-weight:600; font-size:12.5px; letter-spacing:0.02em; }
+tr.user-group td { background:var(--muted); color:var(--muted-fg); font-weight:600; font-size:12.5px; letter-spacing:0.02em; }
 .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:12px; font-weight:500; line-height:1.5; white-space:nowrap; }
 .badge.proposed,.badge.blocked,.badge.open { background:#FDF6EC; color:#E6A23C; }
 .badge.shared,.badge.in_progress,.badge.active,.badge.running,.badge.lead { background:#EBF5FF; color:#4A90E5; }
@@ -324,6 +324,7 @@ async function loadMe(){
     if(!r.ok) return;
     const p=await r.json();
     if(p.ok && p.data){
+      window.__me=p.data;
       const name=p.data.name||"Member";
       $("#meName").textContent=name;
       $("#meAvatar").textContent=(name.replace(/\(.*\)$/,"").trim()[0]||"?").toUpperCase();
@@ -413,7 +414,7 @@ async function loadTeams(){
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" data-name="${esc(m.display_name)}" title="文件浏览器">📁</button> ${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
+          <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" data-name="${esc(m.display_name)}" title="文件浏览器">📁</button> ${mtOpen.length?mtOpen.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
         </tr>`);
       }
     }
