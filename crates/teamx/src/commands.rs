@@ -2018,6 +2018,27 @@ pub fn resolve_server_url(explicit: Option<&str>) -> Result<String> {
     Ok("https://127.0.0.1:5781".to_string())
 }
 
+/// Resolve the public server URL for server-side letter issuance (e.g. clone).
+/// Prefers the explicit flag, then the request `Host` header (what the caller
+/// actually dialed), then the usual env/letter fallbacks. The Host header is
+/// the key input: on the server there is no imported letter and usually no
+/// `TEAMX_SERVER_URL`, so the old path would wrongly default to `127.0.0.1`.
+pub fn resolve_server_url_with_host(explicit: Option<&str>, host: Option<&str>) -> Result<String> {
+    if let Some(u) = explicit {
+        let u = u.trim();
+        if !u.is_empty() {
+            return Ok(u.to_string());
+        }
+    }
+    if let Some(h) = host {
+        let h = h.trim();
+        if !h.is_empty() {
+            return Ok(format!("https://{h}"));
+        }
+    }
+    resolve_server_url(None)
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -2735,13 +2756,6 @@ fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Ve
     rows.collect()
 }
 
-/// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
-///
-/// A device invitation may be bound to a person (`user`) so the same person's
-/// multiple devices share one user id and can access each other's tunnels:
-/// - `--user <id>`: the user must already exist.
-/// - `--user-name <name>`: reuse an existing user with that exact display name,
-///   or create one on the fly.
 #[allow(clippy::too_many_arguments)]
 /// Core invite logic: mint a client cert + invitation letter + DB rows.
 /// Called by `cmd_team_invite` (normal flow) and `cmd_team_clone` (bulk clone).
@@ -2753,21 +2767,21 @@ fn mint_invite(
     role_key: &str,
     label: &str,
     desc: Option<&str>,
-    user_id_opt: Option<&str>,
+    user: Option<(&str, &str)>,
     name_hint: Option<&str>,
     server_url: &str,
     as_lead: bool,
     auto_approve: bool,
     created_by: &str,
     member_id_override: Option<&str>,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String)> {
     let member_id = member_id_override
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let invitation_id = uuid::Uuid::new_v4().to_string();
     let home = teamx_home_dir();
     let issued =
-        pki::issue_member_cert(&home, &member_id, role_key, user_id_opt).map_err(AppError)?;
+        pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id)).map_err(AppError)?;
     let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
         .map_err(|e| AppError(format!("read ca cert: {e}")))?;
     let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
@@ -2793,8 +2807,8 @@ fn mint_invite(
             "client_key": issued.key_pem,
         },
     });
-    if let Some(uid) = user_id_opt {
-        letter["teamx_invitation"]["user"] = json!({ "id": uid });
+    if let Some((uid, uname)) = user {
+        letter["teamx_invitation"]["user"] = json!({ "id": uid, "name": uname });
     }
 
     let label_owned = label.to_string();
@@ -2817,7 +2831,7 @@ fn mint_invite(
                 desc_ref,
                 issued.serial_hex,
                 issued.cn,
-                user_id_opt.unwrap_or(""),
+                user.map(|(id, _)| id).unwrap_or(""),
                 created_by,
                 now,
                 auto_approve,
@@ -2831,6 +2845,9 @@ fn mint_invite(
         if as_lead {
             payload["as_lead"] = json!(true);
         }
+        if let Some((uid, uname)) = user {
+            payload["user"] = json!({ "id": uid, "name": uname });
+        }
         emit_json(tx, team_id, Some(created_by), "invitation.created", payload)?;
         Ok(())
     })
@@ -2839,9 +2856,17 @@ fn mint_invite(
     let letter_json =
         serde_json::to_string(&letter).map_err(|e| AppError(format!("serialize letter: {e}")))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(letter_json.as_bytes());
-    Ok((member_id, format!("teamx-inv:v1:{encoded}")))
+    Ok((member_id, invitation_id, format!("teamx-inv:v1:{encoded}")))
 }
 
+/// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
+///
+/// A device invitation may be bound to a person (`user`) so the same person's
+/// multiple devices share one user id and can access each other's tunnels:
+/// - `--user <id>`: the user must already exist.
+/// - `--user-name <name>`: reuse an existing user with that exact display name,
+///   or create one on the fly.
+#[allow(clippy::too_many_arguments)]
 fn cmd_team_invite(
     conn: &mut Connection,
     role_desc: &str,
@@ -2873,17 +2898,17 @@ fn cmd_team_invite(
     let role_key = role_key_from_label(label);
 
     let user = resolve_user(conn, user_id, user_name, &actor.id)?;
-    let user_id_opt = user.as_ref().map(|(id, _)| id.as_str());
+    let user_ref = user.as_ref().map(|(id, name)| (id.as_str(), name.as_str()));
 
     let resolved_url = resolve_server_url(server_url)?;
-    let (member_id, letter) = mint_invite(
+    let (member_id, invitation_id, letter) = mint_invite(
         conn,
         &team.id,
         &team.name,
         &role_key,
         &label,
         desc.as_deref(),
-        user_id_opt,
+        user_ref,
         name_hint,
         &resolved_url,
         as_lead,
@@ -2894,7 +2919,7 @@ fn cmd_team_invite(
 
     let mut out = json!({
         "ok": true,
-        "invitation_id": "",  // not tracked in return; see ledger
+        "invitation_id": invitation_id,
         "member_id": member_id,
         "role": { "key": role_key, "label": label, "description": desc },
         "letter": letter,
@@ -3114,6 +3139,9 @@ pub fn cmd_team_clone(
              VALUES (?1, ?2, NULL, NULL, 'forming', ?3, ?4, ?4)",
             params![clone_team_id, name, clone_token, now],
         )?;
+        // Seed the default built-in roles so the clone team has the full
+        // catalog (reviewer/observer/…), not just roles held by members.
+        seed_roles(tx, &clone_team_id)?;
         emit_json(tx, &clone_team_id, Some(&actor.id), "team.created", json!({ "name": name }))?;
         Ok(())
     })
@@ -3132,7 +3160,8 @@ pub fn cmd_team_clone(
         let is_owner = plan["is_owner"].as_bool().unwrap();
         let display_name = plan["display_name"].as_str().unwrap();
 
-        // Query user_id for this source member
+        // Query the source member's user binding (id + display name) so the
+        // clone letter keeps the same person (`user.id` and `user.name`).
         let user_id: Option<String> = conn
             .query_row(
                 "SELECT user_id FROM members WHERE id = ?1",
@@ -3141,6 +3170,19 @@ pub fn cmd_team_clone(
             )
             .ok()
             .filter(|s| !s.is_empty());
+        let user_name: Option<String> = user_id.as_ref().and_then(|uid| {
+            conn.query_row(
+                "SELECT display_name FROM users WHERE id = ?1",
+                [uid],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        });
+        let user_ref = match (&user_id, &user_name) {
+            (Some(id), Some(name)) => Some((id.as_str(), name.as_str())),
+            (Some(id), None) => Some((id.as_str(), "")),
+            _ => None,
+        };
 
         let member_id_override = if is_owner {
             Some(owner_holder.as_str())
@@ -3148,14 +3190,14 @@ pub fn cmd_team_clone(
             None
         };
 
-        let (clone_member_id, letter) = mint_invite(
+        let (clone_member_id, _invitation_id, letter) = mint_invite(
             conn,
             &clone_team_id,
             name,
             role_key,
             label,
             desc,
-            user_id.as_deref(),
+            user_ref,
             Some(display_name),
             &resolved_url,
             is_lead,
@@ -6154,8 +6196,15 @@ mod tests {
 
     // ─── Clone tests ───────────────────────────────────────────────────
 
+    /// Serialize tests that mutate the global `TEAMX_HOME` env var: Rust runs
+    /// tests in parallel threads within one process, so a shared env var is
+    /// racy. All PKI-backed clone tests take this lock.
+    static PKI_ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
     /// Helper: set up a temp TEAMX_HOME with PKI, run a closure, then restore.
     fn with_pki_env<F: FnOnce(&Path)>(f: F) {
+        let lock = PKI_ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+        let _guard = lock.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("teamx-clone-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let prev = std::env::var("TEAMX_HOME").ok();
@@ -6253,7 +6302,6 @@ mod tests {
             let mut conn = test_conn();
             let src_id = setup_source_team(&conn);
             let result = cmd_team_clone(&mut conn, "clone-owner", Some(&src_id), None, true, "", Some("src-owner")).unwrap();
-            let clone_id = result["team"]["id"].as_str().unwrap();
             // owner_member_id should be set
             let owner_mid = result["team"]["owner_member_id"].as_str().unwrap();
             assert!(!owner_mid.is_empty());
@@ -6389,6 +6437,58 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM members WHERE team_id = ?1", [src_id.as_str()], |r| r.get(0))
                 .unwrap();
             assert_eq!(src_members, 4, "source should still have 4 members (including left)");
+        });
+    }
+
+    #[test]
+    fn clone_seeds_default_roles() {
+        with_pki_env(|_tmp| {
+            let mut conn = test_conn();
+            let src_id = setup_source_team(&conn);
+            let result = cmd_team_clone(&mut conn, "clone-seed-roles", Some(&src_id), None, true, "", Some("src-owner")).unwrap();
+            let clone_id = result["team"]["id"].as_str().unwrap();
+            // All six built-in roles must exist in the clone team (not just
+            // the roles held by cloned members).
+            for role in ["owner", "observer", "supervisor", "contributor", "subtask-implementer", "reviewer"] {
+                let exists: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM roles WHERE team_id = ?1 AND key = ?2",
+                        params![clone_id, role],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(exists > 0, "clone team missing built-in role `{role}`");
+            }
+        });
+    }
+
+    #[test]
+    fn clone_preserves_user_binding_in_letter() {
+        with_pki_env(|_tmp| {
+            let mut conn = test_conn();
+            let src_id = setup_source_team(&conn);
+            // Bind the worker to a person.
+            conn.execute(
+                "INSERT INTO users (id, display_name, email, created_by, created_at, updated_at)
+                 VALUES ('user-alice', 'Alice', NULL, 'src-owner', 'now', 'now')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE members SET user_id = 'user-alice' WHERE id = 'src-worker'",
+                [],
+            )
+            .unwrap();
+            let result = cmd_team_clone(&mut conn, "clone-user", Some(&src_id), None, true, "", Some("src-owner")).unwrap();
+            let members = result["members"].as_array().unwrap();
+            let worker = members.iter().find(|m| m["source_member_id"].as_str() == Some("src-worker")).unwrap();
+            assert_eq!(worker["user_id"].as_str().unwrap(), "user-alice");
+            // The clone letter must carry the same user id AND the display name.
+            let b64 = worker["letter"].as_str().unwrap().strip_prefix("teamx-inv:v1:").unwrap();
+            let json = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap();
+            let letter: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(letter["teamx_invitation"]["user"]["id"].as_str().unwrap(), "user-alice");
+            assert_eq!(letter["teamx_invitation"]["user"]["name"].as_str().unwrap(), "Alice");
         });
     }
 }

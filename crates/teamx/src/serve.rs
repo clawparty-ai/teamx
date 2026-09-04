@@ -25,7 +25,7 @@ use axum::{
         Path,
         State,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Extension, Json, Router,
@@ -848,12 +848,19 @@ async fn rpc(
     State(state): State<AppState>,
     Extension(identity): Extension<PeerIdentity>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<RpcRequest>,
 ) -> impl IntoResponse {
     let cn = identity.0;
     let hub = state.hub.clone();
     let tunnels = state.tunnels.clone();
     let method = req.method.clone();
+    // Host header as dialed by the caller — used to embed a reachable server
+    // URL in newly issued letters (e.g. clone).
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     // Metrics: count the request bytes (member -> server).
     let member_for_metrics = pki::parse_member_cn(&cn).map(|(id, _)| id);
     if let Some(mid) = &member_for_metrics {
@@ -909,7 +916,7 @@ async fn rpc(
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.db.lock().unwrap();
         let before = commands::max_event_id(&conn).unwrap_or(0);
-        let res = dispatch(&req.method, &req.args, &mut conn, &cn, &tunnels, Some(peer));
+        let res = dispatch(&req.method, &req.args, &mut conn, &cn, &tunnels, Some(peer), host.as_deref());
         let new_events = commands::events_after(&conn, before).unwrap_or_default();
         (res, new_events)
     })
@@ -961,7 +968,7 @@ fn parse_rows<T: serde::de::DeserializeOwned>(args: &Value) -> Vec<T> {
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
 /// then run it through `commands::execute`. The actor identity comes from the
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
-fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry, peer: Option<SocketAddr>) -> Result<Value, String> {
+fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry, peer: Option<SocketAddr>, host: Option<&str>) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
     let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
@@ -1078,14 +1085,18 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             return Err(format!("member `{member_id}` is not a member of team {src_team_id}"));
         }
         let name = s("name").ok_or_else(|| "team.clone requires `name`".to_string())?;
-        let server_url = o("server_url");
         let yes = b("yes");
+        // Option A: derive the public server URL from the request Host header
+        // (the address the caller actually dialed), so newly issued clone
+        // letters are reachable by remote members — not `127.0.0.1`.
+        let server_url = commands::resolve_server_url_with_host(o("server_url").as_deref(), host)
+            .map_err(|e| e.to_string())?;
         // Call cmd_team_clone directly with CN-based member_id
         let result = commands::cmd_team_clone(
             conn,
             &name,
             Some(&src_team_id),
-            server_url.as_deref(),
+            Some(&server_url),
             yes,
             "",
             Some(&member_id),
