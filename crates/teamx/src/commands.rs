@@ -516,6 +516,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Worker(_) => {
             return err("`teamx worker` must be run as its own process")
         }
+        // `teamx fs` is a long-running file service (handled in main).
+        Command::Fs(_) => {
+            return err("`teamx fs` must be run as its own process")
+        }
         Command::Cert(c) => match c {
             CertCmd::Init => cmd_cert_init()?,
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,

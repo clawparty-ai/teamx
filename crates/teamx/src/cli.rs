@@ -188,6 +188,10 @@ pub enum Command {
     /// without an attached TUI. Dry-run unless TEAMX_WORKER_ENABLED=1.
     Worker(WorkerCmd),
 
+    /// Member node file service (workspace browser backend). Binds 127.0.0.1
+    /// and exposes list/read/download/upload under the startup directory.
+    Fs(FsCmd),
+
     /// SOCKS5 outbound proxy (network mode): a local SOCKS5 port on member-a
     /// tunnels traffic through the team server to member-b's proxy exit.
     #[command(subcommand)]
@@ -437,6 +441,17 @@ pub struct ConsoleCmd {
     pub server_url: Option<String>,
 }
 
+
+/// `teamx fs` — member node file service.
+#[derive(Args, Debug, Clone)]
+pub struct FsCmd {
+    /// bind address
+    #[arg(long, default_value = "127.0.0.1")]
+    pub addr: String,
+    /// bind port
+    #[arg(long, default_value_t = 4197)]
+    pub port: u16,
+}
 
 /// `teamx worker` — autonomous node executor.
 #[derive(Args, Debug, Clone)]

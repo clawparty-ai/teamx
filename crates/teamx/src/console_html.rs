@@ -313,6 +313,11 @@ function rawPre(label,v){ return `<section class="panel"><h2>${esc(label)} <span
 
 /* ---------- Teams (+ per-member tunnel open dock) ---------- */
 const kindOf=(name)=>(name||"").includes("ttyd")?"ttyd":((name||"").includes("opencode")?"headless":"web");
+const openLabel=(kind,name)=>{
+  if(kind==="ttyd") return {icon:"🖥", label:"TUI"};
+  if(kind==="headless") return {icon:"🌐", label:"Web"};
+  return {icon:"🌐", label:"Admin"}; // teamx-ui etc.
+};
 async function loadTeams(){
   $("#teamBody").innerHTML=`<div class="loading">loading …</div>`;
   const [p, pt] = await Promise.all([panel("teams"), panel("tunnels")]);
@@ -367,7 +372,7 @@ async function loadTeams(){
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
-          <td>${mt.length?mt.map(x=>`<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">▶ ${esc(kindOf(x.name))}</button>`).join(" "):'<span class="muted">—</span>'}</td>
+          <td>${mt.length?mt.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):'<span class="muted">—</span>'}</td>
         </tr>`);
       }
     }
