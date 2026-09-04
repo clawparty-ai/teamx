@@ -593,6 +593,25 @@ function writeNudgeCursor(cwd: string, seq: number): void {
   }
 }
 
+let lastLeadAutoRun = 0
+
+async function autoRunLeadNudge(sessionID: string): Promise<void> {
+  if (process.env.TEAMX_AUTO_REPLY === "0") return
+  const now = Date.now()
+  if (now - lastLeadAutoRun < 120_000) return
+  lastLeadAutoRun = now
+  const cwd = dirOfSession(sessionID)
+  const prompt =
+    "你是 team lead。团队静默提醒已到：请先用 teamx_sync / teamx_status 查看详情，然后自主协调——检查成员进度、审批待办入队、广播下一步安排或调整目标；用 teamx 工具直接完成，不要询问用户。"
+  try {
+    const bin = process.env.OPENCODE_BIN ?? "opencode"
+    Bun.spawn([bin, "run", "-c", prompt], { cwd, stdout: "ignore", stderr: "ignore" })
+    log("info", "auto-run lead nudge", { sessionID })
+  } catch (e) {
+    log("warn", "auto-run lead nudge failed", { sessionID, error: String(e) })
+  }
+}
+
 async function refreshDigest(sessionID: string): Promise<void> {
     const key = sk(sessionID)
     const cwd = dirOfSession(sessionID)
@@ -650,9 +669,15 @@ async function refreshDigest(sessionID: string): Promise<void> {
       const newest = unreadNudges[unreadNudges.length - 1]
       digest = digest + "\n\n" + t("digest.unread_nudge") + "\n" + summarizeEvent(newest)
       setDigest(sessionID, digest)
-      const promptText =
-        newest.type === "system.nudge_lead" ? t("nudge_lead_prompt") : t("nudge_prompt")
-      await client.tui.appendPrompt({ body: { text: promptText } }).catch(() => {})
+      const hasLeadNudge = unreadNudges.some((e) => e.type === "system.nudge_lead")
+      if (hasLeadNudge && isOwnerSession(data)) {
+        // The lead auto-coordinates: run a headless turn that continues THIS
+        // session (opencode run -c), so the TUI reflects it without Enter.
+        void autoRunLeadNudge(sessionID)
+      } else {
+        const promptText = newest.type === "system.nudge_lead" ? t("nudge_lead_prompt") : t("nudge_prompt")
+        await client.tui.appendPrompt({ body: { text: promptText } }).catch(() => {})
+      }
       writeNudgeCursor(cwd, newest.seq ?? maxSeq)
     }
 
