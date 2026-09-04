@@ -429,7 +429,9 @@ async function loadTeams(){
         window.__memTunnels.set(m.id, mt);
         const me=window.__me||{};
         const canAdmin=me.is_lead===true||me.role==="owner"||me.role==="admin";
-        const mtOpen=mt.filter(t=> !(t.name&&t.name.startsWith("teamx-ui")) || canAdmin);
+        // fs-* tunnels are served by the 📁 file browser, not opened as pages.
+        const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-"));
+        const mtOpen=mtVisible.filter(t=> !(t.name&&t.name.startsWith("teamx-ui")) || canAdmin);
         const act=m.activity||{};
         rows.push(`<tr>
           <td class="mono" style="font-size:11px;color:var(--muted-fg)">${m.user?esc(m.user.display_name):"—"}</td>
@@ -439,7 +441,7 @@ async function loadTeams(){
           <td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td>
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
-          <td>${mt.length?mt.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
+          <td>${mtVisible.length?mtVisible.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
           <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" data-name="${esc(m.display_name)}" title="文件浏览器">📁</button> ${mtOpen.length?mtOpen.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
         </tr>`);
       }
