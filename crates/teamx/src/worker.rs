@@ -46,6 +46,42 @@ fn save_done(d: &Done) {
     }
 }
 
+
+fn session_file() -> PathBuf {
+    crate::db::teamx_home().join("worker-session.json")
+}
+fn load_session_id() -> Option<String> {
+    std::fs::read_to_string(session_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["session_id"].as_str().map(str::to_string))
+}
+fn save_session_id(id: &str) {
+    if let Ok(s) = serde_json::to_string_pretty(&serde_json::json!({ "session_id": id })) {
+        let _ = std::fs::write(session_file(), s);
+    }
+}
+
+/// Fetch `GET {url}/api/session` from the local opencode server (plain HTTP).
+fn rpc_http(url: &str) -> Result<Value, String> {
+    use std::io::Read;
+    let host = url.trim_end_matches('/').trim_start_matches("http://");
+    let mut parts = host.splitn(2, ':');
+    let addr = parts.next().unwrap_or("127.0.0.1");
+    let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
+    let mut stream = std::net::TcpStream::connect((addr, port)).map_err(|e| format!("connect: {e}"))?;
+    let req = format!("GET /api/session HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    use std::io::Write;
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
+    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("");
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("data").cloned())
+        .ok_or_else(|| "no session payload".to_string())
+}
+
 fn rpc(url: &str, method: &str, args: Value) -> Result<Value, String> {
     crate::tunnel_client::run_rpc(url, method, args)
 }
@@ -64,6 +100,11 @@ pub fn run(cmd: &WorkerCmd) -> Result<(), String> {
     let interval = cmd.interval.max(10);
     let cooldown = Duration::from_secs(cmd.cooldown.max(60));
     let opencode_bin = cmd.opencode.clone().unwrap_or_else(|| "opencode".to_string());
+    let opencode_url = cmd
+        .opencode_url
+        .clone()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:4199".to_string());
 
     eprintln!(
         "teamx worker: member inbox worker (server {url})\n  workspace: {}\n  execute={} interval={interval}s cooldown={}s",
@@ -74,7 +115,7 @@ pub fn run(cmd: &WorkerCmd) -> Result<(), String> {
 
     let mut last_run_at = Instant::now() - cooldown; // allow first run
     loop {
-        match poll_once(&url, &opencode_bin, enabled, cmd, cooldown, &mut last_run_at) {
+        match poll_once(&url, &opencode_bin, &opencode_url, enabled, cmd, cooldown, &mut last_run_at) {
             Ok(true) => {}
             Ok(false) => eprintln!("teamx worker: nothing actionable; sleeping {interval}s"),
             Err(e) => eprintln!("teamx worker: {e}"),
@@ -91,6 +132,7 @@ pub fn run(cmd: &WorkerCmd) -> Result<(), String> {
 fn poll_once(
     url: &str,
     opencode_bin: &str,
+    opencode_url: &str,
     enabled: bool,
     cmd: &WorkerCmd,
     cooldown: Duration,
@@ -163,10 +205,17 @@ fn poll_once(
         return Ok(true);
     }
 
-    // Execute one headless turn.
+    // Execute one headless turn against the node's resident opencode server,
+    // continuing this worker's stable session (same context ttyd/web can see).
+    let session_id = load_session_id();
+    let mut args: Vec<String> = vec!["run".into(), "--attach".into(), opencode_url.to_string()];
+    if let Some(sid) = &session_id {
+        args.push("-s".into());
+        args.push(sid.clone());
+    }
+    args.push(prompt);
     let run = Command::new(opencode_bin)
-        .arg("run")
-        .arg(&prompt)
+        .args(&args)
         .current_dir(std::env::current_dir().map_err(|e| e.to_string())?)
         .output()
         .map_err(|e| format!("opencode run spawn failed: {e}"))?;
@@ -175,6 +224,14 @@ fn poll_once(
     eprintln!("teamx worker: opencode run exited={}:\n{}", run.status, tail);
     if !run.status.success() {
         return Err("opencode run failed; items kept for retry".to_string());
+    }
+    // Remember the session id the first time so later turns share its context.
+    if session_id.is_none() {
+        if let Ok(list) = rpc_http(&opencode_url) {
+            if let Some(id) = list.as_array().and_then(|a| a.first()).and_then(|s| s.get("id")).and_then(Value::as_str) {
+                save_session_id(id);
+            }
+        }
     }
 
     // Mark handled, then acknowledge the inbox (advance the nudge cursor).
