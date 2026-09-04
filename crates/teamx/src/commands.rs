@@ -2756,6 +2756,130 @@ fn invitations_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Ve
     rows.collect()
 }
 
+/// The result of minting a client cert + invitation letter (no DB writes).
+/// DB persistence is done separately by `mint_invite_db` so a bulk operation
+/// (clone) can batch every invitation under a single transaction.
+struct MintedInvite {
+    member_id: String,
+    invitation_id: String,
+    serial_hex: String,
+    cn: String,
+    letter: String, // "teamx-inv:v1:<base64>"
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_invite_cert(
+    team_id: &str,
+    team_name: &str,
+    role_key: &str,
+    label: &str,
+    desc: Option<&str>,
+    user: Option<(&str, &str)>,
+    name_hint: Option<&str>,
+    server_url: &str,
+    as_lead: bool,
+    auto_approve: bool,
+    member_id_override: Option<&str>,
+) -> Result<MintedInvite> {
+    let member_id = member_id_override
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let invitation_id = uuid::Uuid::new_v4().to_string();
+    let home = teamx_home_dir();
+    let issued =
+        pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id)).map_err(AppError)?;
+    let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
+        .map_err(|e| AppError(format!("read ca cert: {e}")))?;
+    let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
+    let now = db::now();
+
+    let mut letter = json!({
+        "teamx_invitation": {
+            "version": 2,
+            "invitation_id": invitation_id,
+            "team": { "id": team_id, "name": team_name },
+            "server": { "url": server_url, "ca_fingerprint": format!("sha256:{fingerprint}") },
+            "member": { "name_hint": name_hint.unwrap_or("") },
+            "role": { "key": role_key, "label": label, "description": desc },
+            "auto_approve": auto_approve,
+            "as_lead": as_lead,
+            "issued_at": now,
+            "expires_at": null,
+        },
+        "certificates": {
+            "ca_cert": ca_pem,
+            "client_cert": issued.cert_pem,
+            "client_key": issued.key_pem,
+        },
+    });
+    if let Some((uid, uname)) = user {
+        letter["teamx_invitation"]["user"] = json!({ "id": uid, "name": uname });
+    }
+
+    let letter_json =
+        serde_json::to_string(&letter).map_err(|e| AppError(format!("serialize letter: {e}")))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(letter_json.as_bytes());
+    Ok(MintedInvite {
+        member_id,
+        invitation_id,
+        serial_hex: issued.serial_hex,
+        cn: issued.cn,
+        letter: format!("teamx-inv:v1:{encoded}"),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_invite_db(
+    tx: &mut rusqlite::Transaction,
+    mint: &MintedInvite,
+    team_id: &str,
+    role_key: &str,
+    label: &str,
+    desc: Option<&str>,
+    user: Option<(&str, &str)>,
+    as_lead: bool,
+    auto_approve: bool,
+    created_by: &str,
+) -> rusqlite::Result<()> {
+    let now = db::now();
+    tx.execute(
+        "INSERT OR IGNORE INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
+         VALUES (?1, ?2, ?3, ?4, '{}', 'approved', ?5)",
+        params![team_id, role_key, label, desc, created_by],
+    )?;
+    tx.execute(
+        "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at, auto_approve, as_lead)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            mint.invitation_id,
+            team_id,
+            mint.member_id,
+            role_key,
+            label,
+            desc,
+            mint.serial_hex,
+            mint.cn,
+            user.map(|(id, _)| id).unwrap_or(""),
+            created_by,
+            now,
+            auto_approve,
+            as_lead
+        ],
+    )?;
+    let mut payload = json!({ "invitation_id": mint.invitation_id, "member_id": mint.member_id, "role": role_key, "role_label": label });
+    if auto_approve {
+        payload["auto_approve"] = json!(true);
+    }
+    if as_lead {
+        payload["as_lead"] = json!(true);
+    }
+    if let Some((uid, uname)) = user {
+        payload["user"] = json!({ "id": uid, "name": uname });
+    }
+    emit_json(tx, team_id, Some(created_by), "invitation.created", payload)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Core invite logic: mint a client cert + invitation letter + DB rows.
 /// Called by `cmd_team_invite` (normal flow) and `cmd_team_clone` (bulk clone).
@@ -2775,88 +2899,26 @@ fn mint_invite(
     created_by: &str,
     member_id_override: Option<&str>,
 ) -> Result<(String, String, String)> {
-    let member_id = member_id_override
-        .map(str::to_string)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let invitation_id = uuid::Uuid::new_v4().to_string();
-    let home = teamx_home_dir();
-    let issued =
-        pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id)).map_err(AppError)?;
-    let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
-        .map_err(|e| AppError(format!("read ca cert: {e}")))?;
-    let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
-    let server = server_url.to_string();
-    let now = db::now();
-
-    let mut letter = json!({
-        "teamx_invitation": {
-            "version": 2,
-            "invitation_id": invitation_id,
-            "team": { "id": team_id, "name": team_name },
-            "server": { "url": server, "ca_fingerprint": format!("sha256:{fingerprint}") },
-            "member": { "name_hint": name_hint.unwrap_or("") },
-            "role": { "key": role_key, "label": label, "description": desc },
-            "auto_approve": auto_approve,
-            "as_lead": as_lead,
-            "issued_at": now,
-            "expires_at": null,
-        },
-        "certificates": {
-            "ca_cert": ca_pem,
-            "client_cert": issued.cert_pem,
-            "client_key": issued.key_pem,
-        },
-    });
-    if let Some((uid, uname)) = user {
-        letter["teamx_invitation"]["user"] = json!({ "id": uid, "name": uname });
-    }
-
-    let label_owned = label.to_string();
-    let desc_ref = desc;
+    let mint = mint_invite_cert(
+        team_id, team_name, role_key, label, desc, user, name_hint, server_url, as_lead,
+        auto_approve, member_id_override,
+    )?;
     db::with_write(conn, |tx| {
-        tx.execute(
-            "INSERT OR IGNORE INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
-             VALUES (?1, ?2, ?3, ?4, '{}', 'approved', ?5)",
-            params![team_id, role_key, label_owned, desc_ref, created_by],
-        )?;
-        tx.execute(
-            "INSERT INTO invitations (id, team_id, member_id, role_key, role_label, role_desc, cert_serial, cert_cn, user_id, created_by, created_at, auto_approve, as_lead)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                invitation_id,
-                team_id,
-                member_id,
-                role_key,
-                label_owned,
-                desc_ref,
-                issued.serial_hex,
-                issued.cn,
-                user.map(|(id, _)| id).unwrap_or(""),
-                created_by,
-                now,
-                auto_approve,
-                as_lead
-            ],
-        )?;
-        let mut payload = json!({ "invitation_id": invitation_id, "member_id": member_id, "role": role_key, "role_label": label_owned });
-        if auto_approve {
-            payload["auto_approve"] = json!(true);
-        }
-        if as_lead {
-            payload["as_lead"] = json!(true);
-        }
-        if let Some((uid, uname)) = user {
-            payload["user"] = json!({ "id": uid, "name": uname });
-        }
-        emit_json(tx, team_id, Some(created_by), "invitation.created", payload)?;
-        Ok(())
+        mint_invite_db(
+            tx,
+            &mint,
+            team_id,
+            role_key,
+            label,
+            desc,
+            user,
+            as_lead,
+            auto_approve,
+            created_by,
+        )
     })
     .map_err(|e| AppError(format!("invite failed: {e}")))?;
-
-    let letter_json =
-        serde_json::to_string(&letter).map_err(|e| AppError(format!("serialize letter: {e}")))?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(letter_json.as_bytes());
-    Ok((member_id, invitation_id, format!("teamx-inv:v1:{encoded}")))
+    Ok((mint.member_id, mint.invitation_id, mint.letter))
 }
 
 /// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
@@ -2906,7 +2968,7 @@ fn cmd_team_invite(
         &team.id,
         &team.name,
         &role_key,
-        &label,
+        label,
         desc.as_deref(),
         user_ref,
         name_hint,
@@ -2934,22 +2996,19 @@ fn cmd_team_invite(
 /// Copy approved custom roles from source team to clone team.
 /// Built-in roles (owner/contributor/reviewer etc.) are global and not copied.
 fn clone_copy_roles(
-    conn: &mut Connection,
+    tx: &mut rusqlite::Transaction,
     src_team_id: &str,
     clone_team_id: &str,
     actor_id: &str,
-) -> Result<usize> {
+) -> rusqlite::Result<usize> {
     let rows: Vec<(String, String, Option<String>)> = {
-        let mut stmt = conn
-            .prepare("SELECT key, label, description FROM roles WHERE team_id = ?1 AND state = 'approved'")
-            .map_err(|e| AppError(format!("prepare roles query: {e}")))?;
+        let mut stmt = tx.prepare(
+            "SELECT key, label, description FROM roles WHERE team_id = ?1 AND state = 'approved'",
+        )?;
         let mapped = stmt.query_map([src_team_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|e| AppError(format!("read source roles: {e}")))?;
-        mapped
-            .collect::<rusqlite::Result<_>>()
-            .map_err(|e| AppError(format!("collect source roles: {e}")))?
+        })?;
+        mapped.collect::<rusqlite::Result<_>>()?
     };
 
     let builtins = [
@@ -2965,18 +3024,70 @@ fn clone_copy_roles(
         if builtins.contains(&key.as_str()) {
             continue;
         }
-        db::with_write(conn, |tx| {
-            tx.execute(
-                "INSERT OR IGNORE INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
-                 VALUES (?1, ?2, ?3, ?4, '{}', 'approved', ?5)",
-                params![clone_team_id, key, label, desc.as_deref(), actor_id],
-            )?;
-            Ok(())
-        })
-        .map_err(|e| AppError(format!("copy role {key}: {e}")))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO roles (team_id, key, label, description, permissions_json, state, proposed_by)
+             VALUES (?1, ?2, ?3, ?4, '{}', 'approved', ?5)",
+            params![clone_team_id, key, label, desc.as_deref(), actor_id],
+        )?;
         copied += 1;
     }
     Ok(copied)
+}
+
+/// A single source member to replicate into the clone team: role, lead/owner
+/// status, display name, and the user binding to carry over.
+struct SeatPlan {
+    src_member_id: String,
+    role_key: String,
+    label: String,
+    desc: Option<String>,
+    is_lead: bool,
+    is_owner: bool,
+    display_name: String,
+    user: Option<(String, String)>, // (user_id, display_name)
+}
+
+fn build_seat_plan(
+    conn: &Connection,
+    src_team_id: &str,
+    m: &MemberRow,
+    is_owner: bool,
+    role_key_override: Option<&str>,
+) -> SeatPlan {
+    let role_key = role_key_override
+        .map(str::to_string)
+        .unwrap_or_else(|| m.role.clone().unwrap_or_else(|| "contributor".to_string()));
+    let (label, desc) = role_meta(conn, src_team_id, &role_key);
+    let user_id: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM members WHERE id = ?1",
+            [&m.id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .filter(|s| !s.is_empty());
+    let user_name: Option<String> = user_id.as_ref().and_then(|uid| {
+        conn.query_row(
+            "SELECT display_name FROM users WHERE id = ?1",
+            [uid],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    });
+    let user = match (&user_id, &user_name) {
+        (Some(id), Some(name)) => Some((id.clone(), name.clone())),
+        _ => user_id.clone().map(|id| (id, String::new())),
+    };
+    SeatPlan {
+        src_member_id: m.id.clone(),
+        role_key,
+        label,
+        desc,
+        is_lead: is_owner || m.is_lead,
+        is_owner,
+        display_name: m.display_name.clone(),
+        user,
+    }
 }
 
 /// Clone a team: copy all active members (as invitation letters), approved
@@ -2992,9 +3103,13 @@ pub fn cmd_team_clone(
     actor_member_id: Option<&str>,
 ) -> Result<Value> {
     let (actor, src) = if let Some(mid) = actor_member_id {
+        // CN path (network mode): the caller's member id comes from the TLS
+        // certificate. The source team is the caller's team — the serve dispatch
+        // always passes `team_opt` (validated against membership there), and we
+        // fall back to the member's own team when absent.
         let m = member_by_id(conn, mid)?;
-        let t = team_by_id(conn, &m.team_id)?;
-        // Verify actor is owner/co-lead in the source team
+        let tid: &str = team_opt.unwrap_or(m.team_id.as_str());
+        let t = team_by_id(conn, tid)?;
         if !is_team_owner(conn, mid, &t.id).map_err(|e| AppError(format!("db: {e}")))? {
             return err("only the team owner or a co-lead may clone a team");
         }
@@ -3073,179 +3188,132 @@ pub fn cmd_team_clone(
         }));
     }
 
-    // --- Create clone team (single outer transaction for all DB writes) ---
+    // --- Create clone team ---
     let clone_team_id = uuid::Uuid::new_v4().to_string();
     let owner_holder = uuid::Uuid::new_v4().to_string();
     let clone_token = uuid::Uuid::new_v4().simple().to_string();
     let resolved_url = resolve_server_url(server_url)?;
 
-    // Build member plans (stable order: owner first, then co-leads, then rest)
-    let mut seat_plans: Vec<serde_json::Value> = Vec::new();
-    // Owner first
-    seat_plans.push(json!({
-        "src_member_id": src_owner.id,
-        "role_key": "owner",
-        "label": "Owner",
-        "desc": null,
-        "is_lead": true,
-        "is_owner": true,
-        "display_name": src_owner.display_name,
-    }));
-    // Co-leads (excluding owner)
+    // Build member plans (stable order: owner, co-leads, rest), resolving each
+    // member's role label + description and user binding.
+    let mut seat_plans: Vec<SeatPlan> = Vec::new();
+    seat_plans.push(build_seat_plan(conn, &src.id, src_owner, true, Some("owner")));
     for m in &active_members {
         if m.id == src_owner.id {
             continue;
         }
         if m.is_lead {
-            let role_key = m.role.as_deref().unwrap_or("contributor");
-            let label = role_key_to_label(conn, &src.id, role_key);
-            seat_plans.push(json!({
-                "src_member_id": m.id,
-                "role_key": role_key,
-                "label": label,
-                "desc": null,
-                "is_lead": true,
-                "is_owner": false,
-                "display_name": m.display_name,
-            }));
+            seat_plans.push(build_seat_plan(conn, &src.id, m, false, None));
         }
     }
-    // Rest (non-owner, non-lead)
     for m in &active_members {
         if m.id == src_owner.id || m.is_lead {
             continue;
         }
-        let role_key = m.role.as_deref().unwrap_or("contributor");
-        let label = role_key_to_label(conn, &src.id, role_key);
-        seat_plans.push(json!({
-            "src_member_id": m.id,
-            "role_key": role_key,
-            "label": label,
-            "desc": null,
-            "is_lead": false,
-            "is_owner": false,
-            "display_name": m.display_name,
-        }));
+        seat_plans.push(build_seat_plan(conn, &src.id, m, false, None));
     }
 
-    // Single transaction: create team, copy roles, mint all invitations, create repos
-    let mut letters: Vec<serde_json::Value> = Vec::new();
+    // Pre-mint every client cert + letter (filesystem only — no DB writes).
+    let mut minted: Vec<(SeatPlan, MintedInvite)> = Vec::new();
+    for plan in seat_plans {
+        let user_ref = plan
+            .user
+            .as_ref()
+            .map(|(id, name)| (id.as_str(), name.as_str()));
+        let member_id_override = if plan.is_owner {
+            Some(owner_holder.as_str())
+        } else {
+            None
+        };
+        let mint = mint_invite_cert(
+            &clone_team_id,
+            name,
+            &plan.role_key,
+            &plan.label,
+            plan.desc.as_deref(),
+            user_ref,
+            Some(&plan.display_name),
+            &resolved_url,
+            plan.is_lead,
+            true, // auto_approve
+            member_id_override,
+        )?;
+        minted.push((plan, mint));
+    }
 
-    // Create team first (roles FK requires team to exist)
-    db::with_write(conn, |tx| {
+    // Single outer transaction: create team + seed roles + copy custom roles +
+    // persist every invitation + write back the owner. All-or-nothing on the
+    // DB side (certs on disk are filesystem side-effects, not rollback-able).
+    let roles_copied = db::with_write(conn, |tx| {
         let now = db::now();
         tx.execute(
             "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
              VALUES (?1, ?2, NULL, NULL, 'forming', ?3, ?4, ?4)",
             params![clone_team_id, name, clone_token, now],
         )?;
-        // Seed the default built-in roles so the clone team has the full
-        // catalog (reviewer/observer/…), not just roles held by members.
         seed_roles(tx, &clone_team_id)?;
+        let copied = clone_copy_roles(tx, &src.id, &clone_team_id, &actor.id)?;
         emit_json(tx, &clone_team_id, Some(&actor.id), "team.created", json!({ "name": name }))?;
-        Ok(())
-    })
-    .map_err(|e| AppError(format!("create clone team: {e}")))?;
-
-    // Now copy roles (team exists, FK satisfied)
-    let roles_copied = clone_copy_roles(conn, &src.id, &clone_team_id, &actor.id)?;
-
-    // Mint invitations for each member
-    for plan in &seat_plans {
-        let src_member_id = plan["src_member_id"].as_str().unwrap();
-        let role_key = plan["role_key"].as_str().unwrap();
-        let label = plan["label"].as_str().unwrap();
-        let desc = plan["desc"].as_str();
-        let is_lead = plan["is_lead"].as_bool().unwrap();
-        let is_owner = plan["is_owner"].as_bool().unwrap();
-        let display_name = plan["display_name"].as_str().unwrap();
-
-        // Query the source member's user binding (id + display name) so the
-        // clone letter keeps the same person (`user.id` and `user.name`).
-        let user_id: Option<String> = conn
-            .query_row(
-                "SELECT user_id FROM members WHERE id = ?1",
-                [src_member_id],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .filter(|s| !s.is_empty());
-        let user_name: Option<String> = user_id.as_ref().and_then(|uid| {
-            conn.query_row(
-                "SELECT display_name FROM users WHERE id = ?1",
-                [uid],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-        });
-        let user_ref = match (&user_id, &user_name) {
-            (Some(id), Some(name)) => Some((id.as_str(), name.as_str())),
-            (Some(id), None) => Some((id.as_str(), "")),
-            _ => None,
-        };
-
-        let member_id_override = if is_owner {
-            Some(owner_holder.as_str())
-        } else {
-            None
-        };
-
-        let (clone_member_id, _invitation_id, letter) = mint_invite(
-            conn,
-            &clone_team_id,
-            name,
-            role_key,
-            label,
-            desc,
-            user_ref,
-            Some(display_name),
-            &resolved_url,
-            is_lead,
-            true, // auto_approve
-            &actor.id,
-            member_id_override,
-        )?;
-
-        letters.push(json!({
-            "source_member_id": src_member_id,
-            "clone_member_id": clone_member_id,
-            "display_name": display_name,
-            "role": role_key,
-            "is_lead": is_lead,
-            "is_owner": is_owner,
-            "user_id": user_id,
-            "letter": letter,
-            "note": if user_id.is_none() { Some("unbound-seat") } else { None },
-        }));
-    }
-
-    // Write back owner_member_id
-    db::with_write(conn, |tx| {
+        for (plan, mint) in &minted {
+            let user_ref = plan
+                .user
+                .as_ref()
+                .map(|(id, name)| (id.as_str(), name.as_str()));
+            mint_invite_db(
+                tx,
+                mint,
+                &clone_team_id,
+                &plan.role_key,
+                &plan.label,
+                plan.desc.as_deref(),
+                user_ref,
+                plan.is_lead,
+                true, // auto_approve
+                &actor.id,
+            )?;
+        }
         tx.execute(
             "UPDATE teams SET owner_member_id = ?1 WHERE id = ?2",
             params![owner_holder, clone_team_id],
         )?;
-        Ok(())
+        Ok(copied)
     })
-    .map_err(|e| AppError(format!("update owner: {e}")))?;
+    .map_err(|e| AppError(format!("clone failed: {e}")))?;
 
-    // Create empty repos
+    // Build the member summary from the minted letters.
+    let mut letters: Vec<serde_json::Value> = Vec::new();
+    for (plan, mint) in &minted {
+        let user_id = plan.user.as_ref().map(|(id, _)| id.clone());
+        letters.push(json!({
+            "source_member_id": plan.src_member_id,
+            "clone_member_id": mint.member_id,
+            "display_name": plan.display_name,
+            "role": plan.role_key,
+            "is_lead": plan.is_lead,
+            "is_owner": plan.is_owner,
+            "user_id": user_id,
+            "letter": mint.letter,
+            "note": if plan.user.is_none() { Some("unbound-seat") } else { None },
+        }));
+    }
+
+    // Create empty repos. `created_by` is the clone owner seat (owner_holder);
+    // no permissions are granted here because members do not exist yet — they
+    // gain access on letter import (auto-approve).
     let mut repos: Vec<serde_json::Value> = Vec::new();
     for (_repo_id, repo_name) in &src_repos {
-        // Track the repo in output regardless of filesystem success
         repos.push(json!({
             "source": src.name,
             "name": repo_name,
         }));
-        let create_result = crate::git_service::create_repo(
+        let create_result = crate::git_service::create_empty_repo(
             conn,
             &clone_team_id,
             repo_name,
             Some(&format!("cloned from {}/{}", src.name, repo_name)),
-            &actor.id,
+            &owner_holder,
         );
         if let Err(e) = create_result {
-            // Non-fatal: filesystem may fail in tests, but DB row is logical
             eprintln!("warning: failed to create repo {repo_name}: {e}");
         }
     }
@@ -3266,14 +3334,22 @@ pub fn cmd_team_clone(
     }))
 }
 
-/// Look up the human-readable label for a role key from the team's roles table.
-fn role_key_to_label(conn: &Connection, team_id: &str, role_key: &str) -> String {
-    conn.query_row(
-        "SELECT label FROM roles WHERE team_id = ?1 AND key = ?2",
+/// Look up a role's human-readable label + description from the team's roles
+/// table, falling back to the built-in catalog, then to the raw key.
+fn role_meta(conn: &Connection, team_id: &str, role_key: &str) -> (String, Option<String>) {
+    if let Ok((label, desc)) = conn.query_row(
+        "SELECT label, description FROM roles WHERE team_id = ?1 AND key = ?2",
         params![team_id, role_key],
-        |r| r.get(0),
-    )
-    .unwrap_or_else(|_| role_key.to_string())
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+    ) {
+        return (label, desc);
+    }
+    for (key, label, desc) in crate::db::DEFAULT_ROLES {
+        if *key == role_key {
+            return ((*label).to_string(), Some((*desc).to_string()));
+        }
+    }
+    (role_key.to_string(), None)
 }
 
 /// Resolve (or create) the person a device invitation binds to.
@@ -3650,13 +3726,20 @@ fn claim_invitation(
         .map_err(|e| AppError(format!("import failed: {e}")))?;
     }
 
-    // Auto-approve grants the same git repo WRITE access the owner would
-    // grant via `team approve`, so the member can clone AND push immediately.
+    // Auto-approve grants git repo access so the member can clone AND push
+    // immediately: the team owner gets ADMIN (so they can manage repos /
+    // permissions), everyone else gets WRITE.
     let mut granted_repos: Vec<String> = Vec::new();
     if auto_approve {
         if let Ok(repos) = crate::git_service::list_repos(conn, &team_id) {
+            let is_owner = is_team_owner(conn, &member_id, &team_id).unwrap_or(false);
+            let perm = if is_owner {
+                crate::git_service::PERM_ADMIN
+            } else {
+                crate::git_service::PERM_WRITE
+            };
             for r in repos {
-                let _ = crate::git_service::grant_permission(conn, &r.id, &member_id, crate::git_service::PERM_WRITE, &member_id);
+                let _ = crate::git_service::grant_permission(conn, &r.id, &member_id, perm, &member_id);
                 granted_repos.push(r.name);
             }
         }
@@ -6409,7 +6492,7 @@ mod tests {
             let src_id = setup_source_team(&conn);
             // yes=false → dry run
             let result = cmd_team_clone(&mut conn, "preview-test", Some(&src_id), None, false, "", Some("src-owner")).unwrap();
-            assert_eq!(result["dry_run"].as_bool().unwrap(), true);
+            assert!(result["dry_run"].as_bool().unwrap());
             assert_eq!(result["member_count"].as_i64().unwrap(), 3);
             // Verify no new team was created
             let count: i64 = conn
@@ -6489,6 +6572,63 @@ mod tests {
             let letter: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(letter["teamx_invitation"]["user"]["id"].as_str().unwrap(), "user-alice");
             assert_eq!(letter["teamx_invitation"]["user"]["name"].as_str().unwrap(), "Alice");
+        });
+    }
+
+    #[test]
+    fn clone_preserves_role_description() {
+        with_pki_env(|_tmp| {
+            let mut conn = test_conn();
+            let src_id = setup_source_team(&conn);
+            // Assign the worker a custom role that carries a description.
+            conn.execute(
+                "UPDATE members SET role = 'researcher' WHERE id = 'src-worker'",
+                [],
+            )
+            .unwrap();
+            let result = cmd_team_clone(&mut conn, "clone-role-desc", Some(&src_id), None, true, "", Some("src-owner")).unwrap();
+            let members = result["members"].as_array().unwrap();
+            let worker = members.iter().find(|m| m["source_member_id"].as_str() == Some("src-worker")).unwrap();
+            assert_eq!(worker["role"].as_str().unwrap(), "researcher");
+            // The clone letter must carry the role's label + description.
+            let b64 = worker["letter"].as_str().unwrap().strip_prefix("teamx-inv:v1:").unwrap();
+            let json = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap();
+            let letter: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(letter["teamx_invitation"]["role"]["label"].as_str().unwrap(), "Researcher");
+            assert_eq!(letter["teamx_invitation"]["role"]["description"].as_str().unwrap(), "Does research");
+        });
+    }
+
+    #[test]
+    fn clone_does_not_grant_repo_permissions_upfront() {
+        with_pki_env(|_tmp| {
+            let mut conn = test_conn();
+            let src_id = setup_source_team(&conn);
+            let result = cmd_team_clone(&mut conn, "clone-no-grants", Some(&src_id), None, true, "", Some("src-owner")).unwrap();
+            let clone_id = result["team"]["id"].as_str().unwrap();
+            let owner_holder = result["team"]["owner_member_id"].as_str().unwrap();
+            // Every clone repo (if created on disk) must be attributed to the
+            // clone owner seat, not the source owner (`actor.id`).
+            let created_by: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT DISTINCT created_by FROM git_repos WHERE team_id = ?1")
+                    .unwrap();
+                let rows = stmt.query_map([clone_id], |r| r.get::<_, String>(0)).unwrap();
+                rows.collect::<rusqlite::Result<_>>().unwrap()
+            };
+            for cb in &created_by {
+                assert_eq!(cb, owner_holder, "clone repo created_by must be the clone owner seat");
+            }
+            // No permissions are granted at clone time (members don't exist yet);
+            // access is granted on letter import.
+            let perm_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM git_repo_permissions p JOIN git_repos r ON r.id = p.repo_id WHERE r.team_id = ?1",
+                    [clone_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(perm_count, 0, "no repo permissions should exist before members import");
         });
     }
 }

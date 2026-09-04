@@ -214,6 +214,46 @@ pub fn create_repo(
     })
 }
 
+/// Create a new git repository (bare repo on disk + DB row) WITHOUT granting
+/// any permission. Used by `team clone`, where the clone team's members do not
+/// exist yet (they are pending invitations); their access is granted on letter
+/// import (auto-approve). `created_by` is a plain TEXT (the clone owner seat).
+pub fn create_empty_repo(
+    conn: &Connection,
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    created_by: &str,
+) -> Result<GitRepo, String> {
+    validate_name(name)?;
+    let disk_path = init_bare_repo(team_id, name)?;
+    let id = Uuid::new_v4().to_string();
+    let now = db::now();
+    let path = disk_path.display().to_string();
+
+    conn.execute(
+        "INSERT INTO git_repos (id, team_id, name, path, description, is_bare, created_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?7)",
+        params![id, team_id, name, path, description, created_by, now],
+    )
+    .map_err(|e| {
+        let _ = remove_repo_dir(team_id, name);
+        format!("db error: {e}")
+    })?;
+
+    Ok(GitRepo {
+        id,
+        team_id: team_id.to_string(),
+        name: name.to_string(),
+        path,
+        description: description.map(|s| s.to_string()),
+        is_bare: true,
+        created_by: created_by.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
 /// Get a git repository by name
 pub fn get_repo(
     conn: &Connection,
