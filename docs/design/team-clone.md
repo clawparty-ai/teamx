@@ -32,6 +32,8 @@ updated_at: 2026-09-04
 | DQ-012 | mint_invite 不含 "仅 primary owner 可 as_lead" 检查（clone 有意绕过） | Review #4 | ✅ settled |
 | DQ-013 | server_url 用 resolve_server_url()（非 127.0.0.1:5781） | Review #5 | ✅ settled |
 | DQ-014 | 单测需设临时 TEAMX_HOME + pki::ensure（避免往真实 ~/.teamx 签证书） | Review #9 | ✅ settled |
+| DQ-015 | server_url A 方案：serve 从请求 Host 头推导公网地址 | 后续讨论 - 用户确认 | ✅ settled |
+| DQ-016 | clone 仓库不预授权限，导入时 owner→ADMIN/其余→WRITE | Review #6 | ✅ settled |
 
 ## Current Frontier
 
@@ -47,8 +49,10 @@ updated_at: 2026-09-04
 
 ## Related Artifacts
 
-- `docs/34-team-clone.cn.md`：完整设计文档（v3，含 review 修正）
-- `docs/34-team-clone.cn.md` §4 接口清单：CLI 1 + RPC 1 + 内部函数 3
-- `docs/34-team-clone.cn.md` §5 实现逻辑：cmd_team_clone 九步
-- `docs/34-team-clone.cn.md` §6 mint_invite 重构
-- `docs/34-team-clone.cn.md` §10 测试方案：11 条单元 + e2e
+- `docs/34-team-clone.cn.md`：完整设计文档（已实现，含 review #1~#9 + A 方案回填）
+- `docs/34-team-clone.cn.md` §4 接口清单：CLI 1 + RPC 1 + 内部函数（cert/db 分离）
+- `docs/34-team-clone.cn.md` §5 实现逻辑：预签发证书 + 单个外层事务
+- `docs/34-team-clone.cn.md` §6 mint_invite 重构（cert/db 分离）
+- `docs/34-team-clone.cn.md` §9 server_url A 方案 + 仓库权限策略
+- `docs/34-team-clone.cn.md` §10 测试方案：15 条单元 + e2e（171 全量绿）
+- 实现 commit：`2f6c6ca`（初版）、`294c688`（#1~#4 + A 方案）、`93c0e5b`（#5/#6/#8/#9）

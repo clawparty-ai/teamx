@@ -1,9 +1,9 @@
 # teamx 团队 Clone（fork 一支“同构、隔离、可立即接活”的新团队）
 
 > 流程：需求 → 设计（本文件）→ 原型/实现
-> 状态：**设计（已确认，可实施）**
+> 状态：**已实现**（v3 + 全部 review 修复落地，171 单测全绿）
 > 目标读者：维护者 / 实现者
-> 最后更新：2026-09-04（Review A/B 决策回填）
+> 最后更新：2026-09-04（review #1~#9 修复 + server_url A 方案回填）
 
 ## 0. 决策摘要
 1. **owner 不变**：clone 团队的 owner = 源 owner（同一人，但跨团队是新 member uuid）
@@ -28,8 +28,9 @@
 ## 3. 关键机制结论（实现依据）
 - `teams.owner_member_id` 是 TEXT、**无 FK 到 members** → clone 可在成员导入前就把 owner 字段指向「预分配的 owner seat uuid」。
 - 邀请函即身份：每张邀请函预分配 `member_id`，证书 CN=`member:<id>:<role>`；成员 import 时按 CN 认领该 seat（auto_approve → active）。→ clone **不需要预插 member 行**，逐成员 mint 邀请函即可，导入即激活。
-- 角色表 `roles` 是 per-team（`UNIQUE(team_id,key)`）→ clone 复制源 approved 自定义角色。
-- 仓库表 `git_repos` per-team；`create_repo` 建空 bare repo。
+- 角色表 `roles` 是 per-team（`UNIQUE(team_id,key)`）→ clone 复制源 approved 自定义角色，并 `seed_roles` 补齐内置角色目录。
+- 仓库表 `git_repos` per-team；clone 用 `create_empty_repo` 建空 bare repo（不预授权限，`created_by` = owner_holder）。
+- 仓库权限在**导入时**授予（auto-approve：owner → ADMIN，其余 → WRITE），因为 clone 时成员尚不存在（`git_repo_permissions.member_id` 有 FK 到 members）。
 - “一个 workspace = 一个团队成员身份” → 管理/运行 clone 需要独立 workspace。
 
 ## 4. 公开接口
@@ -40,103 +41,103 @@ teamx team clone --name <NAME> [--team <SRC-ID>] [--server-url <URL>] [--yes] --
 ```
 - `--name`：必填、新团队名、全库唯一
 - `--team`：源团队 id（单团队会话可省略）
-- `--server-url`：写入各邀请函的 server 地址（默认当前 server）
+- `--server-url`：写入各邀请函的 server 地址（网络模式默认从请求 Host 头推导，见 §9）
 - `--yes`：跳过「成员/仓库摘要」确认直接执行
 
 ### 4.2 RPC（1 个）
-- `team.clone`（serve dispatch 新增），参数映射自 CLI。
+- `team.clone`（serve dispatch，CN 特判：从证书 member_id 解析源团队与权限）。
 
-### 4.3 内部函数（3 个）
+### 4.3 内部函数
 | 函数 | 作用 |
 |---|---|
-| `cmd_team_clone(...)` | 总流程 |
-| `clone_copy_roles(conn, src_team_id, clone_team_id)` | 复制 approved 自定义角色 |
-| `mint_invite(...)`（重构自 `cmd_team_invite`） | 一次性签发一张邀请函（letter） |
+| `cmd_team_clone(...)` | 总流程（预签发证书 + 单个外层事务） |
+| `build_seat_plan(...)` / `SeatPlan` | 为每个源成员构造座位计划（role/desc/user 绑定） |
+| `role_meta(...)` | 查角色 label + description（roles 表 → 内置目录兜底） |
+| `clone_copy_roles(tx, ...)` | 复制 approved 自定义角色（`&mut Transaction`） |
+| `mint_invite_cert(...)` / `mint_invite_db(tx, ...)` / `mint_invite(...)` | 证书签发与 DB 写入分离，供批量单事务复用 |
+| `git_service::create_empty_repo(...)` | 建空 bare repo + DB 行，不授权限 |
 
 ### 4.4 复用（不改行为）
-`resolve_actor` / `ensure_owner` / `members_for_team` / `git_service::list_repos` / `git_service::create_repo` / `resolve_user` / `role_key_from_label` / PKI 签发。
+`resolve_actor` / `ensure_owner` / `is_team_owner` / `members_for_team` / `git_service::list_repos` / `resolve_user` / `seed_roles` / PKI 签发。
 
 ## 5. `cmd_team_clone` 实现逻辑
 
 ```
-输入：name, team_opt, server_url, yes, session
+输入：name, team_opt, server_url, yes, session, actor_member_id
 ```
 
-**(0) 校验**
-- `resolve_actor` 定位调用者与源团队；`ensure_owner`（owner/co-lead 才可）
+**(0) 校验 + 解析调用者**
+- CN 路径（网络模式）：`actor_member_id` 来自证书；源团队用 `team_opt`（serve 传入并已校验）或兜底 `m.team_id`；`is_team_owner` 校验 owner/co-lead。
+- Session 路径（本地）：`resolve_actor` + `ensure_owner`。
 - name 非空且 `SELECT COUNT(*) FROM teams WHERE name=?` == 0
 
 **(1) 快照源数据（只读）**
 - active members（state='active'，过滤 left/denied）
 - approved 自定义 roles
 - repos（`SELECT id,name FROM git_repos WHERE team_id=?`）
-- 源 owner 成员定位：`find(m.id == src.owner_member_id)`；不在 active → Err
+- 源 owner 定位：`find(m.id == src.owner_member_id)`；不在 active → Err
 
-**(2) 建 clone team（暂不插成员）**
+**(2) 构造 SeatPlan（稳定顺序：owner → co-lead → 其余）**
+每个成员 `build_seat_plan` 解析：role_key（owner 用 'owner'）、label + desc（`role_meta`）、user 绑定（复用源 `user_id` + `user.display_name`）、is_lead / is_owner。
+
+**(3) 预签发证书（纯文件系统，无 DB 写）**
+对每个 SeatPlan 调 `mint_invite_cert`，得到 `MintedInvite { member_id, invitation_id, serial_hex, cn, letter }`。owner 用 `owner_holder` 作为 member_id。
+
+**(4) 单个外层事务（DB 全有或全无）**
 ```
-team_id  = uuid v4
-owner_holder = uuid v4            // 源 owner 的新 seat uuid（owner 邀请函的 member_id）
-INSERT teams(id, name, owner_member_id=owner_holder, goal_id=NULL,
-             state='forming', invite_token=uuid, created_at, updated_at)
-emit team.created
+db::with_write(conn, |tx| {
+  INSERT teams(id, name, owner_member_id=NULL, 'forming', ...)
+  seed_roles(tx, clone_team_id)                    // 补齐内置角色目录
+  clone_copy_roles(tx, src, clone, actor)          // 复制自定义角色
+  emit team.created
+  for (plan, mint) in minted { mint_invite_db(tx, ...) }   // 逐成员写 invitations + emit
+  UPDATE teams SET owner_member_id = owner_holder
+})
 ```
 
-**(3) 复制角色**
-对源 approved roles：`INSERT OR IGNORE INTO roles(team_id, key, label, description, state='approved', proposed_by=actor)`
+**(5) 空仓库（事务外，文件系统 + DB 行）**
+源每个 repo：`create_empty_repo(clone_team_id, repo_name, "cloned from <src>/<repo>", owner_holder)`（空 bare，`created_by` = clone owner seat，不授权限）。
 
-**(4) 逐成员签发邀请函**
-稳定顺序：owner → co-lead(is_lead) → 其余 active 成员。
-对每个成员构造 `SeatPlan { src_member_id, user_id, role_key, label, is_lead, is_owner }`：
-- is_owner：role_key='owner'，as_lead=true；member_id 需 == `owner_holder`
-- is_lead：as_lead=true
-- user 绑定：成员有 `user_id` → `resolve_user` 复用同一 user；无 → None（letter 无 user 字段，note=`unbound-seat`）
-- auto_approve 恒 true
-调用 `mint_invite(clone_team_id, role_key, label, desc, user_id_opt, name_hint=display_name, server_url, as_lead, auto_approve=true, by_member=actor.id)`，
-记录 `src_member_id → { clone_member_id, letter, ... }`
-
-**(5) 写回 owner**
-`UPDATE teams SET owner_member_id=owner_holder WHERE id=clone_team_id`
-
-**(6) 空仓库**
-源每个 repo：`create_repo(clone_team_id, repo_name, "cloned from <src>/<repo>", actor)`（空 bare）
-
-**(7) 审计**
-在 clone team emit：`team.created` + 每张 `invitation.created`（payload 同现有 invite）
-
-**(8) 确认机制**
+**(6) 确认机制**
 - `yes=false`：**不落库**，仅返回预览摘要（源/目标/成员数/角色数/repo 数）并提示加 `--yes`
-- `yes=true`：执行 (2)-(7)
+- `yes=true`：执行 (2)-(5)
 
-**(9) 返回**
+**(7) 返回**
 ```
 { ok, team:{id,name,state:'forming',owner_member_id},
   source_team_id,
   roles_copied:N,
   members:[ { source_member_id, clone_member_id, display_name, role, is_lead,
-              user_id, letter:"teamx-inv:v1:…",
+              is_owner, user_id, letter:"teamx-inv:v1:…",
               note: <null|'unbound-seat'> } ],
   repos:[{source, name}],
   next:"import letters into per-team workspaces; use a separate workspace per team"
 }
 ```
 
-## 6. 重构：`mint_invite`
-现状 `cmd_team_invite` 内含“解析 actor/owner + mint letter + roles insert + invitations insert + emit”。clone 需要“无 actor 约束地向指定 team 签发”，因此把后段抽成：
+## 6. 重构：`mint_invite`（证书与 DB 写入分离）
+
+现状 `cmd_team_invite` 内含“解析 actor/owner + mint letter + roles insert + invitations insert + emit”。clone 需要“无 actor 约束地向指定 team 批量签发”，因此拆成三阶段：
 
 ```
-fn mint_invite(
-  conn: &mut Connection,
-  team_id: &str, role_key: &str, label: &str, desc: Option<&str>,
-  user_id_opt: Option<&str>, name_hint: Option<&str>,
-  server_url: &str, as_lead: bool, auto_approve: bool, created_by: &str,
-  member_id_override: Option<&str>,
-) -> Result<(String /*member_id*/, String /*letter*/)>
+fn mint_invite_cert(team_id, team_name, role_key, label, desc, user, name_hint,
+                    server_url, as_lead, auto_approve, member_id_override)
+    -> Result<MintedInvite>          // 纯文件系统：签证书 + 构造 letter，不碰 DB
+
+fn mint_invite_db(tx: &mut Transaction, mint, team_id, role_key, label, desc,
+                  user, as_lead, auto_approve, created_by)
+    -> rusqlite::Result<()>          // 事务内：roles insert + invitations insert + emit
+
+fn mint_invite(conn, ...) -> (member_id, invitation_id, letter)
+                                     // 包装：cert + with_write(db)
 ```
-- 直接接收 role_key+label（**不再 label→key 反推**）
+
+- 直接接收 role_key + label + desc（**不再 label→key 反推**）
 - **不含**"仅 primary owner 可 as_lead"检查（clone 有意绕过，入口已授权）
-- `server_url` 用 `resolve_server_url()`（非 127.0.0.1:5781）
+- `server_url` 用 `resolve_server_url_with_host()`（网络模式从请求 Host 头推导，见 §9）
 - `member_id_override`：owner 用预生成的 `owner_holder` uuid
-- `cmd_team_invite` 重构为「解析 + ensure_owner + as_lead 权限检查 → mint_invite」，对外行为不变（既有 invite 测试全量回归）
+- `MintedInvite` 同时返回 `invitation_id`（修复 `team invite` 返回空 id 的回归），letter 的 `user` 对象保留 `{id, name}`
+- `cmd_team_invite` 重构为「解析 + ensure_owner + as_lead 权限检查 → mint_invite」，对外行为不变
 
 ## 7. 不复制 / 隔离边界
 不复制：events / taskx / questions / nudge / tunnels / sessions / activity / 旧邀请 / goal 历史 / git 内容。
@@ -174,11 +175,26 @@ team console         # 查看 clone 的 Members/tunnels
 - `--yes` 机制防误操作（默认先看摘要）
 - 导入失败：邀请函仍有效，可在 clone 的 `invite-list`/`invite-revoke` 管理
 
+### 9.1 server_url（A 方案）
+clone 团队与源团队**共用同一 server（一个 ip:port、一个 DB）**，团队不靠 path 区分（协作层靠 mTLS 证书身份，git 层才走 `/git/{team_id}/{repo}`）。因此每张 clone 邀请函里的 `server.url` 必须填**公网可达地址**，否则远程成员连不上。
+
+`resolve_server_url_with_host(explicit, host)` 优先级：
+1. 显式 `--server-url`
+2. 请求 `Host` 头（客户端实际拨的地址，serve dispatch 从请求提取）
+3. `TEAMX_SERVER_URL` 环境变量 / 已导入 letter / 兜底 127.0.0.1
+
+这解决了「server 端没有 letter、`discover_server_url` 返回 None → 错误兜底 127.0.0.1」的问题。
+
+### 9.2 仓库权限（#6）
+- clone 建空仓库时**不预授权限**（成员尚不存在，`git_repo_permissions.member_id` 有 FK 到 members）；`created_by` = `owner_holder`。
+- 成员导入（auto-approve）时授权：**owner → ADMIN，其余 → WRITE**（`cmd_team_import`）。owner 导入后即可管理仓库/授予他人权限。
+
 ## 10. 测试方案
 
-### 10.1 单元（内存 DB）
-> **前置**：测试需设临时 `TEAMX_HOME` + `pki::ensure`（否则会往真实 `~/.teamx` 签证书）。
-> **事务**：外层单事务（一个 `db::with_write` 包裹建队+角色+invitations+owner 回写）；PKI 证书为文件副作用（失败可能残留孤儿证书文件，DB 行可回滚）。
+### 10.1 单元（内存 DB，共 13 条 clone 测试 + 全量 171 测试）
+> **前置**：测试需设临时 `TEAMX_HOME` + `pki::ensure`（否则会往真实 `~/.teamx` 签证书），并用全局 `Mutex` 串行化（`TEAMX_HOME` 是进程级 env，并行测试会竞争）。
+> **事务**：单个外层 `db::with_write` 包裹建队+seed_roles+复制角色+全部邀请函+owner 回写；PKI 证书为文件副作用（失败可能残留孤儿证书文件，DB 行可回滚）。
+
 | # | 用例 |
 |---|---|
 | 1 | 普通成员 clone → Err；co-lead → Ok |
@@ -191,7 +207,11 @@ team console         # 查看 clone 的 Members/tunnels
 | 8 | 同名二次 clone → Err |
 | 9 | `yes=false` 只返回预览、不落库（无新 team/repo） |
 | 10 | 源 owner 非 active → Err |
-| 11 | 重构回归：既有 `team invite` 测试保持绿 |
+| 11 | 内置角色目录补齐（seed_roles）：clone 团队含全部 6 个内置角色 |
+| 12 | clone letter 保留同一用户绑定（`user.id` + `user.name`） |
+| 13 | clone letter 保留自定义角色 description |
+| 14 | clone 仓库不预授权限：`created_by`=owner_holder、无 `git_repo_permissions` 行 |
+| 15 | 重构回归：既有 `team invite` 测试保持绿 |
 
 ### 10.2 e2e（人工/脚本）
 1. clone 源团队
@@ -201,8 +221,9 @@ team console         # 查看 clone 的 Members/tunnels
 
 ## 11. 文件改动
 - `crates/teamx/src/cli.rs`：TeamCmd + `Clone`
-- `crates/teamx/src/commands.rs`：`cmd_team_clone`、`clone_copy_roles`、重构 `mint_invite`、TeamCmd 分派、单测
-- `crates/teamx/src/serve.rs`：dispatch `team.clone`
+- `crates/teamx/src/commands.rs`：`cmd_team_clone`、`build_seat_plan`/`SeatPlan`、`role_meta`、`clone_copy_roles`、重构 `mint_invite`（cert/db 分离）、导入 auto-approve 授权（owner→ADMIN）、TeamCmd 分派、单测
+- `crates/teamx/src/serve.rs`：dispatch `team.clone`（CN 特判 + Host 头推导 server_url）
+- `crates/teamx/src/git_service.rs`：`create_empty_repo`（不预授权限）
 - `scripts/teamx-clone-node.sh`：节点接入 runbook
 - `docs/26-manual-cloud-host-best-practice.cn.md`：追加 clone 接入段
 
