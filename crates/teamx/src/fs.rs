@@ -82,13 +82,6 @@ pub fn run(cmd: &FsCmd) -> Result<(), String> {
     })
 }
 
-/// We still serve over rustls (axum-server) with a throwaway self-signed cert
-/// only to keep one serving path; `teamx fs` is used through the console proxy
-/// which speaks plain HTTP to the tunnel target. To keep it simple we bind
-/// plain TCP via `axum_server::bind` when available — fallback is rustls with
-/// an ephemeral cert.
-
-
 /// Resolve a client-supplied relative path inside the root.
 fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = if rel.is_empty() || rel == "/" { "." } else { rel.trim_start_matches('/') };
@@ -109,7 +102,13 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     if !cand.starts_with(root) {
         return Err("path escapes workspace".to_string());
     }
-    Ok(cand)
+    // Resolve symlinks so a link inside the workspace cannot point outside it.
+    let rootc = std::fs::canonicalize(root).map_err(|e| format!("root: {e}"))?;
+    let canon = std::fs::canonicalize(&cand).map_err(|e| format!("resolve {}: {e}", cand.display()))?;
+    if !canon.starts_with(&rootc) {
+        return Err("path escapes workspace (symlink)".to_string());
+    }
+    Ok(canon)
 }
 
 fn entry(p: &Path) -> serde_json::Value {

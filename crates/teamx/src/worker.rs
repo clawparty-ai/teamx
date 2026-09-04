@@ -214,20 +214,27 @@ fn poll_once(
         args.push(sid.clone());
     }
     args.push(prompt);
-    let run = Command::new(opencode_bin)
+    let run = match Command::new(opencode_bin)
         .args(&args)
         .current_dir(std::env::current_dir().map_err(|e| e.to_string())?)
         .output()
-        .map_err(|e| format!("opencode run spawn failed: {e}"))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            *last_run_at = Instant::now(); // throttle retries even on failure
+            return Err(format!("opencode run spawn failed: {e}"));
+        }
+    };
     let stdout = String::from_utf8_lossy(&run.stdout);
     let tail: String = stdout.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
     eprintln!("teamx worker: opencode run exited={}:\n{}", run.status, tail);
     if !run.status.success() {
+        *last_run_at = Instant::now(); // do not retry every poll after a failure
         return Err("opencode run failed; items kept for retry".to_string());
     }
     // Remember the session id the first time so later turns share its context.
     if session_id.is_none() {
-        if let Ok(list) = rpc_http(&opencode_url) {
+        if let Ok(list) = rpc_http(opencode_url) {
             if let Some(id) = list.as_array().and_then(|a| a.first()).and_then(|s| s.get("id")).and_then(Value::as_str) {
                 save_session_id(id);
             }
