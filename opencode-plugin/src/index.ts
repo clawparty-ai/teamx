@@ -598,7 +598,7 @@ let lastLeadAutoRun = 0
 async function autoRunLeadNudge(sessionID: string): Promise<void> {
   if (process.env.TEAMX_AUTO_REPLY === "0") return
   const now = Date.now()
-  if (now - lastLeadAutoRun < 120_000) return
+  if (now - lastLeadAutoRun < 300_000) return
   lastLeadAutoRun = now
   const cwd = dirOfSession(sessionID)
   const prompt =
