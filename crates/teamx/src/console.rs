@@ -813,7 +813,10 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let target = pct_path(path);
+    let target = match path.split_once('?') {
+        Some((p, q)) => format!("{}?{q}", pct_path(p)),
+        None => pct_path(path),
+    };
     let head = match method.as_str() {
         "POST" | "PUT" | "PATCH" => format!(
             "{} {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
