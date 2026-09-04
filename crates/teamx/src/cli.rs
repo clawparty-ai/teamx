@@ -680,6 +680,23 @@ pub enum TeamCmd {
         #[arg(long)]
         session: String,
     },
+    /// Clone a team: copy members, roles, and create empty repos under a new name
+    Clone {
+        /// new team name (must be unique across all teams)
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// source team id (optional when the session belongs to one team)
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL to embed in each invitation letter
+        #[arg(long)]
+        server_url: Option<String>,
+        /// skip the preview confirmation and execute immediately
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        session: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

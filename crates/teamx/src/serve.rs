@@ -1059,6 +1059,40 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         return Ok(json!({ "ok": true, "member_id": target, "team": tid, "state": "left" }));
     }
 
+    // `team.clone` — clone a team (owner/co-lead only). Uses CN-based
+    // authorization (not session), so it dispatches directly to cmd_team_clone
+    // with the actor's member_id.
+    if method == "team.clone" {
+        let src_team_id = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("team.clone: member has no active team".to_string()),
+                    _ => return Err("team.clone requires `team` (member belongs to multiple teams)".to_string()),
+                }
+            }
+        };
+        if !commands::member_in_team(conn, &member_id, &src_team_id).map_err(|e| e.to_string())? {
+            return Err(format!("member `{member_id}` is not a member of team {src_team_id}"));
+        }
+        let name = s("name").ok_or_else(|| "team.clone requires `name`".to_string())?;
+        let server_url = o("server_url");
+        let yes = b("yes");
+        // Call cmd_team_clone directly with CN-based member_id
+        let result = commands::cmd_team_clone(
+            conn,
+            &name,
+            Some(&src_team_id),
+            server_url.as_deref(),
+            yes,
+            "",
+            Some(&member_id),
+        ).map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
+
     // `team.inbox` — unified per-member inbox (tasks + my questions + unread
     // nudges). Member's nudge cursor lives server-side (`inbox_cursors`).
     if method == "team.inbox" {

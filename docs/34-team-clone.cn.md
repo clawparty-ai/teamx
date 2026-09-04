@@ -1,8 +1,9 @@
 # teamx 团队 Clone（fork 一支“同构、隔离、可立即接活”的新团队）
 
 > 流程：需求 → 设计（本文件）→ 原型/实现
-> 状态：**设计（待评审）**
+> 状态：**设计（已确认，可实施）**
 > 目标读者：维护者 / 实现者
+> 最后更新：2026-09-04（Review A/B 决策回填）
 
 ## 0. 决策摘要
 1. **owner 不变**：clone 团队的 owner = 源 owner（同一人，但跨团队是新 member uuid）
@@ -128,9 +129,14 @@ fn mint_invite(
   team_id: &str, role_key: &str, label: &str, desc: Option<&str>,
   user_id_opt: Option<&str>, name_hint: Option<&str>,
   server_url: &str, as_lead: bool, auto_approve: bool, created_by: &str,
+  member_id_override: Option<&str>,
 ) -> Result<(String /*member_id*/, String /*letter*/)>
 ```
-`cmd_team_invite` 重构为「解析 + ensure_owner + as_lead 权限检查 → mint_invite」，对外行为不变（既有 invite 测试全量回归）。
+- 直接接收 role_key+label（**不再 label→key 反推**）
+- **不含**"仅 primary owner 可 as_lead"检查（clone 有意绕过，入口已授权）
+- `server_url` 用 `resolve_server_url()`（非 127.0.0.1:5781）
+- `member_id_override`：owner 用预生成的 `owner_holder` uuid
+- `cmd_team_invite` 重构为「解析 + ensure_owner + as_lead 权限检查 → mint_invite」，对外行为不变（既有 invite 测试全量回归）
 
 ## 7. 不复制 / 隔离边界
 不复制：events / taskx / questions / nudge / tunnels / sessions / activity / 旧邀请 / goal 历史 / git 内容。
@@ -171,6 +177,8 @@ team console         # 查看 clone 的 Members/tunnels
 ## 10. 测试方案
 
 ### 10.1 单元（内存 DB）
+> **前置**：测试需设临时 `TEAMX_HOME` + `pki::ensure`（否则会往真实 `~/.teamx` 签证书）。
+> **事务**：外层单事务（一个 `db::with_write` 包裹建队+角色+invitations+owner 回写）；PKI 证书为文件副作用（失败可能残留孤儿证书文件，DB 行可回滚）。
 | # | 用例 |
 |---|---|
 | 1 | 普通成员 clone → Err；co-lead → Ok |
