@@ -1,5 +1,5 @@
 ---
-description: teamx approve member membership (owner)
+description: teamx approve member membership (owner/co-lead)
 agent: teamx
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: teamx deny member membership (owner)
+description: teamx deny member membership (owner/co-lead)
 agent: teamx
 ---
 

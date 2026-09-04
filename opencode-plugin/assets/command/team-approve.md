@@ -1,5 +1,5 @@
 ---
-description: teamx 审批成员入队（owner）
+description: teamx 审批成员入队（owner/co-lead）
 agent: teamx
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: teamx 提议自定义角色（成员自建，owner 审批）
+description: teamx 提议自定义角色（成员自建，owner/co-lead 审批）
 agent: teamx
 ---
 

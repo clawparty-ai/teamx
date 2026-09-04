@@ -1,5 +1,5 @@
 ---
-description: teamx 向成员提问（owner）
+description: teamx 向成员提问（owner/co-lead）
 agent: teamx
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: teamx draft/update team goal (owner)
+description: teamx draft/update team goal (owner/co-lead)
 agent: teamx
 ---
 

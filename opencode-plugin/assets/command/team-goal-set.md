@@ -1,5 +1,5 @@
 ---
-description: teamx 起草/更新团队目标（owner）
+description: teamx 起草/更新团队目标（owner/co-lead）
 agent: teamx
 ---
 

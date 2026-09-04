@@ -6,30 +6,30 @@ agent: teamx
 teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARGUMENTS 后解析并调用对应 teamx_* 工具）：
 
 - `create <name>` → teamx_create_team（创建团队，成为 owner）
-- `join <token> --name <显示名>` → teamx_join（加入团队，需 owner 审批）
+- `join <token> --name <显示名>` → teamx_join（加入团队，需 owner/co-lead 审批）
 - `leave` → teamx_leave（离开团队；owner 不能离开，请用 destroy）
 - `status` → teamx_status（查看当前团队完整状态）
 - `sync` → teamx_sync（拉取最新团队事件）
-- `start` → 启动 grill-doc 设计会话，交互式创建/改进团队的 .teamx/TEAM.md（owner 主导，产出团队契约后可用 team create 一键启动团队）
-- `goal set <title> [body]` → teamx_set_goal（owner 起草目标）
-- `goal share` → teamx_share_goal（owner 共享目标，启动执行）
-- `goal close` → teamx_close_goal（owner 验证并关闭目标）
-- `approve <member_id>` → teamx_approve（owner 审批入队）
-- `deny <member_id>` → teamx_deny（owner 拒绝入队）
-- `invite "<角色>: <描述>" [--server-url <url>]` → teamx_team_invite（owner 签发邀请函 + mTLS 客户端证书，网络模式）
+- `start` → 启动 grill-doc 设计会话，交互式创建/改进团队的 .teamx/TEAM.md（owner/co-lead 主导，产出团队契约后可用 team create 一键启动团队）
+- `goal set <title> [body]` → teamx_set_goal（owner/co-lead 起草目标）
+- `goal share` → teamx_share_goal（owner/co-lead 共享目标，启动执行）
+- `goal close` → teamx_close_goal（owner/co-lead 验证并关闭目标）
+- `approve <member_id>` → teamx_approve（owner/co-lead 审批入队）
+- `deny <member_id>` → teamx_deny（owner/co-lead 拒绝入队）
+- `invite "<角色>: <描述>" [--server-url <url>]` → teamx_team_invite（owner/co-lead 签发邀请函 + mTLS 客户端证书，网络模式）
 - `import <letter> [--name <名>]` → teamx_team_import（成员导入邀请函，认领 pending 席位）
-- `invite-list` → teamx_team_invite_list（owner 列出已签发邀请函）
-- `invite-revoke <invitation_id>` → teamx_team_invite_revoke（owner 吊销邀请函）
+- `invite-list` → teamx_team_invite_list（owner/co-lead 列出已签发邀请函）
+- `invite-revoke <invitation_id>` → teamx_team_invite_revoke（owner/co-lead 吊销邀请函）
 - `role set <role>` → teamx_set_role（选择角色：固定角色或已批准的自定义角色）
-- `role propose <key> <label> [desc]` → teamx_role_propose（成员提议自定义角色，owner 审批）
-- `role approve <key>` / `role deny <key>` → teamx_role_approve / teamx_role_deny（owner 审批/拒绝自定义角色）
-- `role update <key> [--label] [--description]` → teamx_role_update（owner 修改角色名/描述）
+- `role propose <key> <label> [desc]` → teamx_role_propose（成员提议自定义角色，owner/co-lead 审批）
+- `role approve <key>` / `role deny <key>` → teamx_role_approve / teamx_role_deny（owner/co-lead 审批/拒绝自定义角色）
+- `role update <key> [--label] [--description]` → teamx_role_update（owner/co-lead 修改角色名/描述）
 - `state idle|active` → teamx_set_state（设置工作状态）
-- `ask <member_id> <问题>` → teamx_ask（owner 提问）
+- `ask <member_id> <问题>` → teamx_ask（owner/co-lead 提问）
 - `respond <ask_id> <回答>` → teamx_respond（回答提问）
 - `publish <type> [data]` → teamx_publish（progress/decision/update/blocked/resumed/achieved/refine）
-- `archive` → teamx_archive（owner 归档已完成团队）
-- `destroy` → teamx_team_destroy（owner 软销毁团队，隐藏并保留数据，不可逆）
+- `archive` → teamx_archive（owner/co-lead 归档已完成团队）
+- `destroy` → teamx_team_destroy（owner/co-lead 软销毁团队，隐藏并保留数据，不可逆）
 - `tunnel expose --name <n> --port <p> [--lan-ip <ip>]` → teamx_tunnel_expose（暴露本地服务，网络模式）
 - `tunnel list` → teamx_tunnel_list（列出本团队已暴露的服务）
 - `tunnel status <name>` → teamx_tunnel_status（查看隧道状态/直连判断）
@@ -45,6 +45,6 @@ teamx 团队协作命令。请按以下子命令路由执行（agent 收到 $ARG
 
 如果 $ARGUMENTS 为空（没有子命令），默认执行 teamx_status 查看团队完整状态。
 
-**重要：入队审批必须由 owner 决策，绝不自动批准。** 在 status/sync 输出中发现有成员申请加入（membership.pending 或成员 state 为 pending）时，只列出待审批成员并提示 owner 可以执行 `approve <member_id>` 或 `deny <member_id>`，不要擅自调用 teamx_approve / teamx_deny。只有用户明确要求批准某成员时，才执行 teamx_approve。
+**重要：入队审批必须由 team lead（owner/co-lead）决策，绝不自动批准。** 在 status/sync 输出中发现有成员申请加入（membership.pending 或成员 state 为 pending）时，只列出待审批成员并提示 team lead（owner/co-lead）可以执行 `approve <member_id>` 或 `deny <member_id>`，不要擅自调用 teamx_approve / teamx_deny。只有用户明确要求批准某成员时，才执行 teamx_approve。
 
 用户输入: $ARGUMENTS

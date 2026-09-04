@@ -1,5 +1,5 @@
 ---
-description: teamx ask a member a question (owner)
+description: teamx ask a member a question (owner/co-lead)
 agent: teamx
 ---
 

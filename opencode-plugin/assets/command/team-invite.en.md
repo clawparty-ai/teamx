@@ -1,5 +1,5 @@
 ---
-description: teamx invite member (owner issues mTLS client certificate + invitation letter)
+description: teamx invite member (owner/co-lead issues mTLS client certificate + invitation letter)
 agent: teamx
 ---
 

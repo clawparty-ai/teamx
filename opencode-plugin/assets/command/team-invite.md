@@ -1,5 +1,5 @@
 ---
-description: teamx 邀请成员（owner 签发 mTLS 客户端证书 + invitation letter）
+description: teamx 邀请成员（owner/co-lead 签发 mTLS 客户端证书 + invitation letter）
 agent: teamx
 ---
 

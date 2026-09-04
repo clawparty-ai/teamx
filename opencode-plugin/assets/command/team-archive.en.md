@@ -1,5 +1,5 @@
 ---
-description: teamx archive completed team (owner)
+description: teamx archive completed team (owner/co-lead)
 agent: teamx
 ---
 

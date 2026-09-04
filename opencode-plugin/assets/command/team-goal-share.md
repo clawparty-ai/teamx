@@ -1,5 +1,5 @@
 ---
-description: teamx 共享目标并启动协作（owner）
+description: teamx 共享目标并启动协作（owner/co-lead）
 agent: teamx
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: teamx 归档已完成团队（owner）
+description: teamx 归档已完成团队（owner/co-lead）
 agent: teamx
 ---
 

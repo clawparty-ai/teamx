@@ -1,5 +1,5 @@
 ---
-description: teamx 验证并关闭目标（owner，仅当已 achieved）
+description: teamx 验证并关闭目标（owner/co-lead，仅当已 achieved）
 agent: teamx
 ---
 

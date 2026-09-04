@@ -1,5 +1,5 @@
 ---
-description: teamx verify and close goal (owner, only when achieved)
+description: teamx verify and close goal (owner/co-lead, only when achieved)
 agent: teamx
 ---
 

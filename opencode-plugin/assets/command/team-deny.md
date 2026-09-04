@@ -1,5 +1,5 @@
 ---
-description: teamx 拒绝成员入队（owner）
+description: teamx 拒绝成员入队（owner/co-lead）
 agent: teamx
 ---
 

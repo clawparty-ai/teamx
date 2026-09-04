@@ -67,7 +67,7 @@ export const tools = {
   }),
 
   teamx_set_goal: tool({
-    description: "Set or update the team goal (owner only).",
+    description: "Set or update the team goal (team lead: owner or co-lead).",
     args: {
       title: tool.schema.string().describe("goal title"),
       body: tool.schema.string().optional().describe("goal body / detailed description"),
@@ -78,7 +78,7 @@ export const tools = {
   }),
 
   teamx_share_goal: tool({
-    description: "Share the goal with team members and move the team into the active state (owner only).",
+    description: "Share the goal with team members and move the team into the active state (team lead: owner or co-lead).",
     args: {},
     async execute(_args, context: ToolCtx) {
       return tx(context.sessionID, context.directory, ["goal", "share"])
@@ -87,7 +87,7 @@ export const tools = {
 
   teamx_close_goal: tool({
     description:
-      "Verify the achieved goal and close it; the team becomes completed (owner only). " +
+      "Verify the achieved goal and close it; the team becomes completed (team lead: owner or co-lead). " +
       "Only call this after a member reported the goal achieved.",
     args: {},
     async execute(_args, context: ToolCtx) {
@@ -96,7 +96,7 @@ export const tools = {
   }),
 
   teamx_archive: tool({
-    description: "Archive a completed team (owner only). Archived teams accept no new members.",
+    description: "Archive a completed team (team lead: owner or co-lead). Archived teams accept no new members.",
     args: {},
     async execute(_args, context: ToolCtx) {
       return tx(context.sessionID, context.directory, ["team", "archive"])
@@ -105,7 +105,7 @@ export const tools = {
 
   teamx_team_destroy: tool({
     description:
-      "Soft-destroy a team (owner only): mark it destroyed, hide it from all member lists, revoke its " +
+      "Soft-destroy a team (team lead: owner or co-lead): mark it destroyed, hide it from all member lists, revoke its " +
       "outstanding invitations, and keep its data for audit. Members keep their rows but the team is gone.",
     args: {
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
@@ -315,7 +315,7 @@ export const tools = {
       "Self-service by default; owner may set another member via the member arg.",
     args: {
       state: tool.schema.enum(["idle", "active"]).describe("target member state"),
-      member: tool.schema.string().optional().describe("target member id (owner only)"),
+      member: tool.schema.string().optional().describe("target member id (team lead: owner or co-lead)"),
     },
     async execute(args, context: ToolCtx) {
       return tx(context.sessionID, context.directory, ["member", "set-state", args.state, ...opt("--member", args.member)])
@@ -345,7 +345,7 @@ export const tools = {
   }),
 
   teamx_approve: tool({
-    description: "Approve a pending membership request (owner only). Pass team when the owner session belongs to several teams.",
+    description: "Approve a pending membership request (team lead: owner or co-lead). Pass team when the owner session belongs to several teams.",
     args: {
       member_id: tool.schema.string().describe("the pending member id"),
       team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
@@ -356,7 +356,7 @@ export const tools = {
   }),
 
   teamx_deny: tool({
-    description: "Deny a pending membership request (owner only). Pass team when the owner session belongs to several teams.",
+    description: "Deny a pending membership request (team lead: owner or co-lead). Pass team when the owner session belongs to several teams.",
     args: {
       member_id: tool.schema.string().describe("the pending member id"),
       team: tool.schema.string().optional().describe("team id (optional when the owner has one team)"),
@@ -392,7 +392,7 @@ export const tools = {
 
   teamx_team_invite: tool({
     description:
-      "Invite a member with a job role (owner only). Issues a client certificate + a self-contained " +
+      "Invite a member with a job role (team lead: owner or co-lead). Issues a client certificate + a self-contained " +
       "invitation letter (base64 `teamx-inv:v1:...`) to share with the member. The member imports it and " +
       "connects over mTLS; you still approve them before they can work.",
     args: {
@@ -412,7 +412,7 @@ export const tools = {
   }),
 
   teamx_team_invite_list: tool({
-    description: "List issued invitation letters for the team (owner only), with their state (unused/used/revoked).",
+    description: "List issued invitation letters for the team (team lead: owner or co-lead), with their state (unused/used/revoked).",
     args: {},
     async execute(_args, context: ToolCtx) {
       return tx(context.sessionID, context.directory, ["team", "invite-list"])
@@ -420,7 +420,7 @@ export const tools = {
   }),
 
   teamx_team_invite_revoke: tool({
-    description: "Revoke an invitation letter (owner only); its certificate is rejected at connect.",
+    description: "Revoke an invitation letter (team lead: owner or co-lead); its certificate is rejected at connect.",
     args: {
       id: tool.schema.string().describe("invitation id to revoke"),
     },
@@ -469,11 +469,11 @@ export const tools = {
 
   teamx_set_role: tool({
     description:
-      "Choose a role for the current session (member self-service) or assign one to another member (owner only, via member). " +
+      "Choose a role for the current session (member self-service) or assign one to another member (team lead: owner or co-lead, via member). " +
       "Only approved roles are usable: built-in roles (owner, observer, supervisor, contributor, subtask-implementer, reviewer) plus any custom roles the owner approved.",
     args: {
       role: tool.schema.string().describe("role key from the team catalog"),
-      member: tool.schema.string().optional().describe("target member id when assigning on someone's behalf (owner only)"),
+      member: tool.schema.string().optional().describe("target member id when assigning on someone's behalf (team lead: owner or co-lead)"),
     },
     async execute(args, context: ToolCtx) {
       return tx(context.sessionID, context.directory, ["role", "set", args.role, ...opt("--member", args.member)])
@@ -496,7 +496,7 @@ export const tools = {
 
   teamx_role_approve: tool({
     description:
-      "Approve a proposed custom role (owner only). The role becomes usable and is automatically granted to the member who proposed it.",
+      "Approve a proposed custom role (team lead: owner or co-lead). The role becomes usable and is automatically granted to the member who proposed it.",
     args: {
       role: tool.schema.string().describe("role key to approve"),
     },
@@ -507,7 +507,7 @@ export const tools = {
 
   teamx_role_deny: tool({
     description:
-      "Deny a proposed custom role and remove the proposal (owner only). The proposer does not get the role.",
+      "Deny a proposed custom role and remove the proposal (team lead: owner or co-lead). The proposer does not get the role.",
     args: {
       role: tool.schema.string().describe("role key to deny"),
     },
@@ -518,7 +518,7 @@ export const tools = {
 
   teamx_role_update: tool({
     description:
-      "Update a role's label and/or description (owner only). Pass only the fields to change; the other is preserved.",
+      "Update a role's label and/or description (team lead: owner or co-lead). Pass only the fields to change; the other is preserved.",
     args: {
       role: tool.schema.string().describe("role key to update"),
       label: tool.schema.string().optional().describe("new label (optional)"),

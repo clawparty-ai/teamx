@@ -7,6 +7,6 @@ agent: teamx
 
 角色相关其他命令：
 - `/team role propose <key> <label> [desc]`（或 `/team-role-propose`）— 成员提议自定义角色
-- `/team role approve <key>`（或 `/team-role-approve`）— owner 审批
-- `/team role deny <key>`（或 `/team-role-deny`）— owner 拒绝
+- `/team role approve <key>`（或 `/team-role-approve`）— owner/co-lead 审批
+- `/team role deny <key>`（或 `/team-role-deny`）— owner/co-lead 拒绝
 - `/team role update <key> [--label] [--description]`（或 `/team-role-update`）— owner 修改角色描述

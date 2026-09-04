@@ -20,7 +20,7 @@ agent: teamx
               │                  │               │    ▲            │               │
               ▼                  ▼               ▼    │            ▼               ▼
    member:  invite_token      join         [active]◄──┘        [achieved]      [completed]
-             分享令牌        [pending]          │ 协作循环       (member 报告)   (owner 验证)
+             分享令牌        [pending]          │ 协作循环       (member 报告)   (owner/co-lead 验证)
                                              ▼
                               progress / ask / respond / decision / update
                               blocked / resumed / refine

@@ -162,7 +162,7 @@ export function registerTeamTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_archive',
-    description: 'Archive a completed team (owner only). Archived teams accept no new members.',
+    description: 'Archive a completed team (team lead: owner or co-lead). Archived teams accept no new members.',
     parameters: {
       team: { type: 'string', description: 'Team ID (optional)' },
     },
@@ -184,7 +184,7 @@ export function registerTeamTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_team_destroy',
-    description: 'Destroy the team permanently (owner only). This action cannot be undone.',
+    description: 'Destroy the team permanently (team lead: owner or co-lead). This action cannot be undone.',
     parameters: {
       team: { type: 'string', description: 'Team ID (optional)' },
     },
@@ -207,7 +207,7 @@ export function registerTeamTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_team_invite',
     description:
-      'Invite a member with a job role: issue a client cert + invitation letter (owner only). Pass role + description, e.g. "测试工程师: 负责测试并汇报缺陷".',
+      'Invite a member with a job role: issue a client cert + invitation letter (team lead: owner or co-lead). Pass role + description, e.g. "测试工程师: 负责测试并汇报缺陷".',
     parameters: {
       role_desc: { type: 'string', required: true, description: 'Job role + description, e.g. "测试工程师: 负责测试并汇报缺陷"' },
       name_hint: { type: 'string', description: 'Suggested display name (member may override at import)' },
@@ -254,7 +254,7 @@ export function registerTeamTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_team_invite_list',
-    description: 'List issued invitation letters for the team (owner only), with their state (unused/used/revoked).',
+    description: 'List issued invitation letters for the team (team lead: owner or co-lead), with their state (unused/used/revoked).',
     parameters: {
       team: { type: 'string', description: 'Team ID (optional)' },
     },
@@ -276,7 +276,7 @@ export function registerTeamTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_team_invite_revoke',
-    description: 'Revoke an invitation letter (its cert is rejected at connect) (owner only).',
+    description: 'Revoke an invitation letter (its cert is rejected at connect) (team lead: owner or co-lead).',
     parameters: {
       id: { type: 'string', required: true, description: 'Invitation id to revoke' },
       team: { type: 'string', description: 'Team ID (optional)' },
@@ -305,7 +305,7 @@ export function registerTeamTools(ctx: Context): void {
 export function registerGoalTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_set_goal',
-    description: 'Set (or update) the team goal (owner only).',
+    description: 'Set (or update) the team goal (team lead: owner or co-lead).',
     parameters: {
       title: { type: 'string', required: true, description: 'Goal title' },
       body: { type: 'string', description: 'Goal body / detailed description' },
@@ -329,7 +329,7 @@ export function registerGoalTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_share_goal',
     description:
-      'Share the goal with team members and move the team into the active state (owner only).',
+      'Share the goal with team members and move the team into the active state (team lead: owner or co-lead).',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -346,7 +346,7 @@ export function registerGoalTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_close_goal',
     description:
-      'Verify the achieved goal and close it; the team becomes completed (owner only). Only call this after a member reported the goal achieved.',
+      'Verify the achieved goal and close it; the team becomes completed (team lead: owner or co-lead). Only call this after a member reported the goal achieved.',
     parameters: {},
     output: {
       schema: { type: 'string' },
@@ -368,7 +368,7 @@ export function registerGoalTools(ctx: Context): void {
 export function registerMemberTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'teamx_approve',
-    description: 'Approve a pending membership request (owner only). Pass team when the owner session belongs to several teams.',
+    description: 'Approve a pending membership request (team lead: owner or co-lead). Pass team when the owner session belongs to several teams.',
     parameters: {
       member_id: { type: 'string', required: true, description: 'The pending member id' },
       team: { type: 'string', description: 'Team ID (optional)' },
@@ -391,7 +391,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_deny',
-    description: 'Deny a pending membership request (owner only). Pass team when the owner session belongs to several teams.',
+    description: 'Deny a pending membership request (team lead: owner or co-lead). Pass team when the owner session belongs to several teams.',
     parameters: {
       member_id: { type: 'string', required: true, description: 'The pending member id' },
       team: { type: 'string', description: 'Team ID (optional)' },
@@ -418,7 +418,7 @@ export function registerMemberTools(ctx: Context): void {
       'Set the current session role (member self-service); owner may specify on their behalf.',
     parameters: {
       role: { type: 'string', required: true, description: 'Role key from the team catalog' },
-      member: { type: 'string', description: 'Target member id when assigning on someone behalf (owner only)' },
+      member: { type: 'string', description: 'Target member id when assigning on someone behalf (team lead: owner or co-lead)' },
     },
     output: {
       schema: { type: 'string' },
@@ -463,7 +463,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_role_approve',
-    description: 'Approve a proposed custom role and grant it to the proposer (owner only).',
+    description: 'Approve a proposed custom role and grant it to the proposer (team lead: owner or co-lead).',
     parameters: {
       role: { type: 'string', required: true, description: 'Role key to approve' },
     },
@@ -484,7 +484,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_role_deny',
-    description: 'Deny a proposed custom role and remove the proposal (owner only).',
+    description: 'Deny a proposed custom role and remove the proposal (team lead: owner or co-lead).',
     parameters: {
       role: { type: 'string', required: true, description: 'Role key to deny' },
     },
@@ -505,7 +505,7 @@ export function registerMemberTools(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'teamx_role_update',
-    description: "Update a role's label/description (owner only).",
+    description: "Update a role's label/description (team lead: owner or co-lead).",
     parameters: {
       role: { type: 'string', required: true, description: 'Role key to update' },
       label: { type: 'string', description: 'New label (optional)' },
@@ -534,7 +534,7 @@ export function registerMemberTools(ctx: Context): void {
       "Set a member's working state: idle (finished the current slice, no pending work) or active (resumed).",
     parameters: {
       state: { type: 'string', required: true, enum: ['idle', 'active'] as readonly string[], description: 'Target member state' },
-      member: { type: 'string', description: 'Target member id (owner only)' },
+      member: { type: 'string', description: 'Target member id (team lead: owner or co-lead)' },
     },
     output: {
       schema: { type: 'string' },

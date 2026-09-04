@@ -1,5 +1,5 @@
 ---
-description: teamx soft-destroy a team (owner, hide + keep data)
+description: teamx soft-destroy a team (owner/co-lead, hide + keep data)
 agent: teamx
 ---
 

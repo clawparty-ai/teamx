@@ -1,5 +1,5 @@
 ---
-description: teamx propose custom role (member self-service, owner approval)
+description: teamx propose custom role (member self-service, owner/co-lead approval)
 agent: teamx
 ---
 

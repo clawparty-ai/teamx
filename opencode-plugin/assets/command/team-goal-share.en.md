@@ -1,5 +1,5 @@
 ---
-description: teamx share goal and start collaboration (owner)
+description: teamx share goal and start collaboration (owner/co-lead)
 agent: teamx
 ---
 

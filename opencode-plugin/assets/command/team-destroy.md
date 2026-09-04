@@ -1,5 +1,5 @@
 ---
-description: teamx 软销毁团队（owner，隐藏并保留数据）
+description: teamx 软销毁团队（owner/co-lead，隐藏并保留数据）
 agent: teamx
 ---
 
