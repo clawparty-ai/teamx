@@ -279,7 +279,7 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 
 /* ---------- file browser overlay ---------- */
 .fs-overlay { position:fixed; inset:0; background:rgba(20,20,30,.45); z-index:900; display:flex; align-items:center; justify-content:center; padding:24px; }
-.fs-dialog { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-hover); width:min(1100px,96vw); height:min(720px,92vh); display:flex; flex-direction:column; overflow:hidden; }
+.fs-dialog { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-hover); width:min(1500px,98vw); height:min(920px,95vh); display:flex; flex-direction:column; overflow:hidden; }
 .fs-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--muted); border-bottom:1px solid var(--border); }
 .fs-title { flex:1; font-weight:600; font-size:14px; }
 .fs-headbtns { display:flex; gap:8px; }
