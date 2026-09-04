@@ -93,22 +93,23 @@ pub fn run(cmd: &FsCmd) -> Result<(), String> {
 fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = if rel.is_empty() || rel == "/" { "." } else { rel.trim_start_matches('/') };
     let cand = root.join(rel);
-    // Reject escaping and hidden credential dirs.
-    let mut comps = Vec::new();
+    // Reject escaping (`..`) and hidden credential dirs.
     for c in cand.components() {
-        if let Component::Normal(s) = c {
-            let s = s.to_string_lossy();
-            if DENIED_SEGMENTS.contains(&s.as_ref()) {
-                return Err("path not allowed (hidden/credential directory)".to_string());
+        match c {
+            Component::ParentDir => return Err("path escapes workspace".to_string()),
+            Component::Normal(s) => {
+                let s = s.to_string_lossy();
+                if DENIED_SEGMENTS.contains(&s.as_ref()) {
+                    return Err("path not allowed (hidden/credential directory)".to_string());
+                }
             }
-            comps.push(s.to_string());
+            _ => {}
         }
     }
-    let canon = root.join(comps.join("/"));
-    if !canon.starts_with(root) {
+    if !cand.starts_with(root) {
         return Err("path escapes workspace".to_string());
     }
-    Ok(canon)
+    Ok(cand)
 }
 
 fn entry(p: &Path) -> serde_json::Value {
