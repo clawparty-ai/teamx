@@ -431,7 +431,13 @@ async function loadTeams(){
         window.__memTunnels.set(m.id, mt);
         window.__memNames=window.__memNames||{}; window.__memNames[m.id]=m.display_name;
         const me=window.__me||{};
-        const canAdmin=me.is_lead===true||me.role==="owner"||me.role==="admin";
+        // Admin-capable = owner/admin role or any team-lead (owner/co-lead).
+        // Derive from teams[].my (enriched by the server) so we don't race
+        // with the async /api/me that fills window.__me.
+        const teamLead = teams.some(t => (t.my && t.my.is_lead === true) ||
+            (t.my && (t.my.role === "owner" || t.my.role === "admin")) ||
+            t.my_is_lead === true || t.my_role === "owner" || t.my_role === "admin");
+        const canAdmin = (me.is_lead === true) || (me.role === "owner" || me.role === "admin") || teamLead;
         // fs-* tunnels are served by the 📁 file browser, not opened as pages.
         const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-"));
         const mtOpen=mtVisible.filter(t=> !(t.name&&t.name.startsWith("teamx-ui")) || canAdmin);
