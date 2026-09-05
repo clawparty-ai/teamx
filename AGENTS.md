@@ -43,3 +43,9 @@
   - `serve.rs` / `pki.rs` / `state.rs` — mTLS server / 证书 / 团队状态机。
 - 网络抓包的数据路径：数据面 tap（`CaptureTap`）→ 有界 channel → 后台 writer 批量写入 capture DB；转发路径不阻塞。
 - opencode-plugin（TypeScript）使用 bun；`app/` 是 Swift macOS 客户端；`docs/` 含中英双语设计文档，enterprise 专属设计以 `ENT-` 前缀见 `ENT-04-traffic-capture.cn.md`、`ENT-05-traffic-analysis.cn.md`、`ENT-06-traffic-replay.cn.md`。
+
+## 界面命名（术语约定）
+
+- **admin-console** = 原 `teamx ui`（代码/文档里也叫 `teamx-ui`）：企业级管理看板，owner/team lead 用，读 server DB（activity/成本/节点/成员等），绑 127.0.0.1，可经隧道开放给 lead。今后文档/对话优先称 **admin-console**。
+- **user-console** = 成员 web 界面（`teamx console`，member console）：工作区级、成员本人用的浏览器控制台（看自己的团队/任务/事件/隧道）。今后文档/对话称 **user-console**。
+- 写新文档/新 UI 文案时用 admin-console / user-console 这两个叫法；代码标识符暂可沿用 `teamx ui` / `teamx console`（避免无谓大改名），新代码可逐步采用新名。
