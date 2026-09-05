@@ -821,10 +821,66 @@ pub fn rows(conn: &Connection, team: Option<&str>, member: Option<&str>, node: O
     Ok(json!(out))
 }
 
+/// Paged activity rows, newest first, with `has_more`. The `detail` JSON is
+/// parsed into an object so the UI can show tool args/output directly.
+#[allow(clippy::too_many_arguments)]
+pub fn rows_page(
+    conn: &Connection,
+    team: Option<&str>,
+    member: Option<&str>,
+    node: Option<&str>,
+    kind: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<(Vec<Value>, bool)> {
+    let f = filter(team, member, node, kind, from, to);
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
+    // Ask for one extra row to know whether there is a next page.
+    let q = format!(
+        "SELECT id, member_id, node_id, node_name, started_at, duration_ms, kind, detail, \
+                tokens_input, tokens_output, cost, has_human, model_id, provider_id \
+         FROM activity WHERE {} ORDER BY id DESC LIMIT {limit} OFFSET {offset}",
+        f.sql
+    );
+    let mut stmt = conn.prepare(&q)?;
+    let mut items: Vec<Value> = stmt
+        .query_map(rusqlite::params_from_iter(f.params.iter().map(Value::as_str)), |r| {
+            let detail_raw: Option<String> = r.get(7)?;
+            let detail = detail_raw
+                .as_deref()
+                .and_then(|d| serde_json::from_str(d).ok())
+                .unwrap_or(Value::Null);
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "member_id": r.get::<_, String>(1)?,
+                "node_id": r.get::<_, String>(2)?,
+                "node_name": r.get::<_, Option<String>>(3)?,
+                "started_at": r.get::<_, String>(4)?,
+                "duration_ms": r.get::<_, Option<i64>>(5)?,
+                "kind": r.get::<_, String>(6)?,
+                "detail": detail,
+                "tokens_input": r.get::<_, Option<i64>>(8)?,
+                "tokens_output": r.get::<_, Option<i64>>(9)?,
+                "cost": r.get::<_, Option<f64>>(10)?,
+                "has_human": r.get::<_, Option<bool>>(11)?,
+                "model_id": r.get::<_, Option<String>>(12)?,
+                "provider_id": r.get::<_, Option<String>>(13)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let has_more = items.len() as i64 > limit;
+    if has_more {
+        items.pop();
+    }
+    Ok((items, has_more))
+}
+
 /// Human activity (human_input / human_approval / human_command) rows, for
 /// answering "what did the human actually do". Newest first.
-pub fn human_rows(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {
-    let f = filter(team, member, node, None, from, to);
+pub fn human_rows(conn: &Connection, team: Option<&str>, member: Option<&str>, node: Option<&str>, from: Option<&str>, to: Option<&str>, limit: i64) -> rusqlite::Result<Value> {    let f = filter(team, member, node, None, from, to);
     let limit = limit.clamp(1, 1000);
     let q = format!(
         "SELECT id, member_id, node_id, node_name, started_at, kind, detail \

@@ -999,13 +999,27 @@ async function refreshDigest(sessionID: string): Promise<void> {
               else runningTools.add(pid)
               schedulePresencePush()
             }
-            record({
-              node_id: instanceId(dirOfSession(sessionID)),
-              started_at: time?.start ? new Date(time.start).toISOString() : started,
-              duration_ms: durationMs,
-              kind: "tool_call",
-              detail: { tool: part.tool, state: status, arguments: input },
-            })
+            // Record each tool call ONCE, at its terminal state (completed /
+            // error), so one call does not create duplicates and we can carry
+            // the tool's output alongside its arguments (bash etc.).
+            const terminal = status === "completed" || status === "error"
+            if (terminal) {
+              const st = state as Record<string, unknown>
+              const outRaw = status === "completed" && st.output != null ? String(st.output) : undefined
+              const out = outRaw != null && outRaw.length > 4000 ? outRaw.slice(0, 4000) + "\n…(truncated)" : outRaw
+              record({
+                node_id: instanceId(dirOfSession(sessionID)),
+                started_at: time?.start ? new Date(time.start).toISOString() : started,
+                duration_ms: durationMs,
+                kind: "tool_call",
+                detail: {
+                  tool: part.tool,
+                  state: status,
+                  arguments: input,
+                  output: out,
+                },
+              })
+            }
           } else if (part.type === "step-finish") {
             const tokens = (part.tokens ?? {}) as Record<string, unknown> | undefined
             const cache = (tokens?.cache ?? {}) as Record<string, unknown> | undefined

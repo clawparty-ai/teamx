@@ -137,6 +137,7 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         .route("/api/members", get(api_members))
         .route("/api/kanban", get(api_kanban))
         .route("/api/timeline", get(api_timeline))
+        .route("/api/activity", get(api_activity))
         .route("/api/overview", get(api_overview))
         .route("/api/by_member", get(api_by_member))
         .route("/api/by_node", get(api_by_node))
@@ -439,6 +440,14 @@ fn page_html() -> String {
   .view-toggle button.active { background: var(--primary); color: var(--on-primary); font-weight: 600; }
   /* ---------- fishbone timeline (vertical) ---------- */
   .fishbone { background: var(--card); border-radius: var(--radius); padding: 18px 14px 8px; }
+  .fb-row { display: flex; align-items: stretch; margin: 0; }
+  .fb-card { cursor: pointer; user-select: none; }
+  .fb-card:hover { border-color: var(--primary); }
+  .tl-card { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+  .tl-detail { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; }
+  .tl-detail-line { font-size: 11px; color: var(--fg); margin: 2px 0; }
+  .tl-pre { max-height: 220px; overflow: auto; background: #111; color: #e6e6e6; border-radius: 6px; padding: 6px 8px; font-size: 11px; font-family: ui-monospace, Menlo, monospace; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+  #fbMoreBtn { display: block; margin: 12px auto; }
   .fb-wrap { position: relative; }
   .fb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-1px); }
   .fb-start { display: flex; justify-content: center; position: relative; z-index: 2; }
@@ -1447,14 +1456,128 @@ function renderCostBreakdown(o) {
 // ---- Timeline view (Gantt + fishbone toggle) ----
 let tlMode = "fishbone"
 let lastTimelineItems = []
+// Paged activity-log state for the Timeline view (newest first, load older).
+let tlAct = { q: "", offset: 0, hasMore: false, loading: false }
 
 async function renderTimeline() {
   const q = qs()
-  const [teams, tl] = await Promise.all([jget("/api/teams"), jget("/api/timeline?" + q)])
+  const teams = await jget("/api/teams")
   fillTeamSelect(teams)
-  lastTimelineItems = tl.items ?? []
-  if (tlMode === "gantt") drawGantt(lastTimelineItems)
-  else renderFishbone(lastTimelineItems)
+  if (tlMode === "gantt") {
+    const tl = await jget("/api/timeline?" + q)
+    lastTimelineItems = tl.items ?? []
+    drawGantt(lastTimelineItems)
+    return
+  }
+  // Fishbone / 事件流: paged activity log.
+  tlAct = { q, offset: 0, hasMore: false, loading: false }
+  await tlLoadMore(true)
+}
+
+async function tlLoadMore(reset) {
+  if (reset) tlAct.offset = 0
+  if (tlAct.loading) return
+  tlAct.loading = true
+  const url = "/api/activity?" + tlAct.q + "&limit=300&offset=" + tlAct.offset
+  try {
+    const r = await jget(url)
+    if (reset) { $("#fishbone").dataset.reset = "1"; tlAct.rows = [] }
+    const rows = r.rows ?? []
+    if (reset) { $("#fishbone").innerHTML = "" }
+    tlAct.rows = tlAct.rows.concat(rows)
+    tlAct.hasMore = !!r.has_more
+    tlAct.offset += rows.length
+    appendActivityRows(rows)
+    renderFbMoreBtn()
+  } catch (e) {
+    $("#fishbone").innerHTML = '<div class="muted" style="padding:20px">load failed: ' + esc(String(e)) + "</div>"
+  }
+  tlAct.loading = false
+}
+
+function renderFbMoreBtn() {
+  let btn = $("#fbMoreBtn")
+  if (!tlAct.hasMore) {
+    if (btn) btn.remove()
+    return
+  }
+  if (!btn) {
+    btn = document.createElement("button")
+    btn.id = "fbMoreBtn"
+    btn.className = "btn"
+    btn.textContent = "加载更早 ▲"
+    btn.addEventListener("click", () => tlLoadMore(false))
+    const el = $("#fishbone"); if (el) el.appendChild(btn)
+  } else {
+    btn.style.display = ""
+  }
+}
+
+// Detail hover + expand: command input/output etc.
+function activityDetailHtml(it) {
+  let d = null
+  try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+  if (!d || typeof d !== "object") return it.detail ? `<pre class="tl-pre">${esc(String(it.detail))}</pre>` : "<div class='muted'>（无输出）</div>"
+  const out = []
+  if (it.kind === "tool_call" && d.tool) {
+    const args = d.arguments || {}
+    const cmd = args.command || args.script || args.cmd || args.name || args.url || args.file || args.path
+    out.push(`<div class="tl-detail-line"><b>工具</b> ${esc(d.tool)} <span class="muted">(${esc(String(d.state ?? ""))})</span></div>`)
+    if (cmd !== undefined) out.push(`<pre class="tl-pre">$ ${esc(String(cmd))}</pre>`)
+  } else if (it.kind === "command") {
+    if (d.name !== undefined) out.push(`<pre class="tl-pre">$ ${esc(String(d.name))}${d.args ? " " + esc(String(d.args)) : ""}</pre>`)
+  }
+  if (d.output !== undefined && d.output !== null && d.output !== "") {
+    out.push(`<div class="tl-detail-line"><b>输出</b></div><pre class="tl-pre out">${esc(String(d.output))}</pre>`)
+  }
+  if (d.file) out.push(`<div class="tl-detail-line"><b>文件</b> ${esc(d.file)}</div>`)
+  out.push(`<pre class="tl-pre json">${esc(JSON.stringify(d, null, 2))}</pre>`)
+  return out.join("")
+}
+
+function appendActivityRows(rows) {
+  const el = $("#fishbone")
+  if (!el) return
+  const wrap = document.createElement("div")
+  let prevDay = null
+  rows.forEach((it) => {
+    const t = new Date(it.started_at)
+    if (!Number.isFinite(t.getTime())) return
+    const day = t.toDateString()
+    if (prevDay !== day) {
+      wrap.insertAdjacentHTML("beforeend", `<div class="fb-day">${esc(t.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" }))}</div>`)
+      prevDay = day
+    }
+    const time = t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    const kind = it.kind || "event"
+    const label = fishKindLabel(kind)
+    const color = fishKindColor(kind)
+    const text = fishDetailText(it)
+    const who = memberLabel(it.member_id)
+    const dur = it.duration_ms ? `<span>${fmtMs(it.duration_ms)}</span>` : ""
+    const node = it.node_name ? `<span>${esc(it.node_name)}</span>` : ""
+    const human = it.has_human ? `<span class="human">●</span>` : ""
+    const meta = [dur, node, human].filter(Boolean).join("")
+    const title = text ? ` title="${esc(text)}"` : ""
+    const r = document.createElement("div")
+    r.className = "fb-row left"
+    r.innerHTML = `<div class="fb-side"><div class="fb-card tl-card"${title}>
+        <div class="fb-top"><span class="fb-time">${esc(time)}</span><span class="fb-who">${esc(who)}</span><span class="fb-kind" style="background:${color}">${esc(label)}</span>${meta ? `<span class="fb-meta">${meta}</span>` : ""}</div>
+        <div class="fb-text">${esc(text || "(no detail)")}</div>
+        <div class="tl-detail" style="display:none"></div>
+      </div></div><div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div><div class="fb-side"></div>`
+    r.querySelector(".fb-card").addEventListener("click", (e) => {
+      e.stopPropagation()
+      const det = r.querySelector(".tl-detail")
+      if (det.style.display === "none") { det.style.display = "block"; det.innerHTML = activityDetailHtml(it) } else det.style.display = "none"
+    })
+    wrap.appendChild(r)
+  })
+  // keep the load-more button at the end if present
+  const btn = $("#fbMoreBtn")
+  if (btn) btn.remove()
+  el.appendChild(wrap)
+  if (btn) el.appendChild(btn)
 }
 
 function setTimelineMode(mode) {
@@ -1463,7 +1586,7 @@ function setTimelineMode(mode) {
   $("#gantt").style.display = mode === "gantt" ? "" : "none"
   $("#fishbone").style.display = mode === "fishbone" ? "" : "none"
   if (tlMode === "gantt") drawGantt(lastTimelineItems)
-  else renderFishbone(lastTimelineItems)
+  else renderTimeline()
 }
 $$("#tlViewToggle button").forEach((b) => b.addEventListener("click", () => setTimelineMode(b.dataset.tlmode)))
 
@@ -2452,6 +2575,8 @@ struct HashMap0 {
     member: Option<String>,
     #[serde(default)]
     limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
     /// Recent-activity window in milliseconds (Members view cards).
     #[serde(default)]
     window: Option<i64>,
@@ -3346,6 +3471,25 @@ async fn api_timeline(State(state): State<S>, Query(params): Query<HashMap0>, he
     let c = lock(&state);
     match crate::activity::timeline(&c, team, member, from, to) {
         Ok(v) => Json(json!({ "items": v })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+/// `/api/activity` — paged activity rows, newest first, for the Timeline view.
+async fn api_activity(State(state): State<S>, Query(params): Query<HashMap0>, headers: axum::http::HeaderMap) -> axum::response::Response {
+    if let Err(r) = guard(&state, &headers) {
+        return r;
+    }
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let (from, to, kind, member) = extract_filters(&params);
+    let limit = params.limit.unwrap_or(200);
+    let offset = params.offset.unwrap_or(0);
+    let c = lock(&state);
+    match crate::activity::rows_page(&c, Some(&team_owned), member, None, kind, from, to, limit, offset) {
+        Ok((rows, has_more)) => Json(json!({ "rows": rows, "has_more": has_more, "limit": limit, "offset": offset })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     }
 }
