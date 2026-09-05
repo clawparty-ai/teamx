@@ -198,3 +198,65 @@ teamx tunnel forward fs-<user>       --local-port 19035 --session <my>
 - 架构蓝本：`docs/30-cloud-node-opencode-headless-tui.cn.md`
 - 团队 clone：`docs/34-team-clone.cn.md`（§8 节点接入、§13 使用指南）
 - 部署物来源：server `/tmp/teamx-enterprise-hk/target/release/teamx`（二进制）、本机 `opencode-plugin/`（插件）
+
+## 10. teamx-ui 企业看板：按团队隔离 + 经隧道开放给 lead
+
+### 10.1 teamx-ui 是什么
+
+`teamx ui` 是**企业版 activity analytics 看板**（HTTPS + token，owner-only）：读 server 本地 DB，展示团队 activity/成本/节点/成员等。默认绑 `127.0.0.1:9527`，每次启动生成**随机 token**（打印在日志）。
+
+```
+teamx ui --addr 127.0.0.1 --port 9527 --session <owner session> --db <db> --server-url <server>
+```
+
+### 10.2 关键：会话决定看板看到哪个团队（owner/lead 隔离）
+
+`teamx ui` 启动时收集该 `--session` 对应成员**所拥有/lead 的团队**（`owner_teams`）。为了看板只服务目标团队：
+
+1. **用目标团队的 owner/lead 会话启动**（不要用旧团队/无关 session）。例（powernano-v2）：
+   ```ini
+   # /etc/systemd/system/teamx-ui.service
+   ExecStart=/usr/local/bin/teamx ui --addr 127.0.0.1 --port 9527 \
+     --session yongyan-pnv2-owner \
+     --db /var/lib/teamx/teamx.db --server-url https://95.40.221.159
+   ```
+   `yongyan-pnv2-owner` → powernano-v2 的 owner 成员（`e0b655b9`），于是 `owner_teams = {powernano-v2}`。
+
+2. **代码层（已合入）按 owner 团队隔离**：
+   - `/api/teams` 只返回 `owner_teams`（原先列 DB 全部团队，会导致用旧 session 启动时默认显示旧团队数据）；
+   - 数据接口用 `owned_team` 校验：请求的 `?team=` 必须属于 `owner_teams`，否则 **403**；`team` 缺省时用第一个 owner 团队（避免 `team=None` 跨团队聚合）。
+   - 效果：同一 DB 下，用哪支团队的 owner 会话启动，看板就只看哪支团队。
+
+改代码后需重编并部署二进制 + `systemctl restart teamx-ui`（token 会变）。
+
+### 10.3 经隧道开放给远端 lead（如 caishu）
+
+看板绑 127.0.0.1，把它反向隧道暴露给远端 co-lead/owner：
+
+```ini
+# HK server：/etc/systemd/system/tx-expose-teamx-ui.service
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/var/lib/teamx/projects/<team>        # owner workspace（含 owner .teamx）
+Environment=TEAMX_HOME=/var/lib/teamx/projects/<team>/.teamx
+Environment=TEAMX_SERVER_URL=https://95.40.221.159
+ExecStart=/usr/local/bin/teamx tunnel expose teamx-ui --port 9527 \
+  --mode local --team <team_id> --server https://95.40.221.159 --session <owner-session>
+Restart=always
+```
+- 以该团队 **owner 身份**注册隧道 → 团队内 lead（co-lead）也受隧道 ACL 允许 forward（owner/lead 全通）。
+- 远端 lead 访问：
+  ```bash
+  cd ~/…/<lead workspace>
+  TEAMX_SERVER_URL=https://95.40.221.159 teamx tunnel forward teamx-ui --local-port 19527 --session <lead-session>
+  # 浏览器打开（接受自签证书；token 每次重启变）：
+  #   https://127.0.0.1:19527/?token=<从 ui 日志取>
+  ```
+- 取 token：`journalctl -u teamx-ui --no-pager | grep -o 'token=[0-9a-f]*' | tail -1`
+
+### 10.4 参考现状（powernano-v2，2026-09-04）
+
+- `teamx-ui.service` 用 `--session yongyan-pnv2-owner`（powernano-v2 owner）
+- `tx-expose-teamx-ui.service` 暴露 9527，provider = powernano-v2 owner
+- `/api/teams` → 仅 `powernano-v2`；访问旧团队返回 403
