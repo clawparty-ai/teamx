@@ -303,8 +303,10 @@ fn page_html() -> String {
   .btn.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
   /* Dashboard (mockup alignment) */
   .dash-mode { display: flex; gap: 6px; margin-bottom: 14px; }
-  .dash-canvas { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); min-height: 460px; overflow: hidden; }
-  .dash-canvas svg, .dash-canvas #dashMap { width: 100%; height: 100%; min-height: 460px; display: block; }
+  /* Fixed 16:9 stage: the map/topology aspect must not change when the
+     browser resizes — height derives from width via aspect-ratio. */
+  .dash-canvas { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); width: 100%; aspect-ratio: 16 / 9; min-height: 300px; overflow: hidden; }
+  .dash-canvas svg, .dash-canvas #dashMap, .dash-canvas #dashTopo { position: absolute; inset: 0; width: 100%; height: 100%; }
   .dash-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-fg); gap: 8px; padding: 24px; text-align: center; }
   .dash-empty .big { font-size: 34px; }
   .dash-canvas .map-attrib { position: absolute; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted-fg); background: rgba(0,0,0,.35); color: #eee; padding: 2px 6px; border-radius: 3px; }
@@ -610,7 +612,8 @@ fn page_html() -> String {
   </div>
   <div class="toolbar-right">
     <div class="view-toggle" id="dashModeToggle" style="display:none" aria-label="切换 Dashboard 视图">
-      <button type="button" data-dmode="map" class="active">🗺 地图</button>
+      <button type="button" data-dmode="gaode" class="active">🗺 地图</button>
+      <button type="button" data-dmode="osm">Map</button>
       <button type="button" data-dmode="topo">🕸 拓扑</button>
     </div>
     <div class="view-toggle" id="tlViewToggle" style="display:none">
@@ -851,7 +854,7 @@ function tableRows(rows, cols) {
 
 // ---- Dashboard (mockup alignment): stat cards + map/topology ----
 const DASH_DATA_VIEWS = new Set(["dashboard", "kanban", "cost", "timeline", "members"])
-let dashMode = "map"
+let dashMode = "gaode"
 let dashData = { nodes: [] }
 function dashStat(state) {
   if (state === "busy" || state === "online") return "online"
@@ -874,8 +877,11 @@ function dashSummary() {
 function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v }
 function setDashMode(mode) {
   dashMode = mode
+  dashBaseIdx = 0
   $$("#dashModeToggle button").forEach((b) => b.classList.toggle("active", b.dataset.dmode === mode))
   applyDashMode()
+  // Swap the basemap when a Leaflet map is already up (mode -> tiles).
+  if (mode !== "topo" && dashLeaflet && dashTile) addBasemap()
 }
 // Map basemap providers. Follow the mockup: mainland China uses Gaode (高德
 // 地图, GCJ-02 — webrd tiles load without an API key and are reachable from
@@ -893,7 +899,12 @@ function isChinaUser() {
   } catch { /* ignore */ }
   return /^zh/i.test((navigator.language || "") + "-" + (navigator.languages || []).join(","))
 }
-const dashBasemaps = isChinaUser() ? [BM_GAODE, BM_ESRI, BM_OSM] : [BM_OSM, BM_ESRI, BM_GAODE]
+// Dashboard basemap per mode: 地图=Gaode-first, Map=Leaflet with OSM first.
+function dashBasemapsFor(mode) {
+  if (mode === "gaode") return isChinaUser() ? [BM_GAODE, BM_ESRI, BM_OSM] : [BM_GAODE, BM_OSM, BM_ESRI]
+  if (mode === "osm") return isChinaUser() ? [BM_OSM, BM_ESRI, BM_GAODE] : [BM_OSM, BM_ESRI]
+  return [BM_OSM]
+}
 let dashLeaflet = null
 let dashTile = null
 let dashMarkers = null
@@ -906,9 +917,11 @@ function dashPinColor(n) {
 function addBasemap() {
   if (!dashLeaflet) return
   if (dashTile) dashTile.remove()
-  const b = dashBasemaps[Math.min(dashBaseIdx, dashBasemaps.length - 1)]
+  const list = dashBasemapsFor(dashMode)
+  if (!list.length) return
+  const b = list[Math.min(dashBaseIdx, list.length - 1)]
   const layer = L.tileLayer(b.url, { maxZoom: 19, subdomains: b.sub })
-  layer.on("tileerror", () => { if (dashBaseIdx < dashBasemaps.length - 1) { dashBaseIdx += 1; addBasemap() } })
+  layer.on("tileerror", () => { if (dashBaseIdx < list.length - 1) { dashBaseIdx += 1; addBasemap() } })
   layer.addTo(dashLeaflet)
   dashTile = layer
 }
@@ -947,8 +960,10 @@ function renderDashMap() {
     const role = n.role ? ` <span class="tn-role">(${esc(n.role)})</span>` : ""
     const live = (n.live || []).map((l) => `<div>${l.icon} ${esc(l.text)}</div>`).join("")
     const costHtml = n.cost ? "<br>成本 " + fmtCost(n.cost) : ""
+    const ipHtml = n.ip ? `<br>IP ${esc(n.ip)}` : ""
+    const llmHtml = n.provider || n.model ? `<br>LLM ${esc(n.provider || "")}/${esc(n.model || "?")}` : ""
     L.marker([n.lat, n.lng], { icon }).addTo(dashMarkers).bindPopup(
-      `<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}` +
+      `<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}${ipHtml}${llmHtml}` +
         `<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}${live}${costHtml}`
     )
   }
@@ -972,7 +987,7 @@ function renderDashSvg() {
   const ring = Math.min(W, H) / 2 - 60
   // Map mode draws a light lat/lng graticule so the geo view reads as a map
   // even without external tile servers.
-  if (dashMode === "map") {
+  if (dashMode !== "topo") {
     html += `<g stroke="rgba(128,128,128,.12)" stroke-width="1">`
     for (let gx = 0; gx <= W; gx += 120) html += `<line x1="${gx}" y1="0" x2="${gx}" y2="${H}"/>`
     for (let gy = 0; gy <= H; gy += 92) html += `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}"/>`
@@ -998,7 +1013,10 @@ function renderDashSvg() {
     html += `<circle cx="${x}" cy="${y}" r="10" fill="${color}"/><text x="${x}" y="${y + 4}" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">${(m.member_name || "?")[0].toUpperCase()}</text>`
     html += `<line x1="${cx + (x > cx ? 26 : -26)}" y1="${cy + (y > cy ? 26 : -26)}" x2="${x + (x > cx ? -10 : 10)}" y2="${y + (y > cy ? -10 : 10)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="${dashStat(m.state) === "offline" ? "4 3" : ""}"/>`
     const boxY = y < cy - 40 ? y - 60 : y + 18
-    html += `<g transform="translate(${x - 90} ${boxY})"><rect width="180" height="44" rx="6" fill="rgba(26,26,46,.9)" stroke="${color}"/><text x="10" y="17" fill="#fff" font-size="12" font-weight="600">${esc(m.member_name || "")}</text><text x="10" y="33" fill="#bbb" font-size="10">${esc(m.city || "—")} · ${m.sessions || 0} 会话 · ${fmtCost(m.cost)}</text></g>`
+    const ipTxt = m.ip ? `IP ${m.ip}` : ""
+    const llmTxt = (m.provider || m.model) ? `LLM ${m.provider || ""}/${m.model || "?"}` : ""
+    const metaLine = `${esc(m.city || "—")} · ${m.sessions || 0} 会话 · ${fmtCost(m.cost)}`
+    html += `<g transform="translate(${x - 110} ${boxY})"><rect width="220" height="62" rx="6" fill="rgba(26,26,46,.9)" stroke="${color}"/><text x="10" y="17" fill="#fff" font-size="12" font-weight="600">${esc(m.member_name || "")}</text><text x="10" y="33" fill="#bbb" font-size="10">${metaLine}</text>${ipTxt ? `<text x="10" y="46" fill="#bbb" font-size="10">${esc(ipTxt)}</text>` : ""}${llmTxt ? `<text x="10" y="58" fill="#bbb" font-size="10">${esc(llmTxt)}</text>` : ""}</g>`
   })
   svg.innerHTML = html
   if (members.length === 0 && !server) {
@@ -3470,6 +3488,27 @@ fn dash_nodes(
         };
         let (cost, tokens) = agg.get(&member_id).copied().unwrap_or((0.0, 0));
         let loc = node_loc(&locs, &member_id, &display_name);
+        // Extra node-card fields: last known connection IP and the most recent
+        // model the node used (from activity), so leads can see where members
+        // run and which LLM they're on.
+        let ip: Option<String> = c
+            .query_row(
+                "SELECT ip FROM member_connections WHERE member_id = ?1 AND ip IS NOT NULL AND ip != '' \
+                 ORDER BY connected_at DESC LIMIT 1",
+                [&member_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let (model_id, provider_id): (Option<String>, Option<String>) = c
+            .query_row(
+                "SELECT model_id, provider_id FROM activity WHERE member_id = ?1 AND team_id = ?2 \
+                 AND model_id IS NOT NULL AND model_id != '' \
+                 ORDER BY started_at DESC LIMIT 1",
+                rusqlite::params![&member_id, team],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+            .unwrap_or((None, None));
         let mut live: Vec<Value> = Vec::new();
         if sessions > 0 {
             live.push(json!({ "icon": "🖥", "text": format!("{sessions} session(s)") }));
@@ -3486,6 +3525,7 @@ fn dash_nodes(
             "city": loc.city.unwrap_or_else(|| "—".into()), "lat": loc.lat, "lng": loc.lng,
             "sessions": sessions, "running_tools": running_tools, "open_terminals": open_terminals,
             "cost": cost, "tokens": tokens, "live": live,
+            "ip": ip, "model": model_id, "provider": provider_id,
         }));
     }
 
