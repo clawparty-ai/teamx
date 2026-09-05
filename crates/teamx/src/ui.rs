@@ -311,9 +311,13 @@ fn page_html() -> String {
   .dash-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-fg); gap: 8px; padding: 24px; text-align: center; }
   .dash-empty .big { font-size: 34px; }
   .dash-canvas .map-attrib { position: absolute; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted-fg); background: rgba(0,0,0,.35); color: #eee; padding: 2px 6px; border-radius: 3px; }
+  .map-node-card { background: rgba(22,22,40,.92); color: #eee; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); padding: 6px 8px; min-width: 150px; max-width: 230px; font-family: var(--font-sans); box-shadow: 0 4px 16px rgba(0,0,0,.3); transform: translate(8px, -50%); }
+  .map-node-card .m-title { font-size: 11px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .map-node-card .m-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+  .map-node-card .m-role { font-size: 9px; color: #aab; text-transform: uppercase; }
+  .map-node-card .m-meta { font-size: 9px; color: #a9a9bd; margin-top: 2px; word-break: break-all; }
   /* topology node boxes (SVG foreignObject) */
-  .topo-node { border: 1px solid var(--border); border-radius: 6px; background: var(--card); padding: 8px 10px; font-family: var(--font-sans); font-size: 12px; color: var(--fg); width: 180px; box-shadow: var(--shadow); }
-  .topo-node .tn-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .topo-node { border: 1px solid var(--border); border-radius: 6px; background: var(--card); padding: 8px 10px; font-family: var(--font-sans); font-size: 12px; color: var(--fg); width: 180px; box-shadow: var(--shadow); }  .topo-node .tn-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
   .topo-node .tn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .topo-node .tn-meta { color: var(--muted-fg); font-size: 11px; margin-top: 3px; }
   .topo-node .tn-live { margin-top: 4px; font-size: 11px; color: var(--muted-fg); display: flex; flex-direction: column; gap: 2px; }
@@ -448,6 +452,8 @@ fn page_html() -> String {
   .tl-detail-line { font-size: 11px; color: var(--fg); margin: 2px 0; }
   .tl-pre { max-height: 220px; overflow: auto; background: #111; color: #e6e6e6; border-radius: 6px; padding: 6px 8px; font-size: 11px; font-family: ui-monospace, Menlo, monospace; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
   #fbMoreBtn { display: block; margin: 12px auto; }
+  .tl-tip { position: fixed; z-index: 1200; max-width: 520px; background: #111; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.5; box-shadow: 0 6px 24px rgba(0,0,0,.35); pointer-events: none; }
+  .tl-tip b { color: #fff; }
   .fb-wrap { position: relative; }
   .fb-spine { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-1px); }
   .fb-start { display: flex; justify-content: center; position: relative; z-index: 2; }
@@ -963,16 +969,19 @@ function renderDashMap() {
   dashMarkers.clearLayers()
   const nodes = (dashData.nodes || []).filter((n) => n.lat != null && n.lng != null)
   for (const n of nodes) {
-    const letter = n.kind === "server" ? "S" : (n.member_name || "?")[0].toUpperCase()
     const color = dashPinColor(n)
-    const icon = L.divIcon({ className: "map-pin", html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">${letter}</div>` })
-    const role = n.role ? ` <span class="tn-role">(${esc(n.role)})</span>` : ""
+    const name = n.kind === "server" ? "teamx-server" : (n.name || n.member_name || "?")
+    const role = n.kind === "server" ? "server" : (n.role || "")
+    const city = (n.city && n.city !== "—") ? n.city : ""
+    const ipTxt = n.ip ? `IP ${esc(n.ip)}` : ""
+    const llmTxt = (n.provider || n.model) ? `LLM ${esc(n.provider || "")}/${esc(n.model || "?")}` : ""
+    const meta = [city, (n.sessions || 0) + " 会话", ipTxt, llmTxt].filter(Boolean).join(" · ")
+    const card = `<div class="map-node-card"><div class="m-title"><span class="m-dot" style="background:${color}"></span>${esc(name)}</div>${role ? `<span class="m-role">${esc(role)}</span>` : ""}<div class="m-meta">${esc(meta || "—")}</div></div>`
+    const icon = L.divIcon({ className: "map-pin card", html: card })
     const live = (n.live || []).map((l) => `<div>${l.icon} ${esc(l.text)}</div>`).join("")
     const costHtml = n.cost ? "<br>成本 " + fmtCost(n.cost) : ""
-    const ipHtml = n.ip ? `<br>IP ${esc(n.ip)}` : ""
-    const llmHtml = n.provider || n.model ? `<br>LLM ${esc(n.provider || "")}/${esc(n.model || "?")}` : ""
-    L.marker([n.lat, n.lng], { icon }).addTo(dashMarkers).bindPopup(
-      `<b>${esc(n.name)}</b>${role}<br>${esc(n.city || "—")}${ipHtml}${llmHtml}` +
+    L.marker([n.lat, n.lng], { icon, zIndexOffset: n.kind === "server" ? 200 : 0 }).addTo(dashMarkers).bindPopup(
+      `<b>${esc(name)}</b><br>${esc(city || "—")}${n.ip ? `<br>IP ${esc(n.ip)}` : ""}${llmTxt ? `<br>${llmTxt}` : ""}` +
         `<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}${live}${costHtml}`
     )
   }
@@ -1003,29 +1012,51 @@ function renderDashSvg() {
     html += `</g>`
     html += `<text x="16" y="24" fill="var(--muted-fg)" font-size="12" opacity=".6">节点坐标视图（配置经纬度后按地理位置分布；无外部地图瓦片依赖）</text>`
   }
+  // Info-card renderer shared by the server and member nodes. Compact so the
+  // topology stays legible (small fonts to match the rest of the dashboard).
+  const cardW = 190, cardH = 54
+  function nodeCard(node, x0, y0, color, titleColor) {
+    const c = color || "#8b949e"
+    const title = node.kind === "server" ? "teamx-server" : (node.member_name || node.name || "")
+    const role = node.kind === "server" ? "server" : (node.role || "")
+    const meta = (node.city && node.city !== "—" ? node.city + " · " : "") + (node.sessions || 0) + " 会话 · " + fmtCost(node.cost)
+    const ipTxt = node.ip ? "IP " + node.ip : ""
+    const llmTxt = (node.provider || node.model) ? "LLM " + (node.provider || "") + "/" + (node.model || "?") : ""
+    return `<rect x="${x0}" y="${y0}" width="${cardW}" height="${cardH}" rx="6" fill="rgba(26,26,46,.92)" stroke="${c}"/>` +
+      `<text x="${x0+8}" y="${y0+15}" fill="#fff" font-size="11" font-weight="600">${esc(title)}</text>` +
+      (role ? `<text x="${x0+cardW-8}" y="${y0+15}" fill="${titleColor||c}" font-size="9" text-anchor="end">${esc(role)}</text>` : "") +
+      `<text x="${x0+8}" y="${y0+29}" fill="#c8c8d0" font-size="9">${esc(meta)}</text>` +
+      (ipTxt ? `<text x="${x0+8}" y="${y0+41}" fill="#a0a0b0" font-size="9">${esc(ipTxt)}</text>` : "") +
+      (llmTxt ? `<text x="${x0+cardW-8}" y="${y0+41}" fill="#a0a0b0" font-size="9" text-anchor="end">${esc(llmTxt)}</text>` : "")
+  }
+  const dot = (x, y, color) => `<circle cx="${x}" cy="${y}" r="5" fill="${color}"/>`
   if (server) {
-    html += `<circle cx="${cx}" cy="${cy}" r="26" fill="#4A90E5"/><text x="${cx}" y="${cy + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">S</text>`
+    // Server occupies the centre as its own card.
+    const sx0 = cx - cardW / 2, sy0 = cy - 22
+    html += `<line x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy}"/>` // anchor keeps group
+    html += nodeCard({ ...server, name: "teamx-server" }, sx0, sy0, "#4A90E5", "#bfd9ff")
   }
   const placed = members.filter((m) => m.lat != null && m.lng != null).length
   const angleStep = members.length ? 360 / Math.max(1, members.length) : 0
   members.forEach((m, i) => {
     let x, y
     if (m.lat != null && m.lng != null && placed >= 1) {
-      // rough equirectangular to fill the box (ignore precision)
       x = cx + (m.lng - 110) * 90
       y = cy - (m.lat - 35) * 130
     } else {
       const a = (angleStep * i - 90) * Math.PI / 180
       x = cx + ring * Math.cos(a); y = cy + ring * Math.sin(a)
     }
+    x = Math.max(120, Math.min(1080, x)); y = Math.max(80, Math.min(420, y))
     const color = dashStat(m.state) === "offline" ? "#8b949e" : m.state === "busy" ? "#f0a020" : "#3fb950"
-    html += `<circle cx="${x}" cy="${y}" r="10" fill="${color}"/><text x="${x}" y="${y + 4}" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">${(m.member_name || "?")[0].toUpperCase()}</text>`
-    html += `<line x1="${cx + (x > cx ? 26 : -26)}" y1="${cy + (y > cy ? 26 : -26)}" x2="${x + (x > cx ? -10 : 10)}" y2="${y + (y > cy ? -10 : 10)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="${dashStat(m.state) === "offline" ? "4 3" : ""}"/>`
-    const boxY = y < cy - 40 ? y - 60 : y + 18
-    const ipTxt = m.ip ? `IP ${m.ip}` : ""
-    const llmTxt = (m.provider || m.model) ? `LLM ${m.provider || ""}/${m.model || "?"}` : ""
-    const metaLine = `${esc(m.city || "—")} · ${m.sessions || 0} 会话 · ${fmtCost(m.cost)}`
-    html += `<g transform="translate(${x - 110} ${boxY})"><rect width="220" height="62" rx="6" fill="rgba(26,26,46,.9)" stroke="${color}"/><text x="10" y="17" fill="#fff" font-size="12" font-weight="600">${esc(m.member_name || "")}</text><text x="10" y="33" fill="#bbb" font-size="10">${metaLine}</text>${ipTxt ? `<text x="10" y="46" fill="#bbb" font-size="10">${esc(ipTxt)}</text>` : ""}${llmTxt ? `<text x="10" y="58" fill="#bbb" font-size="10">${esc(llmTxt)}</text>` : ""}</g>`
+    // connector from the server card edge to the member card top
+    const ax = cx + (x > cx ? cardW / 2 : -cardW / 2)
+    const ay = cy + 22
+    html += `<line x1="${ax}" y1="${ay}" x2="${x}" y2="${y - cardH / 2 - 8}" stroke="${color}" stroke-width="1.2" stroke-dasharray="${dashStat(m.state) === "offline" ? "4 3" : ""}"/>`
+    html += dot(x, y, color)
+    const boxX = Math.max(60, Math.min(1200 - cardW - 60, x - cardW / 2))
+    const boxY = y + 8
+    html += nodeCard(m, boxX, boxY, color)
   })
   svg.innerHTML = html
   if (members.length === 0 && !server) {
@@ -1458,6 +1489,8 @@ let tlMode = "fishbone"
 let lastTimelineItems = []
 // Paged activity-log state for the Timeline view (newest first, load older).
 let tlAct = { q: "", offset: 0, hasMore: false, loading: false }
+// Alternates left/right around the central spine across the whole feed.
+let tlAlt = 0
 
 async function renderTimeline() {
   const q = qs()
@@ -1471,6 +1504,7 @@ async function renderTimeline() {
   }
   // Fishbone / 事件流: paged activity log.
   tlAct = { q, offset: 0, hasMore: false, loading: false }
+  tlAlt = 0
   await tlLoadMore(true)
 }
 
@@ -1558,19 +1592,22 @@ function appendActivityRows(rows) {
     const node = it.node_name ? `<span>${esc(it.node_name)}</span>` : ""
     const human = it.has_human ? `<span class="human">●</span>` : ""
     const meta = [dur, node, human].filter(Boolean).join("")
-    const title = text ? ` title="${esc(text)}"` : ""
-    const r = document.createElement("div")
-    r.className = "fb-row left"
-    r.innerHTML = `<div class="fb-side"><div class="fb-card tl-card"${title}>
+    const side = tlAlt++ % 2 === 0 ? "left" : "right"
+    const cardHtml = `<div class="fb-card tl-card">
         <div class="fb-top"><span class="fb-time">${esc(time)}</span><span class="fb-who">${esc(who)}</span><span class="fb-kind" style="background:${color}">${esc(label)}</span>${meta ? `<span class="fb-meta">${meta}</span>` : ""}</div>
         <div class="fb-text">${esc(text || "(no detail)")}</div>
         <div class="tl-detail" style="display:none"></div>
-      </div></div><div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div><div class="fb-side"></div>`
+      </div>`
+    const r = document.createElement("div")
+    r.className = "fb-row " + side
+    r.innerHTML = `<div class="fb-side">${side === "left" ? cardHtml : ""}</div><div class="fb-center"><span class="fb-dot" style="background:${color}"></span></div><div class="fb-side">${side === "right" ? cardHtml : ""}</div>`
     r.querySelector(".fb-card").addEventListener("click", (e) => {
       e.stopPropagation()
       const det = r.querySelector(".tl-detail")
       if (det.style.display === "none") { det.style.display = "block"; det.innerHTML = activityDetailHtml(it) } else det.style.display = "none"
     })
+    r.querySelector(".fb-card").addEventListener("mouseenter", (e) => tlTipShow(it, e))
+    r.querySelector(".fb-card").addEventListener("mouseleave", tlTipHide)
     wrap.appendChild(r)
   })
   // keep the load-more button at the end if present
@@ -1579,6 +1616,54 @@ function appendActivityRows(rows) {
   el.appendChild(wrap)
   if (btn) el.appendChild(btn)
 }
+
+// Compact hover summary for an activity row (no raw JSON — so the tooltip
+// never starts with a lone "{"). Long text is truncated.
+function hoverSummary(it) {
+  let d = null
+  try { d = typeof it.detail === "string" ? JSON.parse(it.detail) : it.detail } catch { d = null }
+  const dObj = d && typeof d === "object" ? d : {}
+  let s = ""
+  const kind = it.kind || ""
+  if (kind === "tool_call") {
+    s = "调用工具 " + (dObj.tool || "?")
+    const cmd = dObj.arguments && (dObj.arguments.command || dObj.arguments.script || dObj.arguments.cmd || dObj.arguments.url || dObj.arguments.file || dObj.arguments.path)
+    if (cmd !== undefined && cmd !== null) s += "\n命令: " + String(cmd)
+    if (dObj.output) s += "\n输出: " + String(dObj.output)
+  } else if (kind === "command") {
+    s = "命令: " + String(dObj.name || "") + (dObj.args ? " " + dObj.args : "")
+  } else if (kind === "file_edit") {
+    s = "编辑文件: " + String(dObj.file || "")
+  } else if (kind === "step_finish") {
+    s = "步骤完成" + (dObj.reason ? ": " + dObj.reason : "")
+  } else if (kind && kind.startsWith("human")) {
+    s = String(dObj.text || dObj.name || dObj.response || dObj.title || "人参与")
+  } else {
+    s = String(dObj.task || dObj.title || dObj.description || dObj.file || dObj.tool || "")
+  }
+  s = s.replace(/\s+/g, " ").trim()
+  if (!s) s = kind || "activity"
+  return s.length > 400 ? s.slice(0, 400) + "…" : s
+}
+let tlTipEl = null
+function tlTipShow(it, ev) {
+  if (!tlTipEl) {
+    tlTipEl = document.createElement("div")
+    tlTipEl.className = "tl-tip"
+    document.body.appendChild(tlTipEl)
+  }
+  const who = memberLabel(it.member_id)
+  tlTipEl.innerHTML = `<b>${esc(fishKindLabel(it.kind || "activity"))}</b> · ${esc(who)}<br><span>${esc(hoverSummary(it))}</span>`
+  tlTipEl.style.display = "block"
+  const pad = 14
+  let x = ev.clientX + pad, y = ev.clientY + pad
+  const r = tlTipEl.getBoundingClientRect()
+  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad
+  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad
+  tlTipEl.style.left = x + "px"
+  tlTipEl.style.top = y + "px"
+}
+function tlTipHide() { if (tlTipEl) tlTipEl.style.display = "none" }
 
 function setTimelineMode(mode) {
   tlMode = mode
