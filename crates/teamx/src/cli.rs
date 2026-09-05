@@ -160,6 +160,10 @@ pub enum Command {
     #[command(subcommand)]
     User(UserCmd),
 
+    /// Team definition file (.teamx/TEAM.md) utilities
+    #[command(subcommand)]
+    Teamfile(TeamfileCmd),
+
     /// Run as a network-mode server (HTTP RPC + WebSocket push + tunnels)
     Serve(ServeCmd),
 
@@ -520,6 +524,17 @@ pub enum UserCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamfileCmd {
+    /// Validate a `.teamx/TEAM.md` team definition (used by `/team start`
+    /// before saving; exits non-zero with the issues listed when invalid).
+    Validate {
+        /// path to TEAM.md (default: .teamx/TEAM.md)
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
     },
 }
 

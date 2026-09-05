@@ -463,6 +463,90 @@ pub fn load_team_file(project_root: &Path) -> Result<Option<TeamFile>, String> {
     parse_team_file_text(&text).map(Some)
 }
 
+/// Structural validation of a parsed TEAM.md, returning `(errors, warnings)`.
+/// The `/team start` wizard runs this before saving; `teamx teamfile validate`
+/// surfaces the same rules on the CLI. Role keys are *not* restricted to the
+/// built-in catalog here — teams routinely use custom roles (they get approved
+/// once the team exists); the wizard keeps role-key choices safe up front.
+pub fn validate_team_file(tf: &TeamFile) -> (Vec<String>, Vec<String>) {
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    if tf.team_name.trim().is_empty() {
+        errors.push("缺少团队名（文件第一行 `# <团队名>`）".to_string());
+    }
+    match tf.background.as_deref() {
+        Some(b) if !b.trim().is_empty() => {}
+        _ => errors.push("缺少 `## 背景`（一段话说明这团队为什么存在/服务谁）".to_string()),
+    }
+    if tf.goals.len() > 3 {
+        errors.push(format!("`## 目标` 超过 3 条（当前 {} 条，建议 ≤3 条、可验证）", tf.goals.len()));
+    } else if tf.goals.is_empty() {
+        warnings.push("还没有 `## 目标`，建队后可随时用 `goal set` 补充".to_string());
+    }
+
+    if tf.members.is_empty() {
+        errors.push("没有成员画像（`## 成员` 下至少要有 owner 一人）".to_string());
+    }
+    let mut keys_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut has_owner = false;
+    for m in &tf.members {
+        if !keys_seen.insert(m.key.as_str()) {
+            errors.push(format!("成员 key `{}` 重复（key 会成为目录名，需唯一）", m.key));
+        }
+        match m.role.as_deref() {
+            Some(r) if !r.trim().is_empty() => {
+                if r.trim() == "owner" {
+                    has_owner = true;
+                }
+            }
+            _ => errors.push(format!("成员 `{}` 缺少 `角色`（role）", m.display_name)),
+        }
+        if m.display_name.trim().is_empty() {
+            errors.push(format!("成员 key `{}` 缺少 `姓名`", m.key));
+        }
+    }
+    if !tf.members.is_empty() && !has_owner {
+        errors.push("至少需要一名 `角色: owner` 的成员画像".to_string());
+    }
+
+    let mut doc_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for d in &tf.docs {
+        if !doc_keys.insert(d.key.as_str()) {
+            errors.push(format!("文档 key `{}` 重复", d.key));
+        }
+        if d.title.trim().is_empty() {
+            errors.push(format!("文档 `{}` 缺少标题", d.key));
+        }
+        if d.states.is_empty() {
+            errors.push(format!("文档 `{}` 缺少 `状态流`（如 draft→review→approved→done）", d.key));
+        }
+        if d.owner.trim().is_empty() {
+            warnings.push(format!("文档 `{}` 未指定 `所有者`，默认 owner 收变更", d.key));
+        }
+    }
+
+    (errors, warnings)
+}
+
+/// Read + parse + validate a TEAM.md at `path` (default `<cwd>/.teamx/TEAM.md`).
+pub fn load_and_validate_team_file(path: Option<&Path>) -> Result<(TeamFile, Vec<String>, Vec<String>), String> {
+    let p = match path {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir()
+            .map_err(|e| format!("cwd: {e}"))?
+            .join(".teamx")
+            .join("TEAM.md"),
+    };
+    if !p.exists() {
+        return Err(format!("TEAM.md not found: {}", p.display()));
+    }
+    let text = fs::read_to_string(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+    let tf = parse_team_file_text(&text)?;
+    let (errors, warnings) = validate_team_file(&tf);
+    Ok((tf, errors, warnings))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +635,36 @@ mod tests {
     fn empty_file_errors() {
         assert!(parse_team_file_text("").is_err());
         assert!(parse_team_file_text("   \n  \n").is_err());
+    }
+
+    #[test]
+    fn validate_full_team_file_clean() {
+        let tf = parse_team_file_text(FULL).unwrap();
+        let (errors, _warnings) = validate_team_file(&tf);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn validate_reports_missing_owner_and_dup_keys() {
+        let text = "# T\n## 背景\nb\n## 目标\n- a\n- b\n- c\n- d\n## 成员\n### m\n- 姓名: 一\n- 角色: contributor\n### m\n- 姓名: 二\n- 角色: owner\n";
+        let tf = parse_team_file_text(text).unwrap();
+        let (errors, _warnings) = validate_team_file(&tf);
+        assert!(
+            errors.iter().any(|e| e.contains("超过 3 条")),
+            "should flag too many goals: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("重复")),
+            "should flag duplicate key: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_requires_owner_role() {
+        let text = "# T\n## 背景\nb\n## 成员\n### alice\n- 姓名: Alice\n- 角色: contributor\n";
+        let tf = parse_team_file_text(text).unwrap();
+        let (errors, _warnings) = validate_team_file(&tf);
+        assert!(errors.iter().any(|e| e.contains("owner")), "{errors:?}");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -527,6 +527,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             CertCmd::Init => cmd_cert_init()?,
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
             CertCmd::Ca => cmd_cert_ca()?,
+        },
+        Command::Teamfile(tf) => match tf {
+            TeamfileCmd::Validate { path } => cmd_teamfile_validate(path.as_deref())?,
         },
         Command::User(u) => match u {
             UserCmd::List { session, team } => cmd_user_list(conn, session, team.as_deref())?,
@@ -3353,6 +3356,23 @@ fn role_meta(conn: &Connection, team_id: &str, role_key: &str) -> (String, Optio
 }
 
 /// Resolve (or create) the person a device invitation binds to.
+/// `teamx teamfile validate [PATH]` — parse + validate a TEAM.md. Used by the
+/// `/team start` wizard before saving and by CI.
+fn cmd_teamfile_validate(path: Option<&std::path::Path>) -> Result<Value> {
+    match crate::teamfile::load_and_validate_team_file(path) {
+        Ok((tf, errors, warnings)) => Ok(json!({
+            "ok": errors.is_empty(),
+            "team": tf.team_name,
+            "goals": tf.goals.len(),
+            "members": tf.members.len(),
+            "docs": tf.docs.len(),
+            "errors": errors,
+            "warnings": warnings,
+        })),
+        Err(e) => Ok(json!({ "ok": false, "team": "", "goals": 0, "members": 0, "docs": 0, "errors": [e], "warnings": [] })),
+    }
+}
+
 fn resolve_user(
     conn: &Connection,
     user_id: Option<&str>,
