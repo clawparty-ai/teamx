@@ -2869,20 +2869,43 @@ async fn bridge_pty(
     let _ = tokio::join!(to_member, to_browser);
 }
 
+/// Resolve the requested `?team=` to a team this dashboard session actually
+/// owns (owner/lead). A missing `team` falls back to the first owned team so
+/// the dashboard never aggregates unrelated teams. Returns 403 otherwise.
+fn owned_team(state: &S, team: Option<&str>) -> Result<String, (StatusCode, String)> {
+    if let Some(t) = team {
+        let t = t.to_string();
+        if state.owner_teams.contains(&t) {
+            Ok(t)
+        } else {
+            Err((StatusCode::FORBIDDEN, format!("team `{t}` is not owned by this dashboard session")))
+        }
+    } else {
+        state
+            .owner_teams
+            .first()
+            .cloned()
+            .ok_or_else(|| (StatusCode::FORBIDDEN, "dashboard session owns no team".to_string()))
+    }
+}
+
 async fn api_teams(State(state): State<S>, headers: axum::http::HeaderMap) -> axum::response::Response {
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
+    // Only the teams owned/led by this dashboard session appear — an owner-only
+    // analytics UI must not list (nor let the operator pick) unrelated teams.
     let c = lock(&state);
-    let teams: Vec<serde_json::Value> = c
-        .prepare(
-            "SELECT t.id, t.name, t.state FROM teams t WHERE t.state NOT IN ('destroyed') ORDER BY t.created_at",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)? })))?;
-            rows.collect()
-        })
-        .unwrap_or_default();
+    let mut teams: Vec<serde_json::Value> = Vec::new();
+    for tid in &state.owner_teams {
+        if let Ok(name) = c.query_row(
+            "SELECT t.name FROM teams t WHERE t.id = ?1 AND t.state NOT IN ('destroyed')",
+            [tid],
+            |r| r.get::<_, String>(0),
+        ) {
+            teams.push(json!({ "id": tid, "name": name }));
+        }
+    }
     Json(serde_json::json!({ "teams": teams })).into_response()
 }
 
@@ -2891,7 +2914,11 @@ async fn api_overview(State(state): State<S>, Query(params): Query<HashMap0>, he
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let c = lock(&state);
     match crate::activity::summary(&c, team, member, None, kind, from, to) {
@@ -2904,7 +2931,11 @@ async fn api_by_member(State(state): State<S>, Query(params): Query<HashMap0>, h
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let c = lock(&state);
     match crate::activity::by_member(&c, team, member, None, kind, from, to) {
@@ -2917,7 +2948,11 @@ async fn api_by_node(State(state): State<S>, Query(params): Query<HashMap0>, hea
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let c = lock(&state);
     match crate::activity::by_node(&c, team, member, None, kind, from, to) {
@@ -2930,7 +2965,11 @@ async fn api_tools(State(state): State<S>, Query(params): Query<HashMap0>, heade
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let _ = kind;
     let c = lock(&state);
@@ -2944,7 +2983,11 @@ async fn api_files(State(state): State<S>, Query(params): Query<HashMap0>, heade
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let _ = kind;
     let c = lock(&state);
@@ -2958,7 +3001,11 @@ async fn api_rows(State(state): State<S>, Query(params): Query<HashMap0>, header
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, kind, member) = extract_filters(&params);
     let limit = params.limit.unwrap_or(100);
     let c = lock(&state);
@@ -2972,7 +3019,11 @@ async fn api_human(State(state): State<S>, Query(params): Query<HashMap0>, heade
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, _kind, member) = extract_filters(&params);
     let limit = params.limit.unwrap_or(100);
     let c = lock(&state);
@@ -3096,7 +3147,11 @@ async fn api_members(State(state): State<S>, Query(params): Query<HashMap0>, hea
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let c = lock(&state);
     let (sql, team_param): (&str, Vec<&str>) = match team {
         Some(t) if !t.is_empty() => (
@@ -3185,7 +3240,11 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, _kind, member) = extract_filters(&params);
     let limit = params.limit.unwrap_or(30);
     let c = lock(&state);
@@ -3260,7 +3319,11 @@ async fn api_timeline(State(state): State<S>, Query(params): Query<HashMap0>, he
     if let Err(r) = guard(&state, &headers) {
         return r;
     }
-    let team = params.team.as_deref();
+    let team_owned = match owned_team(&state, params.team.as_deref()) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let (from, to, _kind, member) = extract_filters(&params);
     let c = lock(&state);
     match crate::activity::timeline(&c, team, member, from, to) {
@@ -3444,7 +3507,11 @@ async fn api_map(State(state): State<S>, Query(params): Query<HashMap0>, headers
         return r;
     }
     let (from, to, _, _) = extract_filters(&params);
-    let team = params.team.as_deref().filter(|s| !s.is_empty());
+    let team_owned = match owned_team(&state, params.team.as_deref().filter(|s| !s.is_empty())) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let c = lock(&state);
     Json(dash_nodes(&c, team, from, to, false)).into_response()
 }
@@ -3455,7 +3522,11 @@ async fn api_topology(State(state): State<S>, Query(params): Query<HashMap0>, he
         return r;
     }
     let (from, to, _, _) = extract_filters(&params);
-    let team = params.team.as_deref().filter(|s| !s.is_empty());
+    let team_owned = match owned_team(&state, params.team.as_deref().filter(|s| !s.is_empty())) {
+        Ok(t) => t,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
+    let team: Option<&str> = Some(&team_owned);
     let c = lock(&state);
     let map = dash_nodes(&c, team, from, to, false);
     let nodes = map.get("nodes").cloned().unwrap_or(json!([]));
