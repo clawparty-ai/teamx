@@ -91,3 +91,21 @@
 - `crates/teamx/src/ui.rs`、`activity.rs`、`db.rs`
 - `opencode-plugin/src/index.ts`、`activity.ts`
 - `docs/design/admin-console-improvements.md`
+
+## 9. 节点位置维护（AI 提供，非 geoip）
+
+admin-console 的地图/拓扑坐标**不依赖任何 geoip 库**，读 `<teamx_home>/ui-locations.json`（server 上为 `/root/.teamx/ui-locations.json`）：
+
+```json
+{
+  "server": { "city": "Hong Kong", "lat": 22.3193, "lng": 114.1694 },
+  "members": {
+    "zhongm-worker": { "city": "Tokyo", "lat": 35.6762, "lng": 139.6503, "ip": "35.77.5.99" }
+  }
+}
+```
+
+规则（保持简单，不加命令）：
+- 每个 member 一条记录，含 `city`（必要时 `lat/lng`），并可选绑 `ip`；
+- **IP 不变 → 不更新**；**IP 变 → 由 teamx agent 用 AI 判定新城市/坐标并更新**该记录与 `ip` 字段；
+- 无 `ip` 的条目（本地/个人）视为与 IP 无关，保持不变。
