@@ -116,6 +116,7 @@ function nowIso(): string {
 type WorkSegment = {
   startedAt: string
   hasHuman: boolean
+  task: string
   cost: number
   tokensInput: number
   tokensOutput: number
@@ -134,10 +135,12 @@ const runningTools = new Set<string>()
 const openTerminals = new Set<string>()
 
 /** Record human activity inside the current work segment (if any). */
-function markHuman(sessionID: string | undefined): void {
+function markHuman(sessionID: string | undefined, text?: string): void {
   if (!sessionID) return
   const seg = workSegments.get(sessionID)
-  if (seg) seg.hasHuman = true
+  if (!seg) return
+  seg.hasHuman = true
+  if (text && !seg.task) seg.task = text.replace(/\s+/g, " ").trim().slice(0, 140)
 }
 
 /** Accumulate a step's cost/tokens into the current work segment. */
@@ -183,7 +186,7 @@ function closeWorkSegment(sessionID: string, now: string): void {
     ended_at: now,
     duration_ms: endMs - startMs,
     kind: "work_session",
-    detail: { sessionID },
+    detail: { sessionID, task: seg.task || undefined },
     has_human: seg.hasHuman,
     // Cost/tokens aggregated from the steps that ran inside this segment.
     cost: seg.cost > 0 ? seg.cost : undefined,
@@ -942,6 +945,7 @@ async function refreshDigest(sessionID: string): Promise<void> {
             workSegments.set(sessionID, {
               startedAt: nowIso(),
               hasHuman: false,
+              task: "",
               cost: 0,
               tokensInput: 0,
               tokensOutput: 0,
@@ -1133,7 +1137,7 @@ async function refreshDigest(sessionID: string): Promise<void> {
         kind: "human_input",
         detail: { sessionID, text: texts || undefined },
       })
-      markHuman(sessionID)
+      markHuman(sessionID, texts)
     },
 
     "experimental.chat.system.transform": async ({ sessionID }, { system }) => {

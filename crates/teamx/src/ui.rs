@@ -409,6 +409,8 @@ fn page_html() -> String {
   .kb-tip { display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
   .kb-tip .tip-title { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
   .kb-desc { font-size: 13px; font-weight: 500; color: #fff; background: rgba(255,255,255,0.1); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px; }
+  .kb-task { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kb-desc + .kb-task, .kb-task + .kb-desc { margin-top: 4px; }
   .kb-tip table { border-collapse: collapse; font-size: 12px; }
   .kb-tip td { padding: 2px 8px 2px 0; vertical-align: top; }
   .kb-tip td.k { color: #aaa; white-space: nowrap; font-weight: 500; }
@@ -1277,7 +1279,7 @@ async function renderKanban() {
       : ""
     return `<div class="kb-col">
       <div class="kb-col-head">
-        <div class="kb-col-title">${esc(col.display_name)} ${col.role ? badge(col.role) : ""}</div>
+        <div class="kb-col-title">${esc(col.display_name)} ${col.member_count > 1 ? `<span class="badge">${col.member_count} seats</span>` : ""} ${(col.roles && col.roles[0]) ? badge(col.roles[0]) : ""}</div>
         <div class="kb-col-meta muted">
           ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${costBits}
         </div>
@@ -1293,9 +1295,10 @@ function renderTaskCard(r) {
   try { d = typeof r.detail === "string" ? JSON.parse(r.detail) : (r.detail ?? null) } catch { d = null }
   const d_ = d ?? {}
   const hrs = r.duration_ms != null ? (r.duration_ms / 3600000).toFixed(1) : "?"
-  const who = memberLabel(r.member_id)
+  const who = r.member_label || memberLabel(r.member_id)
   const tag = r.has_human ? "human-in-loop" : "auto"
-  const desc = d_.description || d_.task || ""
+  const task = d_.task || ""
+  const desc = d_.description || ""
   const totTok = (r.tokens_input ?? 0) + (r.tokens_output ?? 0)
   const tipRows = []
   const addRow = (k, v) => { if (v != null && v !== "") tipRows.push([k, String(v)]) }
@@ -1308,21 +1311,23 @@ function renderTaskCard(r) {
   if (r.tokens_input != null) addRow("tokens in", fmtNum(r.tokens_input))
   if (r.tokens_output != null) addRow("tokens out", fmtNum(r.tokens_output))
   if (r.cost != null) addRow("cost", fmtCost(r.cost))
-  // description first, then the rest of detail fields (skip description dup)
-  if (desc) addRow("task", desc)
-  if (d_) { for (const [k, v] of Object.entries(d_)) { if (v == null || k === "description" || k === "task") continue; const val = typeof v === "object" ? JSON.stringify(v) : String(v); addRow(k, val.length > 300 ? val.slice(0, 300) + "…" : val) } }
-  const descHtml = desc ? `<div class="kb-desc">${esc(desc)}</div>` : ""
+  if (task) addRow("task", task)
+  if (desc) addRow("desc", desc)
+  if (d_) { for (const [k, v] of Object.entries(d_)) { if (v == null || k === "task" || k === "description") continue; const val = typeof v === "object" ? JSON.stringify(v) : String(v); addRow(k, val.length > 300 ? val.slice(0, 300) + "…" : val) } }
+  const bodyHtml = task
+    ? `<div class="kb-task" title="${esc(task)}">${esc(task)}</div>${desc ? `<div class="kb-desc">${esc(desc)}</div>` : ""}`
+    : (desc ? `<div class="kb-desc">${esc(desc)}</div>` : `Worked <b>${hrs}h</b>${d_.sessionID ? " · <span class='mono'>" + esc(String(d_.sessionID)) + "</span>" : ""}`)
   const costMeta = totTok > 0 || (r.cost ?? 0) > 0
     ? ` · <span class="cost">⚡ ${fmtNum(totTok)} tok · ${fmtCost(r.cost)}</span>`
     : ""
   const tip = `<div class="kb-tip" role="tooltip">
     <div class="tip-title"><span>${esc(tag)}</span><span class="badge work_session">work_session</span></div>
-    ${descHtml}
+    ${task ? `<div class="kb-desc">${esc(task)}</div>` : ""}
     <table>${tipRows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`).join("")}</table>
   </div>`
   return `<div class="kb-card" tabindex="0">
     <div class="kb-head"><span class="kb-who">${esc(who)}</span><span class="badge ${r.has_human ? "active" : "idle"}">${esc(tag)}</span></div>
-    <div class="kb-body">${desc ? esc(desc) : `Worked <b>${hrs}h</b>`}${!desc && d_.sessionID ? " · <span class='mono'>" + esc(String(d_.sessionID)) + "</span>" : ""}</div>
+    <div class="kb-body">${bodyHtml}</div>
     <div class="kb-meta muted">${fmtDate(r.started_at)}${r.ended_at ? " → " + fmtDate(r.ended_at) : ""}${costMeta}</div>
     ${tip}
   </div>`
@@ -2268,9 +2273,19 @@ function memberLabel(id) {
 function fillTeamSelect(teams) {
   const sel = $("#team")
   if (sel.options.length === 0) {
-    const all = document.createElement("option"); all.value = ""; all.textContent = "All"; sel.appendChild(all)
-    for (const t of teams?.teams ?? []) { const o = document.createElement("option"); o.value = t.id; o.textContent = t.name; sel.appendChild(o) }
+    const list = teams?.teams ?? []
+    // No "All" bucket: when a team is available we always operate on a
+    // concrete team and default to the first one.
+    if (list.length === 0) {
+      const o = document.createElement("option"); o.value = ""; o.textContent = "—"; sel.appendChild(o)
+    } else {
+      for (const t of list) { const o = document.createElement("option"); o.value = t.id; o.textContent = t.name; sel.appendChild(o) }
+    }
     sel.addEventListener("change", () => { selectedGoalId = null; refreshGoalSelect(); refresh() })
+  }
+  // Keep the first team selected by default (not an empty "All").
+  if (sel.value === "" && sel.options.length > 0) {
+    sel.selectedIndex = 0
   }
 }
 function refresh() {
@@ -3473,22 +3488,26 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
         Err((code, msg)) => return (code, msg).into_response(),
     };
     let team: Option<&str> = Some(&team_owned);
-    let (from, to, _kind, member) = extract_filters(&params);
+    let (from, to, _kind, _member) = extract_filters(&params);
     let limit = params.limit.unwrap_or(30);
     let c = lock(&state);
 
-    // Members of the team (or all teams when team is empty/All).
+    // Members of the team, each resolved to the person (user) behind it. A
+    // bound member gets the user's display name; an unbound member is treated
+    // as its own user (its own display name).
     let (sql, team_param): (&str, Vec<&str>) = match team {
         Some(t) if !t.is_empty() => (
-            "SELECT m.id, m.display_name, m.role, m.state FROM members m
+            "SELECT m.id, m.display_name, m.role, m.state, COALESCE(u.id, '') AS uid, COALESCE(u.display_name, m.display_name) AS uname
+             FROM members m LEFT JOIN users u ON u.id = m.user_id
              WHERE m.team_id = ?1 AND m.state NOT IN ('left','denied')
-             ORDER BY m.joined_at ASC",
+             ORDER BY uname ASC, m.joined_at ASC",
             vec![t],
         ),
         _ => (
-            "SELECT m.id, m.display_name, m.role, m.state FROM members m
+            "SELECT m.id, m.display_name, m.role, m.state, COALESCE(u.id, '') AS uid, COALESCE(u.display_name, m.display_name) AS uname
+             FROM members m LEFT JOIN users u ON u.id = m.user_id
              WHERE m.state NOT IN ('left','denied')
-             ORDER BY m.joined_at ASC",
+             ORDER BY uname ASC, m.joined_at ASC",
             vec![],
         ),
     };
@@ -3496,12 +3515,14 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     };
-    let members = match stmt.query_map(rusqlite::params_from_iter(team_param.iter()), |r| {
+    let member_rows = match stmt.query_map(rusqlite::params_from_iter(team_param.iter()), |r| {
         Ok(json!({
             "id": r.get::<_, String>(0)?,
             "display_name": r.get::<_, String>(1)?,
             "role": r.get::<_, Option<String>>(2)?,
             "state": r.get::<_, String>(3)?,
+            "uid": r.get::<_, String>(4)?,
+            "uname": r.get::<_, String>(5)?,
         }))
     }) {
         Ok(rows) => match rows.collect::<Result<Vec<_>, _>>() {
@@ -3511,32 +3532,73 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     };
 
-    // Per-member aggregates (duration/tokens/cost/count) for the column summary.
-    let by_member = crate::activity::by_member(&c, team, member, None, None, from, to)
-        .unwrap_or(serde_json::json!([]));
-    let mut agg: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
-    if let Some(arr) = by_member.as_array() {
-        for m in arr {
-            if let Some(mid) = m.get("member_id").and_then(|x| x.as_str()) {
-                agg.insert(mid.to_string(), m.clone());
+    // Group members by person (user): a user with several member seats
+    // (personal + workers) shares one kanban column.
+    let mut groups: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    let mut idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for m in &member_rows {
+        let uid = m["uid"].as_str().unwrap_or("");
+        let uname = m["uname"].as_str().unwrap_or("").to_string();
+        let key = if uid.is_empty() { m["id"].as_str().unwrap_or("").to_string() } else { uid.to_string() };
+        let gi = match idx.get(&key) {
+            Some(i) => *i,
+            None => {
+                idx.insert(key.clone(), groups.len());
+                groups.push((uname, Vec::new()));
+                groups.len() - 1
+            }
+        };
+        groups[gi].1.push(m.clone());
+    }
+    let mut out = Vec::new();
+    for (uname, members) in groups {
+        let roles: Vec<String> = members
+            .iter()
+            .filter_map(|m| m["role"].as_str().map(|s| s.to_string()))
+            .collect();
+        let mut tasks: Vec<serde_json::Value> = Vec::new();
+        for m in &members {
+            let mid = m["id"].as_str().unwrap_or("").to_string();
+            if let Some(rows) = crate::activity::rows(&c, team, Some(&mid), None, Some("work_session"), from, to, limit)
+                .ok()
+            {
+                if let Some(arr) = rows.as_array() {
+                    for t in arr {
+                        // Tag which seat this work came from (a user may have many).
+                        if let Some(obj) = t.as_object() {
+                            let mut o = obj.clone();
+                            o.insert("member_label".to_string(), json!(m["display_name"].clone()));
+                            tasks.push(serde_json::Value::Object(o));
+                        }
+                    }
+                }
             }
         }
-    }
-
-    // Each member's work sessions (tasks), newest first.
-    let mut out = Vec::new();
-    for m in &members {
-        let mid = m["id"].as_str().unwrap_or("").to_string();
-        let tasks = crate::activity::rows(&c, team, Some(&mid), None, Some("work_session"), from, to, limit)
-            .unwrap_or(serde_json::json!([]));
-        let a = agg.get(&mid).cloned().unwrap_or_else(|| serde_json::json!({}));
+        // Newest first overall, capped.
+        tasks.sort_by_key(|t| t.get("started_at").and_then(|x| x.as_str()).unwrap_or("").to_string());
+        tasks.reverse();
+        tasks.truncate(limit as usize);
+        // Column summary from the tasks themselves.
+        let mut dur_ms = 0i64;
+        let mut tok = 0i64;
+        let mut cost = 0f64;
+        let mut has_human = 0usize;
+        for t in &tasks {
+            dur_ms += t.get("duration_ms").and_then(|x| x.as_i64()).unwrap_or(0);
+            tok += t.get("tokens_input").and_then(|x| x.as_i64()).unwrap_or(0)
+                + t.get("tokens_output").and_then(|x| x.as_i64()).unwrap_or(0);
+            cost += t.get("cost").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            if t.get("has_human").and_then(|x| x.as_bool()).unwrap_or(false) {
+                has_human += 1;
+            }
+        }
         out.push(json!({
-            "member_id": mid,
-            "display_name": m["display_name"],
-            "role": m["role"],
-            "state": m["state"],
+            "user": uname,
+            "display_name": uname,
+            "roles": roles,
+            "member_count": members.len(),
             "tasks": tasks,
-            "summary": a,
+            "summary": { "duration_ms": dur_ms, "count": tasks.len(), "has_human": has_human, "tokens": tok, "cost": cost },
         }));
     }
     Json(json!({ "columns": out })).into_response()
