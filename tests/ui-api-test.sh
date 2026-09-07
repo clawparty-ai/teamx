@@ -39,6 +39,21 @@ sqlite3 "$WORK/.teamx/teamx.db" \
    SELECT id, 1, 2, 1, strftime('%Y-%m-%dT%H:%M:%f+00:00','now') FROM members WHERE role='contributor';" \
   || bad "seed presence"
 
+# seed activity so /api/kanban has data to aggregate/sort:
+#   owner  -> one recent work_session + one fine-grained tool_call (task + detail)
+#   bob    -> NO activity (must sink to the bottom)
+TEAM_ID="$(sqlite3 "$WORK/.teamx/teamx.db" "SELECT id FROM teams LIMIT 1")"
+OWNER_ID="$(sqlite3 "$WORK/.teamx/teamx.db" "SELECT id FROM members WHERE role='owner' LIMIT 1")"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+sqlite3 "$WORK/.teamx/teamx.db" "INSERT INTO activity
+  (team_id, member_id, node_id, node_name, started_at, ended_at, duration_ms, kind, detail, tokens_input, tokens_output, cost, has_human, created_at)
+  VALUES
+  ('$TEAM_ID','$OWNER_ID','n1','node1', datetime('now','-5 minutes'), datetime('now','-4 minutes'), 60000, 'work_session',
+   '{\"task\":\"round2 检索\",\"sessionID\":\"sess-1\"}', 1000, 500, 0.001, 0, datetime('now','-5 minutes')),
+  ('$TEAM_ID','$OWNER_ID','n1','node1', datetime('now','-4 minutes'), NULL, 250, 'tool_call',
+   '{\"tool\":\"bash\",\"state\":\"completed\",\"arguments\":{\"command\":\"echo hi\"}}', 0, 0, 0.0, 0, datetime('now','-4 minutes'));" \
+  || bad "seed activity"
+
 "$BIN" ui --addr 127.0.0.1 --port "$PORT" --session owner --db "$WORK/.teamx/teamx.db" >"$LOG" 2>&1 &
 UI_PID=$!
 for _ in $(seq 1 30); do
@@ -66,9 +81,32 @@ TOP="$($CURL -b /tmp/teamx-ui-api-cookie "$BASE/api/topology")"
 echo "$MAP" | python3 -c "import json,sys;d=json.load(sys.stdin);ns=d['nodes'];assert ns and ns[0]['kind']=='server',ns;assert any(n['kind']=='member' for n in ns);print('map nodes:',len(ns))" && ok "map: server + members" || bad "map: server + members"
 echo "$TOP" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['server']['kind']=='server';assert len(d['nodes'])>=1;assert all(l['type']=='mTLS' for l in d['links']);print('topo links:',len(d['links']))" && ok "topology: server/nodes/mTLS links" || bad "topology"
 
+echo "== kanban: sort + detail events (K-01..03) =="
+KB="$($CURL -b /tmp/teamx-ui-api-cookie "$BASE/api/kanban")"
+echo "$KB" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+cols=d['columns']
+# Both members should be present; owner has activity, bob has none.
+names=[c['display_name'] for c in cols]
+assert 'UIAPITeam' in names and 'bob' in names, ('members', names)
+# K-01: active column first, no-activity column last.
+assert cols[0]['display_name']=='UIAPITeam', ('first col', cols[0]['display_name'])
+assert cols[-1]['display_name']=='bob', ('last col', cols[-1]['display_name'])
+# K-01: active column carries a task (work_session).
+owner=[c for c in cols if c['display_name']=='UIAPITeam'][0]
+assert len(owner['tasks'])>=1, ('tasks', owner['tasks'])
+# K-03: fine-grained tool_call lands in events, not tasks.
+assert any(e['kind']=='tool_call' for e in owner['events']), ('events', owner['events'])
+assert all(t['kind']=='work_session' for t in owner['tasks']), ('tasks kinds', owner['tasks'])
+# K-02: no-activity column has empty tasks & events.
+bob=[c for c in cols if c['display_name']=='bob'][0]
+assert bob['tasks']==[] and bob['events']==[], ('bob empty', bob['tasks'], bob['events'])
+print('kanban columns:', len(cols), '| owner tasks:', len(owner['tasks']), 'events:', len(owner['events']))
+" && ok "kanban: active-first / empty-sunk / events carry tool_call" || bad "kanban sort/aggregation"
+
 echo "== params =="
-code=$($CURL -b /tmp/teamx-ui-api-cookie -o /dev/null -w '%{http_code}' "$BASE/api/map?team=does-not-exist"); check "map unknown team -> 200 empty" 200 "$code"
-$CURL -b /tmp/teamx-ui-api-cookie "$BASE/api/map?team=does-not-exist" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['nodes']==[] or len([n for n in d['nodes'] if n['kind']=='member'])==0" && ok "map unknown team: no members" || bad "map unknown team: no members"
+code=$($CURL -b /tmp/teamx-ui-api-cookie -o /dev/null -w '%{http_code}' "$BASE/api/map?team=does-not-exist"); check "map unknown team -> 403 owner-scoped" 403 "$code"
 code=$($CURL -b /tmp/teamx-ui-api-cookie -o /dev/null -w '%{http_code}' "$BASE/api/overview?from=bogus&to=also"); check "overview invalid from/to -> 200" 200 "$code"
 code=$($CURL -o /dev/null -w '%{http_code}' "$BASE/api/nope"); check "unknown path -> 404" 404 "$code"
 
