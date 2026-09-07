@@ -28,6 +28,7 @@ pub fn page_html() -> String {
     <button data-view="teams" class="active">Members</button>
     <button data-view="tasks">My Tasks</button>
     <button data-view="events">Events</button>
+    <button data-view="discussions">Discussions</button>
   </nav>
   <div class="header-right">
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
@@ -55,6 +56,17 @@ pub fn page_html() -> String {
     <section class="panel"><h2>Recent team events <span class="count" id="evCount"></span></h2>
       <ul class="ev-list" id="evList"></ul>
       <div class="ev-more-wrap"><button class="btn btn-mini" id="evMore" style="display:none">加载更早事件</button></div>
+    </section>
+  </div>
+  <div class="view" id="view-discussions">
+    <section class="panel">
+      <div class="dsc-toolbar">
+        <h2 style="margin:0">Discussions</h2>
+        <button class="btn btn-mini" id="dscNew">+ 新建话题</button>
+        <button class="btn btn-mini" id="dscBack" style="display:none">← 返回列表</button>
+      </div>
+      <div id="dscList"></div>
+      <div id="dscThread" style="display:none"></div>
     </section>
   </div>
 </div>
@@ -269,6 +281,25 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-text { flex:1; min-width:0; word-break:break-word; font-size:13px; color:var(--fg); }
  .ev-text .who { color:var(--muted-fg); font-size:12px; }
  .ev-more-wrap { text-align:center; padding:10px 0 2px; }
+ .dsc-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+ .dsc-row { display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--border); cursor:pointer; border-radius:4px; }
+ .dsc-row:hover { background:var(--muted); }
+ .dsc-row.closed { opacity:.55; }
+ .dsc-row-title { flex:1; font-weight:600; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .dsc-row-meta { color:var(--muted-fg); font-size:12px; white-space:nowrap; }
+ .dsc-empty { padding:18px; text-align:center; color:var(--muted-fg); }
+ .dsc-floor { padding:10px 8px; border-bottom:1px solid var(--border); }
+ .dsc-floor-head { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted-fg); margin-bottom:4px; flex-wrap:wrap; }
+ .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
+ .dsc-floor-author { font-weight:600; color:var(--fg); }
+ .dsc-floor-body { font-size:14px; color:var(--fg); white-space:pre-wrap; word-break:break-word; }
+ .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
+ .dsc-quote .q-who { font-weight:600; color:var(--fg); }
+ .dsc-composer { display:flex; gap:8px; margin-top:12px; align-items:center; }
+ .dsc-composer textarea { flex:1; min-height:52px; resize:vertical; font-family:inherit; font-size:13px; }
+ .dsc-replybar { font-size:12px; color:var(--primary); background:var(--muted); border-radius:4px; padding:3px 8px; margin-bottom:4px; display:inline-flex; gap:6px; align-items:center; }
+ .dsc-form { display:flex; flex-direction:column; gap:8px; margin-top:12px; padding:12px; background:var(--muted); border-radius:6px; }
+ .dsc-form input, .dsc-form textarea { font-family:inherit; font-size:13px; }
 .copy-btn { font-size:12px; padding:3px 10px; }
 .cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
 .btn-mini { font-size:12px; padding:3px 10px; }
@@ -368,6 +399,7 @@ function showView(name){ currentView=name; $$("nav button").forEach(b=>b.classLi
 async function renderView(name){
   if(name==="teams") loadTeams(); else if(name==="tasks") loadTasks();
   else if(name==="events") loadEvents();
+  else if(name==="discussions") loadDiscussions();
 }
 $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
@@ -665,6 +697,156 @@ function summarize(e,pl){
   try{ return JSON.stringify(pl).slice(0,120); }catch(_){ return e.type; }
 }
 $("#evMore").addEventListener("click", ()=>{ evIdx += EV_PAGE; evRender(); });
+
+/* ---------- Discussions (BBS-like threads) ---------- */
+let curDsc = null;           // open discussion id
+let curDscMeta = null;       // title/closed info for the open thread
+let dscReplyTo = null;       // {message_id, text} when replying to a floor
+let dscTimer = null;
+
+async function dscAction(action, payload){
+  const r = await fetch("/api/discussion/"+action, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(payload||{}), cache:"no-store",
+  });
+  let j=null; try{ j=await r.json(); }catch(_){ j=null; }
+  if(!j||!j.ok) throw new Error((j&&j.error)||("discussion "+action+" failed"));
+  return j;
+}
+
+async function loadDiscussions(){
+  curDsc = null; dscReplyTo = null; stopDscPoll();
+  $("#dscBack").style.display="none"; $("#dscThread").style.display="none"; $("#dscList").style.display="";
+  $("#dscNew").style.display="";
+  const p = await panel("discussions"); setLast(p);
+  const host=$("#dscList");
+  if(!p.ok){ host.innerHTML=""; $("#view-discussions .panel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  const arr = ((p.data||{}).discussions)||[];
+  host.innerHTML = arr.map(d=>{
+    const closed = d.closed===true;
+    const icon = closed?"🔒 ":"💬 ";
+    const last = d.last_active || d.created_at || "";
+    return `<div class="dsc-row${closed?" closed":""}" data-id="${esc(d.discussion_id)}">
+      <span>${icon}</span><span class="dsc-row-title">${esc(d.title||"(无标题)")}</span>
+      <span class="dsc-row-meta">${esc(d.author||"")} · ${esc(fmtN(d.messages||0))} 回复 · ${esc(tf(last))}</span>
+    </div>`;
+  }).join("") || `<div class="dsc-empty">暂无讨论，点击「新建话题」发起第一个讨论。</div>`;
+  host.querySelectorAll(".dsc-row").forEach(row=>{
+    row.addEventListener("click",()=>openDiscussion(row.dataset.id));
+  });
+}
+
+async function openDiscussion(id){
+  curDsc = id; dscReplyTo = null;
+  $("#dscList").style.display="none"; $("#dscNew").style.display="none"; $("#dscBack").style.display="";
+  $("#dscThread").style.display=""; $("#dscThread").innerHTML=`<div class="dsc-empty">加载中…</div>`;
+  const p = await panel("discussion?id="+encodeURIComponent(id)); setLast(p);
+  const host=$("#dscThread");
+  if(!p.ok){ host.innerHTML=""; $("#view-discussions .panel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  const d = p.data||{};
+  curDscMeta = d;
+  renderThread(d);
+  stopDscPoll(); startDscPoll();
+}
+
+function floorQuoteHtml(rt){
+  if(!rt) return "";
+  const who = rt.author ? ` · <span class="q-who">${esc(rt.author)}</span>` : "";
+  const txt = rt.text || rt.body || "";
+  return `<div class="dsc-quote">${esc(who)}<br>${esc(txt)}</div>`;
+}
+
+function renderThread(d){
+  const msgs = d.messages||[];
+  const closed = d.closed===true;
+  const title = d.title||"(无标题)";
+  const quotesHtml = (m)=>{
+    let h="";
+    if(m.reply_to && typeof m.reply_to==="object"){
+      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<br>${esc(m.reply_to.text||m.reply_to.body||"")}</div>`;
+    }
+    const qs = Array.isArray(m.quotes)?m.quotes:[];
+    qs.forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><br>${esc(q.text||"")}</div>`; });
+    return h;
+  };
+  const floors = msgs.map((m,i)=>{
+    const no = i+1;
+    return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(m.author||"")}" data-no="${no}">
+      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(m.author||"")}</span><span>${esc(tf(m.created_at))}</span>
+        ${closed?"":`<button class="btn btn-mini" data-act="quote">引用</button>`}
+      </div>
+      ${quotesHtml(m)}
+      <div class="dsc-floor-body">${esc(m.body||"")}</div>
+    </div>`;
+  }).join("");
+  const replyBar = dscReplyTo
+    ? `<div class="dsc-replybar">引用回复 ${esc(dscReplyTo.mid)} <button class="btn btn-mini" id="dscClearReply">✕</button></div>` : "";
+  host.innerHTML = `
+    <div class="dsc-toolbar"><h3 style="margin:0">${esc(title)} ${closed?"🔒":""}</h3>
+      ${closed?`<span class="muted">已关闭</span>`:`${replyBar}
+        <div class="dsc-composer">
+          <textarea id="dscInput" placeholder="写下你的回复…"></textarea>
+          <button class="btn" id="dscSend">发送</button>
+          <button class="btn btn-mini" id="dscCloseThread" title="关闭讨论">关闭讨论</button>
+        </div>`}
+    </div>
+    ${floors||`<div class="dsc-empty">暂无消息。</div>`}
+  `;
+  // wire quote buttons
+  host.querySelectorAll("[data-act=quote]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const floor = btn.closest(".dsc-floor");
+      const mid = floor.dataset.mid, author = floor.dataset.author, no = floor.dataset.no;
+      const bodyEl = floor.querySelector(".dsc-floor-body");
+      dscReplyTo = { mid, author, text:(bodyEl?bodyEl.textContent:"").slice(0,160) };
+      renderThread(curDscMeta); // refresh composer bar
+    });
+  });
+  const back=$("#dscBack");
+  back.onclick = ()=>loadDiscussions();
+  const newBtn=$("#dscNew"); newBtn.onclick = ()=>showNewForm();
+  const send=$("#dscSend"); if(send) send.onclick = async ()=>{
+    const input=$("#dscInput");
+    const text=(input?input.value:"").trim(); if(!text) return;
+    try{
+      if(dscReplyTo){ await dscAction("reply",{id:curDsc,message_id:dscReplyTo.mid,body:text}); }
+      else { await dscAction("say",{id:curDsc,body:text}); }
+      dscReplyTo=null; openDiscussion(curDsc);
+    }catch(e){ alert(String(e.message||e)); }
+  };
+  const closeThread=$("#dscCloseThread"); if(closeThread) closeThread.onclick = async ()=>{
+    if(!confirm("确认关闭该讨论？关闭后不可再发言。")) return;
+    try{ await dscAction("close",{id:curDsc}); openDiscussion(curDsc); }
+    catch(e){ alert(String(e.message||e)); }
+  };
+  const clearReply=$("#dscClearReply"); if(clearReply) clearReply.onclick = ()=>{ dscReplyTo=null; renderThread(curDscMeta); };
+}
+
+function showNewForm(){
+  $("#dscList").style.display="none"; $("#dscThread").style.display=""; $("#dscBack").style.display=""; $("#dscNew").style.display="none";
+  const host=$("#dscThread");
+  host.innerHTML = `<div class="dsc-form">
+    <b>新建话题</b>
+    <input id="dscNewTitle" placeholder="话题标题" />
+    <textarea id="dscNewBody" placeholder="开场消息（可选）"></textarea>
+    <div><button class="btn" id="dscNewSubmit">创建</button> <button class="btn btn-mini" id="dscNewCancel">取消</button></div>
+  </div>`;
+  $("#dscNewSubmit").onclick = async ()=>{
+    const title=$("#dscNewTitle").value.trim(); if(!title){ alert("标题不能为空"); return; }
+    const body=$("#dscNewBody").value.trim();
+    try{ const r=await dscAction("create",{title,body}); openDiscussion(r.data.discussion_id || r.data.id); }
+    catch(e){ alert(String(e.message||e)); }
+  };
+  $("#dscNewCancel").onclick = ()=>loadDiscussions();
+}
+
+function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) openDiscussion(curDsc); },15000); }
+function stopDscPoll(){ if(dscTimer){ clearInterval(dscTimer); dscTimer=null; } }
+
+// Entry buttons (nav switch handles rendering; also ensure back/new work after full reload).
+$("#dscNew").addEventListener("click", showNewForm);
+$("#dscBack").addEventListener("click", loadDiscussions);
+
 
 loadMe();
 bindFsOverlay();

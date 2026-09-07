@@ -178,7 +178,7 @@ fn require_local_session(ctx: &Ctx) -> Result<String, String> {
 }
 
 /// Fetch one panel's data. Never writes team state.
-pub fn fetch_panel(ctx: &Ctx, id: &str) -> RunOut {
+pub fn fetch_panel(ctx: &Ctx, id: &str, query_id: Option<&str>) -> RunOut {
     match id {
         "teams" => {
             let res = teams_status(ctx).map(|mut data| {
@@ -209,6 +209,14 @@ pub fn fetch_panel(ctx: &Ctx, id: &str) -> RunOut {
                 },
             };
             finish("teamx task list", ctx.server_url().is_some(), res)
+        }
+        "discussions" => {
+            let res = discussions_data(ctx);
+            finish("teamx discussion list", ctx.server_url().is_some(), res)
+        }
+        "discussion" => {
+            let res = discussion_data(ctx, query_id);
+            finish("teamx discussion open", ctx.server_url().is_some(), res)
         }
         other => RunOut {
             ok: false,
@@ -241,6 +249,95 @@ fn events_data(ctx: &Ctx) -> Result<Value, String> {
     match &ctx.mode {
         Mode::Network(url) => net_rpc(url, "events", json!({ "team": tid })),
         Mode::Local => local_cli(&["events", "--team", &tid]),
+    }
+}
+
+/// `discussion list` for the member's team.
+fn discussions_data(ctx: &Ctx) -> Result<Value, String> {
+    match &ctx.mode {
+        Mode::Network(url) => net_rpc(url, "discussion.list", json!({})),
+        Mode::Local => {
+            let sess = require_local_session(ctx)?;
+            local_cli(&["discussion", "list", "--session", &sess])
+        }
+    }
+}
+
+/// `discussion open <id>` — one thread's messages.
+fn discussion_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
+    let id = id.ok_or_else(|| "discussion id is required".to_string())?;
+    match &ctx.mode {
+        Mode::Network(url) => net_rpc(url, "discussion.open", json!({ "id": id })),
+        Mode::Local => {
+            let sess = require_local_session(ctx)?;
+            local_cli(&["discussion", "open", id, "--session", &sess])
+        }
+    }
+}
+
+/// Run a discussion write action (`create`/`say`/`reply`/`close`) from the
+/// console. Returns the same JSON the CLI would (ok / discussion_id / seq …).
+pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value, String> {
+    match &ctx.mode {
+        Mode::Network(url) => {
+            let sess = ctx.session_or("console").to_string();
+            match action {
+                "create" => net_rpc(url, "discussion.create", json!({
+                    "session": sess,
+                    "title": body.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                    "body": body.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+                })),
+                "say" => net_rpc(url, "discussion.say", json!({
+                    "session": sess,
+                    "id": body.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "body": body.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+                    "quotes": body.get("quotes").cloned().unwrap_or_else(|| json!([])),
+                })),
+                "reply" => net_rpc(url, "discussion.reply", json!({
+                    "session": sess,
+                    "id": body.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "message_id": body.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "body": body.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+                })),
+                "close" => net_rpc(url, "discussion.close", json!({
+                    "session": sess,
+                    "id": body.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                })),
+                _ => return Err(format!("unknown discussion action `{action}`")),
+            }
+        }
+        Mode::Local => {
+            let sess = require_local_session(ctx)?;
+            let cmd: Vec<String> = match action {
+                "create" => vec![
+                    "discussion".into(), "create".into(),
+                    body.get("title").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    "--body".into(), body.get("body").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    "--session".into(), sess,
+                ],
+                "say" => vec![
+                    "discussion".into(), "say".into(),
+                    body.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    body.get("body").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    "--session".into(), sess,
+                ],
+                "reply" => vec![
+                    "discussion".into(), "reply".into(),
+                    body.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    body.get("message_id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    body.get("body").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    "--session".into(), sess,
+                ],
+                "close" => vec![
+                    "discussion".into(), "close".into(),
+                    body.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    "--session".into(), sess,
+                ],
+                _ => return Err(format!("unknown discussion action `{action}`")),
+            };
+            let refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+            local_cli(&refs)
+        }
     }
 }
 

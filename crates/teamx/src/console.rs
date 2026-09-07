@@ -17,7 +17,7 @@ use axum::{
     body::{to_bytes as body_to_bytes, Body, Bytes},
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::{header, HeaderMap, Method, Request, Response, StatusCode},
     response::{Html, IntoResponse},
@@ -31,7 +31,7 @@ use serde_json::json;
 
 use crate::cli::ConsoleCmd;
 use crate::console_data::{
-    config_path, fetch_me, fetch_panel, load_config, resolve_mode, save_config, slugify,
+    config_path, discussion_action, fetch_me, fetch_panel, load_config, resolve_mode, save_config, slugify,
     valid_node_url, Ctx, Mode, RunOut,
 };
 use crate::console_html::{login_html, not_found_html, page_html, unauthorized_html};
@@ -91,6 +91,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/panels/{id}", get(api_panel))
+        .route("/api/discussion/{action}", post(api_discussion))
         .route("/api/me", get(api_me))
         .route("/api/cloud", get(api_cloud_get).post(api_cloud_post))
         .route(
@@ -213,13 +214,15 @@ async fn api_panel(
     State(state): State<S>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     if let Err(resp) = guard(&state, &headers) {
         return resp;
     }
     let ctx = state.ctx.clone();
     let id = id.clone();
-    let out: RunOut = tokio::task::spawn_blocking(move || fetch_panel(&ctx, &id))
+    let query_id = params.get("id").map(|s| s.clone());
+    let out: RunOut = tokio::task::spawn_blocking(move || fetch_panel(&ctx, &id, query_id.as_deref()))
         .await
         .unwrap_or_else(|_| RunOut {
             ok: false,
@@ -232,7 +235,75 @@ async fn api_panel(
     (StatusCode::OK, Json(out)).into_response()
 }
 
-/// Header identity: the current workspace member (`/api/me`).
+/// POST /api/discussion/{action} — create/say/reply/close a discussion thread.
+#[derive(Deserialize)]
+struct DiscussionBody {
+    id: Option<String>,
+    message_id: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+    quotes: Option<serde_json::Value>,
+}
+
+async fn api_discussion(
+    State(state): State<S>,
+    headers: HeaderMap,
+    axum::extract::Path(action): axum::extract::Path<String>,
+    Json(payload): Json<DiscussionBody>,
+) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let ctx = state.ctx.clone();
+    let mut args = serde_json::Map::new();
+    if let Some(v) = payload.id {
+        args.insert("id".into(), json!(v));
+    }
+    if let Some(v) = payload.message_id {
+        args.insert("message_id".into(), json!(v));
+    }
+    if let Some(v) = payload.title {
+        args.insert("title".into(), json!(v));
+    }
+    if let Some(v) = payload.body {
+        args.insert("body".into(), json!(v));
+    }
+    if let Some(v) = payload.quotes {
+        args.insert("quotes".into(), v);
+    }
+    let args = serde_json::Value::Object(args);
+    let out: RunOut = tokio::task::spawn_blocking(move || {
+        let is_net = ctx.server_url().is_some();
+        match discussion_action(&ctx, &action, &args) {
+            Ok(data) => RunOut {
+                ok: true,
+                mode: if is_net { "rpc" } else { "cli" },
+                cmd: format!("teamx discussion {action}"),
+                error: None,
+                data: Some(data),
+                elapsed_ms: 0,
+            },
+            Err(e) => RunOut {
+                ok: false,
+                mode: if is_net { "rpc" } else { "cli" },
+                cmd: format!("teamx discussion {action}"),
+                error: Some(e),
+                data: None,
+                elapsed_ms: 0,
+            },
+        }
+    })
+    .await
+    .unwrap_or_else(|_| RunOut {
+        ok: false,
+        mode: "",
+        cmd: "discussion".to_string(),
+        error: Some("discussion task panicked".to_string()),
+        data: None,
+        elapsed_ms: 0,
+    });
+    (StatusCode::OK, Json(out)).into_response()
+}
 async fn api_me(State(state): State<S>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = guard(&state, &headers) {
         return resp;
