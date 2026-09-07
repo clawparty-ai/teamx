@@ -53,7 +53,9 @@ pub fn page_html() -> String {
   </div>
   <div class="view" id="view-events">
     <section class="panel"><h2>Recent team events <span class="count" id="evCount"></span></h2>
-      <ul class="ev-list" id="evList"></ul></section>
+      <ul class="ev-list" id="evList"></ul>
+      <div class="ev-more-wrap"><button class="btn btn-mini" id="evMore" style="display:none">加载更早事件</button></div>
+    </section>
   </div>
 </div>
 <div class="fs-overlay" id="fsOverlay" style="display:none">
@@ -265,7 +267,8 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-time { font-family:var(--font-mono); font-size:11.5px; color:var(--muted-fg); flex-shrink:0; padding-top:2px; width:140px; }
 .ev-kind { flex-shrink:0; min-width:80px; text-align:center; }
 .ev-text { flex:1; min-width:0; word-break:break-word; font-size:13px; color:var(--fg); }
-.ev-text .who { color:var(--muted-fg); font-size:12px; }
+ .ev-text .who { color:var(--muted-fg); font-size:12px; }
+ .ev-more-wrap { text-align:center; padding:10px 0 2px; }
 .copy-btn { font-size:12px; padding:3px 10px; }
 .cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
 .btn-mini { font-size:12px; padding:3px 10px; }
@@ -624,21 +627,33 @@ async function loadTasks(){
 }
 
 /* ---------- Events ---------- */
-async function loadEvents(){
-  $("#evList").innerHTML=`<li class="loading">loading …</li>`;
-  const p=await panel("events"); setLast(p);
-  if(!p.ok){ $("#evList").innerHTML=""; const host=$("#view-events .panel"); host.insertAdjacentHTML("afterbegin",errBox(p)); return; }
-  const d = p.data
-  let evs = (d && Array.isArray(d.events)) ? d.events : (Array.isArray(d) ? d : [])
-  // Newest first (the backend returns chronological order).
-  evs = evs.slice(0, 80).reverse()
-  $("#evCount").textContent=evs.length;
-  $("#evList").innerHTML = evs.map(e=>{
+const EV_PAGE = 80;            // events per page
+let evAll = [];                // all events, chronological ascending (as returned)
+let evIdx = 0;                 // index of the oldest rendered event (next page goes further back)
+
+function evRender(){
+  // newest first: walk evAll backwards from the end, `EV_PAGE` items at a time.
+  const end = evAll.length - evIdx;
+  const start = Math.max(0, end - EV_PAGE);
+  const page = evAll.slice(start, end).reverse();
+  $("#evCount").textContent = evAll.length;
+  $("#evMore").style.display = (start > 0) ? "" : "none";
+  $("#evList").innerHTML = page.map(e=>{
     const kind=(e.type||e.kind||"").replace(/^[a-z]+\./,"");
     const who=e.member_id||""; const pl=e.payload||{};
     const text=summarize(e,pl);
     return `<li class="ev-item"><span class="ev-time">${esc(tf(e.created_at))}</span><span class="ev-kind">${badge(kind)}</span><div class="ev-text">${esc(text)} <span class="who">· ${esc((who).slice(0,12))}</span></div></li>`;
   }).join("") || `<li class="muted">暂无事件。</li>`;
+}
+
+async function loadEvents(){
+  $("#evList").innerHTML=`<li class="loading">loading …</li>`;
+  const p=await panel("events"); setLast(p);
+  if(!p.ok){ $("#evList").innerHTML=""; const host=$("#view-events .panel"); host.insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  const d = p.data
+  evAll = (d && Array.isArray(d.events)) ? d.events : (Array.isArray(d) ? d : [])
+  evIdx = 0;
+  evRender();
 }
 function summarize(e,pl){
   if(pl&&pl.message) return String(pl.message);
@@ -649,6 +664,7 @@ function summarize(e,pl){
   for(const k of keys){ if(pl&&pl[k]) return String(pl[k]); }
   try{ return JSON.stringify(pl).slice(0,120); }catch(_){ return e.type; }
 }
+$("#evMore").addEventListener("click", ()=>{ evIdx += EV_PAGE; evRender(); });
 
 loadMe();
 bindFsOverlay();
