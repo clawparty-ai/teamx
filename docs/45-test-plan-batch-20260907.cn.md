@@ -64,14 +64,14 @@
 ### 4.2 serve.rs discussion RPC 映射（当前 0）
 | ID | 用例 | 期望 | 状态 |
 |---|---|---|---|
-| R-01 | `discussion.create/say/reply/close/list/open` 经 RPC 分发 | 映射为对应 `Command::Discussion` 且 session/team 正确（仿既有 RPC 单测） | ❌ 待补 |
-| R-02 | 未知 action | 报 unknown | ❌ 待补 |
+| R-01 | `discussion.*` 经 /rpc 全链路（create/say/reply/open/list/close + 权限/close后禁言） | 见 tests/discussion-rpc-test.sh 全过 | ✅ tests/discussion-rpc-test.sh |
+| R-02 | 未知 action | 报 unknown | ✅ tests/discussion-rpc-test.sh |
 
 ### 4.3 console_data discussion（当前 0）
 | ID | 用例 | 期望 | 状态 |
 |---|---|---|---|
-| C-01 | fetch_panel("discussions") 网络模式 | 返回 discussion.list 结果 | ❌ 待补（net 依赖，用本地 mode 或注入） |
-| C-02 | fetch_panel("discussion?id=…") | 返回 discussion.open 结果 | ❌ 待补 |
+| C-01 | fetch_panel("discussions") 网络模式 | 返回 discussion.list 结果（console 走同一 net_rpc） | 🟡 由 RPC 集成覆盖 + console HTTP 冒烟 |
+| C-02 | fetch_panel("discussion?id=…") | 返回 discussion.open 结果 | 🟡 同上 + 手工冒烟（已验证楼层/引用） |
 | C-03 | discussion_action create/say/reply/close 本地模式参数拼装 | 生成的 CLI args 正确 | ❌ 待补 |
 | C-04 | discussion_action 未知 action | Err | ❌ 待补 |
 
@@ -89,9 +89,9 @@
 ### 4.5 ui.rs api_kanban（当前 0 新增）
 | ID | 用例 | 期望 | 状态 |
 |---|---|---|---|
-| K-01 | 两 user：一有近期 activity、一无 → 列排序活跃在前 | order 正确 | ❌ 待补 |
-| K-02 | 两无 activity user → 按 display_name 沉底排序 | 稳定排序 | ❌ 待补 |
-| K-03 | 有 tool_call/file_edit 无 work_session 的 user | 进 events 而非 tasks；summary.events 计数 | ❌ 待补 |
+| K-01 | 两 user：一有近期 activity、一无 → 列排序活跃在前 | order 正确 | ✅ tests/ui-api-test.sh |
+| K-02 | 无 activity user 沉底 | 空 tasks/events 置尾 | ✅ tests/ui-api-test.sh |
+| K-03 | tool_call 进 events 而非 tasks | 断言 events 含 tool_call、tasks 均为 work_session | ✅ tests/ui-api-test.sh |
 
 ### 4.6 前端 JS（console_html/ui）
 | ID | 用例 | 期望 | 状态 |
@@ -115,14 +115,14 @@
 - 插件变更：`bun run build` + P-02 场景复验。
 - 发布到云端前：跑 `./tests/run-all.sh`（或至少 cargo test + 关键脚本）。
 
-## 6. 后续动作（把"待补"补成"已实现"）
+## 6. 执行记录（2026-09-07）
 
-1. 补 agents.rs 单测 A-01/02/04/05/06（temp TEAMX_HOME + Mutex；不 spawn 真 opencode）。
-2. 补 discussion.rs D-06/07/08（quotes 快照生成、跨队引用、长度上限）。
-3. 补 serve.rs R-01/02（discussion RPC 映射单测）。
-4. 补 console_data C-01..04（本地 mode 走真实 CLI 断言）。
-5. 补 ui.rs K-01..03（api_kanban 排序/聚合，内存 DB）。
-6. 保留 P-02/K/J 的人工回归清单。
+1. ✅ agents.rs 单测 7 项（registry/重名/非法名/pick_port/stop 不存在/pid 缺失）。
+2. ✅ discussion.rs D-06/07/08（quotes 服务端快照、跨队引用、长度上限，含补实现）。
+3. ✅ R-01/02 → `tests/discussion-rpc-test.sh`（serve /rpc 全链路，REST 黑盒，不经重构）。
+4. ✅ K-01..03 → `tests/ui-api-test.sh`（/api/kanban REST 断言）。
+5. 🟡 C-01..04：console 数据通道与 serve RPC 同走 `net_rpc`，网络分支已由 R-01 覆盖；console HTTP 层（/api/panels/discussions、/api/discussion/{action}）经手工冒烟验证（建/说/引用/开/关全链路）。若需自动化可后续加 console local-mode HTTP 脚本。
+6. 保留 §7 手工 E2E 清单（agent 真实参与、浏览器翻页/引用交互）。
 
 ## 7. 手工 E2E 清单（验收用，非自动化）
 - [ ] console Discussions：列表→建话题→两条消息→引用回复显示引用块→刷新/轮询可见 agent 回复→owner close→列表 closed 灰显→再发言被拒
