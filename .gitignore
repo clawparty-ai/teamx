@@ -17,6 +17,17 @@ code-review-codex-0817.md
 # TEAM.md bootstrap work dirs contain invitation letters (private keys)
 .teamx/members/
 
+# teamx workspace secrets / runtime state (keep, but never commit):
+# CA + client mTLS keys, tunnel mapping / console tokens, runtime cursors.
+# Team-definition files such as .teamx/TEAM.md are intentionally NOT ignored.
+.teamx/ca/
+.teamx/letters/
+.teamx/instance.json
+.teamx/forwards.json
+.teamx/console.json
+.teamx/console-server.json
+.teamx/nudge-cursor
+
 # local scratch / tooling (not source)
 .codegraph/
 tmp/
