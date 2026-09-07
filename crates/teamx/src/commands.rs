@@ -475,6 +475,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 cmd_role_update(conn, role, label.as_deref(), description.as_deref(), session, team.as_deref())?
             }
         },
+        Command::Discussion(d) => crate::discussion::run(conn, d).map_err(AppError)?,
         Command::Publish { r#type, data, assignee, session, team } => {
             cmd_publish(conn, r#type, data.as_deref(), assignee.as_deref(), session, team.as_deref())?
         }
@@ -518,6 +519,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         // `teamx worker` is a long-running autonomous executor (handled in main).
         Command::Worker(_) => {
             return err("`teamx worker` must be run as its own process")
+        }
+        // `teamx agents spawn/list/stop` manages headless opencode instances.
+        Command::Agents(cmd) => {
+            crate::agents::run(cmd).map_err(AppError)?
         }
         // `teamx fs` is a long-running file service (handled in main).
         Command::Fs(_) => {

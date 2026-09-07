@@ -388,10 +388,25 @@ fn page_html() -> String {
   .badge.waiting { background: #FDF6EC; color: #E6A23C; }
   .badge.left { background: #FDE8E8; color: #F56C6C; }
   .detail { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: pre-wrap; word-break: break-all; max-width: 480px; }
-  .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-  @media (max-width: 1100px) { .kanban { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 600px) { .kanban { grid-template-columns: 1fr; } }
-  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 200px; }
+  .kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 1100px) { .kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 600px) { .kanban { grid-template-columns: minmax(0, 1fr); } }
+  #view-kanban .kanban { max-width: 1560px; margin: 0 auto; }
+  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 200px; min-width: 0; overflow: hidden; }
+  .kb-ev-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted-fg); margin: 12px 0 6px; padding-top: 10px; border-top: 1px dashed var(--border); }
+  .kb-ev-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 6px; font-size: 11.5px; cursor: pointer; position: relative; }
+  .kb-ev-card:hover { box-shadow: var(--shadow-hover); }
+  .kb-ev-top { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; flex-wrap: wrap; }
+  .kb-ev-who { font-weight: 600; }
+  .kb-ev-text { font-size: 11.5px; color: var(--fg); line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; }
+  .kb-ev-meta { font-size: 10.5px; margin-top: 3px; color: var(--muted-fg); font-family: var(--font-mono); }
+  .kb-ev-detail { margin-top: 6px; }
+  .kb-ev-detail .tl-pre { max-width: 100%; overflow-x: auto; }
+  .kb-col .kb-ev-card .badge { font-size: 10px; line-height: 1.4; }
+  .kb-col-head, .kb-card, .kb-ev-card { max-width: 100%; }
+  .kb-card, .kb-ev-card { overflow-wrap: anywhere; }
+  .kb-card .kb-tip { max-width: min(460px, 90vw); }
+  .kb-card:hover .kb-tip, .kb-card:focus .kb-tip { display: block; }
   .kb-col-head { padding: 0 0 10px; border-bottom: 2px solid var(--border); margin-bottom: 10px; }
   .kb-col-title { font-size: 13px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px; }
   .kb-col-meta { font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
@@ -1271,22 +1286,78 @@ async function renderKanban() {
   $("#kanbanCols").innerHTML = (kanban.columns ?? []).map((col) => {
     const s = col.summary ?? {}
     const tasks = col.tasks ?? []
+    const events = col.events ?? []
     const done = tasks.filter((t) => t.has_human).length
     const totTokens = tasks.reduce((sum, t) => sum + ((t.tokens_input ?? 0) + (t.tokens_output ?? 0)), 0)
     const totCost = tasks.reduce((sum, t) => sum + (t.cost ?? 0), 0)
     const costBits = totTokens > 0 || totCost > 0
       ? ` · ⚡ ${fmtNum(totTokens)} tok · <span class="cost">${fmtCost(totCost)}</span>`
       : ""
+    const detailBits = (s.events ?? 0) > 0
+      ? ` · <span class="muted">${s.events} detail${s.events > 1 ? "s" : ""}${(s.events_cost ?? 0) > 0 ? " · " + fmtCost(s.events_cost) : ""}</span>`
+      : ""
+    const evCards = events.slice(0, 8).map((e) => renderEventCard(e)).join("")
     return `<div class="kb-col">
       <div class="kb-col-head">
         <div class="kb-col-title">${esc(col.display_name)} ${col.member_count > 1 ? `<span class="badge">${col.member_count} seats</span>` : ""} ${(col.roles && col.roles[0]) ? badge(col.roles[0]) : ""}</div>
         <div class="kb-col-meta muted">
-          ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${costBits}
+          ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${costBits}${detailBits}
         </div>
       </div>
       ${tasks.slice(0, 12).map((r) => renderTaskCard(r)).join("") || '<div class="kb-empty muted">no work in this range</div>'}
+      ${evCards ? `<div class="kb-ev-head muted">detail activity</div>${evCards}` : ""}
     </div>`
   }).join("")
+  bindKanbanEvents()
+}
+
+// Delegate hover/click behaviour for the fishbone-style detail cards added to
+// kanban columns (T1): hover -> compact summary tooltip; click -> expand the
+// full command/output/file JSON (same as the fishbone timeline).
+function bindKanbanEvents() {
+  const host = $("#kanbanCols")
+  if (!host || host.dataset.kbBound) return
+  host.dataset.kbBound = "1"
+  host.addEventListener("click", (ev) => {
+    const card = ev.target.closest(".kb-ev-card")
+    if (!card) return
+    let it = null
+    try { it = JSON.parse(card.dataset.activity || "null") } catch { it = null }
+    if (!it) return
+    const det = card.querySelector(".kb-ev-detail")
+    if (!det) return
+    if (det.style.display === "none") { det.style.display = "block"; det.innerHTML = activityDetailHtml(it) }
+    else det.style.display = "none"
+  })
+  host.addEventListener("mouseover", (ev) => {
+    const card = ev.target.closest(".kb-ev-card")
+    if (card) { try { const it = JSON.parse(card.dataset.activity || "null"); if (it) tlTipShow(it, ev) } catch { /* ignore */ } }
+  })
+  host.addEventListener("mouseout", (ev) => {
+    if (ev.target.closest(".kb-ev-card")) tlTipHide()
+  })
+}
+
+// Render one fine-grained activity event (tool/file/step/human) in a column,
+// fishbone-style: kind badge + one-line summary + hover tooltip + click to
+// expand the full detail (command/args/output/file JSON).
+function renderEventCard(r) {
+  const kind = r.kind || "event"
+  const label = fishKindLabel(kind)
+  const color = fishKindColor(kind)
+  const text = fishDetailText(r)
+  const who = r.member_label || memberLabel(r.member_id)
+  const node = r.node_name ? `<span class="muted">@${esc(r.node_name)}</span>` : ""
+  const dur = r.duration_ms ? `<span class="muted">${fmtMs(r.duration_ms)}</span>` : ""
+  const human = r.has_human ? `<span class="human">● human</span>` : ""
+  const cost = fmtItemCost(r)
+  const meta = [dur, human, cost].filter(Boolean).join("") || ""
+  return `<div class="kb-ev-card" tabindex="0" data-activity='${esc(JSON.stringify(r)).replace(/'/g, "&#39;")}'>
+    <div class="kb-ev-top"><span class="badge" style="background:${color}">${esc(label)}</span><span class="kb-ev-who muted">${esc(who)} ${node}</span><span class="muted">${fmtDate(r.started_at)}</span></div>
+    <div class="kb-ev-text">${esc(text || "(no detail)")}</div>
+    ${meta ? `<div class="kb-ev-meta muted">${meta}</div>` : ""}
+    <div class="tl-detail kb-ev-detail" style="display:none"></div>
+  </div>`
 }
 
 // Render one task (work_session) card.
@@ -3557,8 +3628,13 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
             .filter_map(|m| m["role"].as_str().map(|s| s.to_string()))
             .collect();
         let mut tasks: Vec<serde_json::Value> = Vec::new();
+        let mut events: Vec<serde_json::Value> = Vec::new();
         for m in &members {
             let mid = m["id"].as_str().unwrap_or("").to_string();
+            // Task cards = work_session rows (bounded work segments). Detail
+            // stream = every other activity kind (tool_call / file_edit /
+            // step_finish / human_*) so each column shows fine-grained work,
+            // similar to the fishbone timeline.
             if let Some(rows) = crate::activity::rows(&c, team, Some(&mid), None, Some("work_session"), from, to, limit)
                 .ok()
             {
@@ -3573,11 +3649,30 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
                     }
                 }
             }
+            if let Some(rows) = crate::activity::rows(&c, team, Some(&mid), None, None, from, to, limit * 2)
+                .ok()
+            {
+                if let Some(arr) = rows.as_array() {
+                    for t in arr {
+                        let Some(obj) = t.as_object() else { continue };
+                        let Some(kind) = obj.get("kind").and_then(|k| k.as_str()) else { continue };
+                        if kind == "work_session" {
+                            continue;
+                        }
+                        let mut o = obj.clone();
+                        o.insert("member_label".to_string(), json!(m["display_name"].clone()));
+                        events.push(serde_json::Value::Object(o));
+                    }
+                }
+            }
         }
         // Newest first overall, capped.
         tasks.sort_by_key(|t| t.get("started_at").and_then(|x| x.as_str()).unwrap_or("").to_string());
         tasks.reverse();
         tasks.truncate(limit as usize);
+        events.sort_by_key(|t| t.get("started_at").and_then(|x| x.as_str()).unwrap_or("").to_string());
+        events.reverse();
+        events.truncate((limit as usize).saturating_mul(2));
         // Column summary from the tasks themselves.
         let mut dur_ms = 0i64;
         let mut tok = 0i64;
@@ -3592,15 +3687,57 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
                 has_human += 1;
             }
         }
+        let mut ev_dur_ms = 0i64;
+        let mut ev_tok = 0i64;
+        let mut ev_cost = 0f64;
+        let mut ev_human = 0usize;
+        for e in &events {
+            ev_dur_ms += e.get("duration_ms").and_then(|x| x.as_i64()).unwrap_or(0);
+            ev_tok += e.get("tokens_input").and_then(|x| x.as_i64()).unwrap_or(0)
+                + e.get("tokens_output").and_then(|x| x.as_i64()).unwrap_or(0);
+            ev_cost += e.get("cost").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            if e.get("has_human").and_then(|x| x.as_bool()).unwrap_or(false) {
+                ev_human += 1;
+            }
+        }
+        // Last activity across task cards and detail events (used to rank
+        // columns: busiest/most recent user first, no-activity sinks to bottom).
+        let last_active = [&tasks, &events]
+            .iter()
+            .flat_map(|a| a.iter())
+            .filter_map(|x| x.get("started_at").and_then(|s| s.as_str()))
+            .max()
+            .unwrap_or("")
+            .to_string();
         out.push(json!({
             "user": uname,
             "display_name": uname,
             "roles": roles,
             "member_count": members.len(),
             "tasks": tasks,
-            "summary": { "duration_ms": dur_ms, "count": tasks.len(), "has_human": has_human, "tokens": tok, "cost": cost },
+            "events": events,
+            "last_active": last_active,
+            "summary": { "duration_ms": dur_ms, "count": tasks.len(), "has_human": has_human, "tokens": tok, "cost": cost,
+                         "events": events.len(), "events_duration_ms": ev_dur_ms, "events_tokens": ev_tok, "events_cost": ev_cost, "events_human": ev_human },
         }));
     }
+    // T2: rank columns by activity — most recent last_active first; users with
+    // no activity sink to the bottom (stable by display name).
+    out.sort_by(|a, b| {
+        let aa = a.get("last_active").and_then(|x| x.as_str()).unwrap_or("");
+        let bb = b.get("last_active").and_then(|x| x.as_str()).unwrap_or("");
+        let ea = aa.is_empty();
+        let eb = bb.is_empty();
+        if ea != eb {
+            return if ea { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+        }
+        if ea && eb {
+            let na = a.get("display_name").and_then(|x| x.as_str()).unwrap_or("");
+            let nb = b.get("display_name").and_then(|x| x.as_str()).unwrap_or("");
+            return na.cmp(nb);
+        }
+        bb.cmp(aa)
+    });
     Json(json!({ "columns": out })).into_response()
 }
 

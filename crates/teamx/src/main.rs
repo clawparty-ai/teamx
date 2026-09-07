@@ -165,6 +165,30 @@ fn print_human(v: &serde_json::Value) {
 
     // Session identity list (`teamx session list`) — render before the generic
     // `ok` branch so the member list is readable.
+    // Agent instance list (`teamx agents list`) — render before the generic
+    // `ok` branch so the instance table is readable.
+    if let Some(insts) = v.get("instances").and_then(|a| a.as_array()) {
+        if insts.is_empty() {
+            println!("[agents] none");
+        } else {
+            println!("[agents]");
+            for i in insts {
+                let name = i.get("name").and_then(|x| x.as_str()).unwrap_or("-");
+                let st = i.get("status").and_then(|x| x.as_str()).unwrap_or("-");
+                let port = i.get("port").and_then(|x| x.as_i64()).unwrap_or(0);
+                let pid = i.get("pid").and_then(|x| x.as_i64());
+                let dir = i.get("dir").and_then(|x| x.as_str()).unwrap_or("-");
+                let log = i.get("log").and_then(|x| x.as_str()).unwrap_or("");
+                println!("  {name:16} {st:<8} port={port:<5} pid={}", pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
+                println!("      dir: {dir}");
+                if !log.is_empty() {
+                    println!("      log: {log}");
+                }
+            }
+        }
+        return;
+    }
+
     if let Some(sessions) = v.get("sessions").and_then(|s| s.as_array()) {
         let inst = v.get("instance_id").and_then(|i| i.as_str()).unwrap_or("-");
         println!("[teamx sessions] instance: {inst}");

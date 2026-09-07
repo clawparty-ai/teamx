@@ -427,8 +427,10 @@ export const Teamx: Plugin = async ({ client }) => {
 
   // Enable the enterprise activity collector. The flush path needs a session
   // key to attribute rows in V1 local mode; network mode uses the mTLS cert.
+  // The resolver must be safe in headless `opencode run` (worker), where no
+  // interactive session id exists: return undefined instead of throwing.
   initActivity({
-    sessionKey: () => sk(currentSessionID),
+    sessionKey: () => (currentSessionID ? sk(currentSessionID) : undefined),
     log: (level, message, extra) => log(level, message, extra),
   })
 

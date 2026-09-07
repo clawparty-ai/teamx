@@ -20,6 +20,7 @@ code-review-codex-0817.md
 # local scratch / tooling (not source)
 .codegraph/
 tmp/
+docs/tmp/
 create.json
 invite.json
 app/.build/

@@ -13,7 +13,7 @@
 // message text) are recorded in full.
 
 import { hostname } from "node:os"
-import { instanceId, runCli } from "./client"
+import { instanceId, runCli, serverUrlFor } from "./client"
 
 export type ActivityKind =
   | "tool_call"
@@ -55,21 +55,26 @@ let flushTimer: ReturnType<typeof setTimeout> | undefined
 let flushing = false
 let nodeId: string
 let nodeName: string
-let sessionForFlush: (() => string) | null = null
+let sessionForFlush: (() => string | undefined) | null = null
 let logFlush: (level: "debug" | "warn", message: string, extra?: Record<string, unknown>) => void = () => {}
 
 /**
  * Enable the activity collector. Must be called once at plugin startup with a
  * resolver that provides the current opencode session key (used by the V1 local
  * CLI path to attribute rows to the correct member).
+ *
+ * In network mode (a server URL / letter is configured) the resolver is not
+ * required: `activity.push` runs over RPC and the server attributes rows from
+ * the mTLS certificate. Headless `opencode run` (worker) has no interactive
+ * session id, so the resolver may return `undefined` instead of throwing.
  */
 export function initActivity(opts: {
-  sessionKey: () => string
+  sessionKey?: () => string | undefined
   log: (level: "debug" | "warn", message: string, extra?: Record<string, unknown>) => void
 }): void {
   nodeId = instanceId()
   nodeName = hostname()
-  sessionForFlush = opts.sessionKey
+  sessionForFlush = opts.sessionKey ?? null
   logFlush = opts.log
 }
 
@@ -99,17 +104,17 @@ export async function flush(): Promise<void> {
   if (flushing) return
   flushing = true
   try {
+    // Network mode attributes rows from the mTLS certificate, so the session
+    // key is only needed for the V1 local CLI path. Resolving it lazily also
+    // avoids throwing in headless `opencode run` (no interactive session id).
+    const network = serverUrlFor() !== ""
     while (buffer.length > 0) {
       const batch = buffer.splice(0, buffer.length)
-      const session = sessionForFlush?.() ?? ""
-      const r = await runCli([
-        "activity",
-        "push",
-        "--data",
-        JSON.stringify(batch),
-        "--session",
-        session,
-      ])
+      const session = !network ? (sessionForFlush?.() ?? "") : ""
+      const args = network
+        ? ["activity", "push", "--data", JSON.stringify(batch)]
+        : ["activity", "push", "--data", JSON.stringify(batch), "--session", session]
+      const r = await runCli(args)
       if (!r.ok) {
         logFlush("warn", "activity push failed", { stderr: r.stderr, rows: batch.length })
         // Re-queue failed rows so they are retried on the next flush (up to the

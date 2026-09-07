@@ -9,6 +9,7 @@
 //! a CLI invocation or RPC request into a `Command` and render the result.
 
 pub mod activity;
+pub mod agents;
 pub mod broadcast;
 pub mod buildinfo;
 pub mod cli;
@@ -68,6 +69,7 @@ pub mod fs;
 pub mod worker;
 pub mod console_data;
 pub mod console_html;
+pub mod discussion;
 
 use cli::Cli;
 

@@ -51,6 +51,10 @@ pub enum Command {
     #[command(subcommand)]
     Role(RoleCmd),
 
+    /// Group discussion between team members (threads stored as ledger events)
+    #[command(subcommand)]
+    Discussion(DiscussionCmd),
+
     /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
     Publish {
         /// event type
@@ -191,6 +195,12 @@ pub enum Command {
     /// headless `opencode run` turns so a member node progresses tasks even
     /// without an attached TUI. Dry-run unless TEAMX_WORKER_ENABLED=1.
     Worker(WorkerCmd),
+
+    /// Headless agent (opencode instance) manager: spawn/list/stop multiple
+    /// `opencode serve` processes (one workspace per agent) so one machine can
+    /// run many AI agent members without an external orchestrator.
+    #[command(subcommand)]
+    Agents(AgentsCmd),
 
     /// Member node file service (workspace browser backend). Binds 127.0.0.1
     /// and exposes list/read/download/upload under the startup directory.
@@ -478,6 +488,47 @@ pub struct WorkerCmd {
     /// the node's resident opencode serve URL (default http://127.0.0.1:4199)
     #[arg(long)]
     pub opencode_url: Option<String>,
+}
+
+/// `teamx agents` — manage headless opencode agent instances (multi-agent runs).
+#[derive(Subcommand, Debug, Clone)]
+pub enum AgentsCmd {
+    /// Spawn a headless `opencode serve` instance (one workspace per agent).
+    Spawn {
+        /// instance name (unique per machine; also used as process/label)
+        #[arg(long)]
+        name: String,
+        /// workspace / working directory for this instance (default: ./<name>)
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// bind port for `opencode serve` (default: auto-pick 4200+ free port)
+        #[arg(long)]
+        port: Option<u16>,
+        /// opencode binary path (default: `opencode` from PATH)
+        #[arg(long)]
+        opencode: Option<String>,
+        /// extra environment as KEY=VALUE (repeatable), e.g. TEAMX_SERVER_URL
+        #[arg(long = "env")]
+        env: Vec<String>,
+        /// run in the foreground (inherit stdio; default: daemonize + log file)
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// List headless agent instances spawned on this machine.
+    List {
+        /// include only running instances
+        #[arg(long)]
+        running: bool,
+    },
+    /// Stop a headless agent instance (by name). SIGTERM then SIGKILL if needed.
+    Stop {
+        /// instance name
+        #[arg(long)]
+        name: String,
+        /// also remove the instance registration after stopping
+        #[arg(long)]
+        remove: bool,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -818,6 +869,89 @@ pub enum RoleCmd {
         label: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+/// Team discussion subcommands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum DiscussionCmd {
+    /// Create a discussion thread (recorded as a `discussion.created` event)
+    Create {
+        /// thread title
+        #[arg(value_name = "TITLE")]
+        title: String,
+        /// optional body / opening message
+        #[arg(long)]
+        body: Option<String>,
+        /// optional associated task id
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List active discussion threads for the team
+    List {
+        /// include closed threads too
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show one discussion thread (its messages, newest first)
+    Open {
+        /// discussion id (as returned by create)
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Post a message to a discussion
+    Say {
+        /// discussion id
+        #[arg(value_name = "ID")]
+        id: String,
+        /// message body
+        #[arg(value_name = "BODY")]
+        body: String,
+        /// JSON array of quote objects: [{"kind":"message"|"event"|"task","message_id"|"seq"|"task_id":...,"text":"..."}]
+        #[arg(long)]
+        quotes: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Reply to a specific message inside a discussion (sets reply_to)
+    Reply {
+        /// discussion id
+        #[arg(value_name = "ID")]
+        id: String,
+        /// message id being replied to (e.g. the seq of a discussion.message event)
+        #[arg(value_name = "MESSAGE_ID")]
+        message_id: String,
+        /// reply body
+        #[arg(value_name = "BODY")]
+        body: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Close a discussion (owner/lead; appends a `discussion.closed` event)
+    Close {
+        /// discussion id
+        #[arg(value_name = "ID")]
+        id: String,
         #[arg(long)]
         session: String,
         #[arg(long)]

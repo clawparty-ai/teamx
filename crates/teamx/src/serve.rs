@@ -39,7 +39,7 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use crate::broadcast::Hub;
-use crate::cli::{Cli, Command, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
+use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
 use crate::commands;
 use crate::pki;
 
@@ -1446,6 +1446,43 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             role: s("role").ok_or_else(|| "role.update requires `role`".to_string())?,
             label: o("label"),
             description: o("description"),
+            session: sess(args),
+            team: o("team"),
+        }),
+
+        "discussion.create" => Command::Discussion(DiscussionCmd::Create {
+            title: s("title").ok_or_else(|| "discussion.create requires `title`".to_string())?,
+            body: o("body"),
+            task: o("task"),
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.list" => Command::Discussion(DiscussionCmd::List {
+            all: b("all"),
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.open" => Command::Discussion(DiscussionCmd::Open {
+            id: s("id").ok_or_else(|| "discussion.open requires `id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.say" => Command::Discussion(DiscussionCmd::Say {
+            id: s("id").ok_or_else(|| "discussion.say requires `id`".to_string())?,
+            body: s("body").ok_or_else(|| "discussion.say requires `body`".to_string())?,
+            quotes: o("quotes"),
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.reply" => Command::Discussion(DiscussionCmd::Reply {
+            id: s("id").ok_or_else(|| "discussion.reply requires `id`".to_string())?,
+            message_id: s("message_id").ok_or_else(|| "discussion.reply requires `message_id`".to_string())?,
+            body: s("body").ok_or_else(|| "discussion.reply requires `body`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.close" => Command::Discussion(DiscussionCmd::Close {
+            id: s("id").ok_or_else(|| "discussion.close requires `id`".to_string())?,
             session: sess(args),
             team: o("team"),
         }),
