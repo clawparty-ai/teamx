@@ -345,3 +345,121 @@ pub fn run(cmd: &AgentsCmd) -> Result<serde_json::Value, String> {
         AgentsCmd::Stop { name, remove } => stop(name, *remove),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    /// Run a closure with a temp TEAMX_HOME (serialized; restores previous).
+    fn with_tmp_home<F: FnOnce(&Path)>(f: F) {
+        let lock = ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+        let _guard = lock.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("teamx-agents-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let prev = std::env::var("TEAMX_HOME").ok();
+        std::env::set_var("TEAMX_HOME", &tmp);
+        f(&tmp);
+        match prev {
+            Some(v) => std::env::set_var("TEAMX_HOME", v),
+            None => std::env::remove_var("TEAMX_HOME"),
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn registry_empty_load_is_default() {
+        with_tmp_home(|_| {
+            let r = load();
+            assert!(r.instances.is_empty());
+        });
+    }
+
+    #[test]
+    fn registry_save_load_roundtrip() {
+        with_tmp_home(|_| {
+            let mut r = Registry::default();
+            r.instances.insert(
+                "a".into(),
+                Instance {
+                    name: "a".into(),
+                    dir: "/tmp/a".into(),
+                    port: 4200,
+                    opencode: "opencode".into(),
+                    pid: Some(123),
+                    started_at: "now".into(),
+                    log: None,
+                },
+            );
+            save(&r).unwrap();
+            let loaded = load();
+            assert_eq!(loaded.instances.len(), 1);
+            let inst = &loaded.instances["a"];
+            assert_eq!(inst.port, 4200);
+            assert_eq!(inst.pid, Some(123));
+        });
+    }
+
+    #[test]
+    fn pick_port_skips_used_ports() {
+        // Bind 127.0.0.1 on some port, ensure pick_port(Some(that)) avoids it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let used = listener.local_addr().unwrap().port();
+        let picked = pick_port(Some(used));
+        assert_ne!(picked, used, "must not return an already-bound port");
+    }
+
+    #[test]
+    fn spawn_rejects_bad_names_before_launching() {
+        with_tmp_home(|_| {
+            // empty name
+            assert!(spawn("", None, None, None, &[], false).is_err());
+            // whitespace
+            assert!(spawn("has space", None, None, None, &[], false).is_err());
+            // slash
+            assert!(spawn("a/b", None, None, None, &[], false).is_err());
+        });
+    }
+
+    #[test]
+    fn spawn_duplicate_name_rejected() {
+        with_tmp_home(|_| {
+            // Register a fake instance under the name, then spawn should reject.
+            let mut r = Registry::default();
+            r.instances.insert(
+                "dup".into(),
+                Instance {
+                    name: "dup".into(),
+                    dir: "/tmp/d".into(),
+                    port: 1,
+                    opencode: "x".into(),
+                    pid: None,
+                    started_at: "now".into(),
+                    log: None,
+                },
+            );
+            save(&r).unwrap();
+            // spawn checks the existing registry *before* launching opencode, so
+            // it must error here (never tries to exec a binary).
+            let res = spawn("dup", None, None, Some("definitely-not-a-real-binary"), &[], false);
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("already exists"));
+        });
+    }
+
+    #[test]
+    fn stop_unknown_instance_errors() {
+        with_tmp_home(|_| {
+            let res = stop("nope", false);
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("not found"));
+        });
+    }
+
+    #[test]
+    fn status_of_reports_stopped_for_missing_pid() {
+        // pid=None (no registered pid) is always stopped, no process probing.
+        assert_eq!(status_of(None), "stopped");
+    }
+}
