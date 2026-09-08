@@ -825,28 +825,14 @@ function renderThread(d){
         </div>`}
     </div>
     <div class="dsc-toolbar-sub">${closed?`<span class="muted">该讨论已关闭，仅可浏览。</span>`:replyBar}</div>
-    ${floors||`<div class="dsc-empty">暂无消息。</div>`}
+    <div id="dscFloors">${floors||`<div class="dsc-empty">暂无消息。</div>`}</div>
     ${closed?"":`
     <div class="dsc-composer">
       <textarea id="dscInput" placeholder="写下你的回复…"></textarea>
       <button class="btn" id="dscSend">发送</button>
     </div>`}
   `;
-  // wire floor action buttons
-  host.querySelectorAll("[data-act=quote]").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      const floor = btn.closest(".dsc-floor");
-      const mid = floor.dataset.mid, author = floor.dataset.author, no = floor.dataset.no;
-      const bodyEl = floor.querySelector(".dsc-floor-body");
-      dscReplyTo = { mid, author, text:(bodyEl?bodyEl.textContent:"").slice(0,160) };
-      renderThread(curDscMeta); // refresh composer bar
-    });
-  });
-  host.querySelectorAll(".dsc-join-floor").forEach(btn=>{
-    btn.addEventListener("click",()=>{
-      openDscOverlay({ id:curDsc, title, mode:"reply", mid:btn.dataset.mid, author:btn.dataset.author, no:btn.dataset.no });
-    });
-  });
+  wireFloors(host);
   const back=$("#dscBack");
   back.onclick = ()=>loadDiscussions();
   const newBtn=$("#dscNew"); newBtn.onclick = ()=>showNewForm();
@@ -866,6 +852,74 @@ function renderThread(d){
     catch(e){ alert(String(e.message||e)); }
   };
   const clearReply=$("#dscClearReply"); if(clearReply) clearReply.onclick = ()=>{ dscReplyTo=null; renderThread(curDscMeta); };
+}
+
+// Bind floor buttons (quote + join-floor) within a scope element. Used both for
+// the initial full render and when a poll only refreshes #dscFloors.
+function wireFloors(scope){
+  if(!scope) return;
+  scope.querySelectorAll("[data-act=quote]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const floor = btn.closest(".dsc-floor");
+      const mid = floor.dataset.mid, author = floor.dataset.author, no = floor.dataset.no;
+      const bodyEl = floor.querySelector(".dsc-floor-body");
+      dscReplyTo = { mid, author, text:(bodyEl?bodyEl.textContent:"").slice(0,160) };
+      // only refresh the floors region (do not disturb composer)
+      if(curDscMeta) renderThreadFloors(curDscMeta);
+    });
+  });
+  scope.querySelectorAll(".dsc-join-floor").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      openDscOverlay({ id:curDsc, title:(curDscMeta&&curDscMeta.title)||"", mode:"reply", mid:btn.dataset.mid, author:btn.dataset.author, no:btn.dataset.no });
+    });
+  });
+}
+
+// Render ONLY the floors list into #dscFloors (keeps composer/input intact).
+function renderThreadFloors(d){
+  const el=$("#dscFloors"); if(!el) return;
+  const closed = (d&&d.closed)===true;
+  const msgs = d&&d.messages||[];
+  const quotesHtml=(m)=>{ let h="";
+    if(m.reply_to && typeof m.reply_to==="object"){
+      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<br>${esc(m.reply_to.text||m.reply_to.body||"")}</div>`;
+    }
+    (Array.isArray(m.quotes)?m.quotes:[]).forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><br>${esc(q.text||"")}</div>`; });
+    return h;
+  };
+  const floors=msgs.map((m,i)=>{
+    const no=i+1, author=m.author||"";
+    return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">
+      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span><span>${esc(tf(m.created_at))}</span>
+        <span class="dsc-floor-actions">${closed?"":`
+          <button class="btn btn-mini dsc-join-floor" data-act="join-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">参与讨论</button>
+          <button class="btn btn-mini" data-act="quote">引用</button>`}
+        </span>
+      </div>
+      ${quotesHtml(m)}
+      <div class="dsc-floor-body">${esc(m.body||"")}</div>
+    </div>`;
+  }).join("");
+  el.innerHTML = floors||`<div class="dsc-empty">暂无消息。</div>`;
+  wireFloors(el);
+}
+
+// Poll only when NEW messages arrive; otherwise leave the DOM untouched so the
+// user's input / reading is never interrupted by a periodic refresh.
+async function pollDiscussion(){
+  if(!curDsc) return;
+  const p=await panel("discussion?id="+encodeURIComponent(curDsc)).catch(()=>null);
+  if(!p || !p.ok) return;
+  const d=p.data||{};
+  const oldCount=(curDscMeta&&curDscMeta.messages||[]).length;
+  const newCount=(d.messages||[]).length;
+  const wasClosed=(curDscMeta&&curDscMeta.closed)===true;
+  const nowClosed=(d.closed)===true;
+  if(newCount===oldCount && wasClosed===nowClosed) return; // nothing new -> keep DOM
+  curDscMeta=d;
+  // If the thread just closed, refresh the full page (toolbar + composer hide).
+  if(nowClosed && !wasClosed){ openDiscussion(curDsc); return; }
+  renderThreadFloors(d);
 }
 
 // Popup overlay composer for joining a discussion (thread-level or a specific
@@ -917,7 +971,7 @@ function showNewForm(){
   $("#dscNewCancel").onclick = ()=>loadDiscussions();
 }
 
-function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) openDiscussion(curDsc); },15000); }
+function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) pollDiscussion(); },15000); }
 function stopDscPoll(){ if(dscTimer){ clearInterval(dscTimer); dscTimer=null; } }
 
 // Entry buttons (nav switch handles rendering; also ensure back/new work after full reload).
