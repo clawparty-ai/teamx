@@ -70,6 +70,22 @@ pub fn page_html() -> String {
     </section>
   </div>
 </div>
+<div class="fs-overlay" id="dscOverlay" style="display:none">
+  <div class="fs-dialog dsc-dialog">
+    <div class="fs-head">
+      <span class="fs-title" id="dscOvlTitle">参与讨论</span>
+      <button class="btn btn-mini" id="dscOvlClose">✕</button>
+    </div>
+    <div class="dsc-ovl-body">
+      <div id="dscOvlContext" class="muted"></div>
+      <textarea id="dscOvlInput" placeholder="写下你的回复…"></textarea>
+      <div class="dsc-ovl-actions">
+        <button class="btn" id="dscOvlSend">发送</button>
+        <button class="btn btn-mini" id="dscOvlCancel">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="fs-overlay" id="fsOverlay" style="display:none">
   <div class="fs-dialog">
     <div class="fs-head">
@@ -287,16 +303,25 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-row.closed { opacity:.55; }
  .dsc-row-title { flex:1; font-weight:600; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .dsc-row-meta { color:var(--muted-fg); font-size:12px; white-space:nowrap; }
+ .dsc-row-join { flex-shrink:0; }
  .dsc-empty { padding:18px; text-align:center; color:var(--muted-fg); }
  .dsc-floor { padding:10px 8px; border-bottom:1px solid var(--border); }
  .dsc-floor-head { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted-fg); margin-bottom:4px; flex-wrap:wrap; }
+ .dsc-floor-actions { margin-left:auto; display:flex; gap:6px; }
+ .dsc-thread-actions { display:flex; gap:6px; margin-left:auto; }
+ .dsc-toolbar-sub { margin: -6px 0 8px; }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
  .dsc-floor-body { font-size:14px; color:var(--fg); white-space:pre-wrap; word-break:break-word; }
  .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
  .dsc-quote .q-who { font-weight:600; color:var(--fg); }
- .dsc-composer { display:flex; gap:8px; margin-top:12px; align-items:center; }
- .dsc-composer textarea { flex:1; min-height:52px; resize:vertical; font-family:inherit; font-size:13px; }
+ .dsc-composer { display:flex; gap:8px; margin-top:12px; align-items:flex-start; }
+ .dsc-composer textarea { flex:1; min-height:96px; resize:vertical; font-family:inherit; font-size:13px; padding:8px 10px; line-height:1.5; }
+ .dsc-composer .btn { margin-top:auto; }
+ .dsc-dialog { width:min(680px, 94vw); }
+ .dsc-ovl-body { display:flex; flex-direction:column; gap:10px; padding:16px; }
+ .dsc-ovl-body textarea { min-height:220px; resize:vertical; font-family:inherit; font-size:14px; line-height:1.6; padding:10px 12px; }
+ .dsc-ovl-actions { display:flex; gap:8px; justify-content:flex-end; }
  .dsc-replybar { font-size:12px; color:var(--primary); background:var(--muted); border-radius:4px; padding:3px 8px; margin-bottom:4px; display:inline-flex; gap:6px; align-items:center; }
  .dsc-form { display:flex; flex-direction:column; gap:8px; margin-top:12px; padding:12px; background:var(--muted); border-radius:6px; }
  .dsc-form input, .dsc-form textarea { font-family:inherit; font-size:13px; }
@@ -726,12 +751,16 @@ async function loadDiscussions(){
     const closed = d.closed===true;
     const icon = closed?"🔒 ":"💬 ";
     const last = d.last_active || d.created_at || "";
+    const joinBtn = closed ? "" : `<button class="btn btn-mini dsc-row-join" data-id="${esc(d.discussion_id)}" data-title="${esc(d.title||"(无标题)")}">参与讨论</button>`;
     return `<div class="dsc-row${closed?" closed":""}" data-id="${esc(d.discussion_id)}">
       <span>${icon}</span><span class="dsc-row-title">${esc(d.title||"(无标题)")}</span>
       <span class="dsc-row-meta">${esc(d.author||"")} · ${esc(fmtN(d.messages||0))} 回复 · ${esc(tf(last))}</span>
+      ${joinBtn}
     </div>`;
   }).join("") || `<div class="dsc-empty">暂无讨论，点击「新建话题」发起第一个讨论。</div>`;
   host.querySelectorAll(".dsc-row").forEach(row=>{
+    const jb=row.querySelector(".dsc-row-join");
+    if(jb) jb.addEventListener("click",(e)=>{ e.stopPropagation(); openDscOverlay({id:row.dataset.id, title:jb.dataset.title, mode:"thread"}); });
     row.addEventListener("click",()=>openDiscussion(row.dataset.id));
   });
 }
@@ -757,6 +786,8 @@ function floorQuoteHtml(rt){
 }
 
 function renderThread(d){
+  const host=$("#dscThread");
+  if(!host) return;
   const msgs = d.messages||[];
   const closed = d.closed===true;
   const title = d.title||"(无标题)";
@@ -771,9 +802,13 @@ function renderThread(d){
   };
   const floors = msgs.map((m,i)=>{
     const no = i+1;
-    return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(m.author||"")}" data-no="${no}">
-      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(m.author||"")}</span><span>${esc(tf(m.created_at))}</span>
-        ${closed?"":`<button class="btn btn-mini" data-act="quote">引用</button>`}
+    const author = m.author||"";
+    return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">
+      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span><span>${esc(tf(m.created_at))}</span>
+        <span class="dsc-floor-actions">${closed?"":`
+          <button class="btn btn-mini dsc-join-floor" data-act="join-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">参与讨论</button>
+          <button class="btn btn-mini" data-act="quote">引用</button>`}
+        </span>
       </div>
       ${quotesHtml(m)}
       <div class="dsc-floor-body">${esc(m.body||"")}</div>
@@ -783,16 +818,21 @@ function renderThread(d){
     ? `<div class="dsc-replybar">引用回复 ${esc(dscReplyTo.mid)} <button class="btn btn-mini" id="dscClearReply">✕</button></div>` : "";
   host.innerHTML = `
     <div class="dsc-toolbar"><h3 style="margin:0">${esc(title)} ${closed?"🔒":""}</h3>
-      ${closed?`<span class="muted">已关闭</span>`:`${replyBar}
-        <div class="dsc-composer">
-          <textarea id="dscInput" placeholder="写下你的回复…"></textarea>
-          <button class="btn" id="dscSend">发送</button>
+      ${closed?`<span class="muted">已关闭</span>`:`
+        <div class="dsc-thread-actions">
+          <button class="btn btn-mini" id="dscJoinThread">💬 参与讨论</button>
           <button class="btn btn-mini" id="dscCloseThread" title="关闭讨论">关闭讨论</button>
         </div>`}
     </div>
+    <div class="dsc-toolbar-sub">${closed?`<span class="muted">该讨论已关闭，仅可浏览。</span>`:replyBar}</div>
     ${floors||`<div class="dsc-empty">暂无消息。</div>`}
+    ${closed?"":`
+    <div class="dsc-composer">
+      <textarea id="dscInput" placeholder="写下你的回复…"></textarea>
+      <button class="btn" id="dscSend">发送</button>
+    </div>`}
   `;
-  // wire quote buttons
+  // wire floor action buttons
   host.querySelectorAll("[data-act=quote]").forEach(btn=>{
     btn.addEventListener("click",()=>{
       const floor = btn.closest(".dsc-floor");
@@ -802,9 +842,15 @@ function renderThread(d){
       renderThread(curDscMeta); // refresh composer bar
     });
   });
+  host.querySelectorAll(".dsc-join-floor").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      openDscOverlay({ id:curDsc, title, mode:"reply", mid:btn.dataset.mid, author:btn.dataset.author, no:btn.dataset.no });
+    });
+  });
   const back=$("#dscBack");
   back.onclick = ()=>loadDiscussions();
   const newBtn=$("#dscNew"); newBtn.onclick = ()=>showNewForm();
+  const jt=$("#dscJoinThread"); if(jt) jt.onclick = ()=>openDscOverlay({ id:curDsc, title, mode:"thread" });
   const send=$("#dscSend"); if(send) send.onclick = async ()=>{
     const input=$("#dscInput");
     const text=(input?input.value:"").trim(); if(!text) return;
@@ -820,6 +866,37 @@ function renderThread(d){
     catch(e){ alert(String(e.message||e)); }
   };
   const clearReply=$("#dscClearReply"); if(clearReply) clearReply.onclick = ()=>{ dscReplyTo=null; renderThread(curDscMeta); };
+}
+
+// Popup overlay composer for joining a discussion (thread-level or a specific
+// floor). mode: "thread" -> plain say; "reply" -> reply to message_id.
+function openDscOverlay(o){
+  const ovl=$("#dscOverlay"); if(!ovl) return;
+  const replying = o.mode==="reply" && o.mid;
+  $("#dscOvlTitle").textContent = replying ? "回复讨论" : "参与讨论";
+  $("#dscOvlContext").innerHTML = replying
+    ? `回复 <b>#${esc(String(o.no||""))}</b> · ${esc(o.author||"")} 的发言`
+    : (o.title ? `在 <b>${esc(o.title)}</b> 中发言` : "");
+  const ta=$("#dscOvlInput"); ta.value="";
+  ovl.style.display="flex";
+  setTimeout(()=>ta.focus(),0);
+  // ensure single-bind handlers
+  const send=$("#dscOvlSend"), cancel=$("#dscOvlCancel"), close=$("#dscOvlClose");
+  const closeAll=()=>{ ovl.style.display="none"; };
+  const doSend=async ()=>{
+    const text=ta.value.trim(); if(!text) return;
+    try{
+      if(replying){ await dscAction("reply",{id:o.id, message_id:o.mid, body:text}); }
+      else { await dscAction("say",{id:o.id, body:text}); }
+      closeAll();
+      if(curDsc===o.id) openDiscussion(curDsc); else loadDiscussions();
+    }catch(e){ alert(String(e.message||e)); }
+  };
+  // replace onclick each time (overlay singleton re-opened) — simple & safe.
+  send.onclick = doSend;
+  cancel.onclick = closeAll;
+  close.onclick = closeAll;
+  ta.onkeydown = (e)=>{ if(e.key==="Enter" && (e.ctrlKey||e.metaKey)){ e.preventDefault(); doSend(); } };
 }
 
 function showNewForm(){
