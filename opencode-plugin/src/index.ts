@@ -317,6 +317,20 @@ function summarizeEvent(e: SyncEvent): string {
         ? t("toast.default", { seq: String(seq), type: t_, message: shorten(msg) })
         : t("toast.default_no_msg", { seq: String(seq), type: t_ })
     }
+    case "discussion.created": {
+      const author = s("author") || ""
+      const title = s("title") || "讨论"
+      return `💬 ${author} 创建讨论「${title}」`
+    }
+    case "discussion.message": {
+      const author = s("author") || ""
+      const body = shorten(msg || s("body") || "")
+      return `💬 ${author} 在讨论中回复：${body}`
+    }
+    case "discussion.closed": {
+      const title = s("title") || "讨论"
+      return `🔒 讨论「${title}」已关闭`
+    }
     case "task.nudge": {
       const body = msg ? shorten(msg) : ""
       return t("toast.task_nudge", { seq: String(seq), message: body })

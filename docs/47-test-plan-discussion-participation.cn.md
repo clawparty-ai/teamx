@@ -61,8 +61,8 @@
 | ID | 用例 | 期望 |
 |---|---|---|
 | P-01 | discussion.created | 「{author} 创建讨论「{title}」」 |
-| P-02 | discussion.message | 「{author} 在「{title}」回复：{正文前 80 字}」 |
-| P-03 | discussion.message 含 @self | 文案含「(提及你)」/高亮标记 |
+| P-02 | discussion.message | 「{author} 在讨论中回复：{正文前 80 字}」（message 事件不含 title，标题展示由订阅详情提供） |
+| P-03 | discussion.message 含 @self | 定向高亮「提及你」属后续 mention 定向通知（本期不做服务端按成员定制） |
 | P-04 | discussion.closed | 「讨论「{title}」已关闭」 |
 | P-05 | 构建 | `bunx tsc --noEmit` + `bun run build` 通过 |
 
