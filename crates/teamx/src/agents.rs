@@ -333,6 +333,26 @@ fn stop(name: &str, remove: bool) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "ok": true, "name": name, "stopped": stopped, "removed": remove }))
 }
 
+/// Public wrappers so `teamx local-team` can reuse the same process manager.
+pub fn spawn_agent(
+    name: &str,
+    dir: Option<&std::path::Path>,
+    port: Option<u16>,
+    opencode: Option<&str>,
+    envs: &[String],
+    foreground: bool,
+) -> Result<serde_json::Value, String> {
+    with_registry_lock(|| spawn(name, dir, port, opencode, envs, foreground))
+}
+
+pub fn list_agents(running_only: bool) -> Result<serde_json::Value, String> {
+    with_registry_lock(|| list(running_only))
+}
+
+pub fn stop_agent(name: &str, remove: bool) -> Result<serde_json::Value, String> {
+    with_registry_lock(|| stop(name, remove))
+}
+
 /// Dispatch for `teamx agents`. All mutations go through the registry lock so
 /// concurrent spawn/list/stop are serialized (no read-modify-write races, no
 /// double port allocation).

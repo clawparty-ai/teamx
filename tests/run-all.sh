@@ -132,6 +132,13 @@ else
   echo "debug binary missing; skipping console-sse test"
 fi
 
+echo "== 15d Local-team test (TEAM.md -> single-machine multi-agent) =="
+if [ -x target/debug/teamx ] && command -v opencode >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/local-team-test.sh
+else
+  echo "debug binary or opencode missing; skipping local-team test"
+fi
+
 echo
 echo "== 16/16 UI e2e (Playwright) test =="
 if [ "${TEAMX_RUN_UI_E2E:-0}" = "1" ] && command -v bun >/dev/null 2>&1; then

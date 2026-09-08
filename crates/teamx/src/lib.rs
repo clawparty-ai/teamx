@@ -10,6 +10,7 @@
 
 pub mod activity;
 pub mod agents;
+pub mod local_team;
 pub mod broadcast;
 pub mod buildinfo;
 pub mod cli;

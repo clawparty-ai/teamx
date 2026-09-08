@@ -202,6 +202,10 @@ pub enum Command {
     #[command(subcommand)]
     Agents(AgentsCmd),
 
+    /// One-command local single-machine multi-agent launch from .teamx/TEAM.md
+    #[command(subcommand)]
+    LocalTeam(LocalTeamCmd),
+
     /// Member node file service (workspace browser backend). Binds 127.0.0.1
     /// and exposes list/read/download/upload under the startup directory.
     Fs(FsCmd),
@@ -528,6 +532,66 @@ pub enum AgentsCmd {
         /// also remove the instance registration after stopping
         #[arg(long)]
         remove: bool,
+    },
+}
+
+/// `teamx local-team` — one-command launch of every member in `.teamx/TEAM.md`
+/// as a local, single-machine multi-agent working set (headless opencode +
+/// optional web TUI + persona + optional repo clone).
+#[derive(Subcommand, Debug, Clone)]
+pub enum LocalTeamCmd {
+    /// Launch all non-owner members (or `--only`) from the team file.
+    Up {
+        /// path to TEAM.md (default <cwd>/.teamx/TEAM.md)
+        #[arg(long)]
+        team_file: Option<PathBuf>,
+        /// shared git repo name to clone into each member dir (optional)
+        #[arg(long)]
+        repo: Option<String>,
+        /// server URL for git clone (default TEAMX_SERVER_URL or letter)
+        #[arg(long)]
+        server: Option<String>,
+        /// only launch these member keys (comma separated; may include owner)
+        #[arg(long)]
+        only: Option<String>,
+        /// headless serve base port (default 4200; auto-advances)
+        #[arg(long)]
+        port_base: Option<u16>,
+        /// ttyd base port (default 7680; auto-advances)
+        #[arg(long)]
+        ttyd_port_base: Option<u16>,
+        /// do not launch ttyd web TUIs
+        #[arg(long)]
+        no_ttyd: bool,
+        /// do not attempt repo clone
+        #[arg(long)]
+        no_git: bool,
+        /// do not write AGENTS.md persona files
+        #[arg(long)]
+        no_persona: bool,
+        /// opencode binary path (default `opencode` from PATH)
+        #[arg(long)]
+        opencode: Option<String>,
+        /// extra environment KEY=VALUE (repeatable), passed to each headless
+        #[arg(long = "env")]
+        env: Vec<String>,
+    },
+    /// List local-team members (dir, headless port, ttyd url, pid, status).
+    Ps,
+    /// Stop one or all local-team members.
+    Stop {
+        /// member key to stop (default: all)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show a member's headless/ttyd logs.
+    Logs {
+        /// member key
+        #[arg(long)]
+        name: String,
+        /// number of tail lines
+        #[arg(long)]
+        lines: Option<u16>,
     },
 }
 

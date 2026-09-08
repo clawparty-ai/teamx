@@ -189,6 +189,27 @@ fn print_human(v: &serde_json::Value) {
         return;
     }
 
+    // Local team (`teamx local-team ps`) — members list with ttyd URLs.
+    if v.get("members").is_some() && v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
+        let mems = v.get("members").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        if mems.is_empty() {
+            println!("[local-team] none");
+        } else {
+            println!("[local-team]");
+            for m in mems {
+                let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("-");
+                let st = m.get("status").and_then(|x| x.as_str()).unwrap_or("-");
+                let port = m.get("port").and_then(|x| x.as_i64()).unwrap_or(0);
+                let pid = m.get("pid").and_then(|x| x.as_i64());
+                let dir = m.get("dir").and_then(|x| x.as_str()).unwrap_or("-");
+                let ttyd = m.get("ttyd_url").and_then(|x| x.as_str()).unwrap_or("");
+                println!("  {name:16} {st:<8} port={port:<5} ttyd={ttyd:<22} pid={}", pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
+                println!("      dir: {dir}");
+            }
+        }
+        return;
+    }
+
     if let Some(sessions) = v.get("sessions").and_then(|s| s.as_array()) {
         let inst = v.get("instance_id").and_then(|i| i.as_str()).unwrap_or("-");
         println!("[teamx sessions] instance: {inst}");

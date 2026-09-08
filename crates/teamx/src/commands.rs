@@ -527,6 +527,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Agents(cmd) => {
             crate::agents::run(cmd).map_err(AppError)?
         }
+        // `teamx local-team up/ps/stop/logs` launches a TEAM.md locally.
+        Command::LocalTeam(cmd) => {
+            crate::local_team::run(cmd).map_err(AppError)?
+        }
         // `teamx fs` is a long-running file service (handled in main).
         Command::Fs(_) => {
             return err("`teamx fs` must be run as its own process")
