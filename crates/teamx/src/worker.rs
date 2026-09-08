@@ -143,6 +143,7 @@ fn poll_once(
     inbox = inbox.get("data").cloned().unwrap_or(inbox);
     let tasks = inbox.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
     let questions = inbox.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+    let discussions = inbox.get("discussions").and_then(Value::as_array).cloned().unwrap_or_default();
     let nudges = inbox
         .get("nudges")
         .and_then(|n| n.get("unread"))
@@ -160,8 +161,12 @@ fn poll_once(
         .into_iter()
         .filter(|q| !done.items.contains_key(&format!("q:{}", q["id"].as_str().unwrap_or(""))))
         .collect();
+    let new_discussions: Vec<Value> = discussions
+        .into_iter()
+        .filter(|d| !done.items.contains_key(&format!("disc:{}", d["seq"].as_i64().unwrap_or(0))))
+        .collect();
 
-    if new_tasks.is_empty() && new_questions.is_empty() {
+    if new_tasks.is_empty() && new_questions.is_empty() && new_discussions.is_empty() {
         return Ok(false);
     }
 
@@ -169,7 +174,10 @@ fn poll_once(
     // (nudges fire periodically while the team is silent; we must not burn
     // tokens by auto-running every nudge).
     if last_run_at.elapsed() < cooldown && !cmd.once {
-        eprintln!("teamx worker: cooldown active ({} items pending)", new_tasks.len() + new_questions.len());
+        eprintln!(
+            "teamx worker: cooldown active ({} items pending)",
+            new_tasks.len() + new_questions.len() + new_discussions.len()
+        );
         return Ok(true);
     }
 
@@ -189,6 +197,31 @@ fn poll_once(
             prompt.push_str(&format!("- Q: {}\n", q["question"].as_str().unwrap_or("")));
         }
     }
+    if !new_discussions.is_empty() {
+        prompt.push_str("以下是团队讨论中与你相关的新消息（你被 @ / 订阅 / 与你任务相关）：\n");
+        for d in new_discussions.iter().take(5) {
+            let did = d["discussion_id"].as_str().unwrap_or("");
+            let title = d["title"].as_str().unwrap_or("");
+            let author = d["author"].as_str().unwrap_or("");
+            let body = d["body"].as_str().unwrap_or("");
+            let trig = d.get("trigger").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let why: Vec<&str> = vec![
+                trig.get("mentioned").and_then(|x| x.as_bool()).unwrap_or(false).then_some("@提及"),
+                trig.get("subscribed").and_then(|x| x.as_bool()).unwrap_or(false).then_some("订阅"),
+                trig.get("my_task").and_then(|x| x.as_bool()).unwrap_or(false).then_some("关联任务"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            prompt.push_str(&format!(
+                "- [{title}] ({did}) {author} 说：{body}  [触发: {}]\n",
+                why.join("/")
+            ));
+        }
+        prompt.push_str(
+            "请判断是否参与讨论：若与你的职责/被@/任务相关且有增量信息，用 teamx discussion reply 参与；否则保持安静不要回复（不要无意义消耗配额）。\n",
+        );
+    }
     if let Some(last_nudge) = nudges.last() {
         prompt.push_str(&format!(
             "（另有一条团队提醒：{})\n",
@@ -198,7 +231,12 @@ fn poll_once(
     prompt.push_str("请勿重复已完成的任务；只做与上面相关的事。\n");
     prompt.push_str("执行规则：提交/推送请使用 teamx 工具（如 teamx_git_commit_push），不要在克隆仓库目录内手工运行 teamx/git —— 工具会以工作区目录与你的证书身份执行。");
 
-    eprintln!("teamx worker: would run opencode with {} new task(s), {} new question(s)", new_tasks.len(), new_questions.len());
+    eprintln!(
+        "teamx worker: would run opencode with {} new task(s), {} new question(s), {} new discussion(s)",
+        new_tasks.len(),
+        new_questions.len(),
+        new_discussions.len()
+    );
     eprintln!("  prompt: {}", prompt.chars().take(160).collect::<String>());
     if !enabled {
         eprintln!("  [dry-run] TEAMX_WORKER_ENABLED != 1 — not executing opencode. Items kept unprocessed.");
@@ -258,6 +296,9 @@ fn poll_once(
     }
     for q in &new_questions {
         done.items.insert(format!("q:{}", q["id"].as_str().unwrap_or("")), now.clone());
+    }
+    for d in &new_discussions {
+        done.items.insert(format!("disc:{}", d["seq"].as_i64().unwrap_or(0)), now.clone());
     }
     save_done(&done);
     let _ = rpc(url, "team.inbox", serde_json::json!({ "ack": true }));

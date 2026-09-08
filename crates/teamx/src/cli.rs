@@ -973,6 +973,26 @@ pub enum DiscussionCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Subscribe to a discussion so its new messages wake you (AI inbox)
+    Subscribe {
+        /// discussion id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Unsubscribe from a discussion
+    Unsubscribe {
+        /// discussion id
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

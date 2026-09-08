@@ -51,11 +51,11 @@
 ### 3.3 inbox discussion（集成/脚本）
 | ID | 用例 | 期望 |
 |---|---|---|
-| I-01 | 讨论新消息含 `@worker`（worker 成员 display_name） | 该 worker inbox `discussions` 出现该条 |
-| I-02 | 消息未 @ worker、worker 未订阅、无 task 关联 | inbox 不出现 |
-| I-03 | worker 订阅该讨论后，后续消息 | inbox 出现（触发订阅） |
+| I-01 | 讨论新消息含 `@worker`（worker 成员 display_name） | 该 worker inbox `discussions` 出现该条 | ✅ wake_on_mention_of_self |
+| I-02 | 消息未 @ worker、worker 未订阅、无 task 关联 | inbox 不出现 | ✅ no_wake_without_mention_sub_or_task |
+| I-03 | worker 订阅该讨论后，后续消息 | inbox 出现（触发订阅） | ✅ wake_when_subscribed + subscribe/unsubscribe |
 | I-04 | 讨论挂 task 且 worker 为该 task assignee | inbox 出现 |
-| I-05 | 已处理水位：worker 处理过 seq N 后，同 seq 不再重复出现 | 不重复 |
+| I-05 | 已处理水位：worker 处理过 seq N 后，同 seq 不再重复出现 | 不重复 | ✅ wake_skips_own_messages_and_respects_cursor（cursor） |
 
 ### 3.4 插件 toast（opencode-plugin）
 | ID | 用例 | 期望 |

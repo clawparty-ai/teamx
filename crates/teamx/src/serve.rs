@@ -1486,6 +1486,16 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             session: sess(args),
             team: o("team"),
         }),
+        "discussion.subscribe" => Command::Discussion(DiscussionCmd::Subscribe {
+            id: s("id").ok_or_else(|| "discussion.subscribe requires `id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "discussion.unsubscribe" => Command::Discussion(DiscussionCmd::Unsubscribe {
+            id: s("id").ok_or_else(|| "discussion.unsubscribe requires `id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
 
         "publish" => Command::Publish {
             r#type: s("type").ok_or_else(|| "publish requires `type`".to_string())?,

@@ -184,6 +184,137 @@ fn active_posts_in(conn: &Connection, team_id: &str, member_id: &str, display_na
     Ok(n)
 }
 
+// --- Discussion subscription (G5: wake target for inbox) ---
+
+/// Subscribe a member to a discussion's new messages.
+pub fn subscribe(conn: &Connection, team_id: &str, member_id: &str, discussion_id: &str) -> Result<(), String> {
+    // The discussion must exist in this team.
+    let exists = events::list(conn, team_id, None)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|e| e.r#type == EV_CREATED && e.payload.as_ref().and_then(|p| p.get("discussion_id")).and_then(|v| v.as_str()) == Some(discussion_id));
+    if !exists {
+        return Err(format!("discussion `{discussion_id}` not found in this team"));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO discussion_subs (team_id, member_id, discussion_id, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![team_id, member_id, discussion_id, events::db_now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Unsubscribe a member from a discussion.
+pub fn unsubscribe(conn: &Connection, team_id: &str, member_id: &str, discussion_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM discussion_subs WHERE team_id=?1 AND member_id=?2 AND discussion_id=?3",
+        params![team_id, member_id, discussion_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Is the member subscribed to the discussion?
+pub fn is_subscribed(conn: &Connection, team_id: &str, member_id: &str, discussion_id: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM discussion_subs WHERE team_id=?1 AND member_id=?2 AND discussion_id=?3",
+        params![team_id, member_id, discussion_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .map_err(|e| e.to_string())
+}
+
+/// Resolve the `task_id` attached to a discussion (from its `discussion.created` event).
+fn discussion_task_id(conn: &Connection, team_id: &str, discussion_id: &str) -> Option<String> {
+    events::list(conn, team_id, None)
+        .ok()?
+        .into_iter()
+        .find(|e| {
+            e.r#type == EV_CREATED
+                && e.payload.as_ref().and_then(|p| p.get("discussion_id")).and_then(|v| v.as_str()) == Some(discussion_id)
+        })
+        .and_then(|e| e.payload)
+        .and_then(|p| p.get("task_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+}
+
+/// Collect discussions with NEW activity that should wake `member_id`:
+/// triggered when a message (seq > cursor) @mentions the member, OR the member
+/// subscribed to the discussion, OR the discussion is linked to a task the
+/// member is assigned to. Returns newest-first message objects with enough
+/// context for a wake prompt.
+pub fn wake_discussions(conn: &Connection, team_id: &str, member_id: &str, display_name: &str, cursor: i64) -> Result<Vec<Value>, String> {
+    let evs = events::list(conn, team_id, None).map_err(|e| e.to_string())?;
+    let mut out: Vec<Value> = Vec::new();
+    for e in evs {
+        if e.r#type != EV_MESSAGE || e.seq <= cursor {
+            continue;
+        }
+        let Some(p) = &e.payload else { continue };
+        let did = p.get("discussion_id").and_then(|v| v.as_str()).unwrap_or("");
+        if did.is_empty() {
+            continue;
+        }
+        let body = p.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let author = p.get("author").and_then(|v| v.as_str()).unwrap_or("");
+        // Skip the member's own messages (no need to wake yourself).
+        if e.member_id.as_deref() == Some(member_id) {
+            continue;
+        }
+        // Trigger 1: @mention of this member in the message body.
+        let mentioned = body_mentions(body, display_name);
+        // Trigger 2: member subscribed to this discussion.
+        let subbed = is_subscribed(conn, team_id, member_id, did)?;
+        // Trigger 3: discussion linked to a task assigned to this member.
+        let linked_to_my_task = match discussion_task_id(conn, team_id, did) {
+            Some(tid) => {
+                let mine: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM taskx WHERE team_id=?1 AND id=?2 AND assignee_member_id=?3",
+                        params![team_id, tid, member_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                    > 0;
+                mine
+            }
+            None => false,
+        };
+        if !mentioned && !subbed && !linked_to_my_task {
+            continue;
+        }
+        let title = events::list(conn, team_id, None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|ce| {
+                ce.r#type == EV_CREATED
+                    && ce.payload.as_ref().and_then(|q| q.get("discussion_id")).and_then(|v| v.as_str()) == Some(did)
+            })
+            .and_then(|ce| ce.payload)
+            .and_then(|q| q.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| did.to_string());
+        out.push(json!({
+            "discussion_id": did,
+            "title": title,
+            "message_id": p.get("message_id").cloned().unwrap_or_else(|| json!("")),
+            "author": author,
+            "body": body,
+            "seq": e.seq,
+            "trigger": {
+                "mentioned": mentioned,
+                "subscribed": subbed,
+                "my_task": linked_to_my_task,
+            },
+            "created_at": e.created_at,
+        }));
+    }
+    out.sort_by(|a, b| b["seq"].as_i64().unwrap_or(0).cmp(&a["seq"].as_i64().unwrap_or(0)));
+    out.truncate(10);
+    Ok(out)
+}
+
 fn create(conn: &mut Connection, title: &str, body: Option<&str>, task: Option<&str>, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (member_id, display_name, team_id) = member_id_for_session(conn, session, team_opt)?;
     if title.trim().is_empty() {
@@ -453,6 +584,16 @@ pub fn run(conn: &mut Connection, cmd: &DiscussionCmd) -> Result<Value, String> 
             say_or_reply(conn, id, body, None, Some(message_id), session, team.as_deref())
         }
         DiscussionCmd::Close { id, session, team } => close(conn, id, session, team.as_deref()),
+        DiscussionCmd::Subscribe { id, session, team } => {
+            let (member_id, _name, team_id) = member_id_for_session(conn, session, team.as_deref())?;
+            subscribe(conn, &team_id, &member_id, id)?;
+            Ok(json!({ "ok": true, "discussion_id": id, "subscribed": true }))
+        }
+        DiscussionCmd::Unsubscribe { id, session, team } => {
+            let (member_id, _name, team_id) = member_id_for_session(conn, session, team.as_deref())?;
+            unsubscribe(conn, &team_id, &member_id, id)?;
+            Ok(json!({ "ok": true, "discussion_id": id, "subscribed": false }))
+        }
     }
 }
 
@@ -724,5 +865,77 @@ mod tests {
         assert!(say_or_reply(&mut conn, &did, "b", None, None, "s-worker", Some("t1")).is_err());
         set_quota(&conn, "m-worker", 3);
         assert!(say_or_reply(&mut conn, &did, "b", None, None, "s-worker", Some("t1")).is_ok());
+    }
+
+    // --- G5 wake_discussions (inbox trigger) tests ---
+
+    #[test]
+    fn wake_on_mention_of_self() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "W", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // owner posts a message that mentions @Worker -> worker should wake
+        say_or_reply(&mut conn, &did, "@Worker 请复核", None, None, "s-owner", Some("t1")).unwrap();
+        let woke = wake_discussions(&conn, "t1", "m-worker", "Worker", 0).unwrap();
+        assert_eq!(woke.len(), 1, "worker mentioned by exact name should wake");
+        assert_eq!(woke[0]["discussion_id"], did);
+        assert_eq!(woke[0]["trigger"]["mentioned"], true);
+    }
+
+    #[test]
+    fn no_wake_without_mention_sub_or_task() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "N", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        say_or_reply(&mut conn, &did, "普通消息，无关", None, None, "s-owner", Some("t1")).unwrap();
+        let woke = wake_discussions(&conn, "t1", "m-worker", "Worker", 0).unwrap();
+        assert!(woke.is_empty(), "no @ / sub / task link -> no wake");
+    }
+
+    #[test]
+    fn wake_when_subscribed() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "S", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        subscribe(&conn, "t1", "m-worker", &did).unwrap();
+        assert!(is_subscribed(&conn, "t1", "m-worker", &did).unwrap());
+        // owner posts an unrelated message; worker is subscribed so it wakes
+        say_or_reply(&mut conn, &did, "更新", None, None, "s-owner", Some("t1")).unwrap();
+        let woke = wake_discussions(&conn, "t1", "m-worker", "Worker", 0).unwrap();
+        assert_eq!(woke.len(), 1);
+        assert_eq!(woke[0]["trigger"]["subscribed"], true);
+        // after unsubscribe, further messages no longer wake
+        unsubscribe(&conn, "t1", "m-worker", &did).unwrap();
+        assert!(!is_subscribed(&conn, "t1", "m-worker", &did).unwrap());
+    }
+
+    #[test]
+    fn wake_skips_own_messages_and_respects_cursor() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "C", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // worker messages itself (should not wake); then owner mentions worker
+        say_or_reply(&mut conn, &did, "@Worker 自查", None, None, "s-worker", Some("t1")).unwrap();
+        let m = say_or_reply(&mut conn, &did, "@Worker 请处理", None, None, "s-owner", Some("t1")).unwrap();
+        let seq = m["seq"].as_i64().unwrap();
+        let woke = wake_discussions(&conn, "t1", "m-worker", "Worker", 0).unwrap();
+        // Only the owner's @mention wakes; worker's own message is skipped.
+        assert_eq!(woke.len(), 1, "self messages must be skipped");
+        assert_eq!(woke[0]["author"], "Owner");
+        // cursor at the owner's seq means nothing newer remains
+        let woke2 = wake_discussions(&conn, "t1", "m-worker", "Worker", seq).unwrap();
+        assert!(woke2.is_empty(), "seq <= cursor should not be re-delivered");
     }
 }

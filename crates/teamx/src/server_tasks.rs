@@ -14,7 +14,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-type InboxRows = (Vec<Value>, Vec<Value>, Vec<Value>, i64);
+type InboxRows = (Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>, i64);
 
 const STATES: [&str; 6] = ["assigned", "acked", "claimed", "in_progress", "done", "verified"];
 const EVENTS: [&str; 8] = [
@@ -464,6 +464,11 @@ fn inbox_read(
     cursor: i64,
 ) -> Result<InboxRows, String> {
     let my_role = member_role(conn, team_id, member_id)?.unwrap_or_default();
+    let my_name: String = conn
+        .query_row("SELECT display_name FROM members WHERE id=?1 AND team_id=?2", params![member_id, team_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| format!("db: {e}"))?
+        .unwrap_or_default();
     let tasks: Vec<Value> = {
         let mut stmt = conn
             .prepare(&format!(
@@ -518,8 +523,16 @@ fn inbox_read(
         .map_err(|e| format!("db: {e}"))?;
         rows.collect::<rusqlite::Result<Vec<Value>>>().map_err(|e| format!("db: {e}"))?
     };
-    let last_seq = nudges.iter().map(|n| n["seq"].as_i64().unwrap_or(0)).max().unwrap_or(cursor);
-    Ok((tasks, questions, nudges, last_seq))
+    // Discussions with new activity that should wake this member (@ / subscribed /
+    // linked to one of their tasks). Newest-first, capped.
+    let discussions: Vec<Value> = crate::discussion::wake_discussions(conn, team_id, member_id, &my_name, cursor)?;
+    let last_seq = discussions
+        .iter()
+        .map(|d| d["seq"].as_i64().unwrap_or(0))
+        .chain(nudges.iter().map(|n| n["seq"].as_i64().unwrap_or(0)))
+        .max()
+        .unwrap_or(cursor);
+    Ok((tasks, questions, discussions, nudges, last_seq))
 }
 
 /// Unified inbox for a member: my open tasks + questions directed at me +
@@ -541,7 +554,7 @@ pub fn inbox(
         .map_err(|e| format!("db: {e}"))?
         .unwrap_or(0);
 
-    let (tasks, questions, nudges, last_seq): InboxRows = inbox_read(conn, team_id, member_id, cursor)?;
+    let (tasks, questions, discussions, nudges, last_seq): InboxRows = inbox_read(conn, team_id, member_id, cursor)?;
     if ack && last_seq > cursor {
         crate::db::with_write(conn, |tx| {
             tx.execute(
@@ -557,6 +570,7 @@ pub fn inbox(
     Ok(json!({
         "tasks": tasks,
         "questions": questions,
+        "discussions": discussions,
         "nudges": { "unread": nudges, "unread_count": nudges.len(), "last_seq": last_seq },
         "acknowledged": ack && last_seq > cursor,
     }))

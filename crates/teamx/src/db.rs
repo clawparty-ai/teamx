@@ -691,7 +691,20 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE members ADD COLUMN discussion_quota INTEGER NOT NULL DEFAULT 5;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 15)?;
+    if version < 16 {
+        // v16: discussion subscriptions — a member opts in to be woken for a
+        // discussion's new messages (G5 inbox trigger).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS discussion_subs (
+               team_id       TEXT NOT NULL,
+               member_id     TEXT NOT NULL,
+               discussion_id TEXT NOT NULL,
+               created_at    TEXT NOT NULL,
+               PRIMARY KEY (team_id, member_id, discussion_id)
+             );",
+        )?;
+    }
+    conn.pragma_update(None, "user_version", 16)?;
     Ok(())
 }
 
