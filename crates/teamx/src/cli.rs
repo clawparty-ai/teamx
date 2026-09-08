@@ -809,6 +809,22 @@ pub enum MemberCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Get/set a member's per-topic discussion participation quota.
+    DiscussionQuota {
+        /// action: get or set
+        #[arg(value_name = "ACTION", value_parser = ["get", "set"])]
+        action: String,
+        /// new quota value (required for set)
+        #[arg(long)]
+        value: Option<i64>,
+        /// target member id (defaults to the acting session)
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

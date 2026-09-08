@@ -456,6 +456,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             MemberCmd::SetState { state, member, session, team } => {
                 cmd_member_set_state(conn, state, member.as_deref(), session, team.as_deref())?
             }
+            MemberCmd::DiscussionQuota { action, value, member, session, team } => {
+                cmd_member_discussion_quota(conn, action, *value, member.as_deref(), session, team.as_deref())?
+            }
         },
         Command::Role(r) => match r {
             RoleCmd::List { team } => cmd_role_list(conn, team.as_deref())?,
@@ -3949,6 +3952,65 @@ fn cmd_member_set_state(
     .map_err(|e| AppError(format!("member set-state failed: {e}")))?;
     touch(conn, &actor.id).ok();
     Ok(json!({ "ok": true, "member_id": target.id, "state": to_s, "from": from_s }))
+}
+
+/// `teamx member discussion-quota get|set` — per-topic participation quota.
+/// get: any member may read their own; owner/lead may read any member's.
+/// set: a member may set their own; owner/lead may set any member's.
+fn cmd_member_discussion_quota(
+    conn: &mut Connection,
+    action: &str,
+    value: Option<i64>,
+    member_opt: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    // Acting member's lead status (owner or co-lead may administer others).
+    let actor_is_lead: bool = conn
+        .query_row(
+            "SELECT (owner_member_id = ?1 OR is_lead = 1) FROM teams t JOIN members m ON m.team_id = t.id WHERE t.id = ?2 AND m.id = ?1",
+            params![actor.id, team.id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    let target_id = match member_opt {
+        Some(mid) => {
+            if !actor_is_lead && mid != actor.id {
+                return err("only the team owner/lead may read or set another member's quota");
+            }
+            let m = member_by_id(conn, mid)?;
+            if m.team_id != team.id {
+                return err(format!("member {} is not in team {}", m.id, team.id));
+            }
+            m.id.clone()
+        }
+        None => actor.id.clone(),
+    };
+
+    if action == "set" {
+        let v = value.ok_or_else(|| AppError("set requires --value <N>".to_string()))?;
+        if v < 0 {
+            return err("quota must be >= 0");
+        }
+        conn.execute(
+            "UPDATE members SET discussion_quota = ?1 WHERE id = ?2 AND team_id = ?3",
+            params![v, target_id, team.id],
+        )
+        .map_err(|e| AppError(format!("update discussion_quota: {e}")))?;
+        return Ok(json!({ "ok": true, "member_id": target_id, "discussion_quota": v }));
+    }
+
+    // get
+    let quota: i64 = conn
+        .query_row(
+            "SELECT discussion_quota FROM members WHERE id = ?1 AND team_id = ?2",
+            params![target_id, team.id],
+            |r| r.get(0),
+        )
+        .map_err(|e| AppError(format!("read discussion_quota: {e}")))?;
+    Ok(json!({ "ok": true, "member_id": target_id, "discussion_quota": quota }))
 }
 
 fn cmd_goal_set(

@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS members (
   joined_at     TEXT NOT NULL,
   left_at       TEXT,
   is_lead       INTEGER NOT NULL DEFAULT 0,
-  user_id       TEXT NOT NULL DEFAULT ''
+  user_id       TEXT NOT NULL DEFAULT '',
+  discussion_quota INTEGER NOT NULL DEFAULT 5
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -678,7 +679,19 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch("ALTER TABLE invitations ADD COLUMN as_lead INTEGER NOT NULL DEFAULT 0;")?;
         }
     }
-    conn.pragma_update(None, "user_version", 14)?;
+    if version < 15 {
+        // v15: per-member discussion participation quota (per-topic max active
+        // replies). Default 5; owner/lead may raise/lower.
+        let mcols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(members)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !mcols.iter().any(|c| c == "discussion_quota") {
+            conn.execute_batch("ALTER TABLE members ADD COLUMN discussion_quota INTEGER NOT NULL DEFAULT 5;")?;
+        }
+    }
+    conn.pragma_update(None, "user_version", 15)?;
     Ok(())
 }
 

@@ -103,6 +103,87 @@ fn snapshot_message(conn: &Connection, team_id: &str, message_ref: &str) -> Resu
     }))
 }
 
+/// Read the member's per-topic discussion quota (default 5).
+fn member_quota(conn: &Connection, member_id: &str, team_id: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT discussion_quota FROM members WHERE id = ?1 AND team_id = ?2",
+        params![member_id, team_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map_err(|e| format!("read discussion_quota: {e}"))
+}
+
+/// Does `body` mention `@name`? Case-insensitive, word-boundary match so
+/// `@Alice` does not match inside `@Alice2`. The char before/after the name
+/// must not be alphanumeric/underscore/@.
+fn body_mentions(body: &str, name: &str) -> bool {
+    let b = body.to_lowercase();
+    let n = name.trim().to_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    let needle = format!("@{n}");
+    let mut start = 0;
+    while let Some(pos) = b[start..].find(&needle) {
+        let abs = start + pos;
+        let before_ok = abs == 0
+            || !b[..abs]
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '@')
+                .unwrap_or(false);
+        let after = &b[abs + needle.len()..];
+        let after_ok = after.is_empty()
+            || !after
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '@')
+                .unwrap_or(false);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + needle.len();
+    }
+    false
+}
+
+/// Whether a reply (whose target message ref is `reply_target`) is a response
+/// to a message that mentions `@<display_name>` — i.e. a "mention reply" that
+/// must NOT consume the member's active-post quota.
+fn is_mention_reply(
+    conn: &Connection,
+    team_id: &str,
+    display_name: &str,
+    reply_target: Option<&str>,
+) -> Result<bool, String> {
+    let Some(mref) = reply_target else { return Ok(false) };
+    let snap = snapshot_message(conn, team_id, mref)?;
+    let body = snap["body"].as_str().unwrap_or("");
+    Ok(body_mentions(body, display_name))
+}
+
+/// Count this member's ACTIVE posts in one discussion (i.e. messages that were
+/// NOT mention replies). Per-topic: scoped to `discussion_id`.
+fn active_posts_in(conn: &Connection, team_id: &str, member_id: &str, display_name: &str, discussion_id: &str) -> Result<i64, String> {
+    let evs = events::list(conn, team_id, None).map_err(|e| e.to_string())?;
+    let mut n = 0i64;
+    for e in evs {
+        if e.r#type != EV_MESSAGE || e.member_id.as_deref() != Some(member_id) {
+            continue;
+        }
+        let Some(p) = &e.payload else { continue };
+        if p.get("discussion_id").and_then(|v| v.as_str()) != Some(discussion_id) {
+            continue;
+        }
+        let reply_target = p.get("reply_to").and_then(|r| r.get("message_id")).and_then(|v| v.as_str());
+        if is_mention_reply(conn, team_id, display_name, reply_target)? {
+            continue;
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
 fn create(conn: &mut Connection, title: &str, body: Option<&str>, task: Option<&str>, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (member_id, display_name, team_id) = member_id_for_session(conn, session, team_opt)?;
     if title.trim().is_empty() {
@@ -157,6 +238,20 @@ fn say_or_reply(
         .any(|e| e.r#type == EV_CLOSED && e.payload.as_ref().and_then(|p| p.get("discussion_id")).and_then(|x| x.as_str()) == Some(discussion_id));
     if closed {
         return Err(format!("discussion `{discussion_id}` is closed"));
+    }
+
+    // Per-topic participation quota: only ACTIVE posts consume quota. A reply
+    // responding to a message that mentions @<self> is a "mention reply" and is
+    // always allowed (does not count toward the cap, never blocked).
+    let mention_reply = is_mention_reply(conn, &team_id, &display_name, reply_to)?;
+    if !mention_reply {
+        let quota = member_quota(conn, &member_id, &team_id)?;
+        let used = active_posts_in(conn, &team_id, &member_id, &display_name, discussion_id)?;
+        if used >= quota {
+            return Err(format!(
+                "discussion quota reached for this topic ({used}/{quota}); you may only reply when mentioned (@{display_name})"
+            ));
+        }
     }
 
     // Normalize quotes: accept a JSON array string. When the coordinate is a
@@ -537,5 +632,97 @@ mod tests {
         let many: Vec<Value> = (0..MAX_QUOTES + 1).map(|_| json!({"kind":"other","ref":"","text":"t"})).collect();
         let qs = json!(many).to_string();
         assert!(say_or_reply(&mut conn, &did, "hi", Some(&qs), None, "s-owner", Some("t1")).is_err());
+    }
+
+    // --- Quota (per-topic participation) tests ---
+
+    fn set_quota(conn: &Connection, member_id: &str, n: i64) {
+        conn.execute(
+            "UPDATE members SET discussion_quota = ?1 WHERE id = ?2 AND team_id='t1'",
+            params![n, member_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mention_match_respects_word_boundary() {
+        assert!(body_mentions("请 @Worker 复核", "Worker"));
+        assert!(body_mentions("hi @worker", "Worker"));
+        assert!(!body_mentions("见 @Worker2 处理", "Worker"));
+        assert!(!body_mentions("nothing here", "Worker"));
+    }
+
+    #[test]
+    fn quota_blocks_active_posts_after_limit() {
+        let mut conn = test_conn();
+        seed(&conn);
+        set_quota(&conn, "m-worker", 2);
+        let did = create(&mut conn, "Q", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // worker makes 2 active posts (ok), third is blocked
+        assert!(say_or_reply(&mut conn, &did, "a", None, None, "s-worker", Some("t1")).is_ok());
+        assert!(say_or_reply(&mut conn, &did, "b", None, None, "s-worker", Some("t1")).is_ok());
+        let r = say_or_reply(&mut conn, &did, "c", None, None, "s-worker", Some("t1"));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("quota reached"));
+    }
+
+    #[test]
+    fn quota_is_per_topic_independent() {
+        let mut conn = test_conn();
+        seed(&conn);
+        set_quota(&conn, "m-worker", 1);
+        let d1 = create(&mut conn, "T1", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let d2 = create(&mut conn, "T2", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(say_or_reply(&mut conn, &d1, "a", None, None, "s-worker", Some("t1")).is_ok());
+        // T1 now at limit: blocked
+        assert!(say_or_reply(&mut conn, &d1, "b", None, None, "s-worker", Some("t1")).is_err());
+        // T2 still fresh: allowed
+        assert!(say_or_reply(&mut conn, &d2, "x", None, None, "s-worker", Some("t1")).is_ok());
+    }
+
+    #[test]
+    fn mention_reply_does_not_consume_quota_and_bypasses_limit() {
+        let mut conn = test_conn();
+        seed(&conn);
+        set_quota(&conn, "m-worker", 1);
+        let did = create(&mut conn, "M", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // owner posts a message mentioning @Worker
+        let ow = say_or_reply(&mut conn, &did, "@Worker 请看一下", None, None, "s-owner", Some("t1")).unwrap();
+        let ow_id = ow["message_id"].as_str().unwrap().to_string();
+        // worker consumes its 1 active post
+        assert!(say_or_reply(&mut conn, &did, "active", None, None, "s-worker", Some("t1")).is_ok());
+        // worker's active is now 1/1 -> plain say blocked
+        assert!(say_or_reply(&mut conn, &did, "extra", None, None, "s-worker", Some("t1")).is_err());
+        // but replying to the @ mention is allowed (no quota)
+        assert!(say_or_reply(&mut conn, &did, "ok on it", None, Some(&ow_id), "s-worker", Some("t1")).is_ok());
+        // and it did NOT count: a second plain say is still blocked (still 1/1)
+        assert!(say_or_reply(&mut conn, &did, "extra2", None, None, "s-worker", Some("t1")).is_err());
+    }
+
+    #[test]
+    fn raising_quota_resumes_posting() {
+        let mut conn = test_conn();
+        seed(&conn);
+        set_quota(&conn, "m-worker", 1);
+        let did = create(&mut conn, "R", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(say_or_reply(&mut conn, &did, "a", None, None, "s-worker", Some("t1")).is_ok());
+        assert!(say_or_reply(&mut conn, &did, "b", None, None, "s-worker", Some("t1")).is_err());
+        set_quota(&conn, "m-worker", 3);
+        assert!(say_or_reply(&mut conn, &did, "b", None, None, "s-worker", Some("t1")).is_ok());
     }
 }
