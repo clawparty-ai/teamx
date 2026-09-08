@@ -136,5 +136,42 @@ UNK=$(curl -sS --max-time 6 --cacert "$CA" --cert "$OWNER_CERT/member.crt" --key
 echo "$UNK" | python3 -c "import json,sys; d=json.load(sys.stdin); assert not d.get('ok'), d; assert 'unknown' in str(d.get('error','')).lower() or 'unknown' in str(d).lower(), d" || fail "unknown action should error"
 pass "unknown action rejected"
 
+step "participation: quota + inbox wake (per-topic / @mention)"
+# New discussion (the earlier one was closed).
+Q2=$("$TEAMX" team status --session s:owner --json | python3 -c "import json,sys; print(json.load(sys.stdin)['teams'][0]['team']['id'])")
+CR2=$(RPC "$OWNER_CERT" "$CA" discussion.create "{\"title\":\"participation test\",\"body\":\"\",\"team\":\"$Q2\"}")
+DID2=$(echo "$CR2" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['discussion_id'])")
+# Lower Alice's quota to 1 via the shared local DB.
+"$TEAMX" member discussion-quota set --value 1 --member "$ALICE_MID" --session s:owner --team "$Q2" --json >/dev/null
+# Alice active post #1 ok
+RPC "$ALICE_DIR" "$CA" discussion.say "{\"id\":\"$DID2\",\"body\":\"主动一\",\"team\":\"$Q2\"}" >/dev/null
+# Alice active post #2 blocked (quota 1/1)
+BLK=$(RPC "$ALICE_DIR" "$CA" discussion.say "{\"id\":\"$DID2\",\"body\":\"主动二\",\"team\":\"$Q2\"}")
+echo "$BLK" | python3 -c "import json,sys; d=json.load(sys.stdin); assert not d.get('ok') or not d['data'].get('ok'), d; assert 'quota' in str(d.get('error') or d.get('data') or d).lower(), d" || fail "second active post should be blocked by quota"
+pass "quota: active posts blocked after 1/1 (per-topic)"
+# Owner mentions @Alice; Alice's reply to that mention is allowed (no quota)
+MNT=$(RPC "$OWNER_CERT" "$CA" discussion.say "{\"id\":\"$DID2\",\"body\":\"@Alice 请补充\",\"team\":\"$Q2\"}")
+MNTID=$(echo "$MNT" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['message_id'])")
+MREP=$(RPC "$ALICE_DIR" "$CA" discussion.reply "{\"id\":\"$DID2\",\"message_id\":\"$MNTID\",\"body\":\"收到，补充如下\",\"team\":\"$Q2\"}")
+echo "$MREP" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') and d['data']['ok'], d" || fail "mention reply should be allowed despite quota"
+pass "quota: @mention reply allowed at 1/1"
+# Alice inbox: the @Alice owner message wakes her as a discussion entry.
+INB=$(RPC "$ALICE_DIR" "$CA" team.inbox "{\"ack\":false}")
+echo "$INB" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+disc=d.get('data',{}).get('discussions') or []
+assert any(x.get('discussion_id')=='$DID2' and x.get('trigger',{}).get('mentioned') for x in disc), disc
+print('inbox discussions:', len(disc))
+" && pass "inbox: @mention wakes alice" || fail "inbox: expected @mention wake"
+# Alice's own messages never wake her (no self-wake)
+SELFW=$(RPC "$ALICE_DIR" "$CA" team.inbox "{\"ack\":false}")
+echo "$SELFW" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+disc=d.get('data',{}).get('discussions') or []
+assert all(x.get('author')!='Alice' for x in disc), disc
+" && pass "inbox: no self-wake" || fail "inbox: self message must not wake"
+
 echo
 echo "== result: PASSED =="
