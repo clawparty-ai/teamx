@@ -971,15 +971,43 @@ function showNewForm(){
   $("#dscNewCancel").onclick = ()=>loadDiscussions();
 }
 
-function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) pollDiscussion(); },15000); }
+// SSE is the primary driver for live updates; this 60s poll is only a fallback
+// when SSE is unavailable/disconnected (network hiccups), so the page never
+// goes permanently stale.
+function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) pollDiscussion(); },60000); }
 function stopDscPoll(){ if(dscTimer){ clearInterval(dscTimer); dscTimer=null; } }
 
 // Entry buttons (nav switch handles rendering; also ensure back/new work after full reload).
 $("#dscNew").addEventListener("click", showNewForm);
 $("#dscBack").addEventListener("click", loadDiscussions);
 
+/* ---------- SSE live events (Discussion + Events) ---------- */
+let sseConn = null;
+function handleStreamEvent(j){
+  if(!j || !j.type) return;
+  // Discussion events: refresh list or current thread (only when a new message
+  // actually arrived, so the input/composer is never disturbed).
+  if(j.type==="discussion.created" || j.type==="discussion.message" || j.type==="discussion.closed"){
+    if(currentView==="discussions"){
+      if(curDsc) pollDiscussion();
+      else loadDiscussions();
+    }
+  }
+  // Any other notable event: refresh Events view if it is visible.
+  else if(currentView==="events"){
+    loadEvents();
+  }
+}
+function connectStream(){
+  if(!window.EventSource) return;
+  if(sseConn) sseConn.close();
+  sseConn = new EventSource("/api/stream");
+  sseConn.addEventListener("event",(e)=>{ try{ handleStreamEvent(JSON.parse(e.data||"{}")); }catch(_){} });
+  // EventSource auto-reconnects; nothing else needed here.
+}
 
 loadMe();
+connectStream();
 bindFsOverlay();
 showView("teams");
 "##;

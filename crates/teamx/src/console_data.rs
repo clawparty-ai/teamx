@@ -252,6 +252,28 @@ fn events_data(ctx: &Ctx) -> Result<Value, String> {
     }
 }
 
+/// Poll new team events after `after` seq for SSE streaming. Network mode talks
+/// to the serve `/rpc events`; Local mode returns empty (no live channel).
+/// Returns `(events_in_order, max_seq)` where events are the rows with seq > after.
+pub fn poll_team_events(ctx: &Ctx, after: i64) -> Result<(Vec<Value>, i64), String> {
+    let tid = team_id(ctx)?;
+    let url = match &ctx.mode {
+        Mode::Network(u) => u.clone(),
+        Mode::Local => return Ok((Vec::new(), after)),
+    };
+    let data = net_rpc(&url, "events", json!({ "team": tid, "after": after }))?;
+    let rows = data.get("events").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut max = after;
+    for e in &rows {
+        if let Some(s) = e.get("seq").and_then(Value::as_i64) {
+            if s > max {
+                max = s;
+            }
+        }
+    }
+    Ok((rows, max))
+}
+
 /// `discussion list` for the member's team.
 fn discussions_data(ctx: &Ctx) -> Result<Value, String> {
     match &ctx.mode {

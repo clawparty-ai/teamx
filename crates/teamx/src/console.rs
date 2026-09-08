@@ -20,7 +20,7 @@ use axum::{
         Path, Query, State,
     },
     http::{header, HeaderMap, Method, Request, Response, StatusCode},
-    response::{Html, IntoResponse},
+    response::{sse::{Event as SseEvent, KeepAlive, Sse}, Html, IntoResponse},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -91,6 +91,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/panels/{id}", get(api_panel))
+        .route("/api/stream", get(api_stream))
         .route("/api/discussion/{action}", post(api_discussion))
         .route("/api/me", get(api_me))
         .route("/api/cloud", get(api_cloud_get).post(api_cloud_post))
@@ -233,6 +234,74 @@ async fn api_panel(
             elapsed_ms: 0,
         });
     (StatusCode::OK, Json(out)).into_response()
+}
+
+/// GET /api/stream — Server-Sent Events relay of the team's ledger events.
+///
+/// Network mode: the console polls the serve `/rpc events` every ~2s (using the
+/// workspace member's mTLS identity) and forwards new events to the browser as
+/// SSE, so Discussion / Events views update without page polling. The initial
+/// poll only snapshots the current seq (no history replay). Local mode emits
+/// only heartbeats (no live channel).
+async fn api_stream(State(state): State<S>, headers: HeaderMap) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let ctx = state.ctx.clone();
+    use futures_util::stream;
+    use std::convert::Infallible;
+    use std::time::Duration;
+
+    // State: (ctx, last_seq, pending events queue). We drain `pending` first;
+    // when empty, poll the serve for events after `last_seq`. Synchronous RPC
+    // must run on a blocking thread (never inside async).
+    let stream = stream::unfold((ctx, 0i64, Vec::<serde_json::Value>::new()), |(ctx, last, mut pending)| async move {
+        // Helper: run the sync poll_team_events on a blocking task.
+        async fn poll(ctx: &crate::console_data::Ctx, after: i64) -> Result<(Vec<serde_json::Value>, i64), String> {
+            let ctx = ctx.clone();
+            tokio::task::spawn_blocking(move || crate::console_data::poll_team_events(&ctx, after))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        loop {
+            if let Some(row) = pending.pop() {
+                let seq = row.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+                let ev = SseEvent::default().event("event").json_data(row).unwrap_or_else(|_| SseEvent::default());
+                return Some((ev, (ctx, seq.max(last), pending)));
+            }
+            if last == 0 {
+                // first pass: snapshot latest seq only (no history replay)
+                if let Ok((_hist, max)) = poll(&ctx, 0).await {
+                    return Some((heartbeat(), (ctx, max, pending)));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            match poll(&ctx, last).await {
+                Ok((rows, max)) => {
+                    if rows.is_empty() {
+                        return Some((heartbeat(), (ctx, last, pending)));
+                    }
+                    let new_last = max;
+                    for r in rows.into_iter().rev() {
+                        pending.push(r);
+                    }
+                    return Some((heartbeat(), (ctx, new_last, pending)));
+                }
+                Err(e) => {
+                    eprintln!("teamx console: sse poll error: {e}");
+                    return Some((heartbeat(), (ctx, last, pending)));
+                }
+            }
+        }
+    });
+
+    fn heartbeat() -> SseEvent {
+        SseEvent::default().event("heartbeat").data("{}")
+    }
+
+    Sse::new(stream.filter_map(|o| async move { Some(Ok::<_, Infallible>(o)) }))
+        .keep_alive(KeepAlive::default().interval(Duration::from_secs(20)))
+        .into_response()
 }
 
 /// POST /api/discussion/{action} — create/say/reply/close a discussion thread.
