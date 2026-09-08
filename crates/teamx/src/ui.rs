@@ -975,13 +975,22 @@ function renderDashMap() {
   if (!window.L) { mapEl.style.display = "none"; if (svgF) svgF.style.display = ""; renderDashSvg(); return }
   mapEl.style.display = ""
   if (svgF) svgF.style.display = "none"
-  if (mapEl.clientWidth === 0) return // container hidden (view not active yet)
+  if (mapEl.clientWidth === 0) {
+    // Container not laid out yet (hidden view / styles still loading). Retry on
+    // the next tick instead of giving up, so the map is built once width exists.
+    if (!dashLeaflet) setTimeout(renderDashMap, 120)
+    return // container hidden (view not active yet)
+  }
   if (!dashLeaflet) {
     dashLeaflet = L.map(mapEl).setView([34.5, 108.5], 4)
     addBasemap()
     dashMarkers = L.layerGroup().addTo(dashLeaflet)
-    setTimeout(() => dashLeaflet && dashLeaflet.invalidateSize(), 80)
   }
+  // Container size can change between renders (e.g. dashboard switches the
+  // container to full-width, or the map was built while a sibling panel was
+  // still collapsing). Without invalidateSize Leaflet keeps the stale viewport
+  // and tiles fall out of view, leaving an empty (background-only) map.
+  dashLeaflet.invalidateSize()
   if (dashTile && dashTile._map !== dashLeaflet) addBasemap()
   dashMarkers.clearLayers()
   const nodes = (dashData.nodes || []).filter((n) => n.lat != null && n.lng != null)
