@@ -32,6 +32,7 @@ code-review-codex-0817.md
 .codegraph/
 tmp/
 docs/tmp/
+docs/teamx-pitch/
 create.json
 invite.json
 app/.build/
