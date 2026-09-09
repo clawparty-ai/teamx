@@ -388,7 +388,7 @@ fn page_html() -> String {
   @media (max-width: 1100px) { .kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 600px) { .kanban { grid-template-columns: minmax(0, 1fr); } }
   #view-kanban .kanban { max-width: 1560px; margin: 0 auto; }
-  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 200px; min-width: 0; overflow: hidden; }
+  .kb-col { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; min-height: 200px; min-width: 0; overflow: visible; }
   .kb-ev-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted-fg); margin: 12px 0 6px; padding-top: 10px; border-top: 1px dashed var(--border); }
   .kb-ev-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 6px; font-size: 11.5px; cursor: pointer; position: relative; }
   .kb-ev-card:hover { box-shadow: var(--shadow-hover); }
@@ -398,6 +398,13 @@ fn page_html() -> String {
   .kb-ev-meta { font-size: 10.5px; margin-top: 3px; color: var(--muted-fg); font-family: var(--font-mono); }
   .kb-ev-detail { margin-top: 6px; }
   .kb-ev-detail .tl-pre { max-width: 100%; overflow-x: auto; }
+  .kb-card-detail { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); max-height: 340px; overflow: auto; }
+  .kb-card-detail .kb-detail-head { font-size: 11px; color: var(--muted-fg); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .kb-card-detail table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  .kb-card-detail td { padding: 2px 8px 2px 0; vertical-align: top; }
+  .kb-card-detail td.k { color: var(--muted-fg); white-space: nowrap; font-weight: 500; }
+  .kb-card-detail td.v { word-break: break-all; font-family: var(--font-mono); font-size: 11px; }
+  .kb-card-detail .tl-pre { max-width: 100%; overflow-x: auto; }
   .kb-col .kb-ev-card .badge { font-size: 10px; line-height: 1.4; }
   .kb-col-head, .kb-card, .kb-ev-card { max-width: 100%; }
   .kb-card, .kb-ev-card { overflow-wrap: anywhere; }
@@ -407,7 +414,7 @@ fn page_html() -> String {
   .kb-col-title { font-size: 13px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px; }
   .kb-col-meta { font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
   .kb-empty { padding: 16px; text-align: center; color: var(--muted-fg); font-size: 13px; }
-  .kb-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: box-shadow var(--transition); }
+  .kb-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: box-shadow var(--transition); cursor: pointer; }
   .kb-card:hover { box-shadow: var(--shadow-hover); }
   .kb-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 5px; }
   .kb-who { font-weight: 600; font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -417,7 +424,7 @@ fn page_html() -> String {
   .kb-meta { font-size: 11px; color: var(--muted-fg); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kb-meta .cost, .kb-col-meta .cost { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
   .kb-card { position: relative; }
-  .kb-tip { display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
+  .kb-tip { display: none; position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 400; min-width: 320px; max-width: 460px; background: #333; color: #fff; border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); font-size: 13px; line-height: 1.6; }
   .kb-tip .tip-title { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
   .kb-desc { font-size: 13px; font-weight: 500; color: #fff; background: rgba(255,255,255,0.1); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px; }
   .kb-task { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1324,15 +1331,20 @@ function bindKanbanEvents() {
   if (!host || host.dataset.kbBound) return
   host.dataset.kbBound = "1"
   host.addEventListener("click", (ev) => {
-    const card = ev.target.closest(".kb-ev-card")
+    const card = ev.target.closest(".kb-ev-card") || ev.target.closest(".kb-card")
     if (!card) return
+    // Clicking the absolutely-positioned hover tip should not toggle the card.
+    if (ev.target.closest(".kb-tip")) return
     let it = null
     try { it = JSON.parse(card.dataset.activity || "null") } catch { it = null }
     if (!it) return
-    const det = card.querySelector(".kb-ev-detail")
+    const det = card.querySelector(".kb-card-detail") || card.querySelector(".kb-ev-detail")
     if (!det) return
-    if (det.style.display === "none") { det.style.display = "block"; det.innerHTML = activityDetailHtml(it) }
-    else det.style.display = "none"
+    const isTask = card.classList.contains("kb-card")
+    if (det.style.display === "none") {
+      det.style.display = "block"
+      det.innerHTML = isTask ? taskCardDetailHtml(it) : activityDetailHtml(it)
+    } else det.style.display = "none"
   })
   host.addEventListener("mouseover", (ev) => {
     const card = ev.target.closest(".kb-ev-card")
@@ -1401,12 +1413,40 @@ function renderTaskCard(r) {
     ${task ? `<div class="kb-desc">${esc(task)}</div>` : ""}
     <table>${tipRows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`).join("")}</table>
   </div>`
-  return `<div class="kb-card" tabindex="0">
+  const jsonAttr = esc(JSON.stringify(r)).replace(/'/g, "&#39;")
+  return `<div class="kb-card" tabindex="0" data-activity='${jsonAttr}'>
     <div class="kb-head"><span class="kb-who">${esc(who)}</span><span class="badge ${r.has_human ? "active" : "idle"}">${esc(tag)}</span></div>
     <div class="kb-body">${bodyHtml}</div>
     <div class="kb-meta muted">${fmtDate(r.started_at)}${r.ended_at ? " → " + fmtDate(r.ended_at) : ""}${costMeta}</div>
+    <div class="kb-card-detail" style="display:none"></div>
     ${tip}
   </div>`
+}
+
+// Inline detail block for a task card (like the detail-activity cards): a
+// key/value table + the raw work_session JSON.
+function taskCardDetailHtml(r) {
+  let d = null
+  try { d = typeof r.detail === "string" ? JSON.parse(r.detail) : (r.detail ?? null) } catch { d = null }
+  const d_ = d ?? {}
+  const who = r.member_label || memberLabel(r.member_id)
+  const rows = []
+  const addRow = (k, v) => { if (v != null && v !== "") rows.push([k, String(v)]) }
+  addRow("member", who)
+  addRow("node", r.node_name)
+  addRow("started", fmtDate(r.started_at))
+  if (r.ended_at) addRow("ended", fmtDate(r.ended_at))
+  if (r.duration_ms != null) addRow("duration", fmtMs(r.duration_ms))
+  addRow("human", r.has_human ? "yes" : "no")
+  if (r.tokens_input != null) addRow("tokens in", fmtNum(r.tokens_input))
+  if (r.tokens_output != null) addRow("tokens out", fmtNum(r.tokens_output))
+  if (r.cost != null) addRow("cost", fmtCost(r.cost))
+  if (d_.task) addRow("task", d_.task)
+  if (d_.description) addRow("desc", d_.description)
+  if (d_) { for (const [k, v] of Object.entries(d_)) { if (v == null || k === "task" || k === "description") continue; const val = typeof v === "object" ? JSON.stringify(v) : String(v); addRow(k, val.length > 300 ? val.slice(0, 300) + "…" : val) } }
+  const table = rows.length ? `<table>${rows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`).join("")}</table>` : ""
+  const json = d_ && Object.keys(d_).length ? `<div class="tl-detail-line"><b>detail</b></div><pre class="tl-pre json">${esc(JSON.stringify(d_, null, 2))}</pre>` : ""
+  return `<div class="kb-detail-head"><span class="badge work_session">work_session</span> <span class="muted">${esc(d_.task || "work session")}</span></div>${table}${json}`
 }
 
 // ---- Cost view ----
