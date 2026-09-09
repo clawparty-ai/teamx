@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -317,6 +318,23 @@ CREATE TABLE IF NOT EXISTS git_repo_permissions (
   granted_by    TEXT NOT NULL,
   granted_at    TEXT NOT NULL,
   UNIQUE(repo_id, member_id)
+);
+
+-- Active reverse-tunnel registry (network mode). Written by `teamx serve`
+-- when a provider registers/unregisters a tunnel so DB-reading tools (e.g.
+-- the admin-console /api/topology) can show live reverse-tunnel edges even
+-- though the authoritative registry lives in the server process memory.
+CREATE TABLE IF NOT EXISTS tunnels (
+  team_id            TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,
+  provider_member_id TEXT NOT NULL,
+  mode               TEXT NOT NULL DEFAULT 'local',  -- local | frp | proxy
+  port               INTEGER NOT NULL,
+  target_port        INTEGER,
+  lan_ip             TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  PRIMARY KEY (team_id, name)
 );
 ";
 
@@ -750,10 +768,69 @@ pub fn close_connection(conn: &Connection, member_id: &str, endpoint: &str) -> r
     Ok(())
 }
 
+/// Upsert an active reverse-tunnel registration (server side). The server's
+/// in-memory `TunnelRegistry` is authoritative; this table is a mirror that
+/// lets DB-reading tools (admin-console /api/topology) show live edges.
+pub fn tunnel_upsert(
+    conn: &Connection,
+    team_id: &str,
+    name: &str,
+    provider_member_id: &str,
+    mode: &str,
+    port: i64,
+    target_port: Option<i64>,
+    lan_ip: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO tunnels (team_id, name, provider_member_id, mode, port, target_port, lan_ip, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+         ON CONFLICT(team_id, name) DO UPDATE SET
+           provider_member_id = excluded.provider_member_id,
+           mode = excluded.mode,
+           port = excluded.port,
+           target_port = excluded.target_port,
+           lan_ip = excluded.lan_ip,
+           updated_at = excluded.updated_at",
+        rusqlite::params![team_id, name, provider_member_id, mode, port, target_port, lan_ip, now()],
+    )?;
+    Ok(())
+}
+
+/// Remove a tunnel registration (unregister / provider disconnect).
+pub fn tunnel_remove(conn: &Connection, team_id: &str, name: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM tunnels WHERE team_id = ?1 AND name = ?2", rusqlite::params![team_id, name])?;
+    Ok(())
+}
+
+/// Active tunnel registrations for a team, newest first.
+pub fn active_tunnels(conn: &Connection, team_id: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT name, provider_member_id, mode, port, target_port, lan_ip, updated_at
+         FROM tunnels WHERE team_id = ?1 ORDER BY updated_at DESC",
+    ) {
+        if let Ok(rows) = stmt.query_map([team_id], |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "provider_member_id": r.get::<_, String>(1)?,
+                "mode": r.get::<_, String>(2)?,
+                "port": r.get::<_, i64>(3)?,
+                "target_port": r.get::<_, Option<i64>>(4)?,
+                "lan_ip": r.get::<_, Option<String>>(5)?,
+                "updated_at": r.get::<_, String>(6)?,
+            }))
+        }) {
+            for row in rows.flatten() {
+                out.push(row);
+            }
+        }
+    }
+    out
+}
+
 /// The IP of the member's most recent *open* (undisconnected) connection,
 /// or their last known IP if none is currently open.
-pub fn member_ip(conn: &Connection, member_id: &str) -> Option<String> {
-    conn.query_row(
+pub fn member_ip(conn: &Connection, member_id: &str) -> Option<String> {    conn.query_row(
         "SELECT ip FROM member_connections
          WHERE member_id = ?1 AND disconnected_at IS NULL
          ORDER BY connected_at DESC LIMIT 1",

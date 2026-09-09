@@ -433,9 +433,26 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                     let _ = sender.send(ws_text(r#"{"type":"error","message":"register requires name and port"}"#)).await;
                                     continue;
                                 }
-                                match registry.register(&team_id, &member_id, &name, target, lan_ip, out_tx.clone(), mode, provider_user_id.clone()) {
+                                match registry.register(&team_id, &member_id, &name, target, lan_ip.clone(), out_tx.clone(), mode, provider_user_id.clone()) {
                                     Ok(port) => {
                                         owned.insert(name.clone());
+                                        // Mirror the registration into the DB so
+                                        // DB-reading tools (admin-console /api/topology)
+                                        // can draw the live reverse-tunnel edge.
+                                        {
+                                            let db = state.db.clone();
+                                            let tid = team_id.clone();
+                                            let mid = member_id.clone();
+                                            let nm = name.clone();
+                                            let md = mode.as_str().to_string();
+                                            let lip = lan_ip.clone();
+                                            let pp = port as i64;
+                                            let tp = if mode == crate::tunnel::TunnelMode::Proxy { None } else { Some(target as i64) };
+                                            tokio::task::spawn_blocking(move || {
+                                                let conn = db.lock().unwrap();
+                                                let _ = crate::db::tunnel_upsert(&conn, &tid, &nm, &mid, &md, pp, tp, lip.as_deref());
+                                            });
+                                        }
                                         if mode == crate::tunnel::TunnelMode::Frp {
                                             // Spawn the TCP relay for this tunnel (frp mode only).
                                             let reg = registry.clone();
@@ -457,6 +474,13 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                 if let Some(name) = v.get("name").and_then(Value::as_str) {
                                     registry.remove(&team_id, name);
                                     owned.remove(name);
+                                    let db = state.db.clone();
+                                    let tid = team_id.clone();
+                                    let nm = name.to_string();
+                                    tokio::task::spawn_blocking(move || {
+                                        let conn = db.lock().unwrap();
+                                        let _ = crate::db::tunnel_remove(&conn, &tid, &nm);
+                                    });
                                 }
                             }
                             "resolve_result" => {
@@ -511,6 +535,13 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     // Provider disconnected: free every tunnel it registered on this WS.
     for name in &owned {
         registry.remove(&team_id, name);
+        let db = state.db.clone();
+        let tid = team_id.clone();
+        let nm = name.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            let _ = crate::db::tunnel_remove(&conn, &tid, &nm);
+        });
     }
     // Audit: mark the tunnel connection closed.
     {

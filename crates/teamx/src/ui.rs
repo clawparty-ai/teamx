@@ -304,6 +304,11 @@ fn page_html() -> String {
      browser resizes — height derives from width via aspect-ratio. */
   .dash-canvas { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); width: 100%; aspect-ratio: 16 / 9; min-height: 300px; overflow: hidden; }
   .dash-canvas svg, .dash-canvas #dashMap, .dash-canvas #dashTopo { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* Topology overrides: #dashTopo is its own flex column (legend + svg), the
+     shared "absolute svg" rule above must not capture the topo <svg>. */
+  .dash-canvas #dashTopo { display: flex; flex-direction: column; }
+  .dash-canvas #dashTopo svg { position: relative; inset: auto; flex: 1 1 auto; min-height: 0; width: 100%; height: auto; }
+  .dash-canvas #dashTopo .topo-legend-wrap { flex: 0 0 auto; }
   .dash-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-fg); gap: 8px; padding: 24px; text-align: center; }
   .dash-empty .big { font-size: 34px; }
   .dash-canvas .map-attrib { position: absolute; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted-fg); background: rgba(0,0,0,.35); color: #eee; padding: 2px 6px; border-radius: 3px; }
@@ -318,6 +323,35 @@ fn page_html() -> String {
   .topo-node .tn-meta { color: var(--muted-fg); font-size: 11px; margin-top: 3px; }
   .topo-node .tn-live { margin-top: 4px; font-size: 11px; color: var(--muted-fg); display: flex; flex-direction: column; gap: 2px; }
   .topo-node .tn-role { font-weight: 400; color: var(--muted-fg); font-size: 10px; }
+  /* prototype-aligned topology node boxes + legend */
+  .topo-legend { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; font-size: 12px; color: var(--muted-fg); padding: 10px 10px 0; }
+  .topo-legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: 2px; }
+  .topo-node-box { width: 100%; height: 100%; box-sizing: border-box; background: var(--card); border: 1.5px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); font-size: 13px; line-height: 1.4; color: var(--fg); }
+  .topo-node-box.online { border-color: #67C23A; }
+  .topo-node-box.busy { border-color: #E6A23C; }
+  .topo-node-box.offline { border-color: #909399; }
+  .topo-node-box.server { border-color: #4A90E5; }
+  .topo-node-box.external { border-color: #9B59B6; border-style: dashed; }
+  .tnb-head { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--muted); }
+  .tnb-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .tnb-status-dot.online { background: #67C23A; box-shadow: 0 0 0 2px rgba(103,194,58,0.22); }
+  .tnb-status-dot.busy { background: #E6A23C; box-shadow: 0 0 0 2px rgba(230,162,60,0.22); }
+  .tnb-status-dot.offline { background: #909399; }
+  .tnb-status-dot.server { background: #4A90E5; }
+  .tnb-status-dot.external { background: #9B59B6; }
+  .tnb-name { font-weight: 700; font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tnb-head .badge { flex-shrink: 0; font-size: 10px; line-height: 1.5; }
+  .tnb-node { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+  .tnb-live { height: calc(100% - 26px); overflow: hidden; padding: 4px 8px; }
+  .tnb-line { display: flex; align-items: baseline; gap: 5px; line-height: 17px; white-space: nowrap; }
+  .tnb-line.new { animation: tnbIn 280ms ease; }
+  @keyframes tnbIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .tnb-t { font-family: var(--font-mono); font-size: 11px; color: var(--muted-fg); flex-shrink: 0; }
+  .tnb-i { flex-shrink: 0; font-size: 13px; }
+  .tnb-x { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tnb-empty { color: var(--muted-fg); font-size: 12px; padding: 6px 2px; }
+  .tnb-meta { padding: 5px 8px; font-size: 12px; color: var(--muted-fg); }
+  .tnb-meta .mono { font-family: var(--font-mono); font-size: 11px; }
   .dot-green { background: #3fb950; } .dot-orange { background: #f0a020; } .dot-gray { background: #8b949e; } .dot-blue { background: var(--primary); }
   .card-label { font-size: 12px; color: var(--muted-fg); margin-bottom: 2px; }
   .card-value { font-size: 22px; font-weight: 700; font-family: var(--font-mono); }
@@ -1093,21 +1127,227 @@ function renderDashSvg() {
     const e = document.getElementById("dashEmpty"); if (e) e.style.display = "flex"
   }
 }
+// ---- Topology (prototype-aligned): server centre + member boxes + real
+// edges. Data comes from /api/topology (server/node detail, per-member recent
+// activity feed, mTLS + reverse-tunnel links). ----
+let topoLivePool = {}
+let topoActivityStarted = false
+const TOPO_LINK_STYLE = {
+  mtls:    { color: "#4A90E5", label: "mTLS WS" },
+  reverse: { color: "#9B59B6", label: "reverse tunnel" },
+  socks:   { color: "#E6A23C", label: "SOCKS5 / tun0" },
+}
+function topoClock() {
+  return new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+}
+function topoLinkStyle(l) {
+  const ty = String(l.type || "").toLowerCase() + " " + String(l.name || "").toLowerCase()
+  if (ty.includes("reverse") || ty.includes("tunnel")) return TOPO_LINK_STYLE.reverse
+  if (ty.includes("socks") || ty.includes("tun0")) return TOPO_LINK_STYLE.socks
+  return TOPO_LINK_STYLE.mtls
+}
+function topoNodeCls(state) {
+  if (state === "server") return "server"
+  if (state === "external") return "external"
+  if (state === "online") return "online"
+  if (state === "busy") return "busy"
+  return "offline"
+}
+function topoBoxSize(n) {
+  if (n.state === "server") return [190, 104]
+  if (n.state === "external") return [150, 60]
+  return [330, 112]
+}
+function edgePath(x1, y1, x2, y2, curve) {
+  if (!curve) return `M ${x1} ${y1} L ${x2} ${y2}`
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2
+  const dx = x2 - x1, dy = y2 - y1
+  const len = Math.hypot(dx, dy) || 1
+  const ox = (-dy / len) * curve, oy = (dx / len) * curve
+  return `M ${x1} ${y1} Q ${mx + ox} ${my + oy} ${x2} ${y2}`
+}
+function clipEdge(ax, ay, bx, by, hwA, hhA, hwB, hhB) {
+  const dx = bx - ax, dy = by - ay
+  const adx = Math.abs(dx), ady = Math.abs(dy)
+  if (adx < 1e-6 && ady < 1e-6) return null
+  const tA = Math.min(adx > 1e-6 ? hwA / adx : Infinity, ady > 1e-6 ? hhA / ady : Infinity)
+  const tB = Math.min(adx > 1e-6 ? hwB / adx : Infinity, ady > 1e-6 ? hhB / ady : Infinity)
+  return [ax + dx * tA, ay + dy * tA, bx - dx * tB, by - dy * tB]
+}
+function topoLayout(server, members) {
+  const cx = 600, cy = 272
+  const pos = { [server.id]: [cx, cy] }
+  const n = members.length
+  if (!n) return pos
+  const rx = n <= 8 ? 420 : 470
+  const ry = n <= 4 ? 150 : n <= 8 ? 195 : n <= 16 ? 220 : 245
+  members.forEach((m, i) => {
+    let rr = 1
+    if (n > 18 && i % 4 === 3) rr = 0.72 // spill an inner ring for very large teams
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / n
+    pos[m.id] = [cx + rx * rr * Math.cos(a), cy + ry * rr * Math.sin(a)]
+  })
+  return pos
+}
+function topoBodyLines(n) {
+  // Prefer the real recent activity feed; fall back to presence summary.
+  const rec = Array.isArray(n.recent) && n.recent.length ? n.recent : []
+  if (rec.length) return rec
+  if (Array.isArray(n.live) && n.live.length) return n.live
+  return []
+}
+function topoLiveBox(n) {
+  const cls = topoNodeCls(n.state)
+  if (n.state === "server" || n.state === "external") return ""
+  const lines = topoBodyLines(n)
+  const html = lines.length
+    ? lines.slice(0, 5).map((l) => `<div class="tnb-line"><span class="tnb-t">${esc(topoClock())}</span><span class="tnb-i">${esc(l.icon || "•")}</span><span class="tnb-x">${esc(l.text || "")}</span></div>`).join("")
+    : `<div class="tnb-empty">${esc(n.member_name || n.name)} 离线，无会话</div>`
+  return `<div class="tnb-live">${html}</div>`
+}
+function topoNodeSvg(n, pos, byId) {
+  const cls = topoNodeCls(n.state)
+  const [w, h] = topoBoxSize(n)
+  const x = pos[0] - w / 2, y = pos[1] - h / 2
+  if (n.state === "server") {
+    const region = n.region || n.city || "—"
+    return `<foreignObject x="${x}" y="${y}" width="${w}" height="${h}">
+      <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box server">
+        <div class="tnb-head"><span class="tnb-status-dot server"></span><span class="tnb-name">${esc(n.name || "teamx-server")}</span><span class="tnb-node">Tx</span></div>
+        <div class="tnb-meta"><div>${esc(n.version || "")} · ${esc(region)}</div>${n.addr ? `<div class="mono">${esc(n.addr)}</div>` : ""}</div>
+      </div>
+    </foreignObject>`
+  }
+  if (n.state === "external") {
+    return `<foreignObject x="${x}" y="${y}" width="${w}" height="${h}">
+      <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box external">
+        <div class="tnb-head"><span class="tnb-status-dot external"></span><span class="tnb-name">${esc(n.name || "internet")}</span></div>
+        <div class="tnb-meta"><div>${esc(n.region || "")}</div></div>
+      </div>
+    </foreignObject>`
+  }
+  const who = n.member_name || n.name || "member"
+  const nodeTag = String(n.id || who).slice(0, 8)
+  return `<foreignObject x="${x}" y="${y}" width="${w}" height="${h}">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="topo-node-box ${cls}" data-live="1" data-node="${esc(n.id)}">
+      <div class="tnb-head">
+        <span class="tnb-status-dot ${cls}"></span>
+        <span class="tnb-name">${esc(who)}</span>
+        ${n.role ? `<span class="badge ${esc(n.role)}">${esc(n.role)}</span>` : ""}
+        <span class="tnb-node">${esc(nodeTag)}</span>
+      </div>
+      ${topoLiveBox(n)}
+    </div>
+  </foreignObject>`
+}
+function drawTopology(data) {
+  const el = document.getElementById("dashTopo")
+  if (!el) return
+  const server = data.server || { id: "server", name: "teamx-server", state: "server" }
+  const nodes = data.nodes ?? []
+  const links = data.links ?? []
+  const byId = {}
+  for (const n of nodes) { byId[n.id] = n }
+  byId[server.id] = server
+  const pos = topoLayout(server, nodes)
+  const used = new Set()
+  const present = new Map()
+  // Node box sizes for edge clipping.
+  const sizeOf = (id) => {
+    const node = byId[id]
+    return node ? topoBoxSize(node) : [60, 30]
+  }
+  // Edges.
+  const edges = links.map((l) => {
+    const a = pos[l.from], b = pos[l.to]
+    if (!a || !b) return ""
+    const st = topoLinkStyle(l)
+    const [wa, ha] = sizeOf(l.from)
+    const [wb, hb] = sizeOf(l.to)
+    const seg = clipEdge(a[0], a[1], b[0], b[1], wa / 2, ha / 2, wb / 2, hb / 2)
+    if (!seg) return ""
+    const color = st.color
+    const dash = l.status === "down" ? ' stroke-dasharray="6 5"' : ""
+    const isMtls = !(String(l.type || "").toLowerCase().includes("reverse") || String(l.type || "").toLowerCase().includes("tunnel"))
+    const arrow = isMtls ? "" : ' marker-end="url(#topoArrow)"'
+    const curve = !isMtls ? 26 : 0
+    const path = edgePath(seg[0], seg[1], seg[2], seg[3], curve)
+    const mx = (seg[0] + seg[2]) / 2, my = (seg[1] + seg[3]) / 2
+    let label = st.label
+    if (l.name && !isMtls) label = `${st.label} · ${l.name}`
+    const detail = l.detail ? ` · ${l.detail}` : ""
+    used.add(st.label)
+    return `<path d="${path}" fill="none" stroke="${color}" stroke-width="${isMtls ? 1.6 : 1.4}"${dash}${arrow} opacity="${l.status === "down" ? 0.45 : 0.9}"><title>${esc(label + detail)}</title></path>
+      <text x="${mx}" y="${my - 6}" text-anchor="middle" font-size="9.5" fill="var(--muted-fg)">${esc(label)}</text>`
+  }).join("")
+  const nodesSvg = [server, ...nodes].filter((n) => n && pos[n.id]).map((n) => topoNodeSvg(n, pos[n.id], byId)).join("")
+  const legend = [...used].map((l) => {
+    const st = Object.values(TOPO_LINK_STYLE).find((x) => x.label === l) || TOPO_LINK_STYLE.mtls
+    return `<span><span class="sw" style="background:${st.color}"></span>${st.label}</span>`
+  }).join("")
+  const downMark = links.some((l) => l.status === "down")
+    ? `<span><span class="sw" style="background:var(--muted-fg);border-radius:2px"></span>down（虚线）</span>` : ""
+  el.innerHTML = `<div class="topo-legend-wrap">${legend ? `<div class="topo-legend">${legend}${downMark}</div>` : ""}</div>
+    <svg viewBox="0 0 1200 544" class="topo-svg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+      <defs><marker id="topoArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#909399"/></marker></defs>
+      ${edges}
+      ${nodesSvg}
+    </svg>`
+  el.style.display = "flex"
+  el.style.flexDirection = "column"
+  topoLivePool = {}
+  for (const n of nodes) {
+    if (n.state === "online" || n.state === "busy") {
+      const lines = topoBodyLines(n)
+      if (lines.length) topoLivePool[n.id] = lines
+    }
+  }
+  scheduleTopoActivity()
+}
 function renderDashTopo() {
   const mapEl = document.getElementById("dashMap")
   const topoEl = document.getElementById("dashTopo")
   const svgF = document.getElementById("dashSvgFallback"); if (svgF) svgF.style.display = "none"
   if (mapEl) mapEl.style.display = "none"
-  if (topoEl) topoEl.style.display = ""
-  const members = (dashData.nodes || []).filter((n) => n.kind === "member")
-  const server = (dashData.nodes || []).find((n) => n.kind === "server")
-  if (members.length === 0 && !server) {
-    const e = document.getElementById("dashEmpty"); if (e) e.style.display = "flex"
-    topoEl.innerHTML = ""
-    return
-  }
-  const empty = document.getElementById("dashEmpty"); if (empty) empty.style.display = "none"
-  renderDashSvg()
+  if (!topoEl) return
+  const empty = document.getElementById("dashEmpty")
+  topoEl.style.display = "flex"
+  topoEl.innerHTML = '<div class="loading" style="margin:auto">loading topology …</div>'
+  jget("/api/topology?" + qs()).then((data) => {
+    const nodes = (data && data.nodes) || []
+    const server = data && data.server
+    if (nodes.length === 0 && !server) {
+      topoEl.style.display = "none"
+      if (empty) empty.style.display = "flex"
+      return
+    }
+    if (empty) empty.style.display = "none"
+    drawTopology(data)
+  }).catch((e) => {
+    topoEl.innerHTML = '<div class="muted" style="margin:auto;padding:20px">topology load failed: ' + esc(String(e)) + "</div>"
+  })
+}
+// Live ticker: every 3s prepend a random item from a live member's pool.
+function spawnTopoActivity() {
+  const boxes = document.querySelectorAll("#dashTopo .topo-node-box[data-live]")
+  if (!boxes.length) return
+  const liveBoxes = Array.from(boxes).filter((b) => (topoLivePool[b.dataset.node] || []).length)
+  if (!liveBoxes.length) return
+  const box = liveBoxes[Math.floor(Math.random() * liveBoxes.length)]
+  const pool = topoLivePool[box.dataset.node] || []
+  const item = pool[Math.floor(Math.random() * pool.length)]
+  const feed = box.querySelector(".tnb-live")
+  if (!feed || feed.querySelector(".tnb-empty")) return
+  const line = document.createElement("div")
+  line.className = "tnb-line new"
+  line.innerHTML = `<span class="tnb-t">${esc(topoClock())}</span><span class="tnb-i">${esc(item.icon || "•")}</span><span class="tnb-x">${esc(item.text || "")}</span>`
+  feed.prepend(line)
+  while (feed.children.length > 5) feed.removeChild(feed.lastChild)
+}
+function scheduleTopoActivity() {
+  if (topoActivityStarted) return
+  topoActivityStarted = true
+  setInterval(spawnTopoActivity, 3000)
 }
 async function refreshDashboard() {
   try {
@@ -4076,6 +4316,88 @@ async fn api_map(State(state): State<S>, Query(params): Query<HashMap0>, headers
 }
 
 /// `/api/topology` — Dashboard topology-mode server/nodes/links.
+// Compact activity-line representation for topology node boxes: map an
+// activity row (kind + detail JSON) to { icon, text } like the fishbone feed.
+fn topo_live_line(kind: &str, detail: &serde_json::Value) -> (String, String) {
+    let d = detail;
+    let s = |v: Option<&serde_json::Value>| v.and_then(Value::as_str).unwrap_or("").to_string();
+    let text = match kind {
+        "work_session" => {
+            let t = s(d.get("task"));
+            if !t.is_empty() { t } else { s(d.get("description")) }
+        }
+        "tool_call" => {
+            let tool = s(d.get("tool"));
+            if !tool.is_empty() {
+                format!("调用工具 {tool}")
+            } else {
+                let cmd = d.get("arguments").and_then(|a| {
+                    ["command", "script", "cmd", "name", "url", "file", "path"]
+                        .iter()
+                        .find_map(|k| a.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()))
+                        .map(str::to_string)
+                });
+                cmd.unwrap_or_else(|| "tool".to_string())
+            }
+        }
+        "file_edit" => s(d.get("file")),
+        "step_finish" => s(d.get("reason")),
+        "command" => {
+            let n = s(d.get("name"));
+            let args = s(d.get("args"));
+            if n.is_empty() { "命令".to_string() } else if args.is_empty() { n } else { format!("{n} {args}") }
+        }
+        _ => {
+            if kind.starts_with("human") {
+                let t = s(d.get("text"));
+                if !t.is_empty() { t } else { s(d.get("response")) }
+            } else {
+                s(d.get("title"))
+            }
+        }
+    };
+    let icon = match kind {
+        "tool_call" => "🔧".to_string(),
+        "file_edit" => "📝".to_string(),
+        "step_finish" => "✅".to_string(),
+        "command" => "⌨️".to_string(),
+        "work_session" => "🤖".to_string(),
+        _ if kind.starts_with("human") => "💬".to_string(),
+        _ => "•".to_string(),
+    };
+    (icon, if text.is_empty() { kind.to_string() } else { text })
+}
+
+/// Recent fine-grained activity (non-`work_session`) for one member, shaped as
+/// live-feed lines (icon + text) for the topology node box / ticker.
+fn topo_recent_live(
+    c: &Connection,
+    team: Option<&str>,
+    member: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    let Ok(rows) = crate::activity::rows(c, team, Some(member), None, None, from, to, 10) else {
+        return out;
+    };
+    let Some(arr) = rows.as_array() else { return out };
+    for r in arr {
+        let Some(kind) = r.get("kind").and_then(Value::as_str) else { continue };
+        if kind == "work_session" {
+            continue;
+        }
+        let detail = r
+            .get("detail")
+            .and_then(|d| d.as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Object(Default::default()));
+        let (icon, text) = topo_live_line(kind, &detail);
+        out.push(json!({ "icon": icon, "text": text }));
+    }
+    out
+}
+
 async fn api_topology(State(state): State<S>, Query(params): Query<HashMap0>, headers: axum::http::HeaderMap) -> axum::response::Response {
     if let Err(r) = guard(&state, &headers) {
         return r;
@@ -4090,24 +4412,61 @@ async fn api_topology(State(state): State<S>, Query(params): Query<HashMap0>, he
     let map = dash_nodes(&c, team, from, to, false);
     let nodes = map.get("nodes").cloned().unwrap_or(json!([]));
     let nodes_arr = nodes.as_array().cloned().unwrap_or_default();
-    let server = nodes_arr
+    let mut server = nodes_arr
         .iter()
         .find(|n| n.get("kind").and_then(|k| k.as_str()) == Some("server"))
         .cloned()
         .unwrap_or_else(|| json!({ "id": "server", "name": "teamx-server", "kind": "server" }));
-    let member_nodes: Vec<Value> = nodes_arr
-        .iter()
-        .filter(|n| n.get("kind").and_then(|k| k.as_str()) == Some("member"))
-        .cloned()
-        .collect();
+    // Server detail for the topology box (version / region / address).
+    if let Some(obj) = server.as_object_mut() {
+        let region = obj.get("city").and_then(Value::as_str).unwrap_or("—").to_string();
+        obj.insert("region".to_string(), json!(region));
+        obj.insert("version".to_string(), json!(format!("v{} · {}", crate::buildinfo::version(), crate::buildinfo::commit())));
+        if let Some(url) = state.server_url.as_deref() {
+            obj.insert("addr".to_string(), json!(url.trim_end_matches('/')));
+        }
+    }
+    // Member nodes: enrich each with a real recent-activity live feed so the
+    // topology boxes animate with what the member actually did.
+    let mut member_nodes: Vec<Value> = Vec::new();
+    for n in nodes_arr.iter().filter(|n| n.get("kind").and_then(|k| k.as_str()) == Some("member")) {
+        let mut o = n.clone();
+        let mid = n.get("member_id").and_then(Value::as_str).unwrap_or("").to_string();
+        if !mid.is_empty() {
+            let recent = topo_recent_live(&c, team, &mid, from, to);
+            if let Some(obj) = o.as_object_mut() {
+                obj.insert("recent".to_string(), json!(recent));
+            }
+        }
+        member_nodes.push(o);
+    }
     // Links: every member connects to the server over mTLS WS. Up when the
-    // member has fresh presence, otherwise shown as down/dimmed.
+    // member has fresh presence, otherwise shown as down/dimmed. Plus live
+    // reverse tunnels (provider member -> server), mirrored into the DB by
+    // `teamx serve` so this DB-reading dashboard can draw them.
     let mut links: Vec<Value> = Vec::new();
     for n in &member_nodes {
         let state = n.get("state").and_then(|s| s.as_str()).unwrap_or("offline");
         links.push(json!({
             "from": "server", "to": n.get("member_id"),
             "type": "mTLS", "name": "mTLS WS", "status": if state == "offline" { "down" } else { "up" },
+            "detail": if state == "offline" { "成员离线" } else { "成员证书 · 事件流" },
+        }));
+    }
+    for t in crate::db::active_tunnels(&c, &team_owned) {
+        let from = t.get("provider_member_id").and_then(Value::as_str).unwrap_or("").to_string();
+        if from.is_empty() {
+            continue;
+        }
+        let name = t.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let mode = t.get("mode").and_then(Value::as_str).unwrap_or("local").to_string();
+        let port = t.get("port").and_then(Value::as_i64).unwrap_or(0);
+        let target = t.get("target_port").and_then(Value::as_i64).unwrap_or(0);
+        links.push(json!({
+            "from": from, "to": "server",
+            "type": "reverse", "name": name,
+            "status": "up",
+            "detail": format!("{mode} :{port} → :{target}"),
         }));
     }
     Json(json!({
