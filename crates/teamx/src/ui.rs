@@ -1308,7 +1308,16 @@ async function renderKanban() {
     const detailBits = (s.events ?? 0) > 0
       ? ` · <span class="muted">${s.events} detail${s.events > 1 ? "s" : ""}${(s.events_cost ?? 0) > 0 ? " · " + fmtCost(s.events_cost) : ""}</span>`
       : ""
-    const evCards = events.slice(0, 8).map((e) => renderEventCard(e)).join("")
+    // Single interleaved timeline per column: task (work_session) cards and
+    // fine-grained detail events are merged and sorted newest-first so the
+    // column reads as a real chronological stream (a task is naturally broken
+    // up by the tool/file/human events that happened during it).
+    const mixed = tasks
+      .slice(0, 12)
+      .map((r) => ({ r, task: true }))
+      .concat(events.slice(0, 8).map((e) => ({ r: e, task: false })))
+      .sort((a, b) => String(b.r.started_at || "").localeCompare(String(a.r.started_at || "")))
+    const cardsHtml = mixed.map((x) => (x.task ? renderTaskCard(x.r) : renderEventCard(x.r))).join("")
     return `<div class="kb-col">
       <div class="kb-col-head">
         <div class="kb-col-title">${esc(col.display_name)} ${col.member_count > 1 ? `<span class="badge">${col.member_count} seats</span>` : ""} ${(col.roles && col.roles[0]) ? badge(col.roles[0]) : ""}</div>
@@ -1316,8 +1325,7 @@ async function renderKanban() {
           ${fmtMs(s.duration_ms)} · ${fmtNum(tasks.length)} tasks${tasks.length > 0 ? ` · ${done} with human` : ""}${costBits}${detailBits}
         </div>
       </div>
-      ${tasks.slice(0, 12).map((r) => renderTaskCard(r)).join("") || '<div class="kb-empty muted">no work in this range</div>'}
-      ${evCards ? `<div class="kb-ev-head muted">detail activity</div>${evCards}` : ""}
+      ${cardsHtml || '<div class="kb-empty muted">no work in this range</div>'}
     </div>`
   }).join("")
   bindKanbanEvents()
