@@ -1698,10 +1698,27 @@ function activityDetailHtml(it) {
   return out.join("")
 }
 
+// Ensure the fishbone container has its central spine wrapper. Rows are drawn
+// alternating left/right around this vertical bone, so it must wrap every row
+// (across all load-more batches), not sit beside them.
+function fbShell() {
+  const el = $("#fishbone")
+  if (!el) return null
+  let wrap = el.querySelector(".fb-wrap")
+  if (!wrap) {
+    wrap = document.createElement("div")
+    wrap.className = "fb-wrap"
+    wrap.innerHTML = '<div class="fb-spine"></div>'
+    el.appendChild(wrap)
+  }
+  return wrap
+}
+
 function appendActivityRows(rows) {
   const el = $("#fishbone")
   if (!el) return
-  const wrap = document.createElement("div")
+  const wrap = fbShell()
+  if (!wrap) return
   let prevDay = null
   rows.forEach((it) => {
     const t = new Date(it.started_at)
@@ -1739,11 +1756,10 @@ function appendActivityRows(rows) {
     r.querySelector(".fb-card").addEventListener("mouseleave", tlTipHide)
     wrap.appendChild(r)
   })
-  // keep the load-more button at the end if present
+  // keep the load-more button at the end (after the spine wrapper)
   const btn = $("#fbMoreBtn")
   if (btn) btn.remove()
-  el.appendChild(wrap)
-  if (btn) el.appendChild(btn)
+  if (btn) wrap.parentNode && wrap.parentNode.appendChild(btn)
 }
 
 // Compact hover summary for an activity row (no raw JSON — so the tooltip
@@ -1784,11 +1800,33 @@ function tlTipShow(it, ev) {
   const who = memberLabel(it.member_id)
   tlTipEl.innerHTML = `<b>${esc(fishKindLabel(it.kind || "activity"))}</b> · ${esc(who)}<br><span>${esc(hoverSummary(it))}</span>`
   tlTipEl.style.display = "block"
-  const pad = 14
-  let x = ev.clientX + pad, y = ev.clientY + pad
+  const pad = 12
   const r = tlTipEl.getBoundingClientRect()
-  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad
-  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad
+  const cardEl = ev.currentTarget
+  const row = cardEl && cardEl.closest ? cardEl.closest(".fb-row") : null
+  let x, y
+  if (row) {
+    // Fishbone: a left card opens its overlay on the left, a right card on the
+    // right, vertically centred against the card (never over the spine).
+    const cr = cardEl.getBoundingClientRect()
+    y = cr.top + cr.height / 2 - r.height / 2
+    if (row.classList.contains("left")) {
+      x = cr.left - r.width - pad
+      // If it would overflow the left viewport edge, flip to the card's right.
+      if (x < 8) x = cr.right + pad
+    } else {
+      x = cr.right + pad
+      if (x + r.width > window.innerWidth - 8) x = cr.left - r.width - pad
+    }
+  } else {
+    // Kanban/other: follow the cursor.
+    x = ev.clientX + pad
+    y = ev.clientY + pad
+  }
+  if (x + r.width > window.innerWidth - 8) x = window.innerWidth - r.width - 8
+  if (x < 8) x = 8
+  if (y + r.height > window.innerHeight - 8) y = window.innerHeight - r.height - 8
+  if (y < 8) y = 8
   tlTipEl.style.left = x + "px"
   tlTipEl.style.top = y + "px"
 }
