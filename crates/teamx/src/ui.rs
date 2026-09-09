@@ -311,11 +311,11 @@ fn page_html() -> String {
   .dash-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-fg); gap: 8px; padding: 24px; text-align: center; }
   .dash-empty .big { font-size: 34px; }
   .dash-canvas .map-attrib { position: absolute; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted-fg); background: rgba(0,0,0,.35); color: #eee; padding: 2px 6px; border-radius: 3px; }
-  .map-node-card { background: rgba(22,22,40,.92); color: #eee; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); padding: 6px 8px; min-width: 150px; max-width: 230px; font-family: var(--font-sans); box-shadow: 0 4px 16px rgba(0,0,0,.3); transform: translate(8px, -50%); }
-  .map-node-card .m-title { font-size: 11px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .map-node-card { background: rgba(22,22,40,.92); color: #eee; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); padding: 8px 10px; min-width: 210px; max-width: 300px; font-family: var(--font-sans); box-shadow: 0 4px 16px rgba(0,0,0,.3); transform: translate(8px, -50%); }
+  .map-node-card .m-title { font-size: 11px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .map-node-card .m-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
   .map-node-card .m-role { font-size: 9px; color: #aab; text-transform: uppercase; }
-  .map-node-card .m-meta { font-size: 9px; color: #a9a9bd; margin-top: 2px; word-break: break-all; }
+  .map-node-card .m-meta { font-size: 10px; color: #a9a9bd; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* topology node boxes (SVG foreignObject) */
   .topo-node { border: 1px solid var(--border); border-radius: 6px; background: var(--card); padding: 8px 10px; font-family: var(--font-sans); font-size: 12px; color: var(--fg); width: 180px; box-shadow: var(--shadow); }  .topo-node .tn-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
   .topo-node .tn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -982,7 +982,7 @@ function renderDashMap() {
     return // container hidden (view not active yet)
   }
   if (!dashLeaflet) {
-    dashLeaflet = L.map(mapEl).setView([34.5, 108.5], 4)
+    dashLeaflet = L.map(mapEl, { minZoom: 3, maxZoom: 18 }).setView([34.5, 108.5], 4)
     addBasemap()
     dashMarkers = L.layerGroup().addTo(dashLeaflet)
   }
@@ -1011,7 +1011,7 @@ function renderDashMap() {
         `<br>会话 ${n.sessions || 0} · 工具 ${n.running_tools || 0} · 终端 ${n.open_terminals || 0}${live}${costHtml}`
     )
   }
-  if (nodes.length) dashLeaflet.fitBounds(L.latLngBounds(nodes.map((n) => [n.lat, n.lng])).pad(0.4), { maxZoom: 9 })
+  if (nodes.length) dashLeaflet.fitBounds(L.latLngBounds(nodes.map((n) => [n.lat, n.lng])).pad(0.4), { maxZoom: 9, minZoom: 3 })
 }
 // SVG fallback map + topology share a node renderer.
 function renderDashSvg() {
