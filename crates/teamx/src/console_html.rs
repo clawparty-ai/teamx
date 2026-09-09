@@ -490,17 +490,20 @@ async function loadTeams(){
         const mt=byMember.get(m.id)||[];
         window.__memTunnels.set(m.id, mt);
         window.__memNames=window.__memNames||{}; window.__memNames[m.id]=m.display_name;
-        const me=window.__me||{};
-        // Admin-capable = owner/admin role or any team-lead (owner/co-lead).
-        // Derive from teams[].my (enriched by the server) so we don't race
-        // with the async /api/me that fills window.__me.
-        const teamLead = teams.some(t => (t.my && t.my.is_lead === true) ||
-            (t.my && (t.my.role === "owner" || t.my.role === "admin")) ||
-            t.my_is_lead === true || t.my_role === "owner" || t.my_role === "admin");
-        const canAdmin = (me.is_lead === true) || (me.role === "owner" || me.role === "admin") || teamLead;
+        // Admin-capable = owner/admin role or team-lead (owner/co-lead) OF THIS
+        // TEAM only. t.my is per-team data the server attached (attach_my); we
+        // must NOT gate on `teams.some(...)` (any team) or an async /api/me —
+        // that would leak admin visibility across every team the viewer holds.
+        const my = t.my || {};
+        const canAdmin = (my.is_lead === true) || (my.role === "owner" || my.role === "admin") ||
+            (t.my_is_lead === true) || (t.my_role === "owner" || t.my_role === "admin");
         // fs-* tunnels are served by the 📁 file browser, not opened as pages.
-        const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-"));
-        const mtOpen=mtVisible.filter(t=> !(t.name&&t.name.startsWith("teamx-ui")) || canAdmin);
+        // "web" tunnels (non-ttyd / non-opencode, i.e. admin-console and other
+        // admin panels) are only visible+openable by this team's lead — a plain
+        // member must not see an entry to the admin console.
+        const isWeb=(x)=>kindOf(x.name)==="web";
+        const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-") && (!isWeb(t) || canAdmin));
+        const mtOpen=mtVisible;
         const act=m.activity||{};
         rows.push(`<tr>
           <td class="mono" style="font-size:11px;color:var(--muted-fg)">${m.user?esc(m.user.display_name):"—"}</td>
