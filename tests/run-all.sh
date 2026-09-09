@@ -140,6 +140,14 @@ else
 fi
 
 echo
+echo "== 15e Local-team server test (self-boot + activate) =="
+if [ -x target/debug/teamx ] && command -v opencode >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/local-team-server-test.sh
+else
+  echo "debug binary or opencode missing; skipping local-team-server test"
+fi
+
+echo
 echo "== 16/16 UI e2e (Playwright) test =="
 if [ "${TEAMX_RUN_UI_E2E:-0}" = "1" ] && command -v bun >/dev/null 2>&1; then
   (cd tests/ui-e2e && TEAMX_BIN="$ROOT/target/debug/teamx" npx playwright test)

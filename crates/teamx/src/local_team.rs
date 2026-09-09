@@ -135,6 +135,188 @@ fn is_alive(pid: u32) -> bool {
     { let _ = pid; true }
 }
 
+// ---------------------------------------------------------------------------
+// Server bootstrap + member activation (docs/52)
+// ---------------------------------------------------------------------------
+
+fn teamx_bin() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("teamx"))
+}
+
+/// The workspace `.teamx` dir (cwd based; also where local-team keeps state).
+fn ws_teamx_dir() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".teamx")
+}
+
+fn team_db() -> PathBuf {
+    ws_teamx_dir().join("teamx.db")
+}
+
+/// Run `teamx <args...>` as a child. HOME points at the .teamx used for letters
+/// + CA; DB is the workspace authoritative DB (shared). Returns stdout.
+fn run_teamx(args: &[&str], home: &Path) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(teamx_bin());
+    cmd.args(args);
+    cmd.env("TEAMX_HOME", home);
+    cmd.env("TEAMX_DB", team_db());
+    let out = cmd.output().map_err(|e| format!("failed to run {}: {e}", teamx_bin().display()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        let tail = stderr.trim().lines().last().unwrap_or("").to_string();
+        return Err(format!("teamx {} failed: {tail}", args.join(" ")));
+    }
+    Ok(stdout)
+}
+
+/// Try to reach a server at `url` by TCP connect (host:port). We avoid mTLS
+/// health checks here because a freshly bootstrapped serve has no client cert
+/// for this workspace yet; a listening port is enough to decide reuse vs boot.
+fn server_reachable(url: &str) -> bool {
+    let hostport = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .to_string();
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(0)),
+        None => (hostport, if url.starts_with("https") { 443 } else { 80 }),
+    };
+    if port == 0 {
+        return false;
+    }
+    use std::net::ToSocketAddrs;
+    let addr = match (host.as_str(), port).to_socket_addrs() {
+        Ok(mut it) => it.next(),
+        Err(_) => None,
+    };
+    let Some(addr) = addr else { return false };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(700)).is_ok()
+}
+
+/// Ensure a teamx serve is reachable from this workspace:
+///   - if TEAMX_SERVER_URL points at a reachable server, join it;
+///   - otherwise bootstrap a local `teamx serve` on a free port and return URL.
+fn ensure_server(server_opt: Option<&str>) -> Result<String, String> {
+    // 1. existing server (env or arg) reachable
+    let candidate = server_opt
+        .map(|s| s.trim_end_matches('/').to_string())
+        .or_else(|| std::env::var("TEAMX_SERVER_URL").ok().map(|s| s.trim_end_matches('/').to_string()));
+    if let Some(u) = candidate {
+        if server_reachable(&u) {
+            return Ok(u);
+        }
+        // If a URL was explicitly given but unreachable, fail loudly (don't
+        // silently start a second server that the user did not ask for).
+        if server_opt.is_some() {
+            return Err(format!("server {u} is not reachable"));
+        }
+        // env only but not reachable -> fall through to bootstrap below
+    }
+
+    // 2. bootstrap local serve
+    std::fs::create_dir_all(ws_teamx_dir()).map_err(|e| e.to_string())?;
+    let mut port: u16 = 5781;
+    for p in 5781..=5810 {
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
+            port = p;
+            break;
+        }
+    }
+    let url = format!("https://127.0.0.1:{port}");
+    let log = ws_teamx_dir().join("local-team").join("server.log");
+    std::fs::create_dir_all(log.parent().unwrap()).ok();
+    let logf = std::fs::File::create(&log).map_err(|e| e.to_string())?;
+    let errf = logf.try_clone().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(teamx_bin());
+    cmd.args([
+        "serve",
+        "--addr",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--db",
+        team_db().to_str().unwrap_or(""),
+    ]);
+    cmd.env("TEAMX_HOME", ws_teamx_dir());
+    cmd.env("TEAMX_DB", team_db());
+    cmd.stdout(Stdio::from(logf));
+    cmd.stderr(Stdio::from(errf));
+    cmd.stdin(Stdio::null());
+    let child = cmd.spawn().map_err(|e| format!("spawn serve: {e}"))?;
+    std::fs::write(ws_teamx_dir().join("local-team").join("server.pid"), child.id().to_string()).ok();
+    // wait for health
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if server_reachable(&url) {
+            return Ok(url);
+        }
+    }
+    Err(format!("local serve did not become healthy on {url} (see {})", log.display()))
+}
+
+/// Ensure a team exists (owner session). If the workspace DB already has a team
+/// we return its id; otherwise create from TEAM.md (bootstrap issues letters).
+fn ensure_team(team_name: &str) -> Result<String, String> {
+    // See whether a team already exists in this workspace DB.
+    let list = run_teamx(&["team", "list", "--json", "--session", OWNER_SESSION], &ws_teamx_dir())?;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&list) {
+        if let Some(arr) = v.get("teams").and_then(|x| x.as_array()) {
+            if let Some(first) = arr.first() {
+                if let Some(id) = first.get("team_id").and_then(|x| x.as_str()) {
+                    return Ok(id.to_string());
+                }
+            }
+        }
+    }
+    // No team yet -> create (TEAM.md auto-bootstrap issues letters).
+    let out = run_teamx(&["team", "create", team_name, "--json", "--session", OWNER_SESSION], &ws_teamx_dir())?;
+    let v: serde_json::Value = serde_json::from_str(&out).map_err(|e| format!("parse create: {e}: {out}"))?;
+    let tid = v
+        .get("team")
+        .and_then(|t| t.get("id"))
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("team_id").and_then(|x| x.as_str()))
+        .ok_or_else(|| format!("could not parse team id from create output: {out}"))?;
+    Ok(tid.to_string())
+}
+const OWNER_SESSION: &str = "local-owner";
+
+/// Activate a member in the workspace team from its bootstrapped letter:
+/// import into the member's workspace .teamx, then approve (auto). Returns
+/// member_id on success; Ok(None) when no letter (owner / not bootstrapped).
+fn activate_member(key: &str) -> Result<Option<String>, String> {
+    let letter_file = ws_teamx_dir().join("members").join(key).join("invitation.letter");
+    if !letter_file.is_file() {
+        return Ok(None);
+    }
+    let letter = std::fs::read_to_string(&letter_file).map_err(|e| e.to_string())?;
+    let member_home = member_base_dir().join(key).join(".teamx");
+    std::fs::create_dir_all(&member_home).map_err(|e| e.to_string())?;
+
+    let imp = run_teamx(
+        &["team", "import", "--json", "--session", key, &letter],
+        &member_home,
+    )?;
+    let mid = serde_json::from_str::<serde_json::Value>(&imp)
+        .ok()
+        .and_then(|v| v.get("member_id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        .or_else(|| {
+            // human output fallback: try a line like member_id:
+            imp.lines()
+                .find_map(|l| l.strip_prefix("member_id:").map(|s| s.trim().to_string()))
+        });
+    let Some(member_id) = mid else {
+        // import could already be active (repeat up) or letter consumed; try approve by listing
+        eprintln!("teamx local-team: import for {key} gave no member_id; assuming ok");
+        return Ok(None);
+    };
+    // auto-approve (bootstrap letters are not auto-approve; approve now)
+    let _ = run_teamx(&["team", "approve", "--json", "--session", OWNER_SESSION, &member_id], &ws_teamx_dir());
+    Ok(Some(member_id))
+}
+
+
 pub fn run(cmd: &LocalTeamCmd) -> Result<serde_json::Value, String> {
     match cmd {
         LocalTeamCmd::Up {
@@ -156,6 +338,22 @@ pub fn run(cmd: &LocalTeamCmd) -> Result<serde_json::Value, String> {
             let base = port_base.unwrap_or(4200);
             let ttyd_base = ttyd_port_base.unwrap_or(7680);
             let base_dir = member_base_dir();
+
+            // ---- server bootstrap / join + team + member activation ----
+            let server_url = ensure_server(server.as_deref())?;
+            let team_id = ensure_team(if tf.team_name.is_empty() { "local-team" } else { &tf.team_name })?;
+            eprintln!("teamx local-team: team {team_id} ready via {server_url}");
+
+            let target_keys: Vec<String> = tf.members.iter().filter(|m| {
+                if !only.is_empty() { only.contains(&m.key) } else { is_auto_member(m.role.as_deref()) }
+            }).map(|m| m.key.clone()).collect();
+            for k in &target_keys {
+                match activate_member(k) {
+                    Ok(Some(mid)) => eprintln!("teamx local-team: member {k} active ({mid})"),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("teamx local-team: activate {k}: {e}"),
+                }
+            }
 
             let members = tf.members.iter().filter(|m| {
                 if !only.is_empty() {
@@ -281,6 +479,17 @@ pub fn run(cmd: &LocalTeamCmd) -> Result<serde_json::Value, String> {
                 }
                 let _ = crate::agents::stop_agent(&aname, false)?;
                 stopped.push(aname);
+            }
+            // stop the bootstrapped local serve if this workspace started one
+            let server_pid_file = ws_teamx_dir().join("local-team").join("server.pid");
+            if let Ok(s) = std::fs::read_to_string(&server_pid_file) {
+                if let Ok(pid) = s.trim().parse::<u32>() {
+                    if is_alive(pid) {
+                        #[cfg(unix)]
+                        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                    }
+                }
+                let _ = std::fs::remove_file(&server_pid_file);
             }
             Ok(serde_json::json!({ "ok": true, "stopped": stopped }))
         }
