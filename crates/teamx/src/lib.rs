@@ -22,6 +22,7 @@ pub mod db;
 pub mod dns_proxy;
 pub mod doc_flow;
 pub mod events;
+pub mod util;
 pub mod git_client;
 pub mod git_service;
 #[cfg(feature = "gui")]

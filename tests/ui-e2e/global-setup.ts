@@ -50,7 +50,7 @@ export default async function globalSetup() {
   for (let i = 0; i < 100; i++) {
     try {
       const text = readFileSync(log, "utf8")
-      const m = text.match(/token=([0-9a-f]+)/)
+      const m = text.match(/token=([A-Za-z0-9]+)/)
       if (m) { token = m[1]; break }
     } catch { /* not yet */ }
     await new Promise((r) => setTimeout(r, 200))

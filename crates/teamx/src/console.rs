@@ -47,11 +47,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
     crate::procwatch::spawn_parent_monitor();
 
     let home = crate::db::teamx_home();
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
+    let token = crate::util::gen_access_token(16);
 
     // HTTPS with the workspace's instance server cert (same as `teamx ui`).
     let pk = pki::ensure_pki(&home)?;

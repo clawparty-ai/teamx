@@ -82,12 +82,8 @@ pub fn ui(cmd: &UiCmd) -> Result<(), String> {
         ));
     }
 
-    // Random per-launch token (32 bytes hex).
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
+    // Random per-launch token (16 chars, mixed-case letters + digits).
+    let token = crate::util::gen_access_token(16);
 
     // HTTPS: reuse the instance server cert/key (self-signed, localhost SANs).
     let home = crate::db::teamx_home();

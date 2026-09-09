@@ -78,7 +78,7 @@ step "start console (network -> serve) as the member via env mTLS"
 )
 CONSOLE_PID=$!
 for _ in $(seq 1 30); do grep -q "open:" "$CONSOLE_HOME/console.log" 2>/dev/null && break; sleep 0.3; done
-TOKEN=$(sed -n 's/.*token=\([0-9a-f]*\).*/\1/p' "$CONSOLE_HOME/console.log" | head -1)
+TOKEN=$(sed -n 's/.*token=\([A-Za-z0-9]*\).*/\1/p' "$CONSOLE_HOME/console.log" | head -1)
 [ -n "$TOKEN" ] || { echo "console token not found:"; cat "$CONSOLE_HOME/console.log"; exit 1; }
 pass "console up"
 
