@@ -722,7 +722,74 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              );",
         )?;
     }
+
+    converge_columns(conn)?;
     conn.pragma_update(None, "user_version", 16)?;
+    Ok(())
+}
+
+/// Column names of `table` (empty when the table does not exist).
+fn table_columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    rows.collect()
+}
+
+/// Add `column` to `table` when the table exists but the column is missing.
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
+    let cols = table_columns(conn, table)?;
+    if !cols.is_empty() && !cols.iter().any(|c| c == column) {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    }
+    Ok(())
+}
+
+/// Version-independent convergence pass.
+///
+/// `user_version` numbering collided across the public and enterprise lines:
+/// a DB created by the public 0.2.x/0.3.0 releases can carry user_version
+/// 7..=11 WITHOUT any of the enterprise migration content for those versions
+/// (public v7-v11 are different migrations). Pure version gating then skips
+/// the ALTERs the current schema needs, producing runtime failures like
+/// `no such column: goals.closed_at` on team.list / sync after upgrading.
+///
+/// Every step below is idempotent and guarded by an existence check, so it is
+/// safe to run on every migrate() call regardless of user_version: fresh DBs
+/// get everything from SCHEMA (all no-ops here), in-branch legacy DBs already
+/// received these via the versioned blocks, and cross-fork DBs get converged.
+fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
+    // v7 (enterprise): multi-goal support + connection audit.
+    ensure_column(conn, "goals", "closed_at", "TEXT")?;
+    ensure_column(conn, "members", "last_ip", "TEXT")?;
+    // The pre-multi-goal UNIQUE(team_id) index (created by the public line's
+    // v3) rejects a team's second goal; dropping a missing index is a no-op.
+    conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;
+
+    // v4: custom-role workflow columns (public v4 content differs).
+    ensure_column(conn, "roles", "state", "TEXT NOT NULL DEFAULT 'approved'")?;
+    ensure_column(conn, "roles", "proposed_by", "TEXT")?;
+
+    // v10 (enterprise cost): activity attribution/cache/cost columns. SCHEMA
+    // creates the full table for fresh DBs; these ALTERs only fire when an
+    // older `activity` table already exists.
+    let activity_cols: &[(&str, &str)] = &[
+        ("model_id", "TEXT"),
+        ("provider_id", "TEXT"),
+        ("tokens_cache_read", "INTEGER"),
+        ("tokens_cache_write", "INTEGER"),
+        ("cost_source", "TEXT NOT NULL DEFAULT 'none'"),
+        ("cost_input", "REAL"),
+        ("cost_output", "REAL"),
+        ("cost_cache_read", "REAL"),
+        ("cost_cache_write", "REAL"),
+    ];
+    for (name, decl) in activity_cols {
+        ensure_column(conn, "activity", name, decl)?;
+    }
+
+    // Builtin pricing rows use INSERT OR IGNORE — safe to re-run every time,
+    // and required for cross-fork DBs that skipped the versioned v10 block.
+    crate::activity::seed_builtin_pricing(conn)?;
     Ok(())
 }
 
@@ -1020,4 +1087,148 @@ where
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
         Some("teamx: write timed out after repeated busy retries".into()),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Simulate a DB created by the public 0.2.x/0.3.0 line: it carries
+    /// user_version=11 but NONE of the enterprise migration content for
+    /// v7..=11 (the version numbers collided across the two lines). Notably
+    /// `goals` has no `closed_at` and still has the pre-multi-goal UNIQUE
+    /// index, `members` has no `last_ip`, and `roles` has no state columns.
+    fn legacy_public_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE teams (
+               id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_member_id TEXT,
+               goal_id TEXT, state TEXT NOT NULL DEFAULT 'forming',
+               invite_token TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE members (
+               id TEXT PRIMARY KEY,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               session_key TEXT NOT NULL, display_name TEXT NOT NULL,
+               role TEXT, state TEXT NOT NULL DEFAULT 'pending',
+               loopx_project TEXT, last_seen_at TEXT,
+               joined_at TEXT NOT NULL, left_at TEXT
+             );
+             CREATE TABLE goals (
+               id TEXT PRIMARY KEY,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               title TEXT NOT NULL, body TEXT, state TEXT NOT NULL DEFAULT 'proposed',
+               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE UNIQUE INDEX idx_goals_team ON goals(team_id);
+             CREATE TABLE roles (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               key TEXT NOT NULL, label TEXT NOT NULL, description TEXT,
+               permissions_json TEXT, UNIQUE(team_id, key)
+             );
+             CREATE TABLE events (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               member_id TEXT, seq INTEGER NOT NULL, type TEXT NOT NULL,
+               payload_json TEXT, created_at TEXT NOT NULL, UNIQUE(team_id, seq)
+             );
+             CREATE TABLE questions (
+               id TEXT PRIMARY KEY,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               asker_member_id TEXT NOT NULL, target_member_id TEXT NOT NULL,
+               question TEXT NOT NULL, answer TEXT, state TEXT NOT NULL DEFAULT 'open',
+               created_at TEXT NOT NULL, answered_at TEXT
+             );
+             CREATE TABLE sync_cursors (
+               session_key TEXT NOT NULL,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               last_seq INTEGER NOT NULL, PRIMARY KEY(session_key, team_id)
+             );
+             CREATE TABLE invitations (
+               id TEXT PRIMARY KEY,
+               team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               member_id TEXT NOT NULL, role_key TEXT NOT NULL, role_label TEXT,
+               role_desc TEXT, cert_serial TEXT, cert_cn TEXT,
+               created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+               used_by TEXT, used_at TEXT, revoked_at TEXT
+             );
+             INSERT INTO teams (id, name, invite_token, created_at, updated_at)
+               VALUES ('t1', 'legacy', 'tok', 'now', 'now');
+             INSERT INTO goals (id, team_id, title, created_at, updated_at)
+               VALUES ('g1', 't1', 'first goal', 'now', 'now');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 11).unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrate_converges_legacy_public_db() {
+        let conn = legacy_public_conn();
+        migrate(&conn).unwrap();
+
+        // The original production failure: team.list/sync SELECT closed_at.
+        let gcols = table_columns(&conn, "goals").unwrap();
+        assert!(
+            gcols.iter().any(|c| c == "closed_at"),
+            "goals.closed_at missing after migrate: {gcols:?}"
+        );
+        conn.query_row(
+            "SELECT id, team_id, title, body, state, closed_at FROM goals WHERE id = 'g1'",
+            [],
+            |r| r.get::<_, Option<String>>(5),
+        )
+        .unwrap();
+
+        // v7 connection-audit column on the pre-existing members table.
+        let mcols = table_columns(&conn, "members").unwrap();
+        for c in ["last_ip", "is_lead", "user_id", "discussion_quota"] {
+            assert!(mcols.iter().any(|x| x == c), "members.{c} missing: {mcols:?}");
+        }
+
+        // v4 custom-role columns on the pre-existing roles table.
+        let rcols = table_columns(&conn, "roles").unwrap();
+        for c in ["state", "proposed_by"] {
+            assert!(rcols.iter().any(|x| x == c), "roles.{c} missing: {rcols:?}");
+        }
+
+        // The pre-multi-goal UNIQUE(team_id) index must be gone: a second
+        // goal for the same team must insert cleanly.
+        conn.execute(
+            "INSERT INTO goals (id, team_id, title, created_at, updated_at)
+             VALUES ('g2', 't1', 'second goal', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+
+        // Builtin pricing seeded even though the versioned v10 block was
+        // skipped by the foreign user_version.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pricing WHERE source = 'builtin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n > 0, "builtin pricing not seeded");
+
+        // Version converges to the current schema version.
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 16);
+
+        // Idempotent: migrating again must succeed and change nothing.
+        migrate(&conn).unwrap();
+    }
+
+    #[test]
+    fn migrate_fresh_db_is_converged_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let gcols = table_columns(&conn, "goals").unwrap();
+        assert!(gcols.iter().any(|c| c == "closed_at"));
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 16);
+    }
 }
