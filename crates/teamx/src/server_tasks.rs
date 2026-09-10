@@ -233,10 +233,18 @@ fn create(conn: &mut Connection, team_id: &str, member_id: &str, args: &Value) -
                 team_id,
                 Some(member_id),
                 "doc.created",
+                // Emit BOTH field spellings: server-side taskx uses
+                // `assignee`/`role`/`task`, while the opencode plugin's
+                // automation (auto-ack / auto-claim / auto-execute) matches on
+                // the legacy doc-flow names `assignee_member_id` /
+                // `assignee_role` / `id` / `executor`. Keep both so every
+                // consumer (old plugin bundles included) sees its shape.
                 Some(&json!({
-                    "doc": "taskx", "task": id, "title": title,
-                    "mode": mode, "assignee": target_ref,
-                    "role": role.as_deref(), "priority": priority,
+                    "doc": "taskx", "task": id, "id": id, "title": title,
+                    "mode": mode,
+                    "assignee": target_ref, "assignee_member_id": target_ref,
+                    "role": role.as_deref(), "assignee_role": role.as_deref(),
+                    "priority": priority, "executor": executor,
                 })),
             )?;
             created_ids.push(id);
@@ -408,10 +416,10 @@ fn transition(
             Some(member_id),
             event_type,
             Some(&json!({
-                "doc": "taskx", "task": id,
+                "doc": "taskx", "task": id, "id": id,
                 "title": task["title"],
                 "to": nstate,
-                "detail": detail,
+                "detail": detail, "note": detail,
             })),
         )?;
         Ok(())
