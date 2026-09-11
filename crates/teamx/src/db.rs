@@ -844,15 +844,48 @@ pub fn member_ip(conn: &Connection, member_id: &str) -> Option<String> {    conn
 }
 
 /// Whether the member currently has an open connection.
+/// Whether the member is currently "online".
+///
+/// Two independent signals count:
+///   1. an open connection row (long-lived WS / reverse tunnel), or
+///   2. a fresh presence heartbeat (`presence.updated_at` within
+///      `PRESENCE_TTL_MS`).
+///
+/// The heartbeat covers clients that are actively pushing presence but whose
+/// long-lived WS is not established — e.g. a letter imported *after* the plugin
+/// initialised (see issue #6), or a transient WS drop.
 pub fn member_online(conn: &Connection, member_id: &str) -> bool {
-    conn.query_row(
-        "SELECT COUNT(*) FROM member_connections
-         WHERE member_id = ?1 AND disconnected_at IS NULL",
-        [member_id],
-        |r| r.get::<_, i64>(0),
-    )
-    .map(|n| n > 0)
-    .unwrap_or(false)
+    let connected = conn
+        .query_row(
+            "SELECT COUNT(*) FROM member_connections
+             WHERE member_id = ?1 AND disconnected_at IS NULL",
+            [member_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if connected {
+        return true;
+    }
+
+    // Fall back to a fresh presence heartbeat.
+    let updated: Option<String> = conn
+        .query_row(
+            "SELECT updated_at FROM presence WHERE member_id = ?1",
+            [member_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(updated) = updated else {
+        return false;
+    };
+    chrono::DateTime::parse_from_rfc3339(&updated)
+        .ok()
+        .map(|ts| {
+            (chrono::Utc::now() - ts.with_timezone(&chrono::Utc)).num_milliseconds()
+                < crate::activity::PRESENCE_TTL_MS
+        })
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
