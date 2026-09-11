@@ -52,6 +52,20 @@ function isDirectedTask(event: any): boolean {
   return !!(data?.assignee_member_id || data?.assignee)
 }
 
+/**
+ * Cordis dependency declaration.
+ *
+ * MUST be a module-level export: the published `lib/index.js` is a pure ESM
+ * bundle, and cordis's `unwrapExports()` reads `inject` off the module
+ * namespace. Declaring it only on `apply` (as some CJS loaders allow) left
+ * `namespace.inject` undefined, crashing startup with
+ * "cannot get property tools without inject".
+ *
+ * Kept in sync with `apply.inject` below for loaders that read the function
+ * property instead of the namespace.
+ */
+export const inject = ['tools', 'commands', 'systemPrompt', 'skills']
+
 export function apply(ctx: Context, config: Config = {}): void {
   const pollIntervalMs = config.pollIntervalMs || POLL_DEFAULT_MS
   let wsClient: ReturnType<typeof createWsClient> | null = null
@@ -258,3 +272,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
   }
 }
+
+// Back-compat: expose the same declaration on `apply` for loaders that read
+// the static property off the plugin function rather than the ESM namespace.
+;(apply as unknown as { inject?: readonly string[] }).inject = inject
