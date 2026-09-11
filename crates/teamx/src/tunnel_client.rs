@@ -984,6 +984,14 @@ pub fn discover_server_url() -> Option<String> {    let home = crate::db::teamx_
 
 /// Run a short HTTP JSON-RPC call (tunnel.list / status / close).
 pub fn run_rpc(server_url: &str, method: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    run_rpc_with_timeout(server_url, method, args, 15)
+}
+
+/// Same as [`run_rpc`] but with a caller-chosen overall timeout. Short
+/// timeouts suit best-effort notifications (e.g. the CLI's post-write
+/// `events.rebroadcast` trigger), where a slow or unreachable server must
+/// not stall the caller.
+pub fn run_rpc_with_timeout(server_url: &str, method: &str, args: serde_json::Value, timeout_secs: u64) -> Result<serde_json::Value, String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -992,15 +1000,15 @@ pub fn run_rpc(server_url: &str, method: &str, args: serde_json::Value) -> Resul
         let mtls = mtls_for(server_url).ok_or_else(|| "no mTLS material for RPC".to_string())?;
         let config = client_config(&mtls)?;
         let body = serde_json::json!({ "method": method, "args": args }).to_string();
-        let resp = https_post(server_url, "/rpc", &body, &config).await?;
+        let resp = https_post(server_url, "/rpc", &body, &config, timeout_secs).await?;
         serde_json::from_str(&resp).map_err(|e| format!("bad rpc response: {e}"))
     })
 }
 
 /// Minimal HTTPS POST with mTLS (rustls client over tokio TcpStream).
-/// Hardened with a 15s overall timeout and an HTTP status check so a stalled
+/// Hardened with an overall timeout and an HTTP status check so a stalled
 /// server or an error page is surfaced as an error, not garbage JSON.
-async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<ClientConfig>) -> Result<String, String> {
+async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<ClientConfig>, timeout_secs: u64) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
 
@@ -1031,9 +1039,9 @@ async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<Clien
         tls.read_to_end(&mut resp).await.map_err(|e| format!("read: {e}"))?;
         Ok::<_, String>(String::from_utf8_lossy(&resp).to_string())
     };
-    let text = tokio::time::timeout(std::time::Duration::from_secs(15), request)
+    let text = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), request)
         .await
-        .map_err(|_| "rpc timed out after 15s".to_string())??;
+        .map_err(|_| format!("rpc timed out after {timeout_secs}s"))??;
 
     // Split status line / headers / body at the blank line.
     let (head, body_part) = match text.split_once("\r\n\r\n") {

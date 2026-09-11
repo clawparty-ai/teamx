@@ -932,6 +932,52 @@ async fn rpc(
         return (StatusCode::OK, Json(json!({ "ok": true, "data": { "metrics": snap } })));
     }
 
+    // `events.rebroadcast` — a local CLI that wrote the ledger directly asks
+    // the server to fan those events out to live WS connections (N1). The
+    // server publishes only rows that verifiably exist in its own ledger and
+    // only for teams the caller is an active member of: the broadcast stays a
+    // strict subset of the ledger.
+    if method == "events.rebroadcast" {
+        let Some((caller, _)) = pki::parse_member_cn(&cn) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": format!("no member identity in client certificate CN `{cn}`") })),
+            );
+        };
+        let events = req.args.get("events").and_then(Value::as_array).cloned().unwrap_or_default();
+        if events.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "events.rebroadcast requires a non-empty `events` array" })),
+            );
+        }
+        if events.len() > 64 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "events.rebroadcast accepts at most 64 events" })),
+            );
+        }
+        let db = state.db.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            let conn = db.lock().unwrap();
+            commands::verified_rebroadcast_events(&conn, &caller, &events)
+        })
+        .await;
+        return match verified {
+            Ok(rows) => {
+                let published = rows.len();
+                for (team_id, ev) in &rows {
+                    hub.publish(team_id, &json!({ "type": "event", "event": ev }));
+                }
+                (StatusCode::OK, Json(json!({ "ok": true, "data": { "published": published } })))
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "ok": false, "error": format!("internal: {e}") })),
+            ),
+        };
+    }
+
     // DNS resolution via a proxy exit (uncensored resolver). Async: forwards a
     // `resolve` frame to the named exit and waits for its `resolve_result`.
     if method == "team.resolve_dns" {
