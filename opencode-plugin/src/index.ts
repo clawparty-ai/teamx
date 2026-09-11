@@ -32,6 +32,8 @@ import { t } from "./i18n"
 
 const LOG_SERVICE = "teamx"
 const POLL_INTERVAL = Number(process.env.TEAMX_POLL_INTERVAL ?? 15000)
+/** How often the WS watcher re-resolves the server URL (late-letter pickup). */
+const WS_WATCH_INTERVAL = Number(process.env.TEAMX_WS_WATCH_INTERVAL ?? 10_000)
 // loopx-style auto-execute: when a task broadcast arrives, wake the member
 // session and start working until the goal is done. Enabled by default; set
 // TEAMX_AUTO_EXECUTE=0 to disable.
@@ -826,15 +828,39 @@ async function refreshDigest(sessionID: string): Promise<void> {
     }, POLL_INTERVAL)
   }
 
-  // N1/N3: live push. Open a WS connection when a network-mode server is
-  // configured and refresh the digest in real time on each incoming event.
+  // N1/N3: live push watcher (Issue #6). The server URL is re-resolved every
+  // few seconds instead of once at startup, so an invitation letter imported
+  // into a RUNNING opencode session (the common cross-machine onboarding
+  // path) establishes /ws without a restart; a changed URL (newer letter)
+  // rebuilds the connection, and losing all letters drops it. In-connection
+  // retries live in connectWs itself (exponential backoff + jitter).
   // The per-session seq watermark (in refreshDigest) keeps toasts from
   // duplicating between the push and poll paths.
   let wsHandle: ReturnType<typeof connectWs> | undefined
-  const wsServer = serverUrlFor(dirOfSession(undefined))
-  if (wsServer) {
+  let wsCurrentUrl = ""
+  const ensureWs = () => {
+    const url = serverUrlFor(dirOfSession(undefined))
+    if (!url) {
+      if (wsHandle) {
+        wsHandle.close()
+        wsHandle = undefined
+        if (wsConnected) {
+          wsConnected = false
+          scheduleRefresh()
+        }
+        log("debug", "ws push stopped: no server URL (no invitation letter)")
+      }
+      wsCurrentUrl = ""
+      return
+    }
+    if (wsHandle && url === wsCurrentUrl) return
+    if (wsHandle) {
+      wsHandle.close()
+      wsHandle = undefined
+    }
+    wsCurrentUrl = url
     wsHandle = connectWs({
-      serverUrl: wsServer,
+      serverUrl: url,
       cwd: dirOfSession(undefined),
       onEvent: () => scheduleRefresh(),
       onStatus: (connected) => {
@@ -845,7 +871,14 @@ async function refreshDigest(sessionID: string): Promise<void> {
       },
       log: (level, message) => log(level === "debug" ? "debug" : "warn", message),
     })
+    if (!wsBootedWithUrl) {
+      log("info", `ws push connected to ${url} (letter picked up at runtime)`)
+    }
   }
+  const wsBootedWithUrl = serverUrlFor(dirOfSession(undefined)) !== ""
+  ensureWs()
+  const wsWatchTimer = setInterval(ensureWs, WS_WATCH_INTERVAL)
+  void wsWatchTimer
 
   // Reverse-tunnel auto-restore: re-open tunnels that were exposed before an
   // opencode restart (persisted in ~/.teamx/tunnels.json). Only the provider
