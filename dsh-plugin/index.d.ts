@@ -20,3 +20,6 @@ export interface Config {
 
 /** Mount the teamx collaboration plugin into a dsh Cordis context. */
 export declare function apply(ctx: Context, config?: Config): void
+
+/** Cordis service dependencies (module-level so ESM loaders can read them). */
+export declare const inject: readonly string[]
