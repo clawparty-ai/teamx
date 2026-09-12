@@ -1,9 +1,9 @@
 ---
 status: completed
-protocol_version: 1
+protocol_version: 2
 owner: human owner
 created_at: 2026-08-27
-updated_at: 2026-08-29
+updated_at: 2026-09-12
 ---
 
 # Teamx grill-with-docs workflow
@@ -73,6 +73,85 @@ Example Fact Request payload:
   "message": "Investigate how plugin assets are generated and installed."
 }
 ```
+
+## Consensus Mode (protocol v2)
+
+### Motivation
+
+The v1 workflow is *single-owner*: the session leader answers every Design Question;
+other members can only supply facts via Fact Requests ("A Fact Report informs a Design
+Question but cannot settle it. Only the owner settles decisions."). Teams that want to
+decide **together** (all members give a view, then converge on a consensus) had no
+supported flow. v2 adds **Consensus Mode** without changing the v1 default.
+
+### Structure
+
+**One grill session = one discussion thread** (`teamx discussion`). The session still has
+exactly one leader (the human who confirms Shared Understanding) and one Design Session
+Record (`docs/design/<slug>.md`).
+
+```
+1 grill session = 1 discussion
+  ├─ top-level msg: ❓ DQ-0001 <question + options>        ← leader
+  │    ├─ reply: <member answer + rationale + dissent>      ← member
+  │    └─ reply: ✅ 结论 DQ-0001 (consensus/rationale/dissent/unanimity) ← leader
+  ├─ top-level msg: ❓ DQ-0002 ...
+  └─ ... until Frontier empty → record status = completed
+```
+
+### Flow (per question, serial)
+
+1. Leader posts ONE top-level discussion message per Design Question (stable `DQ-*` id,
+   decision, trade-offs, choices, recommendation) and wakes all members
+   (`teamx_ask` / `teamx_publish` with `assignee`).
+2. Each member answers under that message with `discussion.reply`
+   (`reply_to` = the question message): answer + rationale + dissent.
+3. Answer window: all members answered, or a time limit (absent = abstain).
+4. Leader synthesizes and posts `✅ 结论 DQ-xxxx` as a `discussion.reply` to the same
+   question message (consensus / rationale / dissent / unanimity).
+5. Leader writes the same conclusion into the Design Session Record.
+6. Leader opens the next question.
+
+### Settled Decisions (v2)
+
+- **Single writer**: only the leader edits the record, `CONTEXT.md`, and ADRs; members
+  contribute via discussion replies only.
+- **Append-only discussion**: never edit a question message. The conclusion is recorded
+  twice — as a `discussion.reply` (deliberation trail) and in the record (authority).
+- **Consensus rule** is declared at session start: `unanimous` | `majority` |
+  `leader-decides`. Dissent is always recorded, even when a decision carries.
+- **Facts vs. opinions**: facts still use Fact Requests (`FR-*`); Consensus Mode settles
+  subjective trade-offs only.
+- **One thread per session**: the discussion stays open across all questions and is
+  closed only when the session completes.
+- **No new RPC/domain model**: reuse `discussion.*`, `ask`/`respond`, `publish`, and the
+  existing ledger; no Rust/SQLite change.
+
+### Record schema (v2 addition)
+
+`Settled Decisions` gains one entry per DQ:
+
+```markdown
+- DQ-0001 <title>: <consensus> — rationale: …; dissent: …;
+  unanimity: unanimous|majority|leader-decides; discussion: <thread id>#<message id>
+```
+
+### Trade-offs and alternatives
+
+- **Serial per-question vs. whole-Frontier round**: serial is clearer for consensus and
+  maps 1:1 to a discussion message, at the cost of latency; v1's whole-Frontier round
+  remains the default for single-owner sessions.
+- **One thread vs. one thread per DQ**: one thread keeps context and `subscribe` simple;
+  per-DQ threads isolate but require the leader to maintain a DQ→thread map.
+- **Discussion as record vs. file as record**: the ledger is append-only and cannot be
+  edited, so it cannot hold the evolving authoritative answer; the file stays the record
+  and the discussion stays the deliberation trail.
+
+### Ledger compatibility
+
+Consensus Mode adds no new event types: questions/answers/conclusions are ordinary
+`discussion.message` events (with `reply_to`), and optional decision announcements reuse
+`publish` type `decision` pointing at the record.
 
 ## Current Frontier
 
