@@ -240,6 +240,7 @@ async fn nudge_task(state: AppState) {
             let mut conn = db.lock().unwrap();
             let mut out = commands::nudge_idle_teams(&mut conn, after_secs, None)?;
             out.extend(commands::nudge_open_tasks(&mut conn, after_secs, None, None)?);
+            out.extend(commands::nudge_unclaimed_tasks(&mut conn, after_secs, None)?);
             Ok::<_, rusqlite::Error>(out)
         })
         .await;
