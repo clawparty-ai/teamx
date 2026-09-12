@@ -1449,6 +1449,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             team: o("team"),
         }),
 
+        "member.discussion_quota" => Command::Member(MemberCmd::DiscussionQuota {
+            action: s("action").ok_or_else(|| "member.discussion_quota requires `action` (get|set)".to_string())?,
+            // Accept both JSON numbers and numeric strings (CLI flags arrive
+            // as strings through cliArgsToRpc).
+            value: args.get("value").and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_str().and_then(|x| x.trim().parse::<i64>().ok()))
+            }),
+            member: o("member"),
+            session: sess(args),
+            team: o("team"),
+        }),
+
         "role.list" => Command::Role(RoleCmd::List { team: o("team") }),
         "role.set" => Command::Role(RoleCmd::Set {
             role: s("role").ok_or_else(|| "role.set requires `role`".to_string())?,

@@ -103,7 +103,7 @@ fn snapshot_message(conn: &Connection, team_id: &str, message_ref: &str) -> Resu
     }))
 }
 
-/// Read the member's per-topic discussion quota (default 5).
+/// Read the member's per-topic discussion quota (schema default 20).
 fn member_quota(conn: &Connection, member_id: &str, team_id: &str) -> Result<i64, String> {
     conn.query_row(
         "SELECT discussion_quota FROM members WHERE id = ?1 AND team_id = ?2",
@@ -776,6 +776,24 @@ mod tests {
     }
 
     // --- Quota (per-topic participation) tests ---
+
+    #[test]
+    fn fresh_member_default_quota_covers_multi_question_grill() {
+        // Fresh members inherit the column default: it must fit a 6-question
+        // grill (one active post per question) with headroom. Mention replies
+        // never consume quota, so 20 active posts is ample without
+        // meaningfully weakening spam protection.
+        let conn = test_conn();
+        seed(&conn);
+        let q: i64 = conn
+            .query_row(
+                "SELECT discussion_quota FROM members WHERE id = 'm-worker' AND team_id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q, 20);
+    }
 
     fn set_quota(conn: &Connection, member_id: &str, n: i64) {
         conn.execute(

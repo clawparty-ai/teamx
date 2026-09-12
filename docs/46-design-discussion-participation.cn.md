@@ -99,12 +99,13 @@
 
 ### 4.5 成员配额配置
 
-- 存储：`members.discussion_quota`（INT，默认 5）。
+- 存储：`members.discussion_quota`（INT，默认 20；mention 回复不计数）。
 - CLI/RPC：
   ```
-  teamx member discussion-quota --get --session s [--member m] [--team t]   # 读
-  teamx member discussion-quota --set <N> --session s [--member m] [--team t]  # 写（本人可改自己；owner/lead 可改任何人）
+  teamx member discussion-quota get --session s [--member m] [--team t]   # 读
+  teamx member discussion-quota set --value <N> --session s [--member m] [--team t]  # 写（本人可改自己；owner/lead 可改任何人）
   ```
+  RPC 方法：`member.discussion_quota`（`{action, value?, member?, team?}`，网络模式经 mTLS）。
 - console：讨论页/成员视图提供配额显示与编辑入口（owner/lead 与本人）。
 
 ## 5. 数据流示例
