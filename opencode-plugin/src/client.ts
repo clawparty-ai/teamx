@@ -444,6 +444,7 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     "team.import": ["letter"],
     "goal.set": ["title", "body"],
     "member.set_state": ["state"],
+    "member.discussion_quota": ["action"],
     "role.set": ["role"],
     "role.propose": ["role", "label", "description"],
     "role.approve": ["role"],

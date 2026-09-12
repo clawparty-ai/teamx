@@ -31,7 +31,7 @@
 | D1 | 谁会收到"回复"通知 | **全体可见提示**；AI 仅在被 @ / 订阅 / 任务相关时**被唤醒** |
 | D2 | AI 何时被唤醒 | **@提及 → 订阅该讨论 → 讨论挂到自己的 task**，三者皆可触发（可配置开关） |
 | D3 | AI 是否自主判断该不该回 | **唤醒后自主判断**：读上下文 → 有相关信息/职责/被@才回，否则静默不打扰（记"已读未回"水位，避免反复唤醒） |
-| D4 | 配额护栏 | **per-topic 配额**：每 AI × 每话题独立「最大主动回复次数」（默认 5）；主动发言消耗配额，**被 @ 响应不消耗**；达上限后 AI 不再主动发言但仍可响应 @；用户可随时调整 |
+| D4 | 配额护栏 | **per-topic 配额**：每 AI × 每话题独立「最大主动回复次数」（默认 20）；主动发言消耗配额，**被 @ 响应不消耗**；达上限后 AI 不再主动发言但仍可响应 @；用户可随时调整 |
 | D5 | 关注方式 | 先做 **@ 提及**；订阅/任务绑定作为可配置触发一并纳入 v1 开关 |
 
 ### D4 配额语义（关键细节）
@@ -42,7 +42,7 @@
   - **被 @ 响应**（消息里 `@<display_name>` 明确指向该 AI）→ **不消耗配额**。
 - **达到上限后**：该 AI 不再主动回复该话题；但被 @ 仍可响应（响应不耗配额、不受上限限制）。
 - **计数来源**：事件即存储 → 统计该 AI 在该话题发出的 `discussion.message` 条数中「主动发言」（非被@响应）即可，无需额外计数表。
-- **管理**：成员级属性 `discussion_quota`（默认 5，per member，作用于其所有话题）；owner/lead 可设，成员可改自己的；存 server 随成员走。
+- **管理**：成员级属性 `discussion_quota`（默认 20，per member，作用于其所有话题）；owner/lead 可设，成员可改自己的；存 server 随成员走。
 
 ## 4. 详细设计
 
@@ -99,13 +99,15 @@
 
 ### 4.5 成员配额配置
 
-- 存储：`members.discussion_quota`（INT，默认 5）。
+- 存储：`members.discussion_quota`（INT，默认 20；mention 回复不计数）。
 - CLI/RPC：
   ```
-  teamx member discussion-quota --get --session s [--member m] [--team t]   # 读
-  teamx member discussion-quota --set <N> --session s [--member m] [--team t]  # 写（本人可改自己；owner/lead 可改任何人）
+  teamx member discussion-quota get --session s [--member m] [--team t]   # 读
+  teamx member discussion-quota set --value <N> --session s [--member m] [--team t]  # 写（本人可改自己；owner/lead 可改任何人）
   ```
+  RPC 方法：`member.discussion_quota`（`{action, value?, member?, team?}`，网络模式经 mTLS）。
 - console：讨论页/成员视图提供配额显示与编辑入口（owner/lead 与本人）。
+- **默认值迁移说明（方案 B）**：`DEFAULT 20` 仅对**新建数据库 / 新建成员**生效；既有数据库（`user_version >= 15`）列默认仍为 5，既有成员保留其现值（不做全量回填）。既有部署如需放宽，请用上述 RPC/CLI 显式设置。
 
 ## 5. 数据流示例
 
