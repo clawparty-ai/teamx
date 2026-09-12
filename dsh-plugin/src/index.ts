@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent'
-import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools } from './tools.js'
+import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools, registerDiscussionTools } from './tools.js'
 import { registerCommands } from './commands.js'
 import { TEAMX_SKILL } from './skill.js'
 import { TEAMX_GRILL_WITH_DOCS_SKILL } from './grill-with-docs.generated.js'
@@ -78,6 +78,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerGoalTools(ctx)
   registerMemberTools(ctx)
   registerInteractionTools(ctx)
+  registerDiscussionTools(ctx)
   registerCommands(ctx)
   ctx.effect(() => ctx.skills.register(TEAMX_SKILL))
   ctx.effect(() => ctx.skills.register(TEAMX_GRILL_WITH_DOCS_SKILL))
