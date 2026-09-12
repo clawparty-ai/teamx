@@ -500,7 +500,10 @@ fn open(conn: &Connection, id: &str, session: &str, team_opt: Option<&str>) -> R
     let evs = events::list(conn, &team_id, None).map_err(|e| e.to_string())?;
     let mut title = String::new();
     let mut closed = false;
-    let mut messages = Vec::new();
+    let mut closed_by = String::new();
+    let mut closed_at = String::new();
+    let mut summary: Option<String> = None;
+    let mut summary_auto = false;
     for e in &evs {
         let Some(payload) = &e.payload else { continue };
         if payload.get("discussion_id").and_then(|x| x.as_str()) != Some(id) {
@@ -510,30 +513,130 @@ fn open(conn: &Connection, id: &str, session: &str, team_opt: Option<&str>) -> R
             EV_CREATED => {
                 title = payload.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
             }
-            EV_MESSAGE => {
-                let mid = payload.get("message_id").and_then(|x| x.as_str()).unwrap_or(&format!("{id}#{}", e.seq)).to_string();
-                messages.push(json!({
-                    "seq": e.seq,
-                    "message_id": mid,
-                    "author": payload.get("author").and_then(|x| x.as_str()).unwrap_or(""),
-                    "body": payload.get("body").and_then(|x| x.as_str()).unwrap_or(""),
-                    "reply_to": payload.get("reply_to"),
-                    "quotes": payload.get("quotes").cloned().unwrap_or_else(|| json!([])),
-                    "created_at": e.created_at,
-                }));
+            EV_CLOSED => {
+                closed = true;
+                closed_by = payload.get("closed_by").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                closed_at = e.created_at.clone();
+                if let Some(s) = payload.get("summary").and_then(|x| x.as_str()) {
+                    if !s.trim().is_empty() {
+                        summary = Some(s.to_string());
+                    }
+                }
+                if let Some(b) = payload.get("summary_auto").and_then(|x| x.as_bool()) {
+                    summary_auto = b;
+                }
             }
-            EV_CLOSED => closed = true,
             _ => {}
         }
     }
+    let mut messages = collect_messages(&evs, id);
     if title.is_empty() && messages.is_empty() && !closed {
         return Err(format!("discussion `{id}` not found"));
     }
+    // Threads closed before summaries existed (or with an empty one) get a
+    // deterministic digest so members always see a quick recap under the topic.
+    if closed && summary.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+        summary = Some(digest_summary(&messages));
+        summary_auto = true;
+    }
     messages.reverse(); // newest first
-    Ok(json!({ "ok": true, "discussion_id": id, "title": title, "closed": closed, "messages": messages }))
+    Ok(json!({
+        "ok": true,
+        "discussion_id": id,
+        "title": title,
+        "closed": closed,
+        "closed_by": closed_by,
+        "closed_at": closed_at,
+        "summary": summary,
+        "summary_auto": summary_auto,
+        "messages": messages,
+    }))
 }
 
-fn close(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
+/// Collect a thread's messages in chronological order (as stored).
+fn collect_messages(evs: &[events::Event], id: &str) -> Vec<Value> {
+    let mut messages = Vec::new();
+    for e in evs {
+        let Some(payload) = &e.payload else { continue };
+        if payload.get("discussion_id").and_then(|x| x.as_str()) != Some(id) {
+            continue;
+        }
+        if e.r#type != EV_MESSAGE {
+            continue;
+        }
+        let mid = payload
+            .get("message_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or(&format!("{id}#{}", e.seq))
+            .to_string();
+        messages.push(json!({
+            "seq": e.seq,
+            "message_id": mid,
+            "author": payload.get("author").and_then(|x| x.as_str()).unwrap_or(""),
+            "body": payload.get("body").and_then(|x| x.as_str()).unwrap_or(""),
+            "reply_to": payload.get("reply_to"),
+            "quotes": payload.get("quotes").cloned().unwrap_or_else(|| json!([])),
+            "created_at": e.created_at,
+        }));
+    }
+    messages
+}
+
+/// Truncate a string to at most `n` chars (UTF-8 safe), appending `…` if cut.
+fn truncate_chars(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(n).collect();
+    out.push('…');
+    out
+}
+
+/// Short timestamp for the digest header (`YYYY-MM-DD HH:MM` from RFC3339).
+fn short_ts(s: &str) -> String {
+    let t = s.get(0..16).unwrap_or(s);
+    t.replace('T', " ")
+}
+
+/// Deterministic fallback summary built from a thread's messages (chronological
+/// order). Used when the closer supplies no summary, and to backfill threads
+/// that were closed before summaries existed. Not a semantic summary — a
+/// compact digest: participants, size, time range and per-message key lines.
+fn digest_summary(msgs: &[Value]) -> String {
+    if msgs.is_empty() {
+        return "（自动摘要）该讨论没有消息。".to_string();
+    }
+    let mut who: Vec<String> = Vec::new();
+    for m in msgs {
+        let a = m.get("author").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if !a.is_empty() && !who.iter().any(|w| w == a) {
+            who.push(a.to_string());
+        }
+    }
+    let first = msgs.first().and_then(|m| m.get("created_at")).and_then(|x| x.as_str()).unwrap_or("");
+    let last = msgs.last().and_then(|m| m.get("created_at")).and_then(|x| x.as_str()).unwrap_or("");
+    let mut out = format!(
+        "**参与者**：{}（{} 人）· **消息**：{} 条 · **时间**：{} → {}",
+        if who.is_empty() { "—".to_string() } else { who.join("、") },
+        who.len(),
+        msgs.len(),
+        short_ts(first),
+        short_ts(last),
+    );
+    const CAP: usize = 15;
+    out.push_str("\n\n**要点（按时间）**\n");
+    for m in msgs.iter().take(CAP) {
+        let a = m.get("author").and_then(|x| x.as_str()).unwrap_or("");
+        let body = m.get("body").and_then(|x| x.as_str()).unwrap_or("").replace(['\r', '\n'], " ");
+        out.push_str(&format!("- {}：{}\n", a, truncate_chars(body.trim(), 160)));
+    }
+    if msgs.len() > CAP {
+        out.push_str(&format!("- …（共 {} 条，仅摘录前 {} 条）\n", msgs.len(), CAP));
+    }
+    out.trim_end().to_string()
+}
+
+fn close(conn: &mut Connection, id: &str, summary: Option<&str>, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (member_id, display_name, team_id) = member_id_for_session(conn, session, team_opt)?;
     // Only team owner/lead may close a discussion (they hold team authority).
     let is_lead: bool = conn
@@ -556,10 +659,29 @@ fn close(conn: &mut Connection, id: &str, session: &str, team_opt: Option<&str>)
     if !exists {
         return Err(format!("discussion `{id}` not found"));
     }
-    let payload = json!({ "discussion_id": id, "closed_by": display_name });
+    // A closing summary is what members read under the topic. Prefer the one
+    // supplied by the closer (an agent can summarize content + conclusions);
+    // otherwise store a deterministic digest so the topic is never bare.
+    let msgs = collect_messages(&evs, id);
+    let (summary_text, summary_auto) = match summary.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => (s.to_string(), false),
+        None => (digest_summary(&msgs), true),
+    };
+    let payload = json!({
+        "discussion_id": id,
+        "closed_by": display_name,
+        "summary": summary_text,
+        "summary_auto": summary_auto,
+    });
     let seq = db::with_write(conn, |tx| events::emit(tx, &team_id, Some(&member_id), EV_CLOSED, Some(&payload)))
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "ok": true, "discussion_id": id, "closed_seq": seq }))
+    Ok(json!({
+        "ok": true,
+        "discussion_id": id,
+        "closed_seq": seq,
+        "summary": summary_text,
+        "summary_auto": summary_auto,
+    }))
 }
 
 fn uuid_slug() -> String {
@@ -583,7 +705,7 @@ pub fn run(conn: &mut Connection, cmd: &DiscussionCmd) -> Result<Value, String> 
         DiscussionCmd::Reply { id, message_id, body, session, team } => {
             say_or_reply(conn, id, body, None, Some(message_id), session, team.as_deref())
         }
-        DiscussionCmd::Close { id, session, team } => close(conn, id, session, team.as_deref()),
+        DiscussionCmd::Close { id, summary, session, team } => close(conn, id, summary.as_deref(), session, team.as_deref()),
         DiscussionCmd::Subscribe { id, session, team } => {
             let (member_id, _name, team_id) = member_id_for_session(conn, session, team.as_deref())?;
             subscribe(conn, &team_id, &member_id, id)?;
@@ -666,10 +788,18 @@ mod tests {
         assert!(reply["reply_to"].is_object());
 
         // non-lead worker cannot close
-        assert!(close(&mut conn, &did, "s-worker", Some("t1")).is_err());
-        // owner closes
-        let c = close(&mut conn, &did, "s-owner", Some("t1")).unwrap();
+        assert!(close(&mut conn, &did, None, "s-worker", Some("t1")).is_err());
+        // owner closes without a summary -> deterministic digest is stored
+        let c = close(&mut conn, &did, None, "s-owner", Some("t1")).unwrap();
         assert!(c["ok"] == json!(true));
+        assert_eq!(c["summary_auto"], json!(true));
+        assert!(c["summary"].as_str().unwrap().contains("参与者"));
+        // open exposes the stored summary + closed metadata
+        let oc = open(&conn, &did, "s-owner", Some("t1")).unwrap();
+        assert_eq!(oc["closed"], json!(true));
+        assert_eq!(oc["summary_auto"], json!(true));
+        assert!(oc["summary"].as_str().unwrap().contains("参与者"));
+        assert!(!oc["closed_by"].as_str().unwrap().is_empty());
         // after close, saying is rejected
         assert!(say_or_reply(&mut conn, &did, "late", None, None, "s-worker", Some("t1")).is_err());
         // list excludes closed by default
@@ -677,6 +807,45 @@ mod tests {
         assert_eq!(l2["discussions"].as_array().unwrap().len(), 0);
         let l3 = list(&conn, true, "s-owner", Some("t1")).unwrap();
         assert_eq!(l3["discussions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn close_with_explicit_summary_is_stored_and_returned() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        say_or_reply(&mut conn, &did, "hi", None, None, "s-worker", Some("t1")).unwrap();
+        let c = close(&mut conn, &did, Some("## 结论\n采用方案 A"), "s-owner", Some("t1")).unwrap();
+        assert_eq!(c["summary_auto"], json!(false));
+        assert_eq!(c["summary"], json!("## 结论\n采用方案 A"));
+        // open returns the closer-supplied summary verbatim (not the digest)
+        let oc = open(&conn, &did, "s-owner", Some("t1")).unwrap();
+        assert_eq!(oc["summary"], json!("## 结论\n采用方案 A"));
+        assert_eq!(oc["summary_auto"], json!(false));
+    }
+
+    #[test]
+    fn closed_thread_without_stored_summary_gets_digest_on_open() {
+        // Simulate a thread closed before summaries existed: emit EV_CLOSED
+        // with the legacy payload (no `summary`).
+        let mut conn = test_conn();
+        seed(&conn);
+        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        say_or_reply(&mut conn, &did, "hello", None, None, "s-worker", Some("t1")).unwrap();
+        let legacy = json!({ "discussion_id": did, "closed_by": "Owner" });
+        db::with_write(&mut conn, |tx| events::emit(tx, "t1", None, EV_CLOSED, Some(&legacy))).unwrap();
+        let oc = open(&conn, &did, "s-owner", Some("t1")).unwrap();
+        assert_eq!(oc["closed"], json!(true));
+        assert_eq!(oc["summary_auto"], json!(true));
+        let s = oc["summary"].as_str().unwrap();
+        assert!(s.contains("参与者"));
+        assert!(s.contains("hello"));
     }
 
     #[test]

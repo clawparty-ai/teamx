@@ -310,6 +310,12 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-floor-actions { margin-left:auto; display:flex; gap:6px; }
  .dsc-thread-actions { display:flex; gap:6px; margin-left:auto; }
  .dsc-toolbar-sub { margin: -6px 0 8px; }
+ .dsc-summary { background:var(--muted); border:1px solid var(--border); border-left:4px solid var(--accent, #4a9eff); border-radius:6px; padding:10px 12px; margin:8px 0 12px; }
+ .dsc-summary-head { font-weight:600; font-size:12.5px; color:var(--muted-fg); margin-bottom:6px; }
+ .dsc-summary .md-render { font-size:13px; }
+ .dsc-summary .md-render p:first-child { margin-top:0; }
+ .dsc-summary .md-render p:last-child { margin-bottom:0; }
+ .dsc-summary .md-render ul { margin:0.2em 0; padding-left:1.3em; }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
   .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
@@ -847,6 +853,7 @@ function renderThread(d){
         </div>`}
     </div>
     <div class="dsc-toolbar-sub">${closed?`<span class="muted">该讨论已关闭，仅可浏览。</span>`:replyBar}</div>
+    ${closed && d.summary ? `<div class="dsc-summary"><div class="dsc-summary-head">📋 讨论摘要${d.summary_auto?"（自动生成）":""}${d.closed_by?` · 由 ${esc(d.closed_by)} 关闭`:""}</div><div class="md-render">${mdRender(d.summary)}</div></div>` : ""}
     <div id="dscFloors">${floors||`<div class="dsc-empty">暂无消息。</div>`}</div>
     ${closed?"":`
     <div class="dsc-composer">
@@ -870,7 +877,8 @@ function renderThread(d){
   };
   const closeThread=$("#dscCloseThread"); if(closeThread) closeThread.onclick = async ()=>{
     if(!confirm("确认关闭该讨论？关闭后不可再发言。")) return;
-    try{ await dscAction("close",{id:curDsc}); openDiscussion(curDsc); }
+    const summary=(prompt("可选：填写关闭摘要（markdown）。留空则自动生成内容摘要。","")||"").trim();
+    try{ await dscAction("close",{id:curDsc,summary}); openDiscussion(curDsc); }
     catch(e){ alert(String(e.message||e)); }
   };
   const clearReply=$("#dscClearReply"); if(clearReply) clearReply.onclick = ()=>{ dscReplyTo=null; renderThread(curDscMeta); };
