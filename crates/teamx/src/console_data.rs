@@ -274,13 +274,14 @@ pub fn poll_team_events(ctx: &Ctx, after: i64) -> Result<(Vec<Value>, i64), Stri
     Ok((rows, max))
 }
 
-/// `discussion list` for the member's team.
+/// `discussion list` for the member's team. Includes CLOSED threads (shown with a
+/// lock in the console) so history is visible, not only the active ones.
 fn discussions_data(ctx: &Ctx) -> Result<Value, String> {
     match &ctx.mode {
-        Mode::Network(url) => net_rpc(url, "discussion.list", json!({})),
+        Mode::Network(url) => net_rpc(url, "discussion.list", json!({ "all": true })),
         Mode::Local => {
             let sess = require_local_session(ctx)?;
-            local_cli(&["discussion", "list", "--session", &sess])
+            local_cli(&["discussion", "list", "--all", "--session", &sess])
         }
     }
 }

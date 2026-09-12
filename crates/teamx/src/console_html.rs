@@ -312,9 +312,14 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-toolbar-sub { margin: -6px 0 8px; }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
- .dsc-floor-body { font-size:14px; color:var(--fg); white-space:pre-wrap; word-break:break-word; }
+  .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
  .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
- .dsc-quote .q-who { font-weight:600; color:var(--fg); }
+  .dsc-quote .q-who { font-weight:600; color:var(--fg); }
+  .dsc-quote .md-render { font-size:12.5px; }
+  .dsc-quote .md-render p { margin:0.2em 0; }
+  .dsc-quote .md-render h1, .dsc-quote .md-render h2, .dsc-quote .md-render h3, .dsc-quote .md-render h4 { font-size:13px; margin:0.2em 0; }
+  .dsc-quote .md-render ul { margin:0.2em 0; padding-left:1.2em; }
+  .dsc-quote .md-render pre { margin:0.2em 0; }
  .dsc-composer { display:flex; gap:8px; margin-top:12px; align-items:flex-start; }
  .dsc-composer textarea { flex:1; min-height:96px; resize:vertical; font-family:inherit; font-size:13px; padding:8px 10px; line-height:1.5; }
  .dsc-composer .btn { margin-top:auto; }
@@ -440,10 +445,15 @@ function rawPre(label,v){ return `<section class="panel"><h2>${esc(label)} <span
 
 /* ---------- Teams (+ per-member tunnel open dock) ---------- */
 const kindOf=(name)=>(name||"").includes("ttyd")?"ttyd":((name||"").includes("opencode")?"headless":"web");
+// Only the owner/admin console tunnels are privileged. Any other "web" tunnel
+// (a shared web service, a member's own console, etc.) is a normal Web entry —
+// labelling every non-ttyd/opencode tunnel "Admin" was misleading.
+const isAdminName=(name)=>{const n=(name||"").toLowerCase();return n.includes("teamx-ui")||n.includes("admin");};
 const openLabel=(kind,name)=>{
   if(kind==="ttyd") return {icon:"🖥", label:"TUI"};
   if(kind==="headless") return {icon:"🌐", label:"Web"};
-  return {icon:"🌐", label:"Admin"}; // teamx-ui etc.
+  if(isAdminName(name)) return {icon:"🛡", label:"Admin"};
+  return {icon:"🌐", label:"Web"};
 };
 async function loadTeams(){
   $("#teamBody").innerHTML=`<div class="loading">loading …</div>`;
@@ -498,11 +508,9 @@ async function loadTeams(){
         const canAdmin = (my.is_lead === true) || (my.role === "owner" || my.role === "admin") ||
             (t.my_is_lead === true) || (t.my_role === "owner" || t.my_role === "admin");
         // fs-* tunnels are served by the 📁 file browser, not opened as pages.
-        // "web" tunnels (non-ttyd / non-opencode, i.e. admin-console and other
-        // admin panels) are only visible+openable by this team's lead — a plain
-        // member must not see an entry to the admin console.
-        const isWeb=(x)=>kindOf(x.name)==="web";
-        const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-") && (!isWeb(t) || canAdmin));
+        // Only the privileged admin-console tunnels (teamx-ui*/admin*) are
+        // gated to this team's lead; ordinary web services stay visible to all.
+        const mtVisible=mt.filter(t=> t.name && !t.name.startsWith("fs-") && (!isAdminName(t.name) || canAdmin));
         const mtOpen=mtVisible;
         const act=m.activity||{};
         rows.push(`<tr>
@@ -639,25 +647,26 @@ function fsDownload(path,name){
 function mdRender(src){
   const esc2=(t)=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   let lines=(src||"").replace(/\r\n/g,"\n").split("\n");
-  let out=[]; let inCode=false, code=[];
+  let out=[]; let inCode=false, code=[]; let inList=false;
   const inline=(t)=>esc2(t)
     .replace(/`([^`]+)`/g,"<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
     .replace(/\*([^*]+)\*/g,"<i>$1</i>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
   const flush=()=>{ if(inCode){ out.push("<pre><code>"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; } };
+  const closeList=()=>{ if(inList){ out.push("</ul>"); inList=false; } };
   for(const ln of lines){
-    if(/^```/.test(ln)){ if(inCode){flush();} else { inCode=true; } continue; }
+    if(/^```/.test(ln)){ closeList(); if(inCode){flush();} else { inCode=true; } continue; }
     if(inCode){ code.push(ln); continue; }
-    if(/^####\s+/.test(ln)) out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>");
-    else if(/^###\s+/.test(ln)) out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>");
-    else if(/^##\s+/.test(ln)) out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>");
-    else if(/^#\s+/.test(ln)) out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>");
-    else if(/^[-*]\s+/.test(ln)) out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>");
-    else if(/^\s*$/.test(ln)) out.push("");
-    else out.push("<p>"+inline(ln)+"</p>");
+    if(/^####\s+/.test(ln)){ closeList(); out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>"); }
+    else if(/^###\s+/.test(ln)){ closeList(); out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>"); }
+    else if(/^##\s+/.test(ln)){ closeList(); out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>"); }
+    else if(/^#\s+/.test(ln)){ closeList(); out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>"); }
+    else if(/^[-*]\s+/.test(ln)){ if(!inList){ out.push("<ul>"); inList=true; } out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>"); }
+    else if(/^\s*$/.test(ln)){ closeList(); out.push(""); }
+    else { closeList(); out.push("<p>"+inline(ln)+"</p>"); }
   }
-  flush();
+  flush(); closeList();
   return out.join("\n");
 }
 function bindFsOverlay(){
@@ -785,7 +794,7 @@ function floorQuoteHtml(rt){
   if(!rt) return "";
   const who = rt.author ? ` · <span class="q-who">${esc(rt.author)}</span>` : "";
   const txt = rt.text || rt.body || "";
-  return `<div class="dsc-quote">${esc(who)}<br>${esc(txt)}</div>`;
+  return `<div class="dsc-quote">${esc(who)}<div class="md-render">${mdRender(txt)}</div></div>`;
 }
 
 function renderThread(d){
@@ -797,14 +806,16 @@ function renderThread(d){
   const quotesHtml = (m)=>{
     let h="";
     if(m.reply_to && typeof m.reply_to==="object"){
-      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<br>${esc(m.reply_to.text||m.reply_to.body||"")}</div>`;
+      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<div class="md-render">${mdRender(m.reply_to.text||m.reply_to.body||"")}</div></div>`;
     }
     const qs = Array.isArray(m.quotes)?m.quotes:[];
-    qs.forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><br>${esc(q.text||"")}</div>`; });
+    qs.forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><div class="md-render">${mdRender(q.text||"")}</div></div>`; });
     return h;
   };
   const floors = msgs.map((m,i)=>{
-    const no = i+1;
+    // Messages arrive newest-first; number them chronologically so the oldest
+    // floor is #1 (rendered at the bottom) and the newest gets the highest #.
+    const no = msgs.length - i;
     const author = m.author||"";
     return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">
       <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span><span>${esc(tf(m.created_at))}</span>
@@ -814,7 +825,7 @@ function renderThread(d){
         </span>
       </div>
       ${quotesHtml(m)}
-      <div class="dsc-floor-body">${esc(m.body||"")}</div>
+      <div class="dsc-floor-body md-render">${mdRender(m.body||"")}</div>
     </div>`;
   }).join("");
   const replyBar = dscReplyTo
@@ -885,13 +896,13 @@ function renderThreadFloors(d){
   const msgs = d&&d.messages||[];
   const quotesHtml=(m)=>{ let h="";
     if(m.reply_to && typeof m.reply_to==="object"){
-      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<br>${esc(m.reply_to.text||m.reply_to.body||"")}</div>`;
+      h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<div class="md-render">${mdRender(m.reply_to.text||m.reply_to.body||"")}</div></div>`;
     }
-    (Array.isArray(m.quotes)?m.quotes:[]).forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><br>${esc(q.text||"")}</div>`; });
+    (Array.isArray(m.quotes)?m.quotes:[]).forEach(q=>{ h += `<div class="dsc-quote"><span class="q-who">引用 ${esc(q.kind||"")}</span><div class="md-render">${mdRender(q.text||"")}</div></div>`; });
     return h;
   };
   const floors=msgs.map((m,i)=>{
-    const no=i+1, author=m.author||"";
+    const no=msgs.length-i, author=m.author||"";
     return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">
       <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span><span>${esc(tf(m.created_at))}</span>
         <span class="dsc-floor-actions">${closed?"":`
@@ -900,7 +911,7 @@ function renderThreadFloors(d){
         </span>
       </div>
       ${quotesHtml(m)}
-      <div class="dsc-floor-body">${esc(m.body||"")}</div>
+      <div class="dsc-floor-body md-render">${mdRender(m.body||"")}</div>
     </div>`;
   }).join("");
   el.innerHTML = floors||`<div class="dsc-empty">暂无消息。</div>`;
