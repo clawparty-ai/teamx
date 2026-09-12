@@ -5607,6 +5607,45 @@ mod tests {
     }
 
     #[test]
+    fn member_online_includes_fresh_presence() {
+        let conn = test_conn();
+        // No connection and no presence -> offline.
+        assert!(!crate::db::member_online(&conn, "m1"));
+
+        // Fresh presence heartbeat -> online (even without a ws/tunnel row).
+        conn.execute(
+            "INSERT INTO presence (member_id, active_sessions, running_tools, open_terminals, updated_at)
+             VALUES ('m1', 1, 0, 0, ?1)",
+            params![chrono::Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        assert!(crate::db::member_online(&conn, "m1"));
+
+        // Stale heartbeat (beyond TTL) -> offline again.
+        conn.execute(
+            "UPDATE presence SET updated_at = ?1 WHERE member_id = 'm1'",
+            params![(chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339()],
+        )
+        .unwrap();
+        assert!(!crate::db::member_online(&conn, "m1"));
+
+        // An open connection wins regardless of presence.
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1', 'T', 'm1', NULL, 'forming', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO member_connections (member_id, team_id, ip, endpoint, connected_at)
+             VALUES ('m1', 't1', '1.2.3.4', 'ws', 'now')",
+            [],
+        )
+        .unwrap();
+        assert!(crate::db::member_online(&conn, "m1"));
+    }
+
+    #[test]
     fn resolve_user_creates_then_reuses_by_name() {
         let conn = test_conn();
         let (id1, name1) = resolve_user(&conn, None, Some("张三"), "owner").unwrap().unwrap();
