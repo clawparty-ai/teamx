@@ -164,6 +164,7 @@ export async function mtlsFor(serverUrl?: string): Promise<MtlsConfig | null> {
   }
   const wantedHost = serverUrl ? hostOf(serverUrl) : ''
   let best: { sub: string; mtime: number } | null = null
+  let bestHostMatch: { sub: string; mtime: number } | null = null
   for (const id of entries) {
     const sub = join(dir, id)
     const letterPath = join(sub, 'letter.json')
@@ -185,24 +186,24 @@ export async function mtlsFor(serverUrl?: string): Promise<MtlsConfig | null> {
         statSync(ca).mtimeMs,
       )
       if (wantedHost && host === wantedHost) {
-        // Exact host match wins immediately.
-        const [c, k, a] = await Promise.all([
-          readFile(cert, 'utf-8'),
-          readFile(key, 'utf-8'),
-          readFile(ca, 'utf-8'),
-        ])
-        return { ca: a, cert: c, key: k }
+        // Exact host match — keep the NEWEST such letter (a host may have
+        // several letters across teams; readdir order is not meaningful).
+        if (!bestHostMatch || mtime > bestHostMatch.mtime) {
+          bestHostMatch = { sub, mtime }
+        }
+        continue
       }
       if (!best || mtime > best.mtime) best = { sub, mtime }
     } catch {
       // skip unreadable letters
     }
   }
-  if (!best) return null
+  const chosen = bestHostMatch ?? best
+  if (!chosen) return null
   const [c, k, a] = await Promise.all([
-    readFile(join(best.sub, 'client.crt'), 'utf-8'),
-    readFile(join(best.sub, 'client.key'), 'utf-8'),
-    readFile(join(best.sub, 'ca.crt'), 'utf-8'),
+    readFile(join(chosen.sub, 'client.crt'), 'utf-8'),
+    readFile(join(chosen.sub, 'client.key'), 'utf-8'),
+    readFile(join(chosen.sub, 'ca.crt'), 'utf-8'),
   ])
   return { ca: a, cert: c, key: k }
 }

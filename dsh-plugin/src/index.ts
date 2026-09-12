@@ -46,8 +46,14 @@ export interface Config {
 
 const POLL_DEFAULT_MS = 15_000
 
-/** How often the WS watcher re-resolves the server URL (late-letter pickup). */
-const WS_WATCH_INTERVAL_MS = 10_000
+/** How often the WS watcher re-resolves the server URL (late-letter pickup).
+ *  Override with TEAMX_WS_WATCH_INTERVAL (ms, must be > 0); default 10s —
+ *  same env name as the opencode-plugin side. */
+const WS_WATCH_INTERVAL_MS = (() => {
+  const fallback = 10_000
+  const raw = Number(process.env.TEAMX_WS_WATCH_INTERVAL ?? fallback)
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback
+})()
 
 /** Event types that are directed task assignments (auto-execute candidates). */
 function isDirectedTask(event: any): boolean {
