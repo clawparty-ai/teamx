@@ -1259,7 +1259,31 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             // Resolve cost: opencode cost stays authoritative; missing cost is
             // computed from tokens × pricing when the model is known.
             crate::activity::apply_pricing(conn, &mut rows).map_err(|e| e.to_string())?;
+            // Budget alert: snapshot the cumulative cost per (team, member)
+            // before the batch lands, so a threshold crossing can be detected
+            // after insertion. Disabled unless TEAMX_BUDGET_ALERT_COST_USD > 0.
+            let budget = crate::activity::budget_threshold_from_env();
+            let mut before_sums: std::collections::HashMap<(String, String), f64> =
+                std::collections::HashMap::new();
+            if budget.is_some() {
+                for r in &rows {
+                    let key = (r.team_id.clone(), r.member_id.clone());
+                    if let std::collections::hash_map::Entry::Vacant(e) = before_sums.entry(key) {
+                        let sum = crate::activity::member_cost_sum(conn, &r.team_id, &r.member_id)
+                            .map_err(|e| e.to_string())?;
+                        e.insert(sum);
+                    }
+                }
+            }
             let n = crate::activity::push_activities(conn, &rows).map_err(|e| e.to_string())?;
+            if let Some(threshold) = budget {
+                for ((tid, mid), before) in &before_sums {
+                    let after =
+                        crate::activity::member_cost_sum(conn, tid, mid).map_err(|e| e.to_string())?;
+                    crate::activity::budget_alert_on_crossing(conn, tid, mid, *before, after, threshold)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             return Ok(serde_json::json!({ "ok": true, "inserted": n }));
         }
         // Enterprise cost: plugin reports the opencode model pricing it observes

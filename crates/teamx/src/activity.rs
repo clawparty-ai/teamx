@@ -137,6 +137,72 @@ pub fn push_activities(conn: &mut Connection, rows: &[ActivityRow]) -> rusqlite:
 }
 
 // ---------------------------------------------------------------------------
+// Budget alert: env-configured cumulative-cost threshold, crossing-triggered.
+// ---------------------------------------------------------------------------
+
+/// Ledger event emitted when a member's cumulative cost crosses the budget.
+pub const BUDGET_ALERT_EVENT: &str = "budget.alert";
+
+/// Env var holding the per-member per-team cumulative cost threshold (USD).
+pub const BUDGET_ALERT_ENV: &str = "TEAMX_BUDGET_ALERT_COST_USD";
+
+/// Parse a threshold value: must be finite and > 0, otherwise disabled.
+pub fn parse_budget_threshold(raw: &str) -> Option<f64> {
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|t| t.is_finite() && *t > 0.0)
+}
+
+/// Threshold from `TEAMX_BUDGET_ALERT_COST_USD`; unset / invalid / <= 0
+/// disables alerting entirely.
+pub fn budget_threshold_from_env() -> Option<f64> {
+    std::env::var(BUDGET_ALERT_ENV)
+        .ok()
+        .and_then(|s| parse_budget_threshold(&s))
+}
+
+/// Cumulative recorded cost (USD) for one member within one team.
+pub fn member_cost_sum(conn: &Connection, team_id: &str, member_id: &str) -> rusqlite::Result<f64> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(cost), 0.0) FROM activity WHERE team_id = ?1 AND member_id = ?2",
+        params![team_id, member_id],
+        |r| r.get(0),
+    )
+}
+
+/// Emit one `budget.alert` ledger event iff the cumulative cost crosses the
+/// threshold (`before < threshold <= after`). Cost is monotonic per member,
+/// so a given threshold alerts at most once. The event lands in the ledger
+/// and is fanned out to live WS subscribers by the RPC layer like any other
+/// event; admin-console presentation is deliberately out of scope here.
+///
+/// Returns `Ok(true)` when an event was emitted.
+pub fn budget_alert_on_crossing(
+    conn: &mut Connection,
+    team_id: &str,
+    member_id: &str,
+    before: f64,
+    after: f64,
+    threshold: f64,
+) -> rusqlite::Result<bool> {
+    if !(before < threshold && threshold <= after) {
+        return Ok(false);
+    }
+    let payload = json!({
+        "team_id": team_id,
+        "member_id": member_id,
+        "period": "cumulative",
+        "usage_cost_usd": after,
+        "threshold_usd": threshold,
+    });
+    crate::db::with_write(conn, |tx| {
+        crate::events::emit(tx, team_id, Some(member_id), BUDGET_ALERT_EVENT, Some(&payload))
+    })?;
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
 // Enterprise cost: per-(provider, model) pricing + token → cost fallback.
 // ---------------------------------------------------------------------------
 
@@ -988,6 +1054,77 @@ mod tests {
         assert_eq!(s["ai"]["count"], 1);
         assert_eq!(s["active_members"], 1);
         assert_eq!(s["active_nodes"], 1);
+    }
+
+    fn alert_count(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE type = 'budget.alert'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn budget_alert_fires_on_crossing_once() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        let mut r = base_row("t1", "m1", "step_finish");
+        r.cost = Some(0.6);
+        push_activities(&mut conn, &[r]).unwrap();
+
+        // Below threshold: no event.
+        let before = member_cost_sum(&conn, "t1", "m1").unwrap();
+        assert!((before - 0.6).abs() < 1e-9);
+        assert!(!budget_alert_on_crossing(&mut conn, "t1", "m1", 0.0, before, 1.0).unwrap());
+        assert_eq!(alert_count(&conn), 0);
+
+        // Push the member over the threshold, then detect the crossing.
+        let mut r2 = base_row("t1", "m1", "step_finish");
+        r2.cost = Some(0.5);
+        push_activities(&mut conn, &[r2]).unwrap();
+        let after = member_cost_sum(&conn, "t1", "m1").unwrap();
+        assert!(budget_alert_on_crossing(&mut conn, "t1", "m1", before, after, 1.0).unwrap());
+        assert_eq!(alert_count(&conn), 1);
+
+        // Payload carries member / period / usage / threshold.
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM events WHERE type = 'budget.alert'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let v: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["team_id"], "t1");
+        assert_eq!(v["member_id"], "m1");
+        assert_eq!(v["period"], "cumulative");
+        assert_eq!(v["threshold_usd"], 1.0);
+        assert!((v["usage_cost_usd"].as_f64().unwrap() - 1.1).abs() < 1e-9);
+
+        // Already above the threshold: no re-alert (monotonic cost ⇒ once).
+        assert!(!budget_alert_on_crossing(&mut conn, "t1", "m1", after, after + 0.1, 1.0).unwrap());
+        assert_eq!(alert_count(&conn), 1);
+
+        // Other members / teams are isolated from the sum.
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m2', 't1', 's2', 'm2', 'member', 'active', 'now')",
+            [],
+        )
+        .unwrap();
+        assert!((member_cost_sum(&conn, "t1", "m2").unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_threshold_parsing() {
+        assert_eq!(parse_budget_threshold("1.5"), Some(1.5));
+        assert_eq!(parse_budget_threshold(" 2.0 "), Some(2.0));
+        assert_eq!(parse_budget_threshold("0"), None);
+        assert_eq!(parse_budget_threshold("-3"), None);
+        assert_eq!(parse_budget_threshold("abc"), None);
+        assert_eq!(parse_budget_threshold(""), None);
+        assert_eq!(parse_budget_threshold("NaN"), None);
     }
 
     #[test]
