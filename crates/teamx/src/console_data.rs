@@ -322,10 +322,18 @@ pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value,
                     "message_id": body.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
                     "body": body.get("body").and_then(|v| v.as_str()).unwrap_or(""),
                 })),
-                "close" => net_rpc(url, "discussion.close", json!({
-                    "session": sess,
-                    "id": body.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                })),
+                "close" => {
+                    let mut args = json!({
+                        "session": sess,
+                        "id": body.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    });
+                    if let Some(s) = body.get("summary").and_then(|v| v.as_str()) {
+                        if !s.trim().is_empty() {
+                            args["summary"] = json!(s);
+                        }
+                    }
+                    net_rpc(url, "discussion.close", args)
+                }
                 _ => return Err(format!("unknown discussion action `{action}`")),
             }
         }
@@ -351,11 +359,21 @@ pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value,
                     body.get("body").and_then(|v| v.as_str()).unwrap_or("").into(),
                     "--session".into(), sess,
                 ],
-                "close" => vec![
-                    "discussion".into(), "close".into(),
-                    body.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
-                    "--session".into(), sess,
-                ],
+                "close" => {
+                    let mut v: Vec<String> = vec![
+                        "discussion".into(), "close".into(),
+                        body.get("id").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    ];
+                    if let Some(s) = body.get("summary").and_then(|v| v.as_str()) {
+                        if !s.trim().is_empty() {
+                            v.push("--summary".into());
+                            v.push(s.into());
+                        }
+                    }
+                    v.push("--session".into());
+                    v.push(sess);
+                    v
+                }
                 _ => return Err(format!("unknown discussion action `{action}`")),
             };
             let refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();

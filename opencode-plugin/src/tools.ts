@@ -1040,6 +1040,10 @@ export const tools = {
       message_id: tool.schema.string().optional().describe("message id to reply to (reply)"),
       task: tool.schema.string().optional().describe("associated task id (create)"),
       all: tool.schema.boolean().optional().describe("list: include closed threads (default false)"),
+      summary: tool.schema
+        .string()
+        .optional()
+        .describe("close: optional closing summary (markdown) shown under the topic; auto-generated digest if omitted"),
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
@@ -1059,6 +1063,7 @@ export const tools = {
       }
       if (a === "create" && args.body) parts.push("--body", args.body)
       if (a === "create" && args.task) parts.push("--task", args.task)
+      if (a === "close" && args.summary) parts.push("--summary", args.summary)
       if (args.team) parts.push("--team", args.team)
       return tx(context.sessionID, context.directory, parts)
     },

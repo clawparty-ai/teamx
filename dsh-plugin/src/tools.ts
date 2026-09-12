@@ -661,6 +661,7 @@ export function registerDiscussionTools(ctx: Context): void {
       message_id: { type: 'string', description: 'Message id to reply to (reply)' },
       task: { type: 'string', description: 'Associated task id (create)' },
       all: { type: 'boolean', description: 'List: include closed threads (default false)' },
+      summary: { type: 'string', description: 'Close: optional closing summary (markdown) shown under the topic; auto-generated digest if omitted' },
       team: { type: 'string', description: 'Team ID (optional if only one team)' },
     },
     output: {
@@ -687,6 +688,7 @@ export function registerDiscussionTools(ctx: Context): void {
       }
       if (action === 'create' && args.body) parts.push('--body', args.body)
       if (action === 'create' && args.task) parts.push('--task', args.task)
+      if (action === 'close' && args.summary) parts.push('--summary', args.summary)
       const res = await runCli([
         ...parts,
         '--session', getKey(exec),

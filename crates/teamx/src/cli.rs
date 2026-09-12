@@ -1036,6 +1036,9 @@ pub enum DiscussionCmd {
         /// discussion id
         #[arg(value_name = "ID")]
         id: String,
+        /// optional closing summary (markdown) shown under the topic; auto-generated digest if omitted
+        #[arg(long)]
+        summary: Option<String>,
         #[arg(long)]
         session: String,
         #[arg(long)]
