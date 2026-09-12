@@ -46,6 +46,26 @@ export interface Config {
 
 const POLL_DEFAULT_MS = 15_000
 
+/**
+ * Minimum interval between `session.idle` heartbeat publishes, process-wide
+ * (ms). Every session in one dsh process connects with the same mTLS client
+ * cert — i.e. the SAME team member — so an unthrottled per-session heartbeat
+ * writes N duplicate `session.idle` rows into the team ledger on every idle
+ * wave (one per session). One process-wide heartbeat per window is enough
+ * for presence; the digest refresh below stays per-idle and is NOT throttled.
+ *
+ * Override with TEAMX_IDLE_HEARTBEAT_MIN_MS; 0 restores the old per-session
+ * behavior.
+ */
+const IDLE_HEARTBEAT_MIN_MS = (() => {
+  const fallback = 10 * 60_000
+  const raw = Number(process.env.TEAMX_IDLE_HEARTBEAT_MIN_MS ?? fallback)
+  return Number.isFinite(raw) && raw >= 0 ? raw : fallback
+})()
+
+/** Last time a session.idle heartbeat was published by this process. */
+let lastIdlePublishAt = 0
+
 /** How often the WS watcher re-resolves the server URL (late-letter pickup).
  *  Override with TEAMX_WS_WATCH_INTERVAL (ms, must be > 0); default 10s —
  *  same env name as the opencode-plugin side. */
@@ -151,15 +171,21 @@ export function apply(ctx: Context, config: Config = {}): void {
     const isMember = memberStatus(agentId)?.isMember === true
     if (!isMember) return
 
-    // Publish heartbeat (same as opencode-plugin's session.idle activity row)
-    try {
-      await runCli([
-        'publish', 'activity',
-        '--data', JSON.stringify({ kind: 'session.idle' }),
-        '--session', sessionKey(instance, agentId),
-      ])
-    } catch {
-      // heartbeat failure is non-critical
+    // Publish heartbeat (same as opencode-plugin's session.idle activity row).
+    // Throttled process-wide (IDLE_HEARTBEAT_MIN_MS): all sessions in this
+    // process share one mTLS member identity, so per-session heartbeats are
+    // N duplicate ledger rows on every idle wave.
+    if (Date.now() - lastIdlePublishAt >= IDLE_HEARTBEAT_MIN_MS) {
+      try {
+        await runCli([
+          'publish', 'activity',
+          '--data', JSON.stringify({ kind: 'session.idle' }),
+          '--session', sessionKey(instance, agentId),
+        ])
+        lastIdlePublishAt = Date.now()
+      } catch {
+        // heartbeat failure is non-critical
+      }
     }
 
     // Refresh digest on idle
