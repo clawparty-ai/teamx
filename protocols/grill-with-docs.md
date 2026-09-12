@@ -1,6 +1,6 @@
 ---
 name: teamx-grill-with-docs
-protocol_version: 1
+protocol_version: 2
 ---
 
 # Teamx Grill with Docs Protocol
@@ -46,6 +46,45 @@ Round numbers are presentation labels; the Design Session Record retains stable 
 
 Completion criterion: every question in the current Frontier has been presented once with a concrete recommendation, and no dependent question was asked prematurely.
 
+## 3A. Consensus Mode — team grill (one session = one discussion)
+
+Use this mode when the **team** should answer each question together and converge on a
+consensus, instead of a single owner answering. The session still has exactly one
+leader (the human who confirms Shared Understanding) and one Design Session Record.
+
+Structure: **one grill session = one discussion thread**.
+
+For each Design Question in the Frontier, in dependency order, **one question at a time**:
+
+1. **Leader posts ONE top-level discussion message** for the question, carrying the
+   stable `DQ-*` id, the decision, trade-offs, choices and a recommended answer.
+   Wake all members (`teamx_ask`, or `teamx_publish` with `assignee`).
+2. **Each member answers** under that message with `discussion.reply`
+   (`reply_to` = the question message): answer + rationale + any dissent.
+3. **Wait for the answer window** (all members answered, or a time limit; absent =
+   abstain).
+4. **Leader synthesizes** and posts the conclusion as a `discussion.reply` to the
+   SAME question message, marked `✅ 结论 DQ-xxxx`: consensus / rationale / dissent /
+   unanimity.
+5. **Leader writes the same conclusion into the Design Session Record** (the record is
+   the authoritative, editable artifact; the discussion is append-only).
+6. **Leader opens the next question** (next top-level message).
+
+Rules:
+- Only the leader writes the Design Session Record, `CONTEXT.md` and ADRs (single
+  writer). Members contribute via discussion replies only.
+- Discussion messages are append-only: never try to edit a question message. Record the
+  conclusion as a reply **and** in the record file.
+- Declare the consensus rule when the session starts: `unanimous` | `majority` |
+  `leader-decides`. Always record dissent, even when a decision carries.
+- Facts still use Fact Requests (`FR-*`); Consensus Mode settles subjective trade-offs
+  only.
+- The discussion stays open across all questions; `discussion.close` only when the
+  session completes.
+
+Completion criterion: every `DQ-*` has a `✅ 结论` reply and a matching entry in the
+record, the Frontier is empty, and the human leader confirms Shared Understanding.
+
 ## 4. Record the Round
 
 1. Map every owner answer to its stable Design Question. An absent or ambiguous answer leaves that question unresolved.
@@ -83,7 +122,7 @@ After confirmation, set the record status to `completed` and, when a team exists
 ```markdown
 ---
 status: active
-protocol_version: 1
+protocol_version: 2
 owner: <owner identity>
 created_at: <ISO date>
 updated_at: <ISO date>
@@ -93,6 +132,8 @@ updated_at: <ISO date>
 
 ## Context
 ## Settled Decisions
+<!-- Consensus Mode: one entry per DQ, e.g.
+- DQ-0001 <title>: <consensus> — rationale: …; dissent: …; unanimity: unanimous|majority|leader-decides; discussion: <thread id>#<message id> -->
 ## Current Frontier
 ## Remaining Branches
 ## Fact Requests and Reports
@@ -102,6 +143,10 @@ updated_at: <ISO date>
 Completed records remain versioned. Resume active records by exact path; reopen completed records only after explicit owner confirmation.
 
 ## Ledger Payloads
+
+Payload schema is unchanged from v1 (the `protocol_version` inside payloads stays `1`);
+only the Design Session Record frontmatter uses `protocol_version: 2`. Consensus Mode
+reuses the existing `discussion.*` events and adds no new payloads.
 
 Fact Request:
 

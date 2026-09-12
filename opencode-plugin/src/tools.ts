@@ -1024,4 +1024,43 @@ export const tools = {
       return tx(context.sessionID, context.directory, parts)
     },
   }),
+
+  teamx_discussion: tool({
+    description:
+      "Team discussion threads (network mode): list / open / create / say / reply / close / " +
+      "subscribe / unsubscribe. Use this to read and post to team discussions so members " +
+      "participate themselves (instead of only receiving discussion events).",
+    args: {
+      action: tool.schema
+        .enum(["list", "open", "create", "say", "reply", "close", "subscribe", "unsubscribe"])
+        .describe("discussion action"),
+      id: tool.schema.string().optional().describe("discussion id (open/say/reply/close/subscribe/unsubscribe)"),
+      title: tool.schema.string().optional().describe("thread title (create)"),
+      body: tool.schema.string().optional().describe("message body (create/say/reply)"),
+      message_id: tool.schema.string().optional().describe("message id to reply to (reply)"),
+      task: tool.schema.string().optional().describe("associated task id (create)"),
+      all: tool.schema.boolean().optional().describe("list: include closed threads (default false)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      const a = args.action
+      const parts = ["discussion", a]
+      if (a === "create") {
+        parts.push(args.title ?? "")
+      } else if (a === "list") {
+        if (args.all) parts.push("--all")
+      } else if (a === "say") {
+        parts.push(args.id ?? "", args.body ?? "")
+      } else if (a === "reply") {
+        parts.push(args.id ?? "", args.message_id ?? "", args.body ?? "")
+      } else {
+        // open / close / subscribe / unsubscribe
+        parts.push(args.id ?? "")
+      }
+      if (a === "create" && args.body) parts.push("--body", args.body)
+      if (a === "create" && args.task) parts.push("--task", args.task)
+      if (args.team) parts.push("--team", args.team)
+      return tx(context.sessionID, context.directory, parts)
+    },
+  }),
 }

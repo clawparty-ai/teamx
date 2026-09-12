@@ -375,7 +375,7 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   // two-token method; top-level commands (publish/ask/respond/events/log/sync)
   // treat every positional as a parameter. Subcommand names are normalized so
   // `member set-state` maps to the RPC method `member.set_state`.
-  const GROUPED = new Set(["team", "goal", "member", "role", "loopx", "tunnel", "activity", "model", "presence", "task", "git"])
+  const GROUPED = new Set(["team", "goal", "member", "role", "loopx", "tunnel", "activity", "model", "presence", "task", "git", "discussion"])
   const p0 = positional[0] ?? ""
   const p1 = positional[1] ?? ""
   let method: string
@@ -438,6 +438,15 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
     "git.grant": ["name", "member_id"],
     "git.permissions": ["name"],
     "git.bundle": [],
+    // discussions (server RPC): threads + messages (network mode).
+    "discussion.create": ["title"],
+    "discussion.list": [],
+    "discussion.open": ["id"],
+    "discussion.say": ["id", "body"],
+    "discussion.reply": ["id", "message_id", "body"],
+    "discussion.close": ["id"],
+    "discussion.subscribe": ["id"],
+    "discussion.unsubscribe": ["id"],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {
