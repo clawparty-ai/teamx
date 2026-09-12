@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.2 — 2026-09-02
+
+### teamx space moved to project scope (`<cwd>/.teamx`), fixing multi-session certificate confusion
+
+- **Root cause**: the old design stored invitation letters / mTLS certificates in the
+  global `~/.teamx/letters/`, and the plugin resolved the server address via module-level
+  constants; with multiple letters for the same server, certificate selection was
+  nondeterministic (readdir order rather than newest), and the `discoverServerUrl` and
+  `letterMtls` heuristics disagreed, causing URL/certificate mismatches.
+  See `docs/29-teamx-project-scoped-issue.cn.md`.
+- **Fix**: Rust `teamx_home()` now defaults to `<cwd>/.teamx` (overridable via
+  `TEAMX_HOME`); the plugin's `TEAMX_SERVER_URL`/`TEAMX_HOME` resolve per cwd; all tools
+  pass `context.directory`; `team import`/`git setup` always write the project-local
+  `letters/`; a session→directory mapping supports background tasks.
+- **Behavior change**: every workspace (opencode launch directory) owns an independent
+  `.teamx/` space — one identity per project; local DB/CA/instance/serve/tunnels all
+  follow the project.
+- Server deployments pin `TEAMX_HOME` to keep the CA; local and cloud server binaries
+  were updated and verified end to end.
+
 ## 0.4.1 — 2026-09-01
 
 ### grill-doc may run before a team exists (owner prerequisite removed)
@@ -22,6 +42,34 @@ is created** (pre-team mode):
 
 Verification: `node scripts/generate-grill-protocol.mjs --check` shows no drift;
 `node tests/protocol-assets.test.mjs` passes; dsh-plugin typecheck passes.
+
+## 0.4.0 — 2026-08-30
+
+### Merge grill-with-docs (owner-led design session) into enterprise
+
+Merged the grill-with-docs design-session feature from the community edition (main
+branch) into the enterprise branch (cherry-pick `d868b09` + `7858b62`, local-only,
+not pushed):
+
+- **Added `protocols/grill-with-docs.md`** — host-neutral design-session protocol
+  source (owner-led, multi-round interview, evidence collection, ADR capture).
+- **Added `scripts/generate-grill-protocol.mjs`** — deterministically generates
+  per-host adapter artifacts from the protocol source (`--check` validates that
+  artifacts match the source).
+- **opencode side**: new `/team-grill` slash command (`assets/command/team-grill.md`
+  + `.en.md`) with `--doc` / `--resume`; installed by `install.sh`.
+- **DSH side**: new runtime skill `teamx-grill-with-docs`
+  (`src/grill-with-docs.generated.ts`), registered in `src/index.ts`.
+- **Docs**: `docs/22-manual-grill-with-docs.md` (manual testing),
+  `docs/23-manual-grill-with-docs-usage.md` (usage guide),
+  `docs/design/grill-with-docs.md`, ADR 0001/0002, `CONTEXT.md`.
+- **Tests**: `tests/protocol-assets.test.mjs` validates generated-artifact
+  consistency; `tests/run-all.sh` inserts `generate-grill-protocol --check` into the
+  plugin step.
+
+Verification: `cargo test -p teamx` full regression 117 passed (this merge contains
+no Rust changes; 117 is the enterprise full baseline); opencode-plugin typecheck +
+build pass; protocol generation/check scripts pass.
 
 ## 0.2.0 — 2026-08-30
 
