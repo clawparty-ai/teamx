@@ -295,7 +295,11 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .ev-time { font-family:var(--font-mono); font-size:11.5px; color:var(--muted-fg); flex-shrink:0; padding-top:2px; width:140px; }
 .ev-kind { flex-shrink:0; min-width:80px; text-align:center; }
 .ev-text { flex:1; min-width:0; word-break:break-word; font-size:13px; color:var(--fg); }
- .ev-text .who { color:var(--muted-fg); font-size:12px; }
+.ev-text .who { color:var(--muted-fg); font-size:12px; }
+.ev-text .md-render { font-size:13px; line-height:1.5; }
+.ev-text .md-render p:first-child { margin-top:0; }
+.ev-text .md-render p:last-child { margin-bottom:0; }
+.ev-text .md-render pre { margin:0.4em 0; }
  .ev-more-wrap { text-align:center; padding:10px 0 2px; }
  .dsc-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
  .dsc-row { display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--border); cursor:pointer; border-radius:4px; }
@@ -719,7 +723,7 @@ function evRender(){
     const kind=(e.type||e.kind||"").replace(/^[a-z]+\./,"");
     const who=e.member_id||""; const pl=e.payload||{};
     const text=summarize(e,pl);
-    return `<li class="ev-item"><span class="ev-time">${esc(tf(e.created_at))}</span><span class="ev-kind">${badge(kind)}</span><div class="ev-text">${esc(text)} <span class="who">· ${esc((who).slice(0,12))}</span></div></li>`;
+    return `<li class="ev-item"><span class="ev-time">${esc(tf(e.created_at))}</span><span class="ev-kind">${badge(kind)}</span><div class="ev-text"><div class="md-render">${mdRender(text)}</div><span class="who">· ${esc((who).slice(0,12))}</span></div></li>`;
   }).join("") || `<li class="muted">暂无事件。</li>`;
 }
 
