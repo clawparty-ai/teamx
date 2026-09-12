@@ -45,6 +45,7 @@ pub fn page_html() -> String {
 <div class="container">
   <div class="view active" id="view-teams">
     <div class="cards" id="teamCards"></div>
+    <div id="goalPanel"></div>
     <div id="teamBody"></div>
   </div>
   <div class="view" id="view-tasks">
@@ -263,6 +264,14 @@ nav button.active { color:var(--primary); border-bottom-color:var(--primary); fo
 .card-icon { width:46px; height:46px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:21px; flex-shrink:0; }
 .card-icon.blue { background:#EBF5FF; color:#4A90E5; } .card-icon.green { background:#E8F8E8; color:#67C23A; }
 .card-icon.orange { background:#FDF0E0; color:#E6A23C; } .card-icon.purple { background:#F0E8FF; color:#9B59B6; }
+.goal-panel { border-left:4px solid var(--primary); }
+.goal-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.goal-head h2 { margin:0; }
+.goal-team { color:var(--muted-fg); font-size:12px; }
+.goal-body { color:var(--muted-fg); font-size:13.5px; line-height:1.65; max-width:860px; }
+.goal-body p:first-child { margin-top:0; }
+.goal-body p:last-child { margin-bottom:0; }
+.goal-body ul { margin:0.3em 0; padding-left:1.4em; }
 .card .label { font-size:13px; color:var(--muted-fg); margin-bottom:4px; }
 .card .value { font-size:23px; font-weight:600; color:var(--fg); line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 section.panel { background:var(--card); border-radius:var(--radius); padding:16px; margin-bottom:16px; box-shadow:var(--shadow); }
@@ -465,6 +474,24 @@ const openLabel=(kind,name)=>{
   if(isAdminName(name)) return {icon:"🛡", label:"Admin"};
   return {icon:"🌐", label:"Web"};
 };
+// Team goal panel (from `team.status.goal`, i.e. the ledger goal that
+// `/team create` bootstraps from .teamx/TEAM.md's `## 目标`). Rendered under the
+// summary cards so members can read the current goal at a glance.
+function goalPanelHtml(t){
+  const g=(t&&t.goal)||null;
+  const teamName=(t&&t.name)?esc(t.name):"";
+  const head=(g&&g.title)?esc(g.title):"Team goal";
+  const ctx=teamName?`<span class="goal-team">${teamName}</span>`:"";
+  if(!g){
+    return `<section class="panel goal-panel"><h2>🎯 ${head}</h2>${ctx}
+      <div class="muted">该团队尚未设置目标（owner 可用 teamx_set_goal 设定，或由 .teamx/TEAM.md 的「目标」在建队时写入）。</div></section>`;
+  }
+  return `<section class="panel goal-panel">
+    <div class="goal-head"><h2>🎯 ${head}</h2>${badge(g.state||"")}${ctx}</div>
+    ${g.body?`<div class="md-render goal-body">${mdRender(g.body)}</div>`:`<div class="muted">（无目标描述）</div>`}
+  </section>`;
+}
+
 async function loadTeams(){
   $("#teamBody").innerHTML=`<div class="loading">loading …</div>`;
   const [p, pt] = await Promise.all([panel("teams"), panel("tunnels")]);
@@ -490,6 +517,7 @@ async function loadTeams(){
     `<div class="card"><div class="card-icon green">🧩</div><div class="card-body"><div class="label">My role</div><div class="value">${esc((teams[0]&&teams[0].my&&teams[0].my.role)||"—")}</div></div></div>`,
     `<div class="card"><div class="card-icon purple">🟢</div><div class="card-body"><div class="label">Tunnels</div><div class="value">${tuns.length}</div></div></div>`
   ].join("");
+  $("#goalPanel").innerHTML = teams.length ? teams.map(goalPanelHtml).join("") : "";
   if(!p.ok && !pt.ok){ $("#teamBody").innerHTML=(p.error?errBox(p):errBox(pt)); return; }
   $("#teamBody").innerHTML = teams.map(t=>{
     const g=t.goal||{};
