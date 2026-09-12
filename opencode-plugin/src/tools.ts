@@ -1039,6 +1039,7 @@ export const tools = {
       body: tool.schema.string().optional().describe("message body (create/say/reply)"),
       message_id: tool.schema.string().optional().describe("message id to reply to (reply)"),
       task: tool.schema.string().optional().describe("associated task id (create)"),
+      all: tool.schema.boolean().optional().describe("list: include closed threads (default false)"),
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
@@ -1047,7 +1048,7 @@ export const tools = {
       if (a === "create") {
         parts.push(args.title ?? "")
       } else if (a === "list") {
-        // no positional parameters
+        if (args.all) parts.push("--all")
       } else if (a === "say") {
         parts.push(args.id ?? "", args.body ?? "")
       } else if (a === "reply") {

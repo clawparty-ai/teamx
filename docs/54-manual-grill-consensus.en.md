@@ -28,8 +28,10 @@ consensus**:
 
 - You are in a teamx team (grill can run pre-team, but Consensus Mode needs a discussion,
   hence a team + server).
-- The client has the `teamx_discussion` tool (opencode/dsh plugin) or the CLI
-  `teamx discussion` (network mode).
+- The **opencode plugin** provides the `teamx_discussion` tool
+  (list/open/create/say/reply/close/subscribe/unsubscribe). **dsh does not have it
+  yet** — use the CLI `teamx discussion` in network mode for now; dsh tool parity is a
+  **P0 follow-up**. The CLI works for both clients.
 - The client is on **grill protocol v2** (`/team-grill` reports v2).
 
 ---
@@ -142,9 +144,15 @@ DQ→thread map; a single thread is the default and simpler.
 **Can a regular member edit the record?** No — single writer: only the leader edits
 record/CONTEXT/ADR.
 
-**Member lacks the `teamx_discussion` tool?** Update the client (§2); otherwise use the
-CLI `teamx discussion reply` (network mode). Having the leader re-post on their behalf is
-discouraged (it breaks "members post themselves").
+**Member lacks the `teamx_discussion` tool?** The opencode plugin has it; **dsh does not
+yet** — use the CLI `teamx discussion reply` (network mode). Having the leader re-post on
+their behalf is discouraged (it breaks "members post themselves"). dsh tool parity is a
+P0 follow-up.
+
+**Why can't I post after the 5th message?** Discussions have a **per-member, per-topic
+quota** (default 5); a multi-question grill hits it quickly. A single `@` mention unlocks
+further replies, or ask the owner to raise `members.discussion_quota`. Check the quota
+before a long grill.
 
 **Can high-risk actions (merge/revoke/destroy/goal.close) go through IM?** That is the IM
 access topic, not grill itself; grill only produces decision documents.

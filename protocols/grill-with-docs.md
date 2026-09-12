@@ -122,7 +122,7 @@ After confirmation, set the record status to `completed` and, when a team exists
 ```markdown
 ---
 status: active
-protocol_version: 1
+protocol_version: 2
 owner: <owner identity>
 created_at: <ISO date>
 updated_at: <ISO date>
@@ -143,6 +143,10 @@ updated_at: <ISO date>
 Completed records remain versioned. Resume active records by exact path; reopen completed records only after explicit owner confirmation.
 
 ## Ledger Payloads
+
+Payload schema is unchanged from v1 (the `protocol_version` inside payloads stays `1`);
+only the Design Session Record frontmatter uses `protocol_version: 2`. Consensus Mode
+reuses the existing `discussion.*` events and adds no new payloads.
 
 Fact Request:
 

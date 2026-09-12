@@ -23,7 +23,7 @@
 ## 2. 前置条件
 
 - 你在一个 teamx 团队里（grill 也可在**建队前**以 pre-team 模式运行，但 Consensus Mode 需要 discussion，故需团队 + 服务端）。
-- 客户端具备 `teamx_discussion` 工具（opencode/dsh 插件）或可用 CLI `teamx discussion`（网络模式）。
+- **opencode 插件**具备 `teamx_discussion` 工具（list/open/create/say/reply/close/subscribe/unsubscribe）；**dsh 侧暂无该工具**，暂用 CLI `teamx discussion`（网络模式），dsh 工具对齐见 **P0 后续任务**。也可统一用 CLI `teamx discussion`（网络模式）。
 - 已更新到 **grill 协议 v2**（`/team-grill` 显示 v2）。
 
 ---
@@ -141,7 +141,10 @@ teamx_discussion action=reply id=<discussion_id> message_id=<DQ 消息 id> body=
 不能。单一写者原则：只有 leader 写 record/CONTEXT/ADR。
 
 **Q：成员没装 `teamx_discussion` 工具怎么办？**
-先按第 2 节更新客户端；否则可用 CLI `teamx discussion reply`（网络模式），或由 leader 在台账代转（不推荐，破坏"成员自己发"的原则）。
+ opencode 插件有该工具；**dsh 暂无**，先用 CLI `teamx discussion reply`（网络模式），或由 leader 在台账代转（不推荐，破坏"成员自己发"的原则）。dsh 工具对齐见 P0 后续任务。
+
+**Q：为什么我发到第 5 条就不能发言了？**
+ 讨论有 **per-member per-topic 配额**（默认 5）；多题 grill 易触顶。被 `@` 一次即可解锁继续 reply，或请 owner 提高配额（`members.discussion_quota`）。建议多题 grill 前先确认配额充足。
 
 **Q：高危动作（合并/revoke/destroy/goal.close）能进 IM 吗？**
-这是 IM 接入的话题，不是 grill 本身；grill 只产决策文档。
+ 这是 IM 接入的话题，不是 grill 本身；grill 只产决策文档。

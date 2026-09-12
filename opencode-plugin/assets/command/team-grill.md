@@ -3,7 +3,7 @@ description: 运行 Teamx 设计访谈（任意团队成员均可发起），并
 agent: teamx
 ---
 
-<!-- Generated from protocols/grill-with-docs.md; protocol v2; sha256 2dd1db1a5e02cef08e52bda5768dc7610afbefdf0f1c4f28ac0e8f6523771c52; do not edit. -->
+<!-- Generated from protocols/grill-with-docs.md; protocol v2; sha256 c8a7bf5159cc0ae3d04f86d2bec0a403d8e8a701750526b2883cf7bfdf1eeeaa; do not edit. -->
 
 按下方 Teamx grill-with-docs 协议处理明确参数，将其作为新建设计主题或恢复选项。全程使用用户当前语言。
 
@@ -128,7 +128,7 @@ After confirmation, set the record status to `completed` and, when a team exists
 ```markdown
 ---
 status: active
-protocol_version: 1
+protocol_version: 2
 owner: <owner identity>
 created_at: <ISO date>
 updated_at: <ISO date>
@@ -149,6 +149,10 @@ updated_at: <ISO date>
 Completed records remain versioned. Resume active records by exact path; reopen completed records only after explicit owner confirmation.
 
 ## Ledger Payloads
+
+Payload schema is unchanged from v1 (the `protocol_version` inside payloads stays `1`);
+only the Design Session Record frontmatter uses `protocol_version: 2`. Consensus Mode
+reuses the existing `discussion.*` events and adds no new payloads.
 
 Fact Request:
 
