@@ -45,7 +45,7 @@ node tests/protocol-assets.test.mjs
 if command -v bun >/dev/null 2>&1; then
   (cd opencode-plugin && bun install >/dev/null 2>&1 && bun run typecheck && bun run build)
   if [ -d "$ROOT/../deepseek-harness" ]; then
-    (cd dsh-plugin && npm install >/dev/null 2>&1 && npm run typecheck)
+    (cd dsh-plugin && { npm install >/dev/null 2>&1 || { echo "dsh-plugin npm install failed (dev deps reference ../deepseek-harness sibling — check it exists and is intact)" >&2; exit 1; }; } && npm run typecheck)
   else
     echo "deepseek-harness sibling checkout not found; skipping dsh typecheck"
   fi
