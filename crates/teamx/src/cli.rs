@@ -168,7 +168,11 @@ pub enum Command {
     #[command(subcommand)]
     Teamfile(TeamfileCmd),
 
-    /// Run as a network-mode server (HTTP RPC + WebSocket push + tunnels)
+    /// Run as a network-mode server (HTTP RPC + WebSocket push + tunnels).
+    ///
+    /// Env: TEAMX_MAX_BODY overrides the /rpc request body limit (bytes,
+    /// default 512 MiB — large enough for base64 git bundles). Read once at
+    /// startup; changing it requires a restart.
     Serve(ServeCmd),
 
     /// Reverse tunnels (network mode): expose a local service to teammates
