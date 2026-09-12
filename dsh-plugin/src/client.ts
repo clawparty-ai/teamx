@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import https from 'node:https'
 import http from 'node:http'
@@ -121,15 +121,38 @@ function hostOf(url: string): string {
 }
 
 /**
+ * If any of the given env paths points inside an imported-letter directory
+ * (a directory containing `letter.json`), return that directory.
+ *
+ * A launcher that provisions one seat per process sets TEAMX_MTLS_* at start;
+ * even a partial set (e.g. CERT+CA without KEY) then pins the intended letter.
+ * On a host with several letters for the SAME server (re-issued seats, other
+ * members' experiments), recency heuristics can pick the wrong seat — the
+ * env-pointed letter is the operator's explicit choice and must win.
+ */
+function letterDirFromEnv(paths: (string | undefined)[]): string | null {
+  for (const p of paths) {
+    if (!p) continue
+    const dir = dirname(p)
+    if (dir && existsSync(join(dir, 'letter.json'))) return dir
+  }
+  return null
+}
+
+/**
  * Build mTLS TLS options. Resolution order:
  * 1. Explicit env vars TEAMX_MTLS_CERT/KEY/CA — but only when all three are
  *    set AND the files exist (a stale/partial env must not throw or shadow
  *    valid letter material).
- * 2. Auto-discovery from imported invitation letters under
- *    `TEAMX_HOME/letters/<id>/` (client.crt/client.key/ca.crt): the letter
- *    whose embedded server URL host matches `serverUrl` wins; otherwise the
- *    most recently written letter. This mirrors opencode-plugin and covers
- *    the common case where no env was ever configured.
+ * 2. **Env-pinned letter directory**: when any env path points inside an
+ *    imported-letter directory, use that letter's complete triple. This keeps
+ *    a partially-set env from falling through to recency heuristics that, on
+ *    hosts with several letters for the same server, select the wrong seat.
+ * 3. Auto-discovery from imported invitation letters under
+ *    `TEAMX_HOME/letters/<id>/` (client.crt/client.key/ca.crt): among letters
+ *    whose embedded server URL host matches `serverUrl`, the most recently
+ *    written one wins; otherwise the most recent letter overall. This mirrors
+ *    opencode-plugin and covers the common case where no env was configured.
  * Returns null when neither source yields complete material — callers should
  * treat that as "not provisioned yet" (retryable), not as fatal.
  */
@@ -151,6 +174,22 @@ export async function mtlsFor(serverUrl?: string): Promise<MtlsConfig | null> {
       readFile(caPath, 'utf-8'),
     ])
     return { ca, cert, key }
+  }
+
+  // Partial env: honor the operator's explicit letter choice (step 2).
+  const pinnedDir = letterDirFromEnv([certPath, keyPath, caPath])
+  if (pinnedDir) {
+    const cert = join(pinnedDir, 'client.crt')
+    const key = join(pinnedDir, 'client.key')
+    const ca = join(pinnedDir, 'ca.crt')
+    if (existsSync(cert) && existsSync(key) && existsSync(ca)) {
+      const [c, k, a] = await Promise.all([
+        readFile(cert, 'utf-8'),
+        readFile(key, 'utf-8'),
+        readFile(ca, 'utf-8'),
+      ])
+      return { ca: a, cert: c, key: k }
+    }
   }
 
   // Letter-based discovery
