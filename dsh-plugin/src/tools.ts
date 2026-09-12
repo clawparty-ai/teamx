@@ -636,3 +636,63 @@ export function registerInteractionTools(ctx: Context): void {
     },
   }))
 }
+
+// ---------------------------------------------------------------------------
+// Discussion threads (list/open/create/say/reply/close/subscribe/unsubscribe)
+// ---------------------------------------------------------------------------
+
+export function registerDiscussionTools(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'teamx_discussion',
+    description:
+      'Team discussion threads (network mode): list / open / create / say / reply / close / ' +
+      'subscribe / unsubscribe. Use this to read and post to team discussions so members ' +
+      'participate themselves (instead of only receiving discussion events).',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['list', 'open', 'create', 'say', 'reply', 'close', 'subscribe', 'unsubscribe'] as readonly string[],
+        description: 'Discussion action',
+      },
+      id: { type: 'string', description: 'Discussion id (open/say/reply/close/subscribe/unsubscribe)' },
+      title: { type: 'string', description: 'Thread title (create)' },
+      body: { type: 'string', description: 'Message body (create/say/reply)' },
+      message_id: { type: 'string', description: 'Message id to reply to (reply)' },
+      task: { type: 'string', description: 'Associated task id (create)' },
+      all: { type: 'boolean', description: 'List: include closed threads (default false)' },
+      team: { type: 'string', description: 'Team ID (optional if only one team)' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(a, exec) {
+      const args = a as any
+      const action = args.action as string
+      const parts = ['discussion', action]
+      if (action === 'create') {
+        parts.push(args.title ?? '')
+      } else if (action === 'list') {
+        if (args.all === true || args.all === 'true') parts.push('--all')
+      } else if (action === 'say') {
+        parts.push(args.id ?? '', args.body ?? '')
+      } else if (action === 'reply') {
+        parts.push(args.id ?? '', args.message_id ?? '', args.body ?? '')
+      } else {
+        // open / close / subscribe / unsubscribe
+        parts.push(args.id ?? '')
+      }
+      if (action === 'create' && args.body) parts.push('--body', args.body)
+      if (action === 'create' && args.task) parts.push('--task', args.task)
+      const res = await runCli([
+        ...parts,
+        '--session', getKey(exec),
+        ...opt('--team', args.team),
+      ])
+      return JSON.stringify(res)
+    },
+  }))
+}

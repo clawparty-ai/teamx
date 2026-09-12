@@ -379,9 +379,9 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
 
   // Determine the dotted method from the first two positional tokens.
   // Grouped commands (team.*, goal.*, member.*, role.*, loopx.*, tunnel.*,
-  // activity.*) use a two-token method; top-level commands
+  // activity.*, discussion.*) use a two-token method; top-level commands
   // (publish/ask/respond/events/log/sync) treat every positional as a parameter.
-  const GROUPED = new Set(['team', 'goal', 'member', 'role', 'loopx', 'tunnel', 'activity'])
+  const GROUPED = new Set(['team', 'goal', 'member', 'role', 'loopx', 'tunnel', 'activity', 'discussion'])
   const p0 = positional[0] ?? ''
   const p1 = positional[1] ?? ''
   let method: string
@@ -422,6 +422,16 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
      'publish': ['type'],
      'ask': ['member_id'],
      'respond': ['ask_id', 'answer'],
+     // discussions (server RPC): threads + messages (network mode).
+     // Mirrors opencode-plugin/src/client.ts — keep in sync.
+     'discussion.create': ['title'],
+     'discussion.list': [],
+     'discussion.open': ['id'],
+     'discussion.say': ['id', 'body'],
+     'discussion.reply': ['id', 'message_id', 'body'],
+     'discussion.close': ['id'],
+     'discussion.subscribe': ['id'],
+     'discussion.unsubscribe': ['id'],
   }
   const fieldNames = slots[method] ?? []
   for (let k = 0; k < rest.length && k < fieldNames.length; k++) {
