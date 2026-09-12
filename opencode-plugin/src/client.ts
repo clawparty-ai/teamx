@@ -10,7 +10,7 @@
 // `~/.teamx`. `TEAMX_HOME` / `TEAMX_SERVER_URL` env vars still override.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 /**
  * Resolve the teamx space directory for a working directory `cwd`
@@ -266,6 +266,22 @@ function envMtls(serverName: string): MtlsMaterial | null {
   return { cert: readPem(cert), key: readPem(key), ca: readPem(ca), serverName }
 }
 
+/**
+ * If any TEAMX_MTLS_* path points inside an imported-letter directory (a dir
+ * containing `letter.json`), return that directory. A partially-set env (e.g.
+ * CERT+CA without KEY) then still pins the operator's explicit seat instead
+ * of falling through to recency heuristics that may pick another member's
+ * letter on hosts with several letters for the same server.
+ */
+function letterDirFromEnv(): string | null {
+  for (const p of [process.env.TEAMX_MTLS_CERT, process.env.TEAMX_MTLS_KEY, process.env.TEAMX_MTLS_CA]) {
+    if (!p) continue
+    const dir = dirname(p)
+    if (dir && existsSync(join(dir, "letter.json"))) return dir
+  }
+  return null
+}
+
 /** Host portion of a URL (for SNI / letter matching). */
 function hostOf(url: string): string {
   try {
@@ -292,6 +308,7 @@ function letterMtls(serverUrl: string, cwd: string): MtlsMaterial | null {
   }
   const wantedHost = hostOf(serverUrl)
   let best: { cert: string; key: string; ca: string; host: string; mtime: number } | null = null
+  let bestHostMatch: { cert: string; key: string; ca: string; host: string; mtime: number } | null = null
   for (const id of entries) {
     const sub = join(dir, id)
     const letterPath = join(sub, "letter.json")
@@ -315,29 +332,53 @@ function letterMtls(serverUrl: string, cwd: string): MtlsMaterial | null {
     }
     const cand = { cert: certPath, key: keyPath, ca: caPath, host, mtime }
     if (host && host === wantedHost) {
-      // exact host match wins immediately
-      return {
-        cert: readPem(cand.cert),
-        key: readPem(cand.key),
-        ca: readPem(cand.ca),
-        serverName: host,
+      // Exact host match — keep the NEWEST such letter (a host may have
+      // several letters across re-issued seats or teams; readdir order is
+      // not meaningful).
+      if (!bestHostMatch || cand.mtime > bestHostMatch.mtime) {
+        bestHostMatch = cand
       }
+      continue
     }
     if (!best || cand.mtime > best.mtime) best = cand
   }
-  if (!best) return null
+  const chosen = bestHostMatch ?? best
+  if (!chosen) return null
   return {
-    cert: readPem(best.cert),
-    key: readPem(best.key),
-    ca: readPem(best.ca),
-    serverName: best.host || wantedHost || hostOf(serverUrl),
+    cert: readPem(chosen.cert),
+    key: readPem(chosen.key),
+    ca: readPem(chosen.ca),
+    serverName: chosen.host || wantedHost || hostOf(serverUrl),
   }
 }
 
 /** Resolve the mTLS material for a server URL in a workspace (or null). */
 export function mtlsFor(serverUrl: string, cwd?: string): MtlsMaterial | null {
   const host = hostOf(serverUrl)
-  return envMtls(host) ?? letterMtls(serverUrl, cwd ?? process.cwd())
+  const envMaterial = envMtls(host)
+  if (envMaterial) return envMaterial
+
+  // Partial env: if any TEAMX_MTLS_* path points inside an imported-letter
+  // directory (a dir containing `letter.json`), treat that letter as the
+  // operator's explicit seat selection and use its complete triple. On hosts
+  // with several letters for the same server, recency heuristics alone can
+  // pick the wrong seat; the env-pinned letter is the explicit choice.
+  const pinnedDir = letterDirFromEnv()
+  if (pinnedDir) {
+    const certPath = join(pinnedDir, "client.crt")
+    const keyPath = join(pinnedDir, "client.key")
+    const caPath = join(pinnedDir, "ca.crt")
+    if (existsSync(certPath) && existsSync(keyPath) && existsSync(caPath)) {
+      return {
+        cert: readPem(certPath),
+        key: readPem(keyPath),
+        ca: readPem(caPath),
+        serverName: host,
+      }
+    }
+  }
+
+  return letterMtls(serverUrl, cwd ?? process.cwd())
 }
 
 /**

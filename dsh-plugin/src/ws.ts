@@ -5,9 +5,10 @@
  * IMPORTANT: the teamx server identifies the caller by the mTLS client
  * certificate CN (`pki::parse_member_cn`), NOT by any HTTP header. So this
  * client only needs the server URL + mTLS cert material; there are no
- * team/session headers. Without a client cert the server replies
- * `{"type":"error","code":"no_identity"}` and closes — we fail fast rather
- * than reconnect forever.
+ * team/session headers. Cert material is resolved via env vars first and
+ * then by scanning imported invitation letters (see `client.ts`), so a
+ * letter imported after plugin startup is picked up by the retry loop
+ * without a process restart.
  * @module @teamx-ai/dsh-plugin/ws
  */
 
@@ -37,6 +38,7 @@ export class WsClient extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
   private gaveUp = false
+  private warnedNoMtls = false
 
   constructor(opts: WsOptions) {
     super()
@@ -66,16 +68,21 @@ export class WsClient extends EventEmitter {
   private async connect(): Promise<void> {
     if (this.stopped) return
 
-    const mtls = await mtlsFor()
+    const mtls = await mtlsFor(this.opts.serverUrl)
     if (!mtls) {
       // The server identifies members by client-cert CN; without a cert the
-      // connection can never succeed. Fail fast instead of reconnecting.
-      if (!this.gaveUp) {
-        this.gaveUp = true
-        console.warn('[teamx-dsh] WS push skipped: TEAMX_MTLS_CERT/KEY/CA not set (server identifies members via mTLS)')
+      // connection can never succeed RIGHT NOW. But "no cert" usually means
+      // the invitation letter simply hasn't been imported yet (or the env is
+      // incomplete), which fixes itself later — so keep retrying with backoff
+      // instead of giving up for the lifetime of the process.
+      if (!this.warnedNoMtls) {
+        this.warnedNoMtls = true
+        console.warn('[teamx-dsh] WS push waiting for mTLS material (no env cert and no imported letter yet); will retry')
       }
+      this.scheduleReconnect()
       return
     }
+    this.warnedNoMtls = false
 
     const url = new URL('/ws', this.opts.serverUrl)
     const wsUrl = url.toString().replace(/^http/, 'ws')
@@ -107,13 +114,21 @@ export class WsClient extends EventEmitter {
           this.emit('event', msg.event)
           return
         }
-        // `{ type: "error", code, message }` frames are terminal-ish auth errors
+        // `{ type: "error", code, message }` frames carry auth failures
         if (msg?.type === 'error') {
           const code = msg?.code
-          if (code === 'no_identity' || code === 'revoked' || code === 'not_a_member') {
-            // Can't recover without re-importing / re-issuing a cert.
+          if (code === 'revoked') {
+            // The cert itself was revoked — reconnecting can never succeed.
             this.gaveUp = true
-            console.warn(`[teamx-dsh] WS push auth error (${code}): ${msg?.message ?? ''}`)
+            console.warn(`[teamx-dsh] WS push auth error (revoked): ${msg?.message ?? ''}`)
+            this.ws?.close()
+            return
+          }
+          if (code === 'no_identity' || code === 'not_a_member') {
+            // Retryable: the letter may still be awaiting owner approval, or
+            // the seat may be claimed a moment after import. Close and let the
+            // backoff loop try again.
+            console.warn(`[teamx-dsh] WS push auth not ready (${code}): ${msg?.message ?? ''}; will retry`)
             this.ws?.close()
             return
           }
@@ -139,11 +154,13 @@ export class WsClient extends EventEmitter {
 
   private scheduleReconnect(): void {
     if (this.stopped || this.gaveUp) return
+    // Exponential backoff (1s → 30s cap) with jitter to avoid thundering herd
+    // when the server bounces and every member reconnects at once.
+    const delay = this.reconnectMs + Math.random() * 500
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
-    }, this.reconnectMs)
-    // Exponential backoff with cap
+    }, delay)
     this.reconnectMs = Math.min(this.reconnectMs * 2, RECONNECT_MAX_MS)
   }
 }

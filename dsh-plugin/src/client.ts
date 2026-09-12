@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import https from 'node:https'
 import http from 'node:http'
@@ -111,22 +111,140 @@ export interface MtlsConfig {
   key: string
 }
 
+/** Host portion of a URL (for letter matching). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
 /**
- * Build mTLS TLS options from environment variables.
- * Reuses the same env conventions as opencode-plugin:
- *   TEAMX_MTLS_CERT, TEAMX_MTLS_KEY, TEAMX_MTLS_CA
+ * If any of the given env paths points inside an imported-letter directory
+ * (a directory containing `letter.json`), return that directory.
+ *
+ * A launcher that provisions one seat per process sets TEAMX_MTLS_* at start;
+ * even a partial set (e.g. CERT+CA without KEY) then pins the intended letter.
+ * On a host with several letters for the SAME server (re-issued seats, other
+ * members' experiments), recency heuristics can pick the wrong seat — the
+ * env-pointed letter is the operator's explicit choice and must win.
  */
-export async function mtlsFor(): Promise<MtlsConfig | null> {
+function letterDirFromEnv(paths: (string | undefined)[]): string | null {
+  for (const p of paths) {
+    if (!p) continue
+    const dir = dirname(p)
+    if (dir && existsSync(join(dir, 'letter.json'))) return dir
+  }
+  return null
+}
+
+/**
+ * Build mTLS TLS options. Resolution order:
+ * 1. Explicit env vars TEAMX_MTLS_CERT/KEY/CA — but only when all three are
+ *    set AND the files exist (a stale/partial env must not throw or shadow
+ *    valid letter material).
+ * 2. **Env-pinned letter directory**: when any env path points inside an
+ *    imported-letter directory, use that letter's complete triple. This keeps
+ *    a partially-set env from falling through to recency heuristics that, on
+ *    hosts with several letters for the same server, select the wrong seat.
+ * 3. Auto-discovery from imported invitation letters under
+ *    `TEAMX_HOME/letters/<id>/` (client.crt/client.key/ca.crt): among letters
+ *    whose embedded server URL host matches `serverUrl`, the most recently
+ *    written one wins; otherwise the most recent letter overall. This mirrors
+ *    opencode-plugin and covers the common case where no env was configured.
+ * Returns null when neither source yields complete material — callers should
+ * treat that as "not provisioned yet" (retryable), not as fatal.
+ */
+export async function mtlsFor(serverUrl?: string): Promise<MtlsConfig | null> {
   const certPath = process.env.TEAMX_MTLS_CERT
   const keyPath = process.env.TEAMX_MTLS_KEY
   const caPath = process.env.TEAMX_MTLS_CA
-  if (!certPath || !keyPath || !caPath) return null
-  const [cert, key, ca] = await Promise.all([
-    readFile(certPath, 'utf-8'),
-    readFile(keyPath, 'utf-8'),
-    readFile(caPath, 'utf-8'),
+  if (
+    certPath &&
+    keyPath &&
+    caPath &&
+    existsSync(certPath) &&
+    existsSync(keyPath) &&
+    existsSync(caPath)
+  ) {
+    const [cert, key, ca] = await Promise.all([
+      readFile(certPath, 'utf-8'),
+      readFile(keyPath, 'utf-8'),
+      readFile(caPath, 'utf-8'),
+    ])
+    return { ca, cert, key }
+  }
+
+  // Partial env: honor the operator's explicit letter choice (step 2).
+  const pinnedDir = letterDirFromEnv([certPath, keyPath, caPath])
+  if (pinnedDir) {
+    const cert = join(pinnedDir, 'client.crt')
+    const key = join(pinnedDir, 'client.key')
+    const ca = join(pinnedDir, 'ca.crt')
+    if (existsSync(cert) && existsSync(key) && existsSync(ca)) {
+      const [c, k, a] = await Promise.all([
+        readFile(cert, 'utf-8'),
+        readFile(key, 'utf-8'),
+        readFile(ca, 'utf-8'),
+      ])
+      return { ca: a, cert: c, key: k }
+    }
+  }
+
+  // Letter-based discovery
+  const dir = join(TEAMX_HOME, 'letters')
+  if (!existsSync(dir)) return null
+  let entries: string[] = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  const wantedHost = serverUrl ? hostOf(serverUrl) : ''
+  let best: { sub: string; mtime: number } | null = null
+  let bestHostMatch: { sub: string; mtime: number } | null = null
+  for (const id of entries) {
+    const sub = join(dir, id)
+    const letterPath = join(sub, 'letter.json')
+    const cert = join(sub, 'client.crt')
+    const key = join(sub, 'client.key')
+    const ca = join(sub, 'ca.crt')
+    if (!existsSync(letterPath) || !existsSync(cert) || !existsSync(key) || !existsSync(ca)) {
+      continue
+    }
+    try {
+      const letter = JSON.parse(readFileSync(letterPath, 'utf8')) as {
+        teamx_invitation?: { server?: { url?: string } }
+      }
+      const host = hostOf(letter.teamx_invitation?.server?.url ?? '')
+      const mtime = Math.max(
+        statSync(letterPath).mtimeMs,
+        statSync(cert).mtimeMs,
+        statSync(key).mtimeMs,
+        statSync(ca).mtimeMs,
+      )
+      if (wantedHost && host === wantedHost) {
+        // Exact host match — keep the NEWEST such letter (a host may have
+        // several letters across teams; readdir order is not meaningful).
+        if (!bestHostMatch || mtime > bestHostMatch.mtime) {
+          bestHostMatch = { sub, mtime }
+        }
+        continue
+      }
+      if (!best || mtime > best.mtime) best = { sub, mtime }
+    } catch {
+      // skip unreadable letters
+    }
+  }
+  const chosen = bestHostMatch ?? best
+  if (!chosen) return null
+  const [c, k, a] = await Promise.all([
+    readFile(join(chosen.sub, 'client.crt'), 'utf-8'),
+    readFile(join(chosen.sub, 'client.key'), 'utf-8'),
+    readFile(join(chosen.sub, 'ca.crt'), 'utf-8'),
   ])
-  return { ca, cert, key }
+  return { ca: a, cert: c, key: k }
 }
 
 // ---------------------------------------------------------------------------
