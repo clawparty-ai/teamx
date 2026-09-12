@@ -66,6 +66,15 @@ const IDLE_HEARTBEAT_MIN_MS = (() => {
 /** Last time a session.idle heartbeat was published by this process. */
 let lastIdlePublishAt = 0
 
+/** How often the WS watcher re-resolves the server URL (late-letter pickup).
+ *  Override with TEAMX_WS_WATCH_INTERVAL (ms, must be > 0); default 10s —
+ *  same env name as the opencode-plugin side. */
+const WS_WATCH_INTERVAL_MS = (() => {
+  const fallback = 10_000
+  const raw = Number(process.env.TEAMX_WS_WATCH_INTERVAL ?? fallback)
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback
+})()
+
 /** Event types that are directed task assignments (auto-execute candidates). */
 function isDirectedTask(event: any): boolean {
   const data = event?.data || event?.payload || event
@@ -253,50 +262,91 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   // -----------------------------------------------------------------------
-  // Start WS push (if network mode and enabled)
+  // WS push: always-on watcher (Issue #6).
+  //
+  // The server URL is re-resolved every few seconds instead of once at
+  // startup, so an invitation letter imported into a RUNNING dsh process
+  // (the common cross-machine onboarding path) establishes /ws without a
+  // restart; a changed URL (newer letter) rebuilds the client, and losing
+  // all letters stops it. In-connection resilience (transient drops, cert
+  // not provisioned yet, seat pending approval) lives in WsClient itself:
+  // exponential backoff + jitter, retryable auth-not-ready errors.
   // -----------------------------------------------------------------------
-  const serverUrl = resolveServerUrl()
   const wsEnabled = config.wsEnabled !== false
 
-  if (serverUrl && wsEnabled) {
-    ctx.effect(() => {
-      let disposed = false
-      const start = async () => {
-        if (disposed) return
-        try {
-          // WS identity comes from the mTLS client cert CN, so no team/session
-          // params are needed. We still sync once to warm the member cache
-          // (so the poller/auto-execute has member ids) before connecting.
-          for (const agentId of knownMemberSessions()) {
-            try {
-              await refreshAgent(agentId)
-            } catch {
-              // ignore
-            }
-          }
-          if (disposed) return
+  ctx.effect(() => {
+    if (!wsEnabled) return
+    let disposed = false
+    let starting = false
+    let currentUrl = ''
 
-          wsClient = createWsClient({ serverUrl })
-          wsClient.on('event', () => {
-            // Any new event → refresh digest + auto-execute for all members
-            refreshAll().catch(() => {})
-          })
-          await wsClient.start()
-          console.log('[teamx-dsh] WS push client started')
-        } catch (err) {
-          console.warn('[teamx-dsh] WS push failed:', err)
-        }
-      }
-      start()
-      return () => {
-        disposed = true
+    const ensureWs = async () => {
+      if (disposed || starting) return
+      const url = resolveServerUrl()
+      if (!url) {
         if (wsClient) {
-          wsClient.stop()
+          try {
+            wsClient.stop()
+          } catch {
+            // ignore
+          }
+          wsClient = null
+          console.warn('[teamx-dsh] WS push stopped: no server URL (no invitation letter)')
+        }
+        currentUrl = ''
+        return
+      }
+      if (wsClient && url === currentUrl) return
+      starting = true
+      try {
+        if (wsClient) {
+          try {
+            wsClient.stop()
+          } catch {
+            // ignore
+          }
           wsClient = null
         }
+        currentUrl = url
+        // WS identity comes from the mTLS client cert CN, so no team/session
+        // params are needed. We still sync once to warm the member cache
+        // (so the poller/auto-execute has member ids) before connecting.
+        for (const agentId of knownMemberSessions()) {
+          try {
+            await refreshAgent(agentId)
+          } catch {
+            // ignore
+          }
+        }
+        if (disposed) return
+        const client = createWsClient({ serverUrl: url })
+        wsClient = client
+        client.on('event', () => {
+          // Any new event → refresh digest + auto-execute for all members
+          refreshAll().catch(() => {})
+        })
+        await client.start()
+        console.log(`[teamx-dsh] WS push client started (${url})`)
+      } catch (err) {
+        console.warn('[teamx-dsh] WS push failed:', err)
+      } finally {
+        starting = false
       }
-    })
-  }
+    }
+
+    void ensureWs()
+    const watcher = setInterval(() => {
+      void ensureWs()
+    }, WS_WATCH_INTERVAL_MS)
+    return () => {
+      disposed = true
+      clearInterval(watcher)
+      if (wsClient) {
+        wsClient.stop()
+        wsClient = null
+      }
+    }
+  })
 }
 
 // Back-compat: expose the same declaration on `apply` for loaders that read

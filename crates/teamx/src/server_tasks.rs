@@ -233,10 +233,18 @@ fn create(conn: &mut Connection, team_id: &str, member_id: &str, args: &Value) -
                 team_id,
                 Some(member_id),
                 "doc.created",
+                // Emit BOTH field spellings: server-side taskx uses
+                // `assignee`/`role`/`task`, while the opencode plugin's
+                // automation (auto-ack / auto-claim / auto-execute) matches on
+                // the legacy doc-flow names `assignee_member_id` /
+                // `assignee_role` / `id` / `executor`. Keep both so every
+                // consumer (old plugin bundles included) sees its shape.
                 Some(&json!({
-                    "doc": "taskx", "task": id, "title": title,
-                    "mode": mode, "assignee": target_ref,
-                    "role": role.as_deref(), "priority": priority,
+                    "doc": "taskx", "task": id, "id": id, "title": title,
+                    "mode": mode,
+                    "assignee": target_ref, "assignee_member_id": target_ref,
+                    "role": role.as_deref(), "assignee_role": role.as_deref(),
+                    "priority": priority, "executor": executor,
                 })),
             )?;
             created_ids.push(id);
@@ -388,6 +396,31 @@ fn transition(
         .or_else(|| s(args, "result"))
         .or_else(|| s(args, "note"))
         .map(str::to_string);
+    // Effective routing fields for the event payload (aliases for the plugin).
+    // `task` is loaded BEFORE the state update; for `claim` the assignee only
+    // takes effect in this transition, so the emitted event must already carry
+    // the new assignee or the plugin's auto path (which matches on
+    // `assignee_member_id`) would miss it.
+    let effective_assignee: Option<String> = if action == "claim" {
+        Some(member_id.to_string())
+    } else {
+        assignee.clone()
+    };
+    let effective_assignee_ref: Option<&str> = effective_assignee.as_deref();
+    let role_ref: Option<&str> = role.as_deref();
+    let executor_str: String = task
+        .get("executor")
+        .and_then(Value::as_str)
+        .unwrap_or("either")
+        .to_string();
+    let mode_str: Option<String> = task
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let priority_str: Option<String> = task
+        .get("priority")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     crate::db::with_write(conn, |tx| {
         let nstate: &str = match next {
@@ -408,10 +441,19 @@ fn transition(
             Some(member_id),
             event_type,
             Some(&json!({
-                "doc": "taskx", "task": id,
+                // Emit BOTH field spellings (see create()): the plugin matches
+                // on `assignee_member_id` / `assignee_role` / `id` /
+                // `executor`, while older consumers read `assignee` / `role`
+                // / `task`. `detail`/`note` are likewise dual-written.
+                "doc": "taskx", "task": id, "id": id,
                 "title": task["title"],
                 "to": nstate,
-                "detail": detail,
+                "detail": detail, "note": detail,
+                "mode": mode_str,
+                "assignee": effective_assignee_ref,
+                "assignee_member_id": effective_assignee_ref,
+                "role": role_ref, "assignee_role": role_ref,
+                "priority": priority_str, "executor": executor_str,
             })),
         )?;
         Ok(())
@@ -429,12 +471,15 @@ fn log(conn: &mut Connection, team_id: &str, _member_id: &str, args: &Value) -> 
     let mut stmt = conn
         .prepare(
             "SELECT seq, member_id, type, payload_json, created_at FROM events
-             WHERE team_id = ?1 AND payload_json LIKE ?2 ORDER BY seq",
+             WHERE team_id = ?1 AND (payload_json LIKE ?2 OR payload_json LIKE ?3) ORDER BY seq",
         )
         .map_err(|e| format!("db: {e}"))?;
-    let needle = format!("%\"task\": \"{id}\"%");
+    // Payloads carry BOTH spellings (`task` + `id`); match either so log()
+    // keeps working regardless of which key a future emitter writes.
+    let needle_task = format!("%\"task\": \"{id}\"%");
+    let needle_id = format!("%\"id\": \"{id}\"%");
     let rows: Vec<Value> = stmt
-        .query_map(params![team_id, needle], |r| {
+        .query_map(params![team_id, needle_task, needle_id], |r| {
             Ok(json!({
                 "seq": r.get::<_, i64>(0)?,
                 "member_id": r.get::<_, Option<String>>(1)?,
@@ -680,5 +725,78 @@ mod tests {
         assert!(call(&mut c, "task.ack", "m-w2", json!({"id": id})).is_err());
         assert!(call(&mut c, "task.update", "m-w2", json!({"id": id, "progress":"x"})).is_err());
         assert!(call(&mut c, "task.done", "m-w2", json!({"id": id})).is_err());
+    }
+
+    fn last_payload(conn: &Connection, event_type: &str) -> Value {
+        let raw: String = conn
+            .query_row(
+                "SELECT payload_json FROM events WHERE team_id = 't1' AND type = ?1 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![event_type],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn task_event_payload_carries_both_field_spellings() {
+        let mut c = test_conn();
+
+        // Direct task: create emits both spellings for the plugin auto path.
+        let out = call(
+            &mut c,
+            "task.create",
+            "m-owner",
+            json!({"title":"alias me", "assignee":"m-w1", "executor":"either"}),
+        )
+        .unwrap();
+        let id = out["tasks"][0].as_str().unwrap().to_string();
+        let created = last_payload(&c, "doc.created");
+        assert_eq!(created["doc"], "taskx");
+        assert_eq!(created["task"], created["id"]);
+        assert_eq!(created["id"].as_str().unwrap(), id);
+        assert_eq!(created["assignee"], created["assignee_member_id"]);
+        assert_eq!(created["assignee_member_id"].as_str().unwrap(), "m-w1");
+        assert_eq!(created["role"], created["assignee_role"]);
+        assert!(created.get("executor").and_then(Value::as_str).is_some());
+        assert_eq!(created["detail"], Value::Null);
+
+        // Transition (ack/update) keeps the aliases so state-change pushes
+        // are not silently dropped by the plugin; detail/note stay in sync.
+        call(&mut c, "task.ack", "m-w1", json!({"id": id})).unwrap();
+        let acked = last_payload(&c, "doc.acknowledged");
+        assert_eq!(acked["task"].as_str().unwrap(), id);
+        assert_eq!(acked["id"].as_str().unwrap(), id);
+        assert_eq!(acked["assignee_member_id"].as_str().unwrap(), "m-w1");
+        assert_eq!(acked["assignee"], acked["assignee_member_id"]);
+        assert_eq!(acked["role"], acked["assignee_role"]);
+        assert_eq!(acked["detail"], acked["note"]);
+
+        call(&mut c, "task.update", "m-w1", json!({"id": id, "progress":"started"})).unwrap();
+        let updated = last_payload(&c, "doc.updated");
+        assert_eq!(updated["assignee_member_id"].as_str().unwrap(), "m-w1");
+        assert_eq!(updated["note"].as_str().unwrap(), "started");
+
+        // Bid task: claim transitions the assignee from NULL to the claimer;
+        // the emitted claim event must already carry the new assignee alias.
+        let out = call(
+            &mut c,
+            "task.create",
+            "m-owner",
+            json!({"title":"contest", "role":"worker", "mode":"bid"}),
+        )
+        .unwrap();
+        let bid = out["tasks"][0].as_str().unwrap().to_string();
+        let bid_created = last_payload(&c, "doc.created");
+        assert_eq!(bid_created["assignee_role"].as_str().unwrap(), "worker");
+        assert_eq!(bid_created["role"], bid_created["assignee_role"]);
+        call(&mut c, "task.claim", "m-w1", json!({"id": bid})).unwrap();
+        let claimed = last_payload(&c, "doc.claimed");
+        assert_eq!(claimed["assignee_member_id"].as_str().unwrap(), "m-w1");
+        assert_eq!(claimed["assignee"], claimed["assignee_member_id"]);
+
+        // task.log finds events via either `task` or `id` key.
+        let logged = call(&mut c, "task.log", "m-w1", json!({"id": id})).unwrap();
+        assert!(logged["events"].as_array().unwrap().len() >= 3);
     }
 }

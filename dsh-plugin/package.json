@@ -23,7 +23,7 @@
     "check:protocols": "node ../scripts/generate-grill-protocol.mjs --check",
     "build": "npm run generate:protocols && bun build src/index.ts --outfile lib/index.js --external '@deepseek-ai/*' --external 'ws' --format esm --target node",
     "prepack": "npm run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json > /tmp/teamx-dsh-typecheck.log 2>&1; grep -E '^src/' /tmp/teamx-dsh-typecheck.log || true; ! grep -qE '^src/' /tmp/teamx-dsh-typecheck.log"
+    "typecheck": "LOG=$(mktemp -t teamx-dsh-typecheck.XXXXXX.log); command -v tsc >/dev/null 2>&1 || { echo 'typecheck: tsc not found — run npm install (or bun install) in dsh-plugin first' >&2; exit 1; }; tsc --noEmit -p tsconfig.json > $LOG 2>&1; grep -E '^src/' $LOG || true; ! grep -qE '^src/' $LOG"
   },
   "dependencies": {
     "ws": "^8.21.0"

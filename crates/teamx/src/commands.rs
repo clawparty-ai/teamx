@@ -5274,6 +5274,99 @@ pub fn nudge_open_tasks(
 
     Ok(written)
 }
+
+/// Nudge a team when it has unclaimed tasks (bid-mode `taskx` rows with no
+/// assignee), so members pick them up. Emits a team-level `system.nudge` with
+/// `kind = "claim_reminder"` listing the pending task ids/titles. Paced like the
+/// other team nudges (at most one `system.nudge` per team per `after_secs`).
+pub fn nudge_unclaimed_tasks(
+    conn: &mut Connection,
+    after_secs: i64,
+    now_secs: Option<i64>,
+) -> rusqlite::Result<Vec<Value>> {
+    let now = now_secs.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let mut written: Vec<Value> = Vec::new();
+
+    let teams: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, name FROM teams WHERE state IN ('active','blocked')")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    for (team_id, team_name) in teams {
+        let tasks: Vec<(String, String, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, role_key FROM taskx
+                 WHERE team_id = ?1 AND state = 'assigned' AND assignee_member_id IS NULL
+                 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map([&team_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        if tasks.is_empty() {
+            continue;
+        }
+
+        // Pace: at most one team nudge per after_secs window (shared with the
+        // idle reminder so a team never gets both in the same window).
+        let last_nudge: Option<String> = conn.query_row(
+            "SELECT MAX(created_at) FROM events WHERE team_id = ?1 AND type = 'system.nudge'",
+            [&team_id],
+            |r| r.get(0),
+        )?;
+        if let Some(n) = last_nudge {
+            if now - ts_secs(&n) < after_secs {
+                continue;
+            }
+        }
+
+        let list = tasks
+            .iter()
+            .map(|(id, title, _)| format!("`{id}`（{title}）"))
+            .collect::<Vec<_>>()
+            .join("、");
+        let message = format!(
+            "团队「{team_name}」有 {} 个待认领任务：{list}。请有意者 ack→claim→done 认领。",
+            tasks.len()
+        );
+        let payload = json!({
+            "kind": "claim_reminder",
+            "team_name": team_name,
+            "count": tasks.len(),
+            "tasks": tasks
+                .iter()
+                .map(|(id, title, role)| json!({ "id": id, "title": title, "role": role }))
+                .collect::<Vec<_>>(),
+            "message": message,
+        });
+        let ts = chrono::DateTime::from_timestamp(now, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(crate::events::db_now);
+        db::with_write(conn, |tx| {
+            let seq = events::emit(tx, &team_id, None, "system.nudge", Some(&payload))?;
+            tx.execute(
+                "UPDATE events SET created_at = ?1 WHERE team_id = ?2 AND seq = ?3",
+                params![ts, team_id, seq],
+            )?;
+            Ok(())
+        })?;
+        written.push(json!({
+            "team_id": team_id,
+            "member_id": Value::Null,
+            "type": "system.nudge",
+            "payload": payload,
+        }));
+    }
+
+    Ok(written)
+}
+
 /// True if this member's invitation letter has been revoked (network mode I2).
 /// Only invitation-issued members have an `invitations` row; token-joined
 /// members are not affected by invitation revocation.
@@ -5607,6 +5700,45 @@ mod tests {
     }
 
     #[test]
+    fn member_online_includes_fresh_presence() {
+        let conn = test_conn();
+        // No connection and no presence -> offline.
+        assert!(!crate::db::member_online(&conn, "m1"));
+
+        // Fresh presence heartbeat -> online (even without a ws/tunnel row).
+        conn.execute(
+            "INSERT INTO presence (member_id, active_sessions, running_tools, open_terminals, updated_at)
+             VALUES ('m1', 1, 0, 0, ?1)",
+            params![chrono::Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        assert!(crate::db::member_online(&conn, "m1"));
+
+        // Stale heartbeat (beyond TTL) -> offline again.
+        conn.execute(
+            "UPDATE presence SET updated_at = ?1 WHERE member_id = 'm1'",
+            params![(chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339()],
+        )
+        .unwrap();
+        assert!(!crate::db::member_online(&conn, "m1"));
+
+        // An open connection wins regardless of presence.
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1', 'T', 'm1', NULL, 'forming', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO member_connections (member_id, team_id, ip, endpoint, connected_at)
+             VALUES ('m1', 't1', '1.2.3.4', 'ws', 'now')",
+            [],
+        )
+        .unwrap();
+        assert!(crate::db::member_online(&conn, "m1"));
+    }
+
+    #[test]
     fn resolve_user_creates_then_reuses_by_name() {
         let conn = test_conn();
         let (id1, name1) = resolve_user(&conn, None, Some("张三"), "owner").unwrap().unwrap();
@@ -5816,6 +5948,39 @@ mod tests {
         let lmsg = lead["payload"]["message"].as_str().unwrap();
         assert!(lmsg.contains("team lead"), "lead message should target the lead: {lmsg}");
         assert!(lmsg.contains("老板"), "lead message should name the lead member");
+    }
+
+    #[test]
+    fn nudge_fires_for_unclaimed_tasks() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+        // An unclaimed bid task (no assignee) should trigger a claim reminder.
+        conn.execute(
+            "INSERT INTO taskx (id, team_id, title, state, mode, executor, priority,
+                assignee_member_id, role_key, created_by_member_id, created_at, updated_at)
+             VALUES ('issue-x', 't1', '修复 X', 'assigned', 'bid', 'either', 'medium',
+                NULL, 'contributor', 'm1', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+
+        let written = nudge_unclaimed_tasks(&mut conn, 300, Some(10_000)).unwrap();
+        assert_eq!(written.len(), 1, "one claim reminder expected");
+        let e = &written[0];
+        assert_eq!(e["team_id"], "t1");
+        assert_eq!(e["payload"]["kind"], "claim_reminder");
+        let msg = e["payload"]["message"].as_str().unwrap();
+        assert!(msg.contains("issue-x"), "message should list the task id: {msg}");
+        assert!(msg.contains("修复 X"), "message should list the title: {msg}");
+
+        // Once assigned, no reminder.
+        conn.execute(
+            "UPDATE taskx SET assignee_member_id = 'm1' WHERE id = 'issue-x'",
+            [],
+        )
+        .unwrap();
+        let none = nudge_unclaimed_tasks(&mut conn, 300, Some(10_000 + 1000)).unwrap();
+        assert!(none.is_empty(), "claimed task must not nudge: {none:?}");
     }
 
     #[test]
