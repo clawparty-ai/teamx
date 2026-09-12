@@ -652,7 +652,15 @@ function mdRender(src){
     .replace(/`([^`]+)`/g,"<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
     .replace(/\*([^*]+)\*/g,"<i>$1</i>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,text,url)=>{
+      const u=String(url).trim();
+      // Only allow safe schemes; anything else (javascript:/data:/vbscript:…) is
+      // rendered as inert code text, never as an href (stored-XSS guard).
+      if(/^https?:\/\//i.test(u) || /^mailto:/i.test(u)){
+        return `<a href="${u}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      }
+      return `<code>${text} (${u})</code>`;
+    });
   const flush=()=>{ if(inCode){ out.push("<pre><code>"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; } };
   const closeList=()=>{ if(inList){ out.push("</ul>"); inList=false; } };
   for(const ln of lines){
@@ -794,13 +802,13 @@ function floorQuoteHtml(rt){
   if(!rt) return "";
   const who = rt.author ? ` · <span class="q-who">${esc(rt.author)}</span>` : "";
   const txt = rt.text || rt.body || "";
-  return `<div class="dsc-quote">${esc(who)}<div class="md-render">${mdRender(txt)}</div></div>`;
+  return `<div class="dsc-quote">${who}<div class="md-render">${mdRender(txt)}</div></div>`;
 }
 
 function renderThread(d){
   const host=$("#dscThread");
   if(!host) return;
-  const msgs = d.messages||[];
+  const msgs = (d.messages||[]).slice().sort((a,b)=>String(b.created_at||"").localeCompare(String(a.created_at||"")));
   const closed = d.closed===true;
   const title = d.title||"(无标题)";
   const quotesHtml = (m)=>{
@@ -893,7 +901,7 @@ function wireFloors(scope){
 function renderThreadFloors(d){
   const el=$("#dscFloors"); if(!el) return;
   const closed = (d&&d.closed)===true;
-  const msgs = d&&d.messages||[];
+  const msgs = (d&&d.messages||[]).slice().sort((a,b)=>String(b.created_at||"").localeCompare(String(a.created_at||"")));
   const quotesHtml=(m)=>{ let h="";
     if(m.reply_to && typeof m.reply_to==="object"){
       h += `<div class="dsc-quote"><span class="q-who">引用</span> ${esc(m.reply_to.message_id||"")}<div class="md-render">${mdRender(m.reply_to.text||m.reply_to.body||"")}</div></div>`;
