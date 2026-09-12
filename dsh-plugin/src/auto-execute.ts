@@ -25,6 +25,19 @@ const state: AutoExecuteState = {
 }
 
 /**
+ * In-flight injection guard: `${agentId}:${seq}` pairs currently being
+ * injected. Closes the WS-push + poller race — both channels call
+ * `processEvents` with the same events, and the awaits below
+ * (`refreshDigest` / `agent.followup`) leave a window where `lastSeq` is not
+ * yet advanced, so the second concurrent invocation would inject the same
+ * task a second time (B1 duplicate injection). The guard makes the latecomer
+ * skip instead. Entries are always released (`finally`), so a failed
+ * injection still retries on the next poll: at-least-once is preserved and
+ * a failed wake-up is never silently dropped.
+ */
+const inflight = new Set<string>()
+
+/**
  * Register an agent for auto-execute tracking.
  */
 export function registerAgent(agentId: string, agent: Agent, teamId: string): void {
@@ -78,24 +91,34 @@ export async function processEvents(agentId: string, events: any[]): Promise<num
     if (!myMemberId) continue
     if (assignee !== myMemberId) continue
 
-    // Refresh digest first (using the full session key)
-    await refreshDigest(agentId, agentSessionKey(agentId))
-
-    // Build auto-execute message
-    const eventMsg = data.message || data.kind || event.type || 'new task'
-    const autoMsg = buildAutoExecMessage(eventMsg, getDigest(agentId))
-
-    // Wake the agent
+    // Reserve this (agent, seq) BEFORE the awaits below: a concurrent
+    // processEvents run (other channel) sees the reservation and skips
+    // instead of double-injecting.
+    const flightKey = `${agentId}:${seq}`
+    if (inflight.has(flightKey)) continue
+    inflight.add(flightKey)
     try {
-      const userMessage = createUserMessage({
-        content: [{ type: 'text', text: autoMsg }],
-        source: { kind: 'user' },
-      })
-      await agent.followup(userMessage)
-      triggered++
-      state.lastSeq.set(agentId, seq)
-    } catch (err) {
-      console.error(`[teamx-dsh] auto-execute followup failed for ${agentId}:`, err)
+      // Refresh digest first (using the full session key)
+      await refreshDigest(agentId, agentSessionKey(agentId))
+
+      // Build auto-execute message
+      const eventMsg = data.message || data.kind || event.type || 'new task'
+      const autoMsg = buildAutoExecMessage(eventMsg, getDigest(agentId))
+
+      // Wake the agent
+      try {
+        const userMessage = createUserMessage({
+          content: [{ type: 'text', text: autoMsg }],
+          source: { kind: 'user' },
+        })
+        await agent.followup(userMessage)
+        triggered++
+        state.lastSeq.set(agentId, seq)
+      } catch (err) {
+        console.error(`[teamx-dsh] auto-execute followup failed for ${agentId}:`, err)
+      }
+    } finally {
+      inflight.delete(flightKey)
     }
   }
 

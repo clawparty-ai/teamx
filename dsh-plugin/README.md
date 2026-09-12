@@ -4,7 +4,7 @@ teamx plugin for [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepsee
 
 ## What it does
 
-- **28 `teamx_*` tools** registered via `ctx.tools.register(defineTool(...))` for team management, goal tracking, member approval, role assignment, and real-time collaboration
+- **29 `teamx_*` tools** registered via `ctx.tools.register(defineTool(...))` for team management, goal tracking, member approval, role assignment, and real-time collaboration
 - **21 `/team-*` flat slash commands** registered via `ctx.commands.register`
 - **Runtime `teamx` skill** registered via `ctx.skills.register(...)` — provides the collaboration protocol / usage guide so agents know how to use teamx_* tools (Per-Turn Protocol, State Machine, Workflow Guidance)
 - **Runtime `teamx-grill-with-docs` skill** — runs explicit owner-led design sessions and preserves decisions in repository artifacts
@@ -118,6 +118,7 @@ This key is the agent's identity across all teamx operations. **dsh agents and o
 - `teamx_ask` — Ask a member a question
 - `teamx_respond` — Answer an open question
 - `teamx_publish` — Publish event to team ledger
+- `teamx_discussion` — Team discussion threads: list/open/create/say/reply/close/subscribe/unsubscribe
 
 ## Slash commands (21)
 
@@ -180,7 +181,7 @@ Disable with `TEAMX_AUTO_EXECUTE=0`.
 apply(ctx, config)
   ├── ctx.on('ready')
   │   ├── Discover teamx instance ID
-  │   ├── Register 28 teamx_* tools
+  │   ├── Register 29 teamx_* tools
   │   ├── Register 21 /team-* commands
   │   └── Register teamx skill (ctx.skills.register)
   │

@@ -22,6 +22,7 @@ use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo,
+        DefaultBodyLimit,
         Path,
         State,
     },
@@ -125,9 +126,30 @@ where
     }
 }
 
+/// Env var overriding the `/rpc` request body limit (bytes).
+pub const RPC_MAX_BODY_ENV: &str = "TEAMX_MAX_BODY";
+
+/// Default `/rpc` request body limit: 512 MiB — the same cap the smart-HTTP
+/// git path uses (`read_body`), so `git.receive` (base64 bundle inside JSON)
+/// can carry the same payloads as `git-receive-pack`. axum's built-in default
+/// (2 MiB) rejected any bundle over ~1.5 MiB with 413 (Issue #12).
+pub const RPC_MAX_BODY_DEFAULT: usize = 512 * 1024 * 1024;
+
+/// Parse a body-limit override: must be a positive integer; anything else
+/// (unset/invalid/0) falls back to the default.
+pub fn parse_rpc_max_body(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(RPC_MAX_BODY_DEFAULT)
+}
+
+/// Effective `/rpc` body limit: `TEAMX_MAX_BODY` (bytes) or the 512 MiB default.
+pub fn rpc_max_body() -> usize {
+    parse_rpc_max_body(std::env::var(RPC_MAX_BODY_ENV).ok().as_deref())
+}
+
 /// Entry point for `teamx serve`.
-pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
-    // When launched by the opencode plugin, stop as soon as opencode exits.
+pub fn serve(cmd: &ServeCmd) -> Result<(), String> {    // When launched by the opencode plugin, stop as soon as opencode exits.
     crate::procwatch::spawn_parent_monitor();
 
     let db_path = cmd.db.clone().unwrap_or_else(crate::db::default_db_path);
@@ -143,7 +165,10 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/rpc", post(rpc))
+        // Large `git.receive` bundles travel base64-encoded inside the JSON
+        // body — axum's 2 MiB default would 413 them (Issue #12). The limit
+        // is scoped to /rpc only; smart-HTTP git routes keep their own cap.
+        .route("/rpc", post(rpc).layer(DefaultBodyLimit::max(rpc_max_body())))
         .route("/ws", get(ws_handler))
         .route("/tunnel", get(tunnel_ws_handler))
         .route("/tunnel/forward", get(tunnel_forward_handler))
@@ -240,6 +265,7 @@ async fn nudge_task(state: AppState) {
             let mut conn = db.lock().unwrap();
             let mut out = commands::nudge_idle_teams(&mut conn, after_secs, None)?;
             out.extend(commands::nudge_open_tasks(&mut conn, after_secs, None, None)?);
+            out.extend(commands::nudge_unclaimed_tasks(&mut conn, after_secs, None)?);
             Ok::<_, rusqlite::Error>(out)
         })
         .await;
@@ -1259,7 +1285,31 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             // Resolve cost: opencode cost stays authoritative; missing cost is
             // computed from tokens × pricing when the model is known.
             crate::activity::apply_pricing(conn, &mut rows).map_err(|e| e.to_string())?;
+            // Budget alert: snapshot the cumulative cost per (team, member)
+            // before the batch lands, so a threshold crossing can be detected
+            // after insertion. Disabled unless TEAMX_BUDGET_ALERT_COST_USD > 0.
+            let budget = crate::activity::budget_threshold_from_env();
+            let mut before_sums: std::collections::HashMap<(String, String), f64> =
+                std::collections::HashMap::new();
+            if budget.is_some() {
+                for r in &rows {
+                    let key = (r.team_id.clone(), r.member_id.clone());
+                    if let std::collections::hash_map::Entry::Vacant(e) = before_sums.entry(key) {
+                        let sum = crate::activity::member_cost_sum(conn, &r.team_id, &r.member_id)
+                            .map_err(|e| e.to_string())?;
+                        e.insert(sum);
+                    }
+                }
+            }
             let n = crate::activity::push_activities(conn, &rows).map_err(|e| e.to_string())?;
+            if let Some(threshold) = budget {
+                for ((tid, mid), before) in &before_sums {
+                    let after =
+                        crate::activity::member_cost_sum(conn, tid, mid).map_err(|e| e.to_string())?;
+                    crate::activity::budget_alert_on_crossing(conn, tid, mid, *before, after, threshold)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             return Ok(serde_json::json!({ "ok": true, "inserted": n }));
         }
         // Enterprise cost: plugin reports the opencode model pricing it observes
@@ -2283,5 +2333,73 @@ async fn git_http_receive_pack(
             resp
         }
         Err(e) => git_http_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+#[cfg(test)]
+mod rpc_body_limit_tests {
+    use super::*;
+    use axum::http::Request;
+    use tower::ServiceExt; // oneshot
+
+    #[test]
+    fn parse_threshold_defaults_and_overrides() {
+        assert_eq!(parse_rpc_max_body(None), RPC_MAX_BODY_DEFAULT);
+        assert_eq!(parse_rpc_max_body(Some("")), RPC_MAX_BODY_DEFAULT);
+        assert_eq!(parse_rpc_max_body(Some("abc")), RPC_MAX_BODY_DEFAULT);
+        assert_eq!(parse_rpc_max_body(Some("-5")), RPC_MAX_BODY_DEFAULT);
+        assert_eq!(parse_rpc_max_body(Some("0")), RPC_MAX_BODY_DEFAULT);
+        assert_eq!(parse_rpc_max_body(Some(" 1048576 ")), 1024 * 1024);
+        assert_eq!(parse_rpc_max_body(Some("268435456")), 256 * 1024 * 1024);
+    }
+
+    async fn echo_json(Json(v): Json<Value>) -> Json<Value> {
+        Json(v)
+    }
+
+    /// The production wiring: /rpc with the raised DefaultBodyLimit. A body
+    /// above axum's built-in 2 MiB default must reach the handler (no 413).
+    #[tokio::test]
+    async fn rpc_accepts_body_above_axum_default() {
+        let app = Router::new().route(
+            "/rpc",
+            post(echo_json).layer(DefaultBodyLimit::max(parse_rpc_max_body(None))),
+        );
+        // ~3 MiB JSON payload: {"pad": "aaaa..."} — over the 2 MiB default.
+        let pad = "a".repeat(3 * 1024 * 1024);
+        let body = format!("{{\"pad\":\"{pad}\"}}");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/rpc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Control: without the raised limit the same payload is rejected 413,
+    /// proving the test above actually exercises the limit path.
+    #[tokio::test]
+    async fn rpc_without_layer_still_413s_above_2mib() {
+        let app = Router::new().route("/rpc", post(echo_json));
+        let pad = "a".repeat(3 * 1024 * 1024);
+        let body = format!("{{\"pad\":\"{pad}\"}}");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/rpc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent'
-import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools } from './tools.js'
+import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools, registerDiscussionTools } from './tools.js'
 import { registerCommands } from './commands.js'
 import { TEAMX_SKILL } from './skill.js'
 import { TEAMX_GRILL_WITH_DOCS_SKILL } from './grill-with-docs.generated.js'
@@ -45,6 +45,35 @@ export interface Config {
 // ---------------------------------------------------------------------------
 
 const POLL_DEFAULT_MS = 15_000
+
+/**
+ * Minimum interval between `session.idle` heartbeat publishes, process-wide
+ * (ms). Every session in one dsh process connects with the same mTLS client
+ * cert — i.e. the SAME team member — so an unthrottled per-session heartbeat
+ * writes N duplicate `session.idle` rows into the team ledger on every idle
+ * wave (one per session). One process-wide heartbeat per window is enough
+ * for presence; the digest refresh below stays per-idle and is NOT throttled.
+ *
+ * Override with TEAMX_IDLE_HEARTBEAT_MIN_MS; 0 restores the old per-session
+ * behavior.
+ */
+const IDLE_HEARTBEAT_MIN_MS = (() => {
+  const fallback = 10 * 60_000
+  const raw = Number(process.env.TEAMX_IDLE_HEARTBEAT_MIN_MS ?? fallback)
+  return Number.isFinite(raw) && raw >= 0 ? raw : fallback
+})()
+
+/** Last time a session.idle heartbeat was published by this process. */
+let lastIdlePublishAt = 0
+
+/** How often the WS watcher re-resolves the server URL (late-letter pickup).
+ *  Override with TEAMX_WS_WATCH_INTERVAL (ms, must be > 0); default 10s —
+ *  same env name as the opencode-plugin side. */
+const WS_WATCH_INTERVAL_MS = (() => {
+  const fallback = 10_000
+  const raw = Number(process.env.TEAMX_WS_WATCH_INTERVAL ?? fallback)
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback
+})()
 
 /** Event types that are directed task assignments (auto-execute candidates). */
 function isDirectedTask(event: any): boolean {
@@ -78,6 +107,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerGoalTools(ctx)
   registerMemberTools(ctx)
   registerInteractionTools(ctx)
+  registerDiscussionTools(ctx)
   registerCommands(ctx)
   ctx.effect(() => ctx.skills.register(TEAMX_SKILL))
   ctx.effect(() => ctx.skills.register(TEAMX_GRILL_WITH_DOCS_SKILL))
@@ -142,15 +172,21 @@ export function apply(ctx: Context, config: Config = {}): void {
     const isMember = memberStatus(agentId)?.isMember === true
     if (!isMember) return
 
-    // Publish heartbeat (same as opencode-plugin's session.idle activity row)
-    try {
-      await runCli([
-        'publish', 'activity',
-        '--data', JSON.stringify({ kind: 'session.idle' }),
-        '--session', sessionKey(instance, agentId),
-      ])
-    } catch {
-      // heartbeat failure is non-critical
+    // Publish heartbeat (same as opencode-plugin's session.idle activity row).
+    // Throttled process-wide (IDLE_HEARTBEAT_MIN_MS): all sessions in this
+    // process share one mTLS member identity, so per-session heartbeats are
+    // N duplicate ledger rows on every idle wave.
+    if (Date.now() - lastIdlePublishAt >= IDLE_HEARTBEAT_MIN_MS) {
+      try {
+        await runCli([
+          'publish', 'activity',
+          '--data', JSON.stringify({ kind: 'session.idle' }),
+          '--session', sessionKey(instance, agentId),
+        ])
+        lastIdlePublishAt = Date.now()
+      } catch {
+        // heartbeat failure is non-critical
+      }
     }
 
     // Refresh digest on idle
@@ -227,50 +263,91 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   // -----------------------------------------------------------------------
-  // Start WS push (if network mode and enabled)
+  // WS push: always-on watcher (Issue #6).
+  //
+  // The server URL is re-resolved every few seconds instead of once at
+  // startup, so an invitation letter imported into a RUNNING dsh process
+  // (the common cross-machine onboarding path) establishes /ws without a
+  // restart; a changed URL (newer letter) rebuilds the client, and losing
+  // all letters stops it. In-connection resilience (transient drops, cert
+  // not provisioned yet, seat pending approval) lives in WsClient itself:
+  // exponential backoff + jitter, retryable auth-not-ready errors.
   // -----------------------------------------------------------------------
-  const serverUrl = resolveServerUrl()
   const wsEnabled = config.wsEnabled !== false
 
-  if (serverUrl && wsEnabled) {
-    ctx.effect(() => {
-      let disposed = false
-      const start = async () => {
-        if (disposed) return
-        try {
-          // WS identity comes from the mTLS client cert CN, so no team/session
-          // params are needed. We still sync once to warm the member cache
-          // (so the poller/auto-execute has member ids) before connecting.
-          for (const agentId of knownMemberSessions()) {
-            try {
-              await refreshAgent(agentId)
-            } catch {
-              // ignore
-            }
-          }
-          if (disposed) return
+  ctx.effect(() => {
+    if (!wsEnabled) return
+    let disposed = false
+    let starting = false
+    let currentUrl = ''
 
-          wsClient = createWsClient({ serverUrl })
-          wsClient.on('event', () => {
-            // Any new event → refresh digest + auto-execute for all members
-            refreshAll().catch(() => {})
-          })
-          await wsClient.start()
-          console.log('[teamx-dsh] WS push client started')
-        } catch (err) {
-          console.warn('[teamx-dsh] WS push failed:', err)
-        }
-      }
-      start()
-      return () => {
-        disposed = true
+    const ensureWs = async () => {
+      if (disposed || starting) return
+      const url = resolveServerUrl()
+      if (!url) {
         if (wsClient) {
-          wsClient.stop()
+          try {
+            wsClient.stop()
+          } catch {
+            // ignore
+          }
+          wsClient = null
+          console.warn('[teamx-dsh] WS push stopped: no server URL (no invitation letter)')
+        }
+        currentUrl = ''
+        return
+      }
+      if (wsClient && url === currentUrl) return
+      starting = true
+      try {
+        if (wsClient) {
+          try {
+            wsClient.stop()
+          } catch {
+            // ignore
+          }
           wsClient = null
         }
+        currentUrl = url
+        // WS identity comes from the mTLS client cert CN, so no team/session
+        // params are needed. We still sync once to warm the member cache
+        // (so the poller/auto-execute has member ids) before connecting.
+        for (const agentId of knownMemberSessions()) {
+          try {
+            await refreshAgent(agentId)
+          } catch {
+            // ignore
+          }
+        }
+        if (disposed) return
+        const client = createWsClient({ serverUrl: url })
+        wsClient = client
+        client.on('event', () => {
+          // Any new event → refresh digest + auto-execute for all members
+          refreshAll().catch(() => {})
+        })
+        await client.start()
+        console.log(`[teamx-dsh] WS push client started (${url})`)
+      } catch (err) {
+        console.warn('[teamx-dsh] WS push failed:', err)
+      } finally {
+        starting = false
       }
-    })
-  }
+    }
+
+    void ensureWs()
+    const watcher = setInterval(() => {
+      void ensureWs()
+    }, WS_WATCH_INTERVAL_MS)
+    return () => {
+      disposed = true
+      clearInterval(watcher)
+      if (wsClient) {
+        wsClient.stop()
+        wsClient = null
+      }
+    }
+  })
 }
 
 // Back-compat: expose the same declaration on `apply` for loaders that read
