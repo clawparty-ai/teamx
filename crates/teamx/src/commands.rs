@@ -479,6 +479,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Discussion(d) => crate::discussion::run(conn, d).map_err(AppError)?,
+        Command::Im(i) => crate::im::run(conn, i).map_err(AppError)?,
         Command::Publish { r#type, data, assignee, session, team } => {
             cmd_publish(conn, r#type, data.as_deref(), assignee.as_deref(), session, team.as_deref())?
         }

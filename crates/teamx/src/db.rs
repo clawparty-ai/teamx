@@ -862,9 +862,53 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              CREATE INDEX IF NOT EXISTS idx_direct_tickets_pair ON direct_tickets(from_member, to_member, created_at);",
         )?;
     }
+    if version < 20 {
+        // v20: IM identity binding (IM P1 — docs/design/im-access-requirements.md
+        // §5.2/§6). A binding code is pre-associated with a member, single-use,
+        // 5-minute TTL and stored **as a hash only**; the binding table is the
+        // identity source for inbound IM actions (the gateway never carries a
+        // member id). `im_bind_attempts` backs per-IM-user throttling; it stores
+        // epoch seconds so the window filter never depends on text formatting.
+        // (Renumbered twice: v17 was taken by the issue-13 taskx PK rebuild,
+        // v18/v19 by the direct-connect P0/P0.5 migrations — see 交接 decision
+        // #8; next free version is now v21.)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS im_bind_codes (
+               code_hash  TEXT PRIMARY KEY,
+               member_id  TEXT NOT NULL,
+               team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               scope      TEXT NOT NULL DEFAULT 'self',
+               created_by TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               expires_at TEXT NOT NULL,
+               used_at    TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_im_bind_codes_member ON im_bind_codes(member_id, team_id);
+             CREATE TABLE IF NOT EXISTS im_bindings (
+               platform     TEXT NOT NULL,
+               im_user_id   TEXT NOT NULL,
+               member_id    TEXT NOT NULL,
+               team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               bound_at     TEXT NOT NULL,
+               bound_by     TEXT NOT NULL,
+               revoked_at   TEXT,
+               last_seen_at TEXT,
+               PRIMARY KEY (platform, im_user_id, team_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_im_bindings_member ON im_bindings(member_id);
+             CREATE TABLE IF NOT EXISTS im_bind_attempts (
+               platform     TEXT NOT NULL,
+               im_user_id   TEXT NOT NULL,
+               attempted_at INTEGER NOT NULL,
+               ok           INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_im_bind_attempts
+               ON im_bind_attempts(platform, im_user_id, attempted_at);",
+        )?;
+    }
 
     converge_columns(conn)?;
-    conn.pragma_update(None, "user_version", 19)?;
+    conn.pragma_update(None, "user_version", 20)?;
     Ok(())
 }
 
@@ -1388,7 +1432,7 @@ mod tests {
 
         // Version converges to the current schema version.
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 19);
+        assert_eq!(v, 20);
 
         // Idempotent: migrating again must succeed and change nothing.
         migrate(&conn).unwrap();
@@ -1402,6 +1446,6 @@ mod tests {
         let gcols = table_columns(&conn, "goals").unwrap();
         assert!(gcols.iter().any(|c| c == "closed_at"));
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 19);
+        assert_eq!(v, 20);
     }
 }

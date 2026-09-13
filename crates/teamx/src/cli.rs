@@ -55,6 +55,10 @@ pub enum Command {
     #[command(subcommand)]
     Discussion(DiscussionCmd),
 
+    /// IM access: identity binding (one-time codes) for remote operation
+    #[command(subcommand)]
+    Im(ImCmd),
+
     /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
     Publish {
         /// event type
@@ -1108,6 +1112,79 @@ pub enum LoopxCmd {
     Report {
         #[arg(value_name = "PROJECT")]
         project: PathBuf,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+/// IM identity binding (P1). Codes are single-use, 5-minute TTL, and are
+/// pre-associated with the member who created them, so binding needs no lead
+/// approval. `bind` is the in-process gateway path (P1, design §5.3 option A):
+/// the gateway calls it with the IM identity carried by the inbound message.
+#[derive(Subcommand, Debug)]
+pub enum ImCmd {
+    /// Create a one-time binding code for yourself (send it to the team bot)
+    BindCode {
+        /// code lifetime in seconds (default 300, allowed 60..=900)
+        #[arg(long)]
+        ttl_secs: Option<i64>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Redeem a binding code as an IM identity (in-process gateway path)
+    Bind {
+        /// the one-time code
+        #[arg(value_name = "CODE")]
+        code: String,
+        /// IM-side user id (feishu open_id / user_id)
+        #[arg(long)]
+        im_user: String,
+        /// IM platform key
+        #[arg(long, default_value = "feishu")]
+        platform: String,
+        /// IM-side tenant / team id (optional)
+        #[arg(long)]
+        im_team: Option<String>,
+        /// provider signature over the delegated fields (optional in P1)
+        #[arg(long)]
+        signature: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Unbind an IM identity (your own; a lead may unbind anyone in the team)
+    Unbind {
+        /// IM-side user id
+        #[arg(long)]
+        im_user: String,
+        #[arg(long, default_value = "feishu")]
+        platform: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List IM bindings (your own, or the team's with --all as a lead)
+    Bindings {
+        /// list every binding of the team (owner / co-lead only)
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Resolve the member behind an IM identity (owner / co-lead only)
+    Resolve {
+        #[arg(long)]
+        im_user: String,
+        #[arg(long, default_value = "feishu")]
+        platform: String,
         #[arg(long)]
         session: String,
         #[arg(long)]
