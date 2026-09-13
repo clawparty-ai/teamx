@@ -218,6 +218,14 @@ pub fn fetch_panel(ctx: &Ctx, id: &str, query_id: Option<&str>) -> RunOut {
             let res = discussion_data(ctx, query_id);
             finish("teamx discussion open", ctx.server_url().is_some(), res)
         }
+        "docs" => {
+            let res = docs_data(ctx);
+            finish("teamx docs", ctx.server_url().is_some(), res)
+        }
+        "doc" => {
+            let res = doc_data(ctx, query_id);
+            finish("teamx doc", ctx.server_url().is_some(), res)
+        }
         other => RunOut {
             ok: false,
             mode: "cli",
@@ -298,10 +306,146 @@ fn discussion_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
     }
 }
 
+/// `docs` panel — document types + instances read from the workspace
+/// `<home>/docs/` (`.teamx/docs/`): `_spec/<key>.json` contracts and
+/// `<key>/<id>.meta.json` + `<id>.md` instances. P0 is local-only (the console
+/// runs in the workspace); remote members without a clone see an empty state.
+fn docs_data(ctx: &Ctx) -> Result<Value, String> {
+    let root = ctx.home.join("docs");
+    let mut types: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(root.join("_spec")) {
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&txt) else { continue };
+            let key = p.file_stem().and_then(|x| x.to_str()).unwrap_or("");
+            types.push(normalize_spec(&v, key));
+        }
+    }
+    if types.is_empty() {
+        // Builtin taskx so the tab is never empty on teams without `## 文档`.
+        let s = crate::doc_flow::builtin_taskx_spec();
+        types.push(json!({
+            "key": s.key, "title": s.title, "purpose": "内置任务类型",
+            "states": s.states, "owner": s.owner, "transitions": [],
+        }));
+    }
+    let mut docs: Vec<Value> = Vec::new();
+    for t in &types {
+        let key = t.get("key").and_then(|x| x.as_str()).unwrap_or("");
+        let dir = root.join(key);
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let fname = p.file_name().and_then(|x| x.to_str()).unwrap_or("");
+            let Some(id) = fname.strip_suffix(".meta.json") else { continue };
+            let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+            let Ok(m) = serde_json::from_str::<Value>(&txt) else { continue };
+            let title = std::fs::read_to_string(dir.join(format!("{id}.md")))
+                .ok()
+                .and_then(|b| first_heading(&b))
+                .unwrap_or_else(|| id.to_string());
+            docs.push(json!({
+                "doc": m.get("doc").and_then(|x| x.as_str()).unwrap_or(key),
+                "id": m.get("id").and_then(|x| x.as_str()).unwrap_or(id),
+                "title": title,
+                "state": m.get("state").and_then(|x| x.as_str()).unwrap_or(""),
+                "owner": m.get("owner").and_then(|x| x.as_str()).unwrap_or(""),
+                "updated_at": m.get("updated_at").and_then(|x| x.as_str()).unwrap_or(""),
+            }));
+        }
+    }
+    docs.sort_by(|a, b| {
+        let ka = (
+            a.get("doc").and_then(|x| x.as_str()).unwrap_or(""),
+            a.get("updated_at").and_then(|x| x.as_str()).unwrap_or(""),
+        );
+        let kb = (
+            b.get("doc").and_then(|x| x.as_str()).unwrap_or(""),
+            b.get("updated_at").and_then(|x| x.as_str()).unwrap_or(""),
+        );
+        kb.cmp(&ka)
+    });
+    Ok(json!({ "ok": true, "types": types, "docs": docs }))
+}
+
+fn normalize_spec(v: &Value, fallback_key: &str) -> Value {
+    let key = v
+        .get("key")
+        .or_else(|| v.get("doc"))
+        .and_then(|x| x.as_str())
+        .unwrap_or(fallback_key);
+    let title = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(key);
+    json!({
+        "key": key,
+        "title": title,
+        "purpose": v.get("purpose").and_then(|x| x.as_str()).unwrap_or(""),
+        "states": v.get("states").cloned().unwrap_or_else(|| json!([])),
+        "owner": v.get("owner").and_then(|x| x.as_str()).unwrap_or(""),
+        "transitions": v.get("transitions").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+/// First `# heading` line of a markdown doc, used as its list title.
+fn first_heading(md: &str) -> Option<String> {
+    for line in md.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("# ") {
+            let r = rest.trim();
+            if !r.is_empty() {
+                return Some(r.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `doc` panel — one document's body + meta (scanned across `<key>/<id>.meta.json`).
+fn doc_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
+    let id = id.ok_or_else(|| "doc id is required".to_string())?;
+    let root = ctx.home.join("docs");
+    let Ok(rd) = std::fs::read_dir(&root) else {
+        return Err("no .teamx/docs directory in this workspace".to_string());
+    };
+    for e in rd.flatten() {
+        let dir = e.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let meta = dir.join(format!("{id}.meta.json"));
+        if !meta.exists() {
+            continue;
+        }
+        let txt = std::fs::read_to_string(&meta).map_err(|e| e.to_string())?;
+        let m: Value = serde_json::from_str(&txt).map_err(|e| e.to_string())?;
+        let body = std::fs::read_to_string(dir.join(format!("{id}.md"))).unwrap_or_default();
+        return Ok(json!({
+            "ok": true,
+            "doc": m.get("doc").cloned().unwrap_or(Value::Null),
+            "id": m.get("id").cloned().unwrap_or_else(|| json!(id)),
+            "state": m.get("state").cloned().unwrap_or(Value::Null),
+            "owner": m.get("owner").cloned().unwrap_or(Value::Null),
+            "created_at": m.get("created_at").cloned().unwrap_or(Value::Null),
+            "updated_at": m.get("updated_at").cloned().unwrap_or(Value::Null),
+            "history": m.get("history").cloned().unwrap_or_else(|| json!([])),
+            "body": body,
+        }));
+    }
+    Err(format!("document `{id}` not found under {}", root.display()))
+}
+
 /// Run a discussion write action (`create`/`say`/`reply`/`close`) from the
 /// console. Returns the same JSON the CLI would (ok / discussion_id / seq …).
-pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value, String> {
-    match &ctx.mode {
+pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value, String> {    match &ctx.mode {
         Mode::Network(url) => {
             let sess = ctx.session_or("console").to_string();
             match action {
@@ -672,5 +816,57 @@ mod tests {
         assert_eq!(slugify("caicai · headless"), "caicai-headless");
         assert_eq!(slugify("Tokyo ttyd"), "tokyo-ttyd");
         assert_eq!(slugify("!!"), "node");
+    }
+
+    #[test]
+    fn docs_data_reads_specs_and_instances() {
+        let root = std::env::temp_dir().join(format!("teamx-console-docs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join(".teamx");
+        std::fs::create_dir_all(home.join("docs/_spec")).unwrap();
+        std::fs::create_dir_all(home.join("docs/design")).unwrap();
+        std::fs::write(
+            home.join("docs/_spec/design.json"),
+            r#"{"key":"design","title":"方案","purpose":"purpose","states":["draft","review","done"],"owner":"tech-lead"}"#,
+        )
+        .unwrap();
+        std::fs::write(home.join("docs/design/001-x.md"), "# 我的方案\n\n正文").unwrap();
+        std::fs::write(
+            home.join("docs/design/001-x.meta.json"),
+            r#"{"doc":"design","id":"001-x","state":"review","owner":"caishu","updated_at":"2026-09-13 07:50","history":[{"state":"draft","by":"caishu","at":"2026-09-13 07:40","event_seq":1}]}"#,
+        )
+        .unwrap();
+        let ctx = Ctx {
+            mode: Mode::Local,
+            session: None,
+            home: home.clone(),
+            config_path: root.join("console.json"),
+        };
+        let v = docs_data(&ctx).unwrap();
+        let types = v["types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["key"], json!("design"));
+        assert_eq!(types[0]["states"], json!(["draft", "review", "done"]));
+        let docs = v["docs"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["id"], json!("001-x"));
+        assert_eq!(docs[0]["title"], json!("我的方案"));
+        assert_eq!(docs[0]["state"], json!("review"));
+
+        let one = doc_data(&ctx, Some("001-x")).unwrap();
+        assert_eq!(one["body"], json!("# 我的方案\n\n正文"));
+        assert_eq!(one["history"].as_array().unwrap().len(), 1);
+
+        // No workspace docs -> builtin taskx fallback type.
+        let empty = Ctx {
+            mode: Mode::Local,
+            session: None,
+            home: root.join("nope"),
+            config_path: root.join("console.json"),
+        };
+        let ev = docs_data(&empty).unwrap();
+        assert_eq!(ev["types"][0]["key"], json!("taskx"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
