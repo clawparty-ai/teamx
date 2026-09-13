@@ -194,6 +194,11 @@ pub enum Command {
     #[command(subcommand)]
     Tunnel(TunnelCmd),
 
+    /// Member-to-member direct connectivity (data-plane rendezvous): advertise
+    /// candidates and probe a peer for a direct path (control stays on server).
+    #[command(subcommand)]
+    Direct(DirectCmd),
+
     /// Member activity analytics (enterprise): push/query activity rows
     #[command(subcommand)]
     Activity(ActivityCmd),
@@ -1403,6 +1408,54 @@ pub enum TaskCmd {
 /// These manage the server's tunnel registry. `expose` is issued by the
 /// provider (member opening a tunnel); `list`/`status`/`close` are read/control
 /// operations that any member can run against the server.
+/// `teamx direct` — member-to-member direct connectivity (data-plane rendezvous).
+/// The server is the control plane: it stores candidates so same-team members
+/// can try a direct TCP path before falling back to the tunnel relay.
+#[derive(Subcommand, Debug)]
+pub enum DirectCmd {
+    /// Advertise this member's direct-connect candidates to the server
+    Advertise {
+        /// LAN IP(s) teammates may reach (repeatable)
+        #[arg(long = "lan-ip")]
+        lan_ips: Vec<String>,
+        /// local direct-listener port
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Show a peer member's advertised direct candidates (same team only)
+    Candidates {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Probe a peer's candidates with a direct TCP connect (reports reachability)
+    Probe {
+        #[arg(value_name = "MEMBER_ID")]
+        member_id: String,
+        /// per-candidate connect timeout (ms)
+        #[arg(long, default_value_t = 800)]
+        timeout_ms: u64,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum TunnelCmd {
     /// Expose a local service to teammates through the server (provider side).

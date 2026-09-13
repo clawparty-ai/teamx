@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -575,6 +575,33 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
                 TunnelCmd::Forward { name, local_port, .. } => {
                     crate::tunnel_client::forward(&url, name, local_port.unwrap_or(0))
+                }
+            };
+            return result.map_err(AppError);
+        }
+        // Member-to-member direct connectivity (network mode): the CLI talks to
+        // the server, which is the rendezvous/control plane.
+        Command::Direct(cmd) => {
+            let url = resolve_server_url(match cmd {
+                DirectCmd::Advertise { server, .. } => server.as_deref(),
+                DirectCmd::Candidates { server, .. } => server.as_deref(),
+                DirectCmd::Probe { server, .. } => server.as_deref(),
+            })?;
+            let result = match cmd {
+                DirectCmd::Advertise { lan_ips, port, session, team, .. } => {
+                    crate::tunnel_client::rpc(&url, "direct.advertise", json!({
+                        "lan_ips": lan_ips, "listener_port": port, "session": session, "team": team,
+                    }))
+                }
+                DirectCmd::Candidates { member_id, session, team, .. } => {
+                    crate::tunnel_client::rpc(&url, "direct.candidates", json!({
+                        "member_id": member_id, "session": session, "team": team,
+                    }))
+                }
+                DirectCmd::Probe { member_id, timeout_ms, session, team, .. } => {
+                    crate::tunnel_client::rpc(&url, "direct.probe", json!({
+                        "member_id": member_id, "timeout_ms": timeout_ms, "session": session, "team": team,
+                    }))
                 }
             };
             return result.map_err(AppError);
