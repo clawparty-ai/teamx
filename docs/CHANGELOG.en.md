@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.2 — 2026-09-02
+## 0.2.2 — 2026-09-13
 
 ### teamx space moved to project scope (`<cwd>/.teamx`), fixing multi-session certificate confusion
 
