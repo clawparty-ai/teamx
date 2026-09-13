@@ -1610,6 +1610,12 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             answer: s("answer").ok_or_else(|| "respond requires `answer`".to_string())?,
             session: sess(args),
         },
+        "ask.cancel" => Command::AskCancel {
+            ask_id: s("ask_id").ok_or_else(|| "ask.cancel requires `ask_id`".to_string())?,
+            reason: o("reason"),
+            session: sess(args),
+            team: o("team"),
+        },
         "events" => Command::Events {
             after: args.get("after").and_then(Value::as_i64),
             team: o("team"),

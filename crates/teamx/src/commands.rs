@@ -488,6 +488,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Respond { ask_id, answer, session } => {
             cmd_respond(conn, ask_id, answer, session)?
         }
+        Command::AskCancel { ask_id, reason, session, team } => {
+            cmd_ask_cancel(conn, ask_id, reason.as_deref(), session, team.as_deref())?
+        }
         Command::Events { after, team } => cmd_events(conn, *after, team.as_deref())?,
         Command::Log { team, session, limit, after } => {
             cmd_log(conn, team.as_deref(), session.as_deref(), *limit, *after)?
@@ -5149,6 +5152,87 @@ fn cmd_respond(conn: &mut Connection, ask_id: &str, answer: &str, session: &str)
     Ok(json!({ "ok": true, "question_id": q.id, "target_state": target_to.as_str(), "from": target_from.as_str() }))
 }
 
+/// Owner/co-lead cancels an open question (issue #26): marks it `cancelled`
+/// (history kept, not deleted) and, when the target has no other open question
+/// and is `waiting`, returns them to `active` so directed tasks can wake them.
+fn cmd_ask_cancel(
+    conn: &mut Connection,
+    ask_id: &str,
+    reason: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let q: QuestionRow = conn
+        .query_row(
+            "SELECT id, team_id, asker_member_id, target_member_id, question, answer, state, created_at
+             FROM questions WHERE id = ?1",
+            [ask_id],
+            question_row,
+        )
+        .map_err(|e| AppError(format!("question {ask_id} not found: {e}")))?;
+    let (actor, team) = resolve_actor(conn, session, team_opt.or(Some(q.team_id.as_str())))?;
+    if team.id != q.team_id {
+        return err(format!("question {ask_id} is not in team {}", team.id));
+    }
+    let is_lead: bool = conn
+        .query_row(
+            "SELECT (t.owner_member_id = ?1 OR m.is_lead = 1)
+             FROM teams t JOIN members m ON m.team_id = t.id
+             WHERE t.id = ?2 AND m.id = ?1",
+            params![actor.id, team.id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !is_lead {
+        return err("ask.cancel: only the team owner or a co-lead may cancel a question");
+    }
+    if q.state != "open" {
+        return err(format!("question {ask_id} is already {}", q.state));
+    }
+    let now = db::now();
+    let reason_s = reason.unwrap_or("").to_string();
+    let target = q.target_member_id.clone();
+    let qid = q.id.clone();
+    let qteam = q.team_id.clone();
+    let qtext = q.question.clone();
+    let actor_id = actor.id.clone();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE questions SET state = 'cancelled', answered_at = ?1 WHERE id = ?2",
+            params![now, qid],
+        )?;
+        let still_open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM questions WHERE team_id = ?1 AND target_member_id = ?2 AND state = 'open'",
+            params![qteam, target],
+            |r| r.get(0),
+        )?;
+        if still_open == 0 {
+            let st: String = tx
+                .query_row("SELECT state FROM members WHERE id = ?1", params![target], |r| r.get(0))
+                .unwrap_or_default();
+            if st == "waiting" {
+                tx.execute("UPDATE members SET state = 'active' WHERE id = ?1", params![target])?;
+            }
+        }
+        emit_json(
+            tx,
+            &qteam,
+            Some(&actor_id),
+            "clarification.cancelled",
+            json!({
+                "question_id": qid,
+                "question": qtext,
+                "target_member_id": target,
+                "reason": reason_s,
+            }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("ask cancel failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({ "ok": true, "question_id": q.id, "state": "cancelled", "target_member_id": target }))
+}
+
 fn cmd_events(conn: &Connection, after: Option<i64>, team_opt: Option<&str>) -> Result<Value> {
     let team_id = team_opt.ok_or_else(|| AppError("teamx events requires --team <id>".to_string()))?;
     team_by_id(conn, team_id)?;
@@ -5791,6 +5875,34 @@ mod tests {
             params![owner_id, team_id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn ask_cancel_unlocks_waiting_target() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-w','t1','sw','W','worker','active','now')",
+            [],
+        )
+        .unwrap();
+        // owner asks the worker -> worker becomes waiting
+        let a = cmd_ask(&mut conn, "m-w", "Q?", "s", Some("t1")).unwrap();
+        let qid = a["question_id"].as_str().unwrap().to_string();
+        let st: String = conn.query_row("SELECT state FROM members WHERE id='m-w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st, "waiting");
+
+        // non-lead (the worker) cannot cancel
+        assert!(cmd_ask_cancel(&mut conn, &qid, Some("x"), "sw", Some("t1")).is_err());
+
+        // owner cancels -> question cancelled, worker back to active
+        let c = cmd_ask_cancel(&mut conn, &qid, Some("stale"), "s", Some("t1")).unwrap();
+        assert_eq!(c["state"], json!("cancelled"));
+        let st2: String = conn.query_row("SELECT state FROM members WHERE id='m-w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st2, "active");
+        let qs: String = conn.query_row("SELECT state FROM questions WHERE id=?1", [&qid], |r| r.get(0)).unwrap();
+        assert_eq!(qs, "cancelled");
     }
 
     #[test]
