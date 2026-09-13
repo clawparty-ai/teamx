@@ -24,14 +24,18 @@
 
 ## P0.5 + P1（已实现：配对票据 + 限速 + listener/ping）
 
-讨论线程（Q1-Q5 收敛）定下的安全与端口口径落地：
+讨论线程（Q1-Q5 收敛）定下的安全与端口口径落地。P0.5（票据+限速）由 owner PR #47
+先行合并；本节一并记录 P1 与 RPC 桥接：
 
-- **配对票据（P0.5）**：`direct.probe` 探测可达即签发**一次性配对票据**（两个 uuid v4
-  拼接，TTL 60s，单次消费）；provider 在直连 TLS 握手时经 `direct.ticket.check` RPC
-  校验（绑定 team + provider=caller，过期/已消费/队不匹配全部拒绝并落台账）。
-  **知道 IP 不再能完成直连会话**。
-- **probe 限速（P0.5）**：每 (member, peer) 对 60s 滑动窗口最多 10 次探测；超限拒绝并落
-  `direct.rejected`（对齐 `im.rejected` 风格），收敛端口扫描面。
+- **配对票据（P0.5，PR #47）**：`direct.probe` 探测即签发**一次性配对票据**
+  （uuid v4，TTL 60s，`used_at` 单次消费）；服务端进程内 `consume_ticket` 校验
+  （未知/错配/过期/重放全拒绝）。**知道 IP 不再能完成直连会话**。
+- **probe 限速（P0.5，PR #47）**：每 (member, peer) 对 60s 滑动窗口最多 10 次探测；
+  超限拒绝并落 `direct.rejected`（对齐 `im.rejected` 风格），收敛端口扫描面。
+- **`direct.ticket.check` RPC（P1 桥接）**：`consume_ticket` 是服务端进程内函数，
+  provider（独立进程）无法直调——新增该 RPC 把票据校验开放给 provider：caller 身份
+  取自 mTLS 证书（绑定 to=provider），requester 从票据行解析（不信任请求体），
+  失败全部审计 `direct.rejected`。
 - **`teamx direct listen`（P1，provider）**：rustls mTLS listener（成员证书为身份、
   团队 CA 为客户端信任锚），随机端口 + 自动探测主 LAN IP（UDP-connect 路由法）并
   `direct.advertise` 登记；入站连接先 TLS 握手（证明同 team）→ 读票据行 → 服务端校验 →
@@ -41,9 +45,7 @@
 - **TLS 名字策略**：成员证书无 SAN，成员间端点没有主机名——consumer 侧用
   `CaChainVerifier`（链验证到团队 CA、**名字无关**，EKU=clientAuth）；身份绑定由
   一次性票据 + 服务端审计承担，禁 TOFU/自签。
-- **db**：`direct_tickets` / `direct_probe_attempts` 收敛式建表（不占 user_version，
-  与并行迁移轨零冲突）。
-- **测试**：单测 4 条（票据发放/单次消费/未知票据与错误 caller/限速与配对隔离）+
+- **测试**：单测 +1（ticket.check RPC 绑定 caller/重放拒绝/未知票据审计）+
   `tests/direct-listen-ping-test.sh`（真实 serve + 双成员 mTLS 闭环 + 限速负例 +
   `direct.rejected` 台账断言），注册 run-all 15i。
 
