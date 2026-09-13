@@ -25,6 +25,7 @@ pub mod events;
 pub mod util;
 pub mod git_client;
 pub mod git_service;
+pub mod im;
 #[cfg(feature = "gui")]
 pub mod gui;
 #[cfg(feature = "gui")]
