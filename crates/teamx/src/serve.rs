@@ -224,6 +224,14 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {    // When launched by the 
         let nudge_state = state.clone();
         tokio::spawn(async move { crate::serve::nudge_task(nudge_state).await });
 
+        // Start the IM outbound notifier (docs/57): watches the ledger and
+        // pushes whitelisted events to the configured IM groups. Disabled
+        // unless TEAMX_IM_NOTIFY_GROUPS names at least one group; dry-run
+        // (TEAMX_IM_DRY_RUN, default on) logs instead of sending.
+        if let Ok(notify_state) = im_notifier_task(state.clone(), &crate::im::ImConfig::from_env()) {
+            tokio::spawn(notify_state);
+        }
+
         let config = RustlsConfig::from_config(tls_config);
         let server = axum_server::bind_rustls(addr, config)
             .map(|acceptor| CertAcceptor { inner: acceptor });
@@ -280,6 +288,61 @@ async fn nudge_task(state: AppState) {
             }
         }
     }
+}
+
+/// IM outbound notifier loop (docs/57). Returns the spawn-ready future, or
+/// `Err(())` when the notifier is disabled (no `TEAMX_IM_NOTIFY_GROUPS`).
+/// Every pass: collect whitelisted ledger events into `im_outbox`, then
+/// flush due rows through the provider (direct rows immediately, digest
+/// rows after the 60 s window). IM platform failures never abort the loop.
+fn im_notifier_task(
+    state: AppState,
+    cfg: &crate::im::ImConfig,
+) -> Result<impl std::future::Future<Output = ()>, ()> {
+    use std::sync::Arc as StdArc;
+    if cfg.notify_groups.is_empty() {
+        return Err(());
+    }
+    let provider: StdArc<dyn crate::im::providers::ImProvider + Send + Sync> =
+        StdArc::new(crate::im::FeishuProvider::new(cfg.clone()));
+    let digest_window_secs = std::env::var("TEAMX_IM_DIGEST_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(crate::im::notifier::DIGEST_WINDOW_SECS);
+    let notifier = StdArc::new(crate::im::Notifier {
+        groups: cfg.notify_groups.clone(),
+        provider,
+        digest_window_secs,
+    });
+    let interval_secs = std::env::var("TEAMX_IM_NOTIFY_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15u64);
+    Ok(async move {
+        eprintln!(
+            "teamx serve: im notifier started ({} group(s), interval {interval_secs}s)",
+            notifier.groups.len()
+        );
+        let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
+        tick.tick().await; // consume the immediate first tick
+        loop {
+            tick.tick().await;
+            let db = state.db.clone();
+            let n = notifier.clone();
+            let stats = tokio::task::spawn_blocking(move || {
+                let mut conn = db.lock().unwrap();
+                n.run_once(&mut conn, chrono::Utc::now().timestamp())
+            })
+            .await
+            .unwrap_or_default();
+            if stats.collected + stats.pushed + stats.failed > 0 {
+                eprintln!(
+                    "teamx im notifier: collected {} pushed {} failed {} deferred {}",
+                    stats.collected, stats.pushed, stats.failed, stats.deferred
+                );
+            }
+        }
+    })
 }
 
 /// Build a rustls ServerConfig enforcing mutual TLS:

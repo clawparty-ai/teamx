@@ -12,13 +12,18 @@ pub struct ImConfig {
     pub feishu_app_secret: Option<String>,
     /// When true, providers log instead of sending (safe default).
     pub dry_run: bool,
+    /// Target IM group chat ids for the outbound notifier (feishu `chat_id`,
+    /// `oc_...`). Empty = notifier disabled (collect-only). Set via
+    /// `TEAMX_IM_NOTIFY_GROUPS` (comma-separated).
+    pub notify_groups: Vec<String>,
 }
 
 impl ImConfig {
     /// Read config from the environment.
     ///
     /// Env: `TEAMX_IM_FEISHU_APP_ID`, `TEAMX_IM_FEISHU_APP_SECRET`,
-    /// `TEAMX_IM_DRY_RUN` (`1`/`true` enables; anything else disables).
+    /// `TEAMX_IM_DRY_RUN` (`1`/`true` enables; anything else disables),
+    /// `TEAMX_IM_NOTIFY_GROUPS` (comma-separated feishu chat ids).
     /// `dry_run` defaults to true when the env var is absent.
     pub fn from_env() -> Self {
         let get = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
@@ -26,10 +31,20 @@ impl ImConfig {
             Some(v) => v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"),
             None => true,
         };
+        let notify_groups = get("TEAMX_IM_NOTIFY_GROUPS")
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             feishu_app_id: get("TEAMX_IM_FEISHU_APP_ID"),
             feishu_app_secret: get("TEAMX_IM_FEISHU_APP_SECRET"),
             dry_run,
+            notify_groups,
         }
     }
 

@@ -4,23 +4,36 @@
 //! subscription is an outbound connection** (no public callback endpoint
 //! needed), which fits self-hosted / NAT deployments (design §5.1).
 //!
-//! This file lands the provider primitives. The live long-connection client
-//! and HTTP send transport are wired by `im-p1-outbound-notifier` /
-//! `im-p1-inbound-gateway-security`; here they are dry-run / stubbed so the
-//! seam is exercisable and testable today.
+//! Live transport (landed by `im-p1-outbound-notifier`, docs/57): `send`
+//! fetches a cached `tenant_access_token` and posts to
+//! `im/v1/messages` (group = `chat_id`, direct = `open_id`). A platform
+//! rate limit (HTTP 429) surfaces as an error containing `429` so the
+//! notifier's backoff can respect it. Signature verification still lands
+//! with the gateway (`im-p1-inbound-gateway-security`): `verify` requires a
+//! signature to be present but does not yet validate it. All sends honour
+//! `dry_run` (default **on**) — an unconfigured deployment never touches the
+//! network.
+
+use std::sync::Mutex;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::im::config::ImConfig;
 use crate::im::providers::ImProvider;
 use crate::im::types::{ImChannel, ImDelegatedContext, ImEvent, ImMessage};
 
+const FEISHU_BASE: &str = "https://open.feishu.cn/open-apis";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Feishu provider.
 pub struct FeishuProvider {
     cfg: ImConfig,
+    /// Cached tenant_access_token: (token, expires_at unix seconds).
+    token: Mutex<Option<(String, i64)>>,
 }
 
 impl FeishuProvider {
     pub fn new(cfg: ImConfig) -> Self {
-        Self { cfg }
+        Self { cfg, token: Mutex::new(None) }
     }
 
     /// Human-readable channel label for logs.
@@ -28,6 +41,95 @@ impl FeishuProvider {
         match ch {
             ImChannel::Group(id) => format!("group:{id}"),
             ImChannel::Direct(id) => format!("direct:{id}"),
+        }
+    }
+
+    /// receive_id_type for the feishu messages API, per channel kind.
+    fn receive_id_type(ch: &ImChannel) -> &'static str {
+        match ch {
+            ImChannel::Group(_) => "chat_id",
+            ImChannel::Direct(_) => "open_id",
+        }
+    }
+
+    fn receive_id(ch: &ImChannel) -> &str {
+        match ch {
+            ImChannel::Group(id) | ImChannel::Direct(id) => id,
+        }
+    }
+
+    /// Fetch (and cache) a tenant_access_token. Token lives ~2 h on the
+    /// platform; we refresh 5 min before expiry.
+    fn tenant_token(&self) -> Result<String, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Some(tok) = self.token.lock().unwrap().as_ref() {
+            if now < tok.1 - 300 {
+                return Ok(tok.0.clone());
+            }
+        }
+        let app_id = self
+            .cfg
+            .feishu_app_id
+            .as_deref()
+            .ok_or("feishu not configured: TEAMX_IM_FEISHU_APP_ID missing")?;
+        let app_secret = self
+            .cfg
+            .feishu_app_secret
+            .as_deref()
+            .ok_or("feishu not configured: TEAMX_IM_FEISHU_APP_SECRET missing")?;
+        let resp: serde_json::Value = ureq::post(&format!("{FEISHU_BASE}/auth/v3/tenant_access_token/internal"))
+            .timeout(HTTP_TIMEOUT)
+            .send_json(serde_json::json!({ "app_id": app_id, "app_secret": app_secret }))
+            .map_err(|e| format!("feishu token request failed: {e}"))?
+            .into_json()
+            .map_err(|e| format!("feishu token decode failed: {e}"))?;
+        let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if code != 0 {
+            return Err(format!("feishu token error code={code}: {}", resp.get("msg").and_then(|v| v.as_str()).unwrap_or("")));
+        }
+        let token = resp
+            .get("tenant_access_token")
+            .and_then(|v| v.as_str())
+            .ok_or("feishu token response missing tenant_access_token")?
+            .to_string();
+        let expire = resp.get("expire").and_then(|v| v.as_i64()).unwrap_or(7200);
+        *self.token.lock().unwrap() = Some((token.clone(), now + expire));
+        Ok(token)
+    }
+
+    /// One feishu HTTP send. Maps HTTP 429 to an error containing "429".
+    fn http_send(&self, token: &str, msg: &ImMessage) -> Result<(), String> {
+        let id_type = Self::receive_id_type(&msg.channel);
+        let url = format!("{FEISHU_BASE}/im/v1/messages?receive_id_type={id_type}");
+        let content = serde_json::json!({ "text": msg.body }).to_string();
+        let body = serde_json::json!({
+            "receive_id": Self::receive_id(&msg.channel),
+            "msg_type": "text",
+            "content": content,
+        });
+        match ureq::post(&url)
+            .timeout(HTTP_TIMEOUT)
+            .set("Authorization", &format!("Bearer {token}"))
+            .send_json(body)
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, resp)) => {
+                let snippet = resp
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+                if code == 429 {
+                    Err(format!("feishu send: 429 rate limited: {snippet}"))
+                } else {
+                    Err(format!("feishu send: http {code}: {snippet}"))
+                }
+            }
+            Err(e) => Err(format!("feishu send: {e}")),
         }
     }
 }
@@ -48,11 +150,8 @@ impl ImProvider for FeishuProvider {
             );
             return Ok(());
         }
-        if !self.cfg.feishu_configured() {
-            return Err("feishu not configured: TEAMX_IM_FEISHU_APP_ID / _APP_SECRET missing".into());
-        }
-        // Live transport is landed by im-p1-outbound-notifier.
-        Err("feishu send: live transport not wired yet (see im-p1-outbound-notifier)".into())
+        let token = self.tenant_token()?;
+        self.http_send(&token, msg)
     }
 
     fn verify(&self, ctx: &ImDelegatedContext) -> Result<(), String> {
@@ -97,6 +196,7 @@ mod tests {
             feishu_app_id: Some("cli_x".into()),
             feishu_app_secret: Some("secret".into()),
             dry_run,
+            ..Default::default()
         })
     }
 
