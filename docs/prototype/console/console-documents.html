@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teamx Console · Documents (prototype v3 · state graph)</title>
+<style>
+
+:root {
+  --primary:#4A90E5; --primary-hover:#357ABD; --primary-light:#EBF3FC; --on-primary:#FFFFFF;
+  --secondary:#67C23A; --accent:#E6A23C; --danger:#F56C6C;
+  --bg:#f8f8f8; --fg:#333333; --card:#FFFFFF; --card-fg:#333333;
+  --muted:#F2F6FC; --muted-fg:#909399; --border:#EBEEF5; --ring:#4A90E5; --radius:4px;
+  --shadow:0 2px 4px 0 rgba(214,228,241,0.7); --shadow-hover:0 4px 12px rgba(214,228,241,0.9);
+  --font-sans:"Microsoft YaHei","PingFang SC",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"SF Mono","Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --transition:200ms ease;
+}
+.dark {
+  --primary:#5B9EF0; --primary-hover:#7BB3F5; --primary-light:#1A2A3A; --on-primary:#FFFFFF;
+  --bg:#1A1A2E; --fg:#E0E0E0; --card:#22223A; --card-fg:#E0E0E0; --muted:#2A2A40; --muted-fg:#909399;
+  --border:#333355; --ring:#5B9EF0; --shadow:0 2px 4px 0 rgba(0,0,0,0.3); --shadow-hover:0 4px 12px rgba(0,0,0,0.4);
+}
+* { box-sizing:border-box; }
+body { font-family:var(--font-sans); font-size:14px; line-height:1.5; margin:0; background:var(--bg); color:var(--fg); -webkit-font-smoothing:antialiased; }
+header { position:sticky; top:0; z-index:100; display:flex; align-items:center; height:60px; padding:0 20px; background:var(--card); border-bottom:1px solid var(--border); box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+header .logo { display:flex; align-items:center; gap:10px; margin-right:24px; flex-shrink:0; }
+header .logo .logo-icon { width:32px; height:32px; background:linear-gradient(135deg,#4A90E5,#357ABD); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:16px; }
+header .logo-text { font-size:16px; font-weight:600; color:var(--primary); letter-spacing:0.02em; }
+nav { display:flex; gap:0; flex:1; justify-content:center; }
+nav button { background:none; border:none; font:inherit; font-size:14px; font-weight:500; color:var(--muted-fg); padding:18px 18px; border-bottom:2px solid transparent; cursor:pointer; transition:color var(--transition),border-color var(--transition); }
+nav button:hover { color:var(--primary); }
+nav button.active { color:var(--primary); border-bottom-color:var(--primary); font-weight:600; }
+.header-right { margin-left:auto; display:flex; align-items:center; gap:16px; flex-shrink:0; }
+.user-info { display:flex; align-items:center; gap:8px; font-size:13px; color:#666; }
+.user-avatar { width:30px; height:30px; border-radius:50%; background:var(--primary-light); color:var(--primary); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px; }
+.theme-toggle { width:34px; height:34px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); color:var(--fg); cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:16px; }
+.toolbar { display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; padding:10px 20px; background:var(--card); border-bottom:1px solid var(--border); }
+.ws { font-size:12.5px; color:var(--muted-fg); font-family:var(--font-mono); }
+.ws b { color:var(--fg); font-weight:600; }
+.toolbar-right { margin-left:auto; display:flex; gap:10px; align-items:center; }
+.container { width:100%; padding:20px 24px; }
+.view { display:none; }
+.view.active { display:block; animation:fadein 200ms ease; }
+@keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+.cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
+@media (max-width:900px){ .cards { grid-template-columns:repeat(2,1fr); } }
+.card { background:var(--card); border-radius:var(--radius); padding:18px 20px; box-shadow:var(--shadow); transition:box-shadow var(--transition); display:flex; align-items:center; gap:16px; }
+.card:hover { box-shadow:var(--shadow-hover); }
+.card-icon { width:46px; height:46px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:21px; flex-shrink:0; }
+.card-icon.blue { background:#EBF5FF; color:#4A90E5; } .card-icon.green { background:#E8F8E8; color:#67C23A; }
+.card-icon.orange { background:#FDF0E0; color:#E6A23C; } .card-icon.purple { background:#F0E8FF; color:#9B59B6; }
+.card .label { font-size:13px; color:var(--muted-fg); margin-bottom:4px; }
+.card .value { font-size:23px; font-weight:600; color:var(--fg); line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+section.panel { background:var(--card); border-radius:var(--radius); padding:16px; margin-bottom:16px; box-shadow:var(--shadow); }
+h2 { font-size:14px; font-weight:600; margin:0 0 12px; color:var(--fg); }
+h2 .count { font-family:var(--font-mono); font-weight:500; color:var(--muted-fg); margin-left:6px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+tbody tr { transition:background var(--transition); } tbody tr:hover { background:var(--muted); }
+th { color:var(--muted-fg); font-weight:600; font-size:12px; background:var(--muted); }
+tr.user-group td { background:var(--muted); color:var(--muted-fg); font-weight:600; font-size:12.5px; letter-spacing:0.02em; }
+.badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:12px; font-weight:500; line-height:1.5; white-space:nowrap; }
+.badge.proposed,.badge.blocked,.badge.open { background:#FDF6EC; color:#E6A23C; }
+.badge.shared,.badge.in_progress,.badge.active,.badge.running,.badge.lead { background:#EBF5FF; color:#4A90E5; }
+.badge.achieved,.badge.completed,.badge.closed,.badge.done,.badge.contributor { background:#E8F8E8; color:#67C23A; }
+.badge.refining,.badge.review,.badge.reviewer { background:#F0E8FF; color:#9B59B6; }
+.badge.owner,.badge.searcher,.badge.extractor,.badge.kb-engineer { background:#EBF5FF; color:#4A90E5; }
+.badge.idle,.badge.pending { background:#F2F6FC; color:#909399; }
+.badge.waiting,.badge.high { background:#FDF6EC; color:#E6A23C; }
+.badge.left,.badge.medium { background:#FDE8E8; color:#F56C6C; }
+.badge.low { background:#E8F8E8; color:#67C23A; }
+.muted { color:var(--muted-fg); font-size:12px; }
+.mono { font-family:var(--font-mono); }
+.loading { color:var(--muted-fg); font-size:13px; padding:20px; text-align:center; }
+.errorbox { background:#FDE8E8; color:#c0392b; border:1px solid var(--border); border-radius:var(--radius); padding:14px; font-size:13px; margin-bottom:16px; }
+.errorbox .mono { font-family:var(--font-mono); font-size:12px; word-break:break-all; }
+pre.raw { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; overflow:auto; max-height:520px; }
+.ev-list { list-style:none; margin:0; padding:0; }
+.ev-item { display:flex; align-items:flex-start; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); }
+.ev-item:last-child { border-bottom:none; }
+.ev-time { font-family:var(--font-mono); font-size:11.5px; color:var(--muted-fg); flex-shrink:0; padding-top:2px; width:140px; }
+.ev-kind { flex-shrink:0; min-width:80px; text-align:center; }
+.ev-text { flex:1; min-width:0; word-break:break-word; font-size:13px; color:var(--fg); }
+ .ev-text .who { color:var(--muted-fg); font-size:12px; }
+ .ev-more-wrap { text-align:center; padding:10px 0 2px; }
+ .dsc-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+ .dsc-row { display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--border); cursor:pointer; border-radius:4px; }
+ .dsc-row:hover { background:var(--muted); }
+ .dsc-row.closed { opacity:.55; }
+ .dsc-row-title { flex:1; font-weight:600; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .dsc-row-meta { color:var(--muted-fg); font-size:12px; white-space:nowrap; }
+ .dsc-row-join { flex-shrink:0; }
+ .dsc-empty { padding:18px; text-align:center; color:var(--muted-fg); }
+ .dsc-floor { padding:10px 8px; border-bottom:1px solid var(--border); }
+ .dsc-floor-head { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted-fg); margin-bottom:4px; flex-wrap:wrap; }
+ .dsc-floor-actions { margin-left:auto; display:flex; gap:6px; }
+ .dsc-thread-actions { display:flex; gap:6px; margin-left:auto; }
+ .dsc-toolbar-sub { margin: -6px 0 8px; }
+ .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
+ .dsc-floor-author { font-weight:600; color:var(--fg); }
+ .dsc-floor-body { font-size:14px; color:var(--fg); white-space:pre-wrap; word-break:break-word; }
+ .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
+ .dsc-quote .q-who { font-weight:600; color:var(--fg); }
+ .dsc-composer { display:flex; gap:8px; margin-top:12px; align-items:flex-start; }
+ .dsc-composer textarea { flex:1; min-height:96px; resize:vertical; font-family:inherit; font-size:13px; padding:8px 10px; line-height:1.5; }
+ .dsc-composer .btn { margin-top:auto; }
+ .dsc-dialog { width:min(680px, 94vw); }
+ .dsc-ovl-body { display:flex; flex-direction:column; gap:10px; padding:16px; }
+ .dsc-ovl-body textarea { min-height:220px; resize:vertical; font-family:inherit; font-size:14px; line-height:1.6; padding:10px 12px; }
+ .dsc-ovl-actions { display:flex; gap:8px; justify-content:flex-end; }
+ .dsc-replybar { font-size:12px; color:var(--primary); background:var(--muted); border-radius:4px; padding:3px 8px; margin-bottom:4px; display:inline-flex; gap:6px; align-items:center; }
+ .dsc-form { display:flex; flex-direction:column; gap:8px; margin-top:12px; padding:12px; background:var(--muted); border-radius:6px; }
+ .dsc-form input, .dsc-form textarea { font-family:inherit; font-size:13px; }
+.copy-btn { font-size:12px; padding:3px 10px; }
+.cmd-line { font-family:var(--font-mono); font-size:12px; background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; margin-top:8px; word-break:break-all; display:none; color:var(--fg); }
+.btn-mini { font-size:12px; padding:3px 10px; }
+.btn-mini.busy { opacity:.7; }
+.tun-chip { display:inline-flex; align-items:center; gap:4px; background:var(--muted); border:1px solid var(--border); border-radius:12px; padding:2px 8px; margin:2px 4px 2px 0; font-size:11.5px; color:var(--fg); }
+.tun-chip .dot { width:7px; height:7px; border-radius:50%; background:#67C23A; }
+.btn { padding:6px 14px; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); color:var(--fg); font-size:13px; font-weight:500; cursor:pointer; transition:all var(--transition); }
+.btn:hover { border-color:var(--primary); color:var(--primary); }
+.btn-primary { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
+.btn-primary:hover { background:var(--primary-hover); color:var(--on-primary); }
+
+/* ---------- file browser overlay ---------- */
+.fs-overlay { position:fixed; inset:0; background:rgba(20,20,30,.45); z-index:900; display:flex; align-items:center; justify-content:center; padding:24px; }
+.fs-dialog { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-hover); width:min(1500px,98vw); height:min(920px,95vh); display:flex; flex-direction:column; overflow:hidden; }
+.fs-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--muted); border-bottom:1px solid var(--border); }
+.fs-title { flex:1; font-weight:600; font-size:14px; }
+.fs-headbtns { display:flex; gap:8px; }
+.fs-breadcrumb { padding:6px 14px; font-family:var(--font-mono); font-size:12px; color:var(--primary); border-bottom:1px solid var(--border); background:var(--card); }
+.fs-body { flex:1; display:flex; min-height:0; }
+.fs-left { width:46%; min-width:300px; overflow:auto; border-right:1px solid var(--border); }
+.fs-right { flex:1; overflow:auto; padding:12px; background:var(--card); }
+.fs-row { display:flex; align-items:center; gap:10px; padding:6px 12px; border-bottom:1px solid var(--border); font-size:13px; cursor:pointer; }
+.fs-row:hover { background:var(--muted); }
+.fs-row .ic { width:20px; text-align:center; }
+.fs-row .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fs-row .meta { color:var(--muted-fg); font-size:11.5px; font-family:var(--font-mono); }
+.fs-preview-empty { color:var(--muted-fg); text-align:center; padding-top:80px; }
+.fs-right pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre-wrap; word-break:break-word; max-height:640px; overflow:auto; }
+.fs-right img { max-width:100%; }
+.md-render { font-size:14px; line-height:1.6; } .md-render h1,.md-render h2,.md-render h3,.md-render h4 { margin:0.5em 0 0.3em; } .md-render p { margin:0.4em 0; } .md-render code { background:var(--muted); padding:1px 4px; border-radius:3px; } .md-render pre { background:var(--muted); padding:10px; border-radius:6px; overflow:auto; }
+.fs-btn-actions { display:flex; gap:6px; align-items:center; }
+.fs-btn-actions .act { font-size:12px; cursor:pointer; color:var(--muted-fg); }
+.fs-btn-actions .act:hover { color:var(--primary); }
+.fs-headbtns .btn-mini { font-size:16px; padding:4px 11px; }
+
+/* overlay dialog inverts the page theme: light page → dark dialog, dark page → light dialog */
+.fs-dialog { color:var(--fg); }
+body:not(.dark) .fs-dialog { background:#22223A; color:#E0E0E0; border-color:#333355; }
+body:not(.dark) .fs-dialog .fs-head { background:#2A2A40; color:#E0E0E0; border-bottom-color:#333355; }
+body:not(.dark) .fs-dialog .fs-breadcrumb { background:#2A2A40; color:#7BB3F5; border-bottom-color:#333355; }
+body:not(.dark) .fs-dialog .fs-left { border-right-color:#333355; }
+body:not(.dark) .fs-dialog .fs-right { background:#22223A; }
+body:not(.dark) .fs-dialog .fs-row { border-bottom-color:#333355; }
+body:not(.dark) .fs-dialog .fs-row:hover { background:#333355; }
+body:not(.dark) .fs-dialog .fs-row .meta { color:#909399; }
+body:not(.dark) .fs-dialog pre { background:#1A1A2E; color:#E0E0E0; border-color:#333355; }
+body:not(.dark) .fs-dialog .fs-preview-empty { color:#909399; }
+.dark .fs-dialog { background:#FFFFFF; color:#333333; border-color:#EBEEF5; }
+.dark .fs-dialog .fs-head { background:#F2F6FC; color:#333333; border-bottom-color:#EBEEF5; }
+.dark .fs-dialog .fs-breadcrumb { background:#FFFFFF; color:#4A90E5; border-bottom-color:#EBEEF5; }
+.dark .fs-dialog .fs-left { border-right-color:#EBEEF5; }
+.dark .fs-dialog .fs-right { background:#FFFFFF; }
+.dark .fs-dialog .fs-row { border-bottom-color:#EBEEF5; }
+.dark .fs-dialog .fs-row:hover { background:#F2F6FC; }
+.dark .fs-dialog .fs-row .meta { color:#909399; }
+.dark .fs-dialog pre { background:#F2F6FC; color:#333333; border-color:#EBEEF5; }
+.dark .fs-dialog .fs-preview-empty { color:#909399; }
+a.btn { text-decoration:none; }
+
+/* ================= prototype-only: Documents ================= */
+.doc-nav { display:flex; gap:2px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:14px; }
+.doc-nav button { background:none; border:none; font:inherit; font-size:13.5px; font-weight:500; color:var(--muted-fg); padding:10px 16px; border-bottom:2px solid transparent; cursor:pointer; transition:color var(--transition),border-color var(--transition); }
+.doc-nav button:hover { color:var(--primary); }
+.doc-nav button.active { color:var(--primary); border-bottom-color:var(--primary); font-weight:600; }
+.doc-nav button .n { opacity:.7; margin-left:6px; font-size:12px; }
+.doc-purpose { color:var(--muted-fg); font-size:12.5px; margin:-4px 0 16px; }
+
+/* 状态流转图（有向图：正向 + 回退/重开环） */
+.flow-wrap { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:14px 18px 10px; margin-bottom:18px; box-shadow:var(--shadow); overflow-x:auto; }
+.flow-svg { display:block; }
+.gnode rect { fill:var(--card); stroke:var(--border); stroke-width:1.5; }
+.gnode.has rect { stroke:var(--primary); fill:var(--primary-light); }
+.gnode .gn-name { font-size:12px; fill:var(--muted-fg); font-family:var(--font-mono); }
+.gnode.has .gn-name { fill:var(--primary); font-weight:600; }
+.gnode .gn-count { font-size:18px; font-weight:700; fill:var(--muted-fg); }
+.gnode.has .gn-count { fill:var(--primary); }
+.edge-label { font-size:10.5px; fill:#909399; }
+.edge-label.back { fill:#E6A23C; }
+.flow-legend { display:flex; gap:18px; align-items:center; margin-top:8px; font-size:11.5px; color:var(--muted-fg); }
+.flow-legend .sw { display:inline-block; width:26px; height:0; border-top:1.6px solid #909399; vertical-align:middle; margin-right:6px; }
+.flow-legend .sw.back { border-top:1.6px dashed #E6A23C; }
+.flow-total { margin-left:auto; }
+.flow-total b { color:var(--fg); font-size:14px; }
+
+/* master-detail */
+.doc-split { display:grid; grid-template-columns:minmax(320px, 40%) 1fr; gap:16px; align-items:start; }
+.doc-list-panel { max-height:calc(100vh - 380px); overflow:auto; }
+.doc-list-panel table { font-size:13px; }
+.doc-list-panel tbody tr { cursor:pointer; }
+.doc-list-panel tbody tr:hover { background:var(--muted); }
+.doc-list-panel tbody tr.sel { background:var(--primary-light); }
+.doc-list-panel tbody tr.sel td { color:var(--primary); }
+.doc-detail-panel { position:sticky; top:16px; min-height:220px; }
+.doc-detail-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+.doc-detail-head h2 { margin:0; }
+.doc-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px 24px; margin:12px 0 18px; padding:12px 14px; background:var(--muted); border-radius:6px; font-size:13px; }
+.doc-meta .k { color:var(--muted-fg); font-size:12px; }
+.doc-timeline { list-style:none; margin:0; padding:0; }
+.doc-timeline li { position:relative; padding:0 0 14px 18px; border-left:2px solid var(--border); margin-left:6px; }
+.doc-timeline li:last-child { border-left-color:transparent; padding-bottom:0; }
+.doc-timeline .dot { position:absolute; left:-6px; top:2px; width:10px; height:10px; border-radius:50%; background:var(--primary); }
+.doc-timeline .t { font-size:12px; color:var(--muted-fg); margin-left:8px; }
+.doc-body { max-width:900px; }
+.doc-empty { color:var(--muted-fg); font-size:13px; padding:28px 8px; text-align:center; }
+.proto-note { background:#FFF8E6; border:1px solid #F5DDA8; color:#8a6d1f; border-radius:6px; padding:8px 12px; font-size:12.5px; margin-bottom:16px; }
+@media (max-width: 900px){ .doc-split { grid-template-columns:1fr; } .doc-detail-panel { position:static; } .doc-list-panel { max-height:none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Console</span></div>
+  <nav>
+    <button data-view="teams">Members</button>
+    <button data-view="tasks">My Tasks</button>
+    <button data-view="events">Events</button>
+    <button data-view="discussions">Discussions</button>
+    <button data-view="documents" class="active">Documents</button>
+  </nav>
+  <div class="header-right"><div class="user-info"><div class="user-avatar">C</div><span>caishu</span></div></div>
+</header>
+<div class="toolbar">
+  <div class="ws">workspace <b>/Users/caishu/github/teamx-enterprise</b></div>
+  <div class="toolbar-right"><span class="muted">prototype v3 · mock data</span></div>
+</div>
+<div class="container">
+  <div class="view active" id="view-documents">
+    <div class="proto-note">静态原型 v3（mock 数据）：状态流转改为**有向图**——支持正向流转与回退/重开环（虚线弧线），节点标注当前数量。</div>
+
+    <div class="doc-nav" id="docNav"></div>
+    <div class="doc-purpose" id="docPurpose"></div>
+
+    <div class="flow-wrap">
+      <div id="docFlow"></div>
+      <div class="flow-legend">
+        <span><span class="sw"></span>正向流转</span>
+        <span><span class="sw back"></span>回退 / 重开（打回）</span>
+        <span class="flow-total">共 <b id="flowTotal">0</b> 份</span>
+      </div>
+    </div>
+
+    <div class="doc-split">
+      <section class="panel doc-list-panel">
+        <h2 id="docListTitle">Documents</h2>
+        <table>
+          <thead><tr><th>ID</th><th>标题</th><th>State</th><th>Owner</th></tr></thead>
+          <tbody id="docRows"></tbody>
+        </table>
+      </section>
+      <section class="panel doc-detail-panel" id="docDetail"></section>
+    </div>
+  </div>
+</div>
+
+<script>
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const badge=(s)=>{const b=s||"idle";return `<span class="badge ${esc(b)}">${esc(b)}</span>`};
+
+function mdRender(src){
+  const esc2=(t)=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let lines=(src||"").replace(/\r\n/g,"\n").split("\n");
+  let out=[]; let inCode=false, code=[];
+  const inline=(t)=>esc2(t)
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
+    .replace(/\*([^*]+)\*/g,"<i>$1</i>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+  const flush=()=>{ if(inCode){ out.push("<pre><code>"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; } };
+  for(const ln of lines){
+    if(/^```/.test(ln)){ if(inCode){flush();} else { inCode=true; } continue; }
+    if(inCode){ code.push(ln); continue; }
+    if(/^####\s+/.test(ln)) out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>");
+    else if(/^###\s+/.test(ln)) out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>");
+    else if(/^##\s+/.test(ln)) out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>");
+    else if(/^#\s+/.test(ln)) out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>");
+    else if(/^[-*]\s+/.test(ln)) out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>");
+    else if(/^\s*$/.test(ln)) out.push("");
+    else out.push("<p>"+inline(ln)+"</p>");
+  }
+  flush();
+  return out.join("\n");
+}
+
+
+// ---- mock: doc types (TEAM.md `## 文档`) with a DIRECTED state graph ----
+// nodes: [{id,x,y}] (中心坐标)；edges: [{from,to,label,back?,bend?}]
+// back=true 画成下方虚线弧线（回退/重开）；bend 控制弧高（避免重叠）。
+const DOC_TYPES = [
+  { key:"design", title:"方案", purpose:"设计/实现方案：起草 → 评审 → 通过 → 完成（可打回/重开）", owner:"tech-lead",
+    graph:{ w:880, h:210,
+      nodes:[{id:"draft",x:80,y:64},{id:"review",x:320,y:64},{id:"approved",x:560,y:64},{id:"done",x:800,y:64}],
+      edges:[
+        {from:"draft",to:"review",label:"提交"},
+        {from:"review",to:"approved",label:"通过"},
+        {from:"approved",to:"done",label:"完成"},
+        {from:"review",to:"draft",label:"打回",back:true,bend:60},
+        {from:"approved",to:"review",label:"重开",back:true,bend:96},
+        {from:"done",to:"approved",label:"重开",back:true,bend:132},
+      ] } },
+  { key:"review", title:"评审", purpose:"评审记录：open → resolved（可重开）", owner:"reviewer",
+    graph:{ w:520, h:190,
+      nodes:[{id:"open",x:120,y:64},{id:"resolved",x:400,y:64}],
+      edges:[
+        {from:"open",to:"resolved",label:"处理"},
+        {from:"resolved",to:"open",label:"重开",back:true,bend:70},
+      ] } },
+  { key:"report", title:"报告", purpose:"阶段性报告：draft → final（可重开）", owner:"contributor",
+    graph:{ w:520, h:190,
+      nodes:[{id:"draft",x:120,y:64},{id:"final",x:400,y:64}],
+      edges:[
+        {from:"draft",to:"final",label:"定稿"},
+        {from:"final",to:"draft",label:"重开",back:true,bend:70},
+      ] } },
+  { key:"taskx", title:"任务", purpose:"内置任务类型（与 My Tasks 同源）：assigned → acked → claimed → in_progress → done → verified", owner:"contributor",
+    graph:{ w:1240, h:210,
+      nodes:[{id:"assigned",x:80,y:64},{id:"acked",x:300,y:64},{id:"claimed",x:520,y:64},{id:"in_progress",x:740,y:64},{id:"done",x:960,y:64},{id:"verified",x:1180,y:64}],
+      edges:[
+        {from:"assigned",to:"acked",label:"回执"},
+        {from:"acked",to:"claimed",label:"认领"},
+        {from:"claimed",to:"in_progress",label:"开始"},
+        {from:"in_progress",to:"done",label:"完成"},
+        {from:"done",to:"verified",label:"验收"},
+        {from:"done",to:"in_progress",label:"打回",back:true,bend:60},
+        {from:"verified",to:"done",label:"重开",back:true,bend:110},
+      ] } },
+];
+
+const DOCS = [
+  { doc:"design", id:"001-documents-tab", title:"console Documents 展示设计", state:"review", owner:"caishu", updated_at:"2026-09-13 07:50",
+    body:"# 目标\n在 member console 增加 Documents 浏览。\n\n## 结构\n1. 一级 tab：Documents\n2. 二级：按文档类型（与一级 nav 同款）\n3. 类型视图：**状态流转图（有向图）** + 列表\n4. 文档详情：右侧分栏\n\n## 状态图\n支持回退/重开环（打回）。",
+    history:[["draft","2026-09-13 07:40","caishu"],["review","2026-09-13 07:50","caishu"]] },
+  { doc:"design", id:"002-im-gateway", title:"IM 网关架构方案", state:"approved", owner:"weiye", updated_at:"2026-09-12 23:10",
+    body:"## 架构\n- ImGateway（独立进程，零特权）\n- Notifier（出站，内置 serve）\n- Provider（飞书/企微）",
+    history:[["draft","2026-09-12 20:00","weiye"],["review","2026-09-12 22:00","caicai"],["approved","2026-09-12 23:10","caishu"]] },
+  { doc:"design", id:"003-console-goal-panel", title:"Members 页 Team goal 面板", state:"done", owner:"caishu", updated_at:"2026-09-13 07:30",
+    body:"在 Members 页顶部卡片下方展示当前团队目标。",
+    history:[["draft","2026-09-13 07:00","caishu"],["review","2026-09-13 07:15","caicai"],["approved","2026-09-13 07:20","caishu"],["done","2026-09-13 07:30","caishu"]] },
+  { doc:"review", id:"R-021", title:"PR #21 评审", state:"resolved", owner:"caicai", updated_at:"2026-09-12 18:20",
+    body:"## 结论\nCHANGES-REQUESTED → 作者修复 → PASS。",
+    history:[["open","2026-09-12 17:00","caicai"],["resolved","2026-09-12 18:20","caicai"]] },
+  { doc:"review", id:"R-022", title:"PR #27 评审", state:"open", owner:"weiye", updated_at:"2026-09-13 07:00",
+    body:"待评审：console Events 页 markdown 格式化。",
+    history:[["open","2026-09-13 07:00","weiye"]] },
+  { doc:"report", id:"REP-01", title:"IM P0 收口报告", state:"final", owner:"caishu", updated_at:"2026-09-12 23:30",
+    body:"# IM P0\n- dsh 工具对齐（#23）\n- B1 重复注入（#24）\n- 配额 + RPC（#25）",
+    history:[["draft","2026-09-12 23:00","caishu"],["final","2026-09-12 23:30","caishu"]] },
+  { doc:"taskx", id:"task-review-pr-31", title:"Review PR #31", state:"in_progress", owner:"caicai", updated_at:"2026-09-13 07:45",
+    body:"按 review 工作流审查 PR #31。",
+    history:[["assigned","2026-09-13 07:40","caishu"],["acked","2026-09-13 07:42","caicai"],["in_progress","2026-09-13 07:45","caicai"]] },
+  { doc:"taskx", id:"task-owner-cancel-ask", title:"owner 可作废陈旧 ask", state:"done", owner:"caicai", updated_at:"2026-09-12 23:00",
+    body:"实现 ask.cancel。",
+    history:[["assigned","2026-09-12 20:00","caishu"],["acked","2026-09-12 20:05","caicai"],["claimed","2026-09-12 20:10","caicai"],["in_progress","2026-09-12 20:30","caicai"],["done","2026-09-12 23:00","caicai"]] },
+];
+
+let curType = DOC_TYPES[0].key;
+let curDoc = null;
+
+function escAttr(s){ return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function docsOf(key){ return DOCS.filter(d=>d.doc===key); }
+
+function renderNav(){
+  document.getElementById("docNav").innerHTML = DOC_TYPES.map(t=>{
+    const n = docsOf(t.key).length;
+    return `<button class="${t.key===curType?"active":""}" data-key="${escAttr(t.key)}">${esc(t.title)}<span class="n">${n}</span></button>`;
+  }).join("");
+  document.querySelectorAll("#docNav button").forEach(b=>b.onclick=()=>{ curType=b.dataset.key; curDoc=null; renderAll(); });
+}
+
+// ---- 有向状态流转图（SVG） ----
+const NODE_W = 124, NODE_H = 56;
+function renderFlow(){
+  const t = DOC_TYPES.find(x=>x.key===curType);
+  const g = t.graph;
+  const counts = {}; g.nodes.forEach(n=>counts[n.id]=0);
+  docsOf(curType).forEach(d=>{ counts[d.state]=(counts[d.state]||0)+1; });
+  const node = id => g.nodes.find(n=>n.id===id);
+
+  const edges = g.edges.map(e=>{
+    const a=node(e.from), b=node(e.to);
+    const back = e.back===true;
+    let d, lx, ly;
+    if(back){
+      const bend = e.bend||70;
+      const yb = Math.max(a.y,b.y) + NODE_H/2;
+      d = `M ${a.x} ${a.y+NODE_H/2} C ${a.x} ${yb+bend}, ${b.x} ${yb+bend}, ${b.x} ${b.y+NODE_H/2}`;
+      lx=(a.x+b.x)/2; ly=yb+bend-6;
+    } else {
+      d = `M ${a.x+NODE_W/2} ${a.y} L ${b.x-NODE_W/2} ${b.y}`;
+      lx=(a.x+b.x)/2; ly=a.y-12;
+    }
+    const color = back ? "#E6A23C" : "#909399";
+    const dash = back ? ` stroke-dasharray="5 4"` : "";
+    const label = e.label ? `<text x="${lx}" y="${ly}" text-anchor="middle" class="edge-label${back?" back":""}">${esc(e.label)}</text>` : "";
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" marker-end="url(#arrow-${back?"back":"fwd"})"${dash}/>${label}`;
+  }).join("");
+
+  const nodes = g.nodes.map(n=>{
+    const c=counts[n.id]||0, has=c>0;
+    return `<g class="gnode${has?" has":""}">
+      <rect x="${n.x-NODE_W/2}" y="${n.y-NODE_H/2}" width="${NODE_W}" height="${NODE_H}" rx="9"/>
+      <text x="${n.x}" y="${n.y-4}" text-anchor="middle" class="gn-name">${esc(n.id)}</text>
+      <text x="${n.x}" y="${n.y+18}" text-anchor="middle" class="gn-count">${c}</text>
+    </g>`;
+  }).join("");
+
+  document.getElementById("docFlow").innerHTML = `
+    <svg viewBox="0 0 ${g.w} ${g.h}" width="${g.w}" height="${g.h}" class="flow-svg">
+      <defs>
+        <marker id="arrow-fwd" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#909399"/></marker>
+        <marker id="arrow-back" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#E6A23C"/></marker>
+      </defs>
+      ${edges}${nodes}
+    </svg>`;
+  document.getElementById("flowTotal").textContent = docsOf(curType).length;
+}
+
+function renderList(){
+  const t = DOC_TYPES.find(x=>x.key===curType);
+  const list = docsOf(curType);
+  document.getElementById("docPurpose").textContent = t.purpose || "";
+  document.getElementById("docListTitle").textContent = `${t.title} · ${list.length}`;
+  document.getElementById("docRows").innerHTML = list.map(d=>`
+    <tr data-id="${escAttr(d.id)}" class="${curDoc&&curDoc.id===d.id?"sel":""}">
+      <td class="mono" style="font-size:12px">${esc(d.id)}</td>
+      <td style="font-weight:500">${esc(d.title)}</td>
+      <td>${badge(d.state)}</td>
+      <td>${esc(d.owner)}</td>
+    </tr>`).join("") || `<tr><td colspan="4" class="muted">该类型暂无文档。</td></tr>`;
+  document.querySelectorAll("#docRows tr[data-id]").forEach(tr=>tr.onclick=()=>openDoc(tr.dataset.id));
+}
+
+function renderDetail(){
+  const host = document.getElementById("docDetail");
+  if(!curDoc){ host.innerHTML = `<div class="doc-empty">← 从左侧列表选择一份文档查看详情。</div>`; return; }
+  const d = curDoc, t = DOC_TYPES.find(x=>x.key===d.doc);
+  const hist = (d.history||[]).map(([s,at,by])=>`<li><span class="dot"></span><b>${esc(s)}</b><span class="t">${esc(at)} · ${esc(by)}</span></li>`).join("");
+  host.innerHTML = `
+    <div class="doc-detail-head"><h2>${esc(d.title)}</h2>${badge(d.state)}</div>
+    <div class="doc-meta">
+      <div><div class="k">类型</div>${esc(t.title)} <span class="mono">(${esc(t.key)})</span></div>
+      <div><div class="k">ID</div><span class="mono">${esc(d.id)}</span></div>
+      <div><div class="k">Owner</div>${esc(d.owner)}</div>
+      <div><div class="k">Updated</div>${esc(d.updated_at)}</div>
+    </div>
+    <div class="doc-body md-render">${mdRender(d.body)}</div>
+    <h3 style="margin-top:22px">状态时间线</h3>
+    <ul class="doc-timeline">${hist}</ul>
+    <h3 style="margin-top:22px">关联台账事件</h3>
+    <ul class="ev-list"><li class="ev-item"><span class="ev-time">${esc(d.updated_at)}</span><span class="ev-kind">${badge("doc."+d.doc)}</span><div class="ev-text"><span class="md-render">${esc(d.title)} → ${esc(d.state)}</span></div></li></ul>`;
+}
+
+function openDoc(id){ curDoc = DOCS.find(d=>d.id===id)||null; renderList(); renderDetail(); }
+function renderAll(){ renderNav(); renderFlow(); renderList(); renderDetail(); }
+renderAll();
+</script>
+</body>
+</html>

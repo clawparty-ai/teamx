@@ -29,6 +29,7 @@ pub fn page_html() -> String {
     <button data-view="tasks">My Tasks</button>
     <button data-view="events">Events</button>
     <button data-view="discussions">Discussions</button>
+    <button data-view="documents">Documents</button>
   </nav>
   <div class="header-right">
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
@@ -69,6 +70,25 @@ pub fn page_html() -> String {
       <div id="dscList"></div>
       <div id="dscThread" style="display:none"></div>
     </section>
+  </div>
+  <div class="view" id="view-documents">
+    <div class="doc-nav" id="docNav"></div>
+    <div class="doc-purpose" id="docPurpose"></div>
+    <div class="flow-wrap">
+      <div id="docFlow"></div>
+      <div class="flow-legend">
+        <span><span class="sw"></span>正向流转</span>
+        <span><span class="sw back"></span>回退 / 重开</span>
+        <span class="flow-total">共 <b id="docTotal">0</b> 份</span>
+      </div>
+    </div>
+    <div class="doc-split">
+      <section class="panel doc-list-panel">
+        <h2 id="docListTitle">Documents</h2>
+        <table><thead><tr><th>ID</th><th>标题</th><th>State</th><th>Owner</th></tr></thead><tbody id="docRows"></tbody></table>
+      </section>
+      <section class="panel doc-detail-panel" id="docDetail"></section>
+    </div>
   </div>
 </div>
 <div class="fs-overlay" id="dscOverlay" style="display:none">
@@ -329,6 +349,48 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-summary .md-render p:first-child { margin-top:0; }
  .dsc-summary .md-render p:last-child { margin-bottom:0; }
  .dsc-summary .md-render ul { margin:0.2em 0; padding-left:1.3em; }
+ /* ---------- Documents ---------- */
+ .doc-nav { display:flex; gap:2px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:14px; }
+ .doc-nav button { background:none; border:none; font:inherit; font-size:13.5px; font-weight:500; color:var(--muted-fg); padding:10px 16px; border-bottom:2px solid transparent; cursor:pointer; }
+ .doc-nav button:hover { color:var(--primary); }
+ .doc-nav button.active { color:var(--primary); border-bottom-color:var(--primary); font-weight:600; }
+ .doc-nav button .n { opacity:.7; margin-left:6px; font-size:12px; }
+ .doc-purpose { color:var(--muted-fg); font-size:12.5px; margin:-4px 0 16px; }
+ .flow-wrap { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:14px 18px 10px; margin-bottom:18px; box-shadow:var(--shadow); overflow-x:auto; }
+ .flow-svg { display:block; }
+ .gnode rect { fill:var(--card); stroke:var(--border); stroke-width:1.5; }
+ .gnode.has rect { stroke:var(--primary); fill:var(--primary-light); }
+ .gnode .gn-name { font-size:12px; fill:var(--muted-fg); font-family:var(--font-mono); }
+ .gnode.has .gn-name { fill:var(--primary); font-weight:600; }
+ .gnode .gn-count { font-size:18px; font-weight:700; fill:var(--muted-fg); }
+ .gnode.has .gn-count { fill:var(--primary); }
+ .edge-label { font-size:10.5px; fill:#909399; }
+ .edge-label.back { fill:#E6A23C; }
+ .flow-legend { display:flex; gap:18px; align-items:center; margin-top:8px; font-size:11.5px; color:var(--muted-fg); }
+ .flow-legend .sw { display:inline-block; width:26px; height:0; border-top:1.6px solid #909399; vertical-align:middle; margin-right:6px; }
+ .flow-legend .sw.back { border-top:1.6px dashed #E6A23C; }
+ .flow-total { margin-left:auto; }
+ .flow-total b { color:var(--fg); font-size:14px; }
+ .doc-split { display:grid; grid-template-columns:minmax(320px, 40%) 1fr; gap:16px; align-items:start; }
+ .doc-list-panel { max-height:calc(100vh - 380px); overflow:auto; }
+ .doc-list-panel table { font-size:13px; }
+ .doc-list-panel tbody tr { cursor:pointer; }
+ .doc-list-panel tbody tr:hover { background:var(--muted); }
+ .doc-list-panel tbody tr.sel { background:var(--primary-light); }
+ .doc-list-panel tbody tr.sel td { color:var(--primary); }
+ .doc-detail-panel { position:sticky; top:16px; min-height:220px; }
+ .doc-detail-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+ .doc-detail-head h2 { margin:0; }
+ .doc-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px 24px; margin:12px 0 18px; padding:12px 14px; background:var(--muted); border-radius:6px; font-size:13px; }
+ .doc-meta .k { color:var(--muted-fg); font-size:12px; }
+ .doc-timeline { list-style:none; margin:0; padding:0; }
+ .doc-timeline li { position:relative; padding:0 0 14px 18px; border-left:2px solid var(--border); margin-left:6px; }
+ .doc-timeline li:last-child { border-left-color:transparent; padding-bottom:0; }
+ .doc-timeline .dot { position:absolute; left:-6px; top:2px; width:10px; height:10px; border-radius:50%; background:var(--primary); }
+ .doc-timeline .t { font-size:12px; color:var(--muted-fg); margin-left:8px; }
+ .doc-body { max-width:900px; }
+ .doc-empty { color:var(--muted-fg); font-size:13px; padding:28px 8px; text-align:center; }
+ @media (max-width:900px){ .doc-split { grid-template-columns:1fr; } .doc-detail-panel { position:static; } .doc-list-panel { max-height:none; } }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
   .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
@@ -449,6 +511,7 @@ async function renderView(name){
   if(name==="teams") loadTeams(); else if(name==="tasks") loadTasks();
   else if(name==="events") loadEvents();
   else if(name==="discussions") loadDiscussions();
+  else if(name==="documents") loadDocuments();
 }
 $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
@@ -1042,6 +1105,106 @@ function stopDscPoll(){ if(dscTimer){ clearInterval(dscTimer); dscTimer=null; } 
 // Entry buttons (nav switch handles rendering; also ensure back/new work after full reload).
 $("#dscNew").addEventListener("click", showNewForm);
 $("#dscBack").addEventListener("click", loadDiscussions);
+
+/* ---------- Documents (TEAM.md `## 文档` contracts) ---------- */
+let docTypes=[], docAll=[], docCurType=null, docCur=null;
+
+async function loadDocuments(){
+  $("#docRows").innerHTML=`<tr><td colspan="4" class="loading">loading …</td></tr>`;
+  $("#docDetail").innerHTML=`<div class="doc-empty">加载中…</div>`;
+  const p=await panel("docs"); setLast(p);
+  if(!p.ok){ $("#docRows").innerHTML=""; $("#view-documents .doc-list-panel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  const d=p.data||{};
+  docTypes=(d.types||[]); docAll=(d.docs||[]);
+  if(!docTypes.length){
+    $("#docNav").innerHTML=""; $("#docFlow").innerHTML=""; $("#docTotal").textContent="0";
+    $("#docRows").innerHTML=`<tr><td colspan="4" class="muted">该 workspace 没有 .teamx/docs（TEAM.md 「文档」契约定义的文档类型）。</td></tr>`;
+    $("#docDetail").innerHTML=""; return;
+  }
+  if(!docCurType||!docTypes.some(t=>t.key===docCurType)) docCurType=docTypes[0].key;
+  docCur=null;
+  renderDocAll();
+}
+function docTypeOf(key){ return docTypes.find(t=>t.key===key)||{key:key,title:key,states:[],transitions:[]}; }
+function docListOf(key){ return docAll.filter(x=>x.doc===key); }
+
+function renderDocNav(){
+  $("#docNav").innerHTML=docTypes.map(t=>`<button class="${t.key===docCurType?"active":""}" data-key="${esc(t.key)}">${esc(t.title||t.key)}<span class="n">${docListOf(t.key).length}</span></button>`).join("");
+  $$("#docNav button").forEach(b=>b.onclick=()=>{ docCurType=b.dataset.key; docCur=null; renderDocAll(); });
+}
+
+const DOC_NW=124, DOC_NH=56, DOC_GAP=96, DOC_X0=80, DOC_Y=64;
+function renderDocFlow(){
+  const t=docTypeOf(docCurType);
+  const states=(t.states||[]).slice();
+  const list=docListOf(docCurType);
+  const counts={}; states.forEach(s=>counts[s]=0);
+  list.forEach(x=>{ counts[x.state]=(counts[x.state]||0)+1; });
+  $("#docTotal").textContent=list.length;
+  if(!states.length){ $("#docFlow").innerHTML=`<div class="muted">该类型未声明状态流。</div>`; return; }
+  const pos={}; states.forEach((s,i)=>{ pos[s]={x:DOC_X0+i*(DOC_NW+DOC_GAP), y:DOC_Y}; });
+  const w=DOC_X0*2+(states.length-1)*(DOC_NW+DOC_GAP), h=210;
+  const edges=[];
+  for(let i=1;i<states.length;i++) edges.push({from:states[i-1],to:states[i]});
+  (t.transitions||[]).forEach(tr=>{
+    const from=tr.from||tr[0], to=tr.to||tr[1];
+    if(pos[from]&&pos[to]&&!edges.some(e=>e.from===from&&e.to===to)) edges.push({from,to,back:(pos[to].x<pos[from].x),label:tr.label||""});
+  });
+  const edgeSvg=edges.map(e=>{
+    const a=pos[e.from], b=pos[e.to];
+    const back=e.back===true;
+    let d,lx,ly;
+    if(back){ const bend=70; const yb=Math.max(a.y,b.y)+DOC_NH/2; d=`M ${a.x} ${a.y+DOC_NH/2} C ${a.x} ${yb+bend}, ${b.x} ${yb+bend}, ${b.x} ${b.y+DOC_NH/2}`; lx=(a.x+b.x)/2; ly=yb+bend-6; }
+    else { d=`M ${a.x+DOC_NW/2} ${a.y} L ${b.x-DOC_NW/2} ${b.y}`; lx=(a.x+b.x)/2; ly=a.y-12; }
+    const color=back?"#E6A23C":"#909399";
+    const dash=back?` stroke-dasharray="5 4"`:"";
+    const label=e.label?`<text x="${lx}" y="${ly}" text-anchor="middle" class="edge-label${back?" back":""}">${esc(e.label)}</text>`:"";
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" marker-end="url(#doc-arrow-${back?"back":"fwd"})"${dash}/>${label}`;
+  }).join("");
+  const nodeSvg=states.map(s=>{
+    const c=counts[s]||0, has=c>0, p=pos[s];
+    return `<g class="gnode${has?" has":""}"><rect x="${p.x-DOC_NW/2}" y="${p.y-DOC_NH/2}" width="${DOC_NW}" height="${DOC_NH}" rx="9"/><text x="${p.x}" y="${p.y-4}" text-anchor="middle" class="gn-name">${esc(s)}</text><text x="${p.x}" y="${p.y+18}" text-anchor="middle" class="gn-count">${c}</text></g>`;
+  }).join("");
+  $("#docFlow").innerHTML=`<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="flow-svg"><defs><marker id="doc-arrow-fwd" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#909399"/></marker><marker id="doc-arrow-back" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#E6A23C"/></marker></defs>${edgeSvg}${nodeSvg}</svg>`;
+}
+
+function renderDocList(){
+  const t=docTypeOf(docCurType);
+  const list=docListOf(docCurType);
+  $("#docPurpose").textContent=t.purpose||"";
+  $("#docListTitle").textContent=`${t.title||t.key} · ${list.length}`;
+  $("#docRows").innerHTML=list.map(x=>`<tr data-id="${esc(x.id)}" class="${docCur&&docCur.id===x.id?"sel":""}"><td class="mono" style="font-size:12px">${esc(x.id)}</td><td style="font-weight:500">${esc(x.title||x.id)}</td><td>${badge(x.state)}</td><td>${esc(x.owner||"—")}</td></tr>`).join("")||`<tr><td colspan="4" class="muted">该类型暂无文档。</td></tr>`;
+  $$("#docRows tr[data-id]").forEach(tr=>tr.onclick=()=>openDoc(tr.dataset.id));
+}
+
+function renderDocDetail(){
+  const host=$("#docDetail");
+  if(!docCur){ host.innerHTML=`<div class="doc-empty">← 从左侧列表选择一份文档查看详情。</div>`; return; }
+  const d=docCur, t=docTypeOf(d.doc);
+  const hist=(d.history||[]).map(h=>`<li><span class="dot"></span><b>${esc(h.state||"")}</b><span class="t">${esc(h.at||"")}${h.by?" · "+esc(h.by):""}</span></li>`).join("");
+  host.innerHTML=`
+    <div class="doc-detail-head"><h2>${esc(d.title||d.id)}</h2>${badge(d.state)}</div>
+    <div class="doc-meta">
+      <div><div class="k">类型</div>${esc(t.title||t.key)} <span class="mono">(${esc(t.key)})</span></div>
+      <div><div class="k">ID</div><span class="mono">${esc(d.id)}</span></div>
+      <div><div class="k">Owner</div>${esc(d.owner||"—")}</div>
+      <div><div class="k">Updated</div>${esc(d.updated_at||"—")}</div>
+    </div>
+    <div class="doc-body md-render">${mdRender(d.body||"")}</div>
+    ${hist?`<h3 style="margin-top:22px">状态时间线</h3><ul class="doc-timeline">${hist}</ul>`:""}`;
+}
+
+async function openDoc(id){
+  docCur=(docAll.find(x=>x.id===id)||{id:id});
+  renderDocList();
+  $("#docDetail").innerHTML=`<div class="doc-empty">加载中…</div>`;
+  const p=await panel("doc?id="+encodeURIComponent(id)); setLast(p);
+  if(!p.ok){ $("#docDetail").innerHTML=errBox(p); return; }
+  docCur=Object.assign({}, docCur, p.data||{});
+  renderDocDetail();
+}
+
+function renderDocAll(){ renderDocNav(); renderDocFlow(); renderDocList(); renderDocDetail(); }
 
 /* ---------- SSE live events (Discussion + Events) ---------- */
 let sseConn = null;
