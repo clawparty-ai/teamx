@@ -156,6 +156,14 @@ else
 fi
 
 echo
+echo "== 15i Direct listen/ping test (network, P1) =="
+if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && [ -x target/debug/teamx ]; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/direct-listen-ping-test.sh
+else
+  echo "curl/python3 or debug binary missing; skipping direct-listen-ping test"
+fi
+
+echo
 echo "== 16/16 UI e2e (Playwright) test =="
 if [ "${TEAMX_RUN_UI_E2E:-0}" = "1" ] && command -v bun >/dev/null 2>&1; then
   (cd tests/ui-e2e && TEAMX_BIN="$ROOT/target/debug/teamx" npx playwright test)
