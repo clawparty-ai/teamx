@@ -803,4 +803,22 @@ mod tests {
         let logged = call(&mut c, "task.log", "m-w1", json!({"id": id})).unwrap();
         assert!(logged["events"].as_array().unwrap().len() >= 3);
     }
+
+    #[test]
+    fn task_ids_are_scoped_per_team() {
+        // issue #13: two teams on one server may each own `task-1`.
+        let mut c = test_conn();
+        c.execute_batch(
+            "INSERT INTO teams (id,name,owner_member_id,state,invite_token,created_at,updated_at)
+             VALUES ('t2','test2','m-owner2','active','tok2','now','now');
+             INSERT INTO members (id,team_id,session_key,display_name,role,state,joined_at)
+             VALUES ('m-owner2','t2','s9','Owner2','owner','active','now');",
+        )
+        .unwrap();
+        let a = rpc("task.create", &json!({"title":"A","assignee":"m-w1"}), &mut c, "t1", "m-owner").unwrap();
+        assert_eq!(a["tasks"][0], json!("task-1"));
+        // Before the scoped PK this second insert hit the global PK → raw UNIQUE.
+        let b = rpc("task.create", &json!({"title":"B","assignee":"m-owner2"}), &mut c, "t2", "m-owner2").unwrap();
+        assert_eq!(b["tasks"][0], json!("task-1"));
+    }
 }
