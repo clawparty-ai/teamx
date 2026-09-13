@@ -336,6 +336,8 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-row:hover { background:var(--muted); }
  .dsc-row.closed { opacity:.55; }
  .dsc-row-title { flex:1; font-weight:600; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .dsc-row-no { color:var(--muted-fg); font-size:12px; font-family:var(--font-mono); flex-shrink:0; }
+ .dsc-thread-no { color:var(--primary); font-weight:600; font-family:var(--font-mono); }
  .dsc-row-meta { color:var(--muted-fg); font-size:12px; white-space:nowrap; }
  .dsc-row-join { flex-shrink:0; }
  .dsc-empty { padding:18px; text-align:center; color:var(--muted-fg); }
@@ -879,7 +881,7 @@ async function loadDiscussions(){
     const last = d.last_active || d.created_at || "";
     const joinBtn = closed ? "" : `<button class="btn btn-mini dsc-row-join" data-id="${esc(d.discussion_id)}" data-title="${esc(d.title||"(无标题)")}">参与讨论</button>`;
     return `<div class="dsc-row${closed?" closed":""}" data-id="${esc(d.discussion_id)}">
-      <span>${icon}</span><span class="dsc-row-title">${esc(d.title||"(无标题)")}</span>
+      <span>${icon}</span><span class="dsc-row-no">#${esc(String(d.number||""))}</span><span class="dsc-row-title">${esc(d.title||"(无标题)")}</span>
       <span class="dsc-row-meta">${esc(d.author||"")} · ${esc(fmtN(d.messages||0))} 回复 · ${esc(tf(last))}</span>
       ${joinBtn}
     </div>`;
@@ -956,7 +958,7 @@ function renderThread(d){
   const replyBar = dscReplyTo
     ? `<div class="dsc-replybar">引用回复 ${esc(dscReplyTo.mid)} <button class="btn btn-mini" id="dscClearReply">✕</button></div>` : "";
   host.innerHTML = `
-    <div class="dsc-toolbar"><h3 style="margin:0">${esc(title)} ${closed?"🔒":""}</h3>
+    <div class="dsc-toolbar"><h3 style="margin:0">${d.number?`<span class="dsc-thread-no">#${esc(String(d.number))}</span> `:""}${esc(title)} ${closed?"🔒":""}</h3>
       ${closed?`<span class="muted">已关闭</span>`:`
         <div class="dsc-thread-actions">
           <button class="btn btn-mini" id="dscJoinThread">💬 参与讨论</button>

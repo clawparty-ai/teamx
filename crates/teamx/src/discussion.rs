@@ -455,6 +455,7 @@ fn say_or_reply(
 fn list(conn: &Connection, all: bool, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (_, _, team_id) = member_id_for_session(conn, session, team_opt)?;
     let evs = events::list(conn, &team_id, None).map_err(|e| e.to_string())?;
+    let numbers = discussion_numbers(&evs);
     // Group by discussion_id.
     let mut threads: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
     for e in &evs {
@@ -487,7 +488,10 @@ fn list(conn: &Connection, all: bool, session: &str, team_opt: Option<&str>) -> 
             _ => {}
         }
     }
-    let mut out: Vec<Value> = threads.into_values().collect();
+    let mut out: Vec<Value> = threads.into_iter().map(|(did, mut t)| {
+        t["number"] = json!(numbers.get(&did).copied().unwrap_or(0));
+        t
+    }).collect();
     if !all {
         out.retain(|t| t["closed"].as_bool() != Some(true));
     }
@@ -495,9 +499,29 @@ fn list(conn: &Connection, all: bool, session: &str, team_opt: Option<&str>) -> 
     Ok(json!({ "ok": true, "discussions": out }))
 }
 
+/// Per-team sequential discussion numbers (`#1`, `#2`, …) derived from the
+/// creation order of `discussion.created` events — no schema change, and it
+/// works for every historical thread. Used by `list` / `open` to expose a
+/// short human-friendly `number` alongside the opaque `discussion_id`.
+fn discussion_numbers(evs: &[events::Event]) -> std::collections::HashMap<String, i64> {
+    let mut map = std::collections::HashMap::new();
+    let mut n: i64 = 0;
+    for e in evs {
+        if e.r#type != EV_CREATED {
+            continue;
+        }
+        if let Some(did) = e.payload.as_ref().and_then(|p| p.get("discussion_id")).and_then(|x| x.as_str()) {
+            n += 1;
+            map.insert(did.to_string(), n);
+        }
+    }
+    map
+}
+
 fn open(conn: &Connection, id: &str, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (_, _, team_id) = member_id_for_session(conn, session, team_opt)?;
     let evs = events::list(conn, &team_id, None).map_err(|e| e.to_string())?;
+    let number = discussion_numbers(&evs).get(id).copied().unwrap_or(0);
     let mut title = String::new();
     let mut closed = false;
     let mut closed_by = String::new();
@@ -543,6 +567,7 @@ fn open(conn: &Connection, id: &str, session: &str, team_opt: Option<&str>) -> R
     Ok(json!({
         "ok": true,
         "discussion_id": id,
+        "number": number,
         "title": title,
         "closed": closed,
         "closed_by": closed_by,
@@ -1124,5 +1149,20 @@ mod tests {
         // cursor at the owner's seq means nothing newer remains
         let woke2 = wake_discussions(&conn, "t1", "m-worker", "Worker", seq).unwrap();
         assert!(woke2.is_empty(), "seq <= cursor should not be re-delivered");
+    }
+
+    #[test]
+    fn discussions_have_sequential_numbers() {
+        let mut conn = test_conn();
+        seed(&conn);
+        let d1 = create(&mut conn, "A", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str().unwrap().to_string();
+        let d2 = create(&mut conn, "B", None, None, "s-owner", Some("t1")).unwrap()["discussion_id"]
+            .as_str().unwrap().to_string();
+        let l = list(&conn, true, "s-owner", Some("t1")).unwrap();
+        let arr = l["discussions"].as_array().unwrap();
+        let n = |id: &str| arr.iter().find(|x| x["discussion_id"] == json!(id)).unwrap()["number"].as_i64().unwrap();
+        assert_eq!((n(&d1), n(&d2)), (1, 2));
+        assert_eq!(open(&conn, &d2, "s-owner", Some("t1")).unwrap()["number"], json!(2));
     }
 }
