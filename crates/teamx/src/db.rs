@@ -344,7 +344,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // taskx (server-backed tasks for network teams, see docs/33-server-taskx-rpc.cn.md).
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS taskx (
-           id           TEXT PRIMARY KEY,
+           id           TEXT NOT NULL,
            team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
            title        TEXT NOT NULL,
            body         TEXT,
@@ -356,7 +356,8 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            role_key     TEXT,
            created_by_member_id TEXT NOT NULL,
            created_at   TEXT NOT NULL,
-           updated_at   TEXT NOT NULL
+           updated_at   TEXT NOT NULL,
+           PRIMARY KEY (team_id, id)
          );
          CREATE INDEX IF NOT EXISTS idx_taskx_team   ON taskx(team_id);
          CREATE INDEX IF NOT EXISTS idx_taskx_assign ON taskx(assignee_member_id);
@@ -753,8 +754,78 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 17 {
+        // v17: taskx id is scoped per team — PK `(team_id, id)` so two teams can
+        // each own `task-1` (issue #13). The old global PK was stricter, so every
+        // existing row already satisfies the new constraint (no dedup needed).
+        // SQLite cannot alter a PK in place → rebuild the table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS taskx_new (
+               id           TEXT NOT NULL,
+               team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               title        TEXT NOT NULL,
+               body         TEXT,
+               state        TEXT NOT NULL DEFAULT 'assigned',
+               mode         TEXT NOT NULL DEFAULT 'direct',
+               executor     TEXT NOT NULL DEFAULT 'either',
+               priority     TEXT NOT NULL DEFAULT 'medium',
+               assignee_member_id TEXT,
+               role_key     TEXT,
+               created_by_member_id TEXT NOT NULL,
+               created_at   TEXT NOT NULL,
+               updated_at   TEXT NOT NULL,
+               PRIMARY KEY (team_id, id)
+             );
+             INSERT OR IGNORE INTO taskx_new
+               SELECT id, team_id, title, body, state, mode, executor, priority,
+                      assignee_member_id, role_key, created_by_member_id,
+                      created_at, updated_at
+                 FROM taskx;
+             DROP TABLE taskx;
+             ALTER TABLE taskx_new RENAME TO taskx;
+             CREATE INDEX IF NOT EXISTS idx_taskx_team   ON taskx(team_id);
+             CREATE INDEX IF NOT EXISTS idx_taskx_assign ON taskx(assignee_member_id);
+             CREATE INDEX IF NOT EXISTS idx_taskx_role   ON taskx(role_key);",
+        )?;
+    }
+
+    if version < 17 {
+        // v17: taskx `id` is scoped per team — PRIMARY KEY (team_id, id) so two
+        // teams on one server may each own `task-1` (issue #13). The previous
+        // global PK is *stricter* than the new one, so every existing row
+        // already satisfies the new constraint — no dedup is needed.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS taskx_v17 (
+               id           TEXT NOT NULL,
+               team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+               title        TEXT NOT NULL,
+               body         TEXT,
+               state        TEXT NOT NULL DEFAULT 'assigned',
+               mode         TEXT NOT NULL DEFAULT 'direct',
+               executor     TEXT NOT NULL DEFAULT 'either',
+               priority     TEXT NOT NULL DEFAULT 'medium',
+               assignee_member_id TEXT,
+               role_key     TEXT,
+               created_by_member_id TEXT NOT NULL,
+               created_at   TEXT NOT NULL,
+               updated_at   TEXT NOT NULL,
+               PRIMARY KEY (team_id, id)
+             );
+             INSERT OR IGNORE INTO taskx_v17
+               SELECT id, team_id, title, body, state, mode, executor, priority,
+                      assignee_member_id, role_key, created_by_member_id,
+                      created_at, updated_at
+                 FROM taskx;
+             DROP TABLE taskx;
+             ALTER TABLE taskx_v17 RENAME TO taskx;
+             CREATE INDEX IF NOT EXISTS idx_taskx_team   ON taskx(team_id);
+             CREATE INDEX IF NOT EXISTS idx_taskx_assign ON taskx(assignee_member_id);
+             CREATE INDEX IF NOT EXISTS idx_taskx_role   ON taskx(role_key);",
+        )?;
+    }
+
     converge_columns(conn)?;
-    conn.pragma_update(None, "user_version", 16)?;
+    conn.pragma_update(None, "user_version", 17)?;
     Ok(())
 }
 
@@ -1278,7 +1349,7 @@ mod tests {
 
         // Version converges to the current schema version.
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 16);
+        assert_eq!(v, 17);
 
         // Idempotent: migrating again must succeed and change nothing.
         migrate(&conn).unwrap();
@@ -1292,6 +1363,6 @@ mod tests {
         let gcols = table_columns(&conn, "goals").unwrap();
         assert!(gcols.iter().any(|c| c == "closed_at"));
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 16);
+        assert_eq!(v, 17);
     }
 }
