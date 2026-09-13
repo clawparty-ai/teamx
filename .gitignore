@@ -22,6 +22,8 @@ code-review-codex-0817.md
 # Team-definition files such as .teamx/TEAM.md are intentionally NOT ignored.
 .teamx/ca/
 .teamx/letters/
+# per-member imported invitation letters (contain the member's client private key)
+.teamx/*/*.letter
 .teamx/instance.json
 .teamx/forwards.json
 .teamx/console.json

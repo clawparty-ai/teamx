@@ -1,0 +1,43 @@
+{
+  "key": "pr",
+  "title": "代码合并请求（PR）",
+  "purpose": "代码变更的评审与合并",
+  "template": [
+    "变更描述",
+    "关联 issue",
+    "测试说明",
+    "回滚方案"
+  ],
+  "creators": [
+    "contributor",
+    "tech-lead"
+  ],
+  "owner": "提交者",
+  "approvers": [
+    "tech-lead",
+    "owner"
+  ],
+  "states": [
+    "opened",
+    "reviewing",
+    "approved",
+    "merged"
+  ],
+  "reactions": [
+    {
+      "on": "created",
+      "to_role": "tech-lead",
+      "action": "评审"
+    },
+    {
+      "on": "approved",
+      "to_role": null,
+      "action": "合并并关闭关联 issue"
+    },
+    {
+      "on": "merged",
+      "to_role": null,
+      "action": "更新 release-note"
+    }
+  ]
+}

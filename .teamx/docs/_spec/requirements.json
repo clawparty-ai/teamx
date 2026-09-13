@@ -1,0 +1,40 @@
+{
+  "key": "requirements",
+  "title": "需求文档",
+  "purpose": "定义需求与验收标准，是设计/开发/测试的依据",
+  "template": [
+    "背景",
+    "目标",
+    "范围",
+    "用户故事",
+    "验收标准",
+    "变更记录"
+  ],
+  "creators": [
+    "owner",
+    "tech-lead"
+  ],
+  "owner": "owner",
+  "approvers": [
+    "owner",
+    "tech-lead"
+  ],
+  "states": [
+    "draft",
+    "review",
+    "approved",
+    "done"
+  ],
+  "reactions": [
+    {
+      "on": "created",
+      "to_role": "owner",
+      "action": "细化需求"
+    },
+    {
+      "on": "approved",
+      "to_role": "contributor",
+      "action": "开始设计与开发"
+    }
+  ]
+}

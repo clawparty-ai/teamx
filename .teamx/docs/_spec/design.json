@@ -1,0 +1,40 @@
+{
+  "key": "design",
+  "title": "设计文档",
+  "purpose": "记录方案设计（架构/接口/数据模型），设计评审通过后方可实施",
+  "template": [
+    "背景",
+    "目标",
+    "方案",
+    "接口与数据",
+    "风险",
+    "测试要点"
+  ],
+  "creators": [
+    "tech-lead",
+    "contributor"
+  ],
+  "owner": "tech-lead",
+  "approvers": [
+    "owner",
+    "tech-lead"
+  ],
+  "states": [
+    "draft",
+    "review",
+    "approved",
+    "done"
+  ],
+  "reactions": [
+    {
+      "on": "created",
+      "to_role": "tech-lead",
+      "action": "评审设计"
+    },
+    {
+      "on": "approved",
+      "to_role": "contributor",
+      "action": "开始实现"
+    }
+  ]
+}
