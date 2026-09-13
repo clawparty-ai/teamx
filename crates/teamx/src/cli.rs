@@ -98,6 +98,21 @@ pub enum Command {
         session: String,
     },
 
+    /// Cancel an open question (owner/co-lead only). Unlocks the target member
+    /// (waiting → active) when they have no other open question.
+    AskCancel {
+        /// question id
+        #[arg(value_name = "ASK_ID")]
+        ask_id: String,
+        /// optional reason (recorded in the ledger)
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+
     /// List raw ledger events for a team
     Events {
         /// only events with seq greater than this
