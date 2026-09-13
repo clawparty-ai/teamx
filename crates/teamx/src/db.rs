@@ -796,8 +796,28 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 18 {
+        // v18: member-to-member direct-connect candidates (data-plane rendezvous).
+        // The server is the control plane: it records each member's LAN IPs and
+        // its server-reflexive address (peer IP:port as seen by the server), so
+        // same-team members can attempt a direct connection before falling back
+        // to the tunnel relay.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS direct_endpoints (
+               member_id      TEXT NOT NULL,
+               team_id        TEXT NOT NULL,
+               lan_ips        TEXT NOT NULL DEFAULT '[]',
+               reflexive_ip   TEXT,
+               reflexive_port INTEGER,
+               listener_port  INTEGER,
+               updated_at     TEXT NOT NULL,
+               PRIMARY KEY (member_id, team_id)
+             );",
+        )?;
+    }
+
     converge_columns(conn)?;
-    conn.pragma_update(None, "user_version", 17)?;
+    conn.pragma_update(None, "user_version", 18)?;
     Ok(())
 }
 
@@ -1321,7 +1341,7 @@ mod tests {
 
         // Version converges to the current schema version.
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
 
         // Idempotent: migrating again must succeed and change nothing.
         migrate(&conn).unwrap();
@@ -1335,6 +1355,6 @@ mod tests {
         let gcols = table_columns(&conn, "goals").unwrap();
         assert!(gcols.iter().any(|c| c == "closed_at"));
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
     }
 }

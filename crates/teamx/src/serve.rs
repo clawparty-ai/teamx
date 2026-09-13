@@ -1060,6 +1060,33 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         return crate::server_tasks::rpc(method, args, conn, &tid, &member_id);
     }
 
+    // direct.* — member-to-member direct connectivity (candidate registry +
+    // probe). Team = the caller's single team unless `team` is given; the
+    // server records the observed peer address as the reflexive candidate.
+    if method.starts_with("direct.") {
+        let tid = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("direct: member has no active team".to_string()),
+                    _ => {
+                        return Err(format!(
+                            "direct requires `team` (member belongs to {} teams)",
+                            teams.len()
+                        ))
+                    }
+                }
+            }
+        };
+        if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+            return Err(format!("member `{member_id}` is not a member of team {tid}"));
+        }
+        let reflexive = peer.map(|p| (p.ip().to_string(), p.port()));
+        return crate::direct::rpc(method, args, conn, &tid, &member_id, reflexive);
+    }
+
     // `team.force_leave` — owner/co-lead retires a stale member seat (e.g. an
     // old non-user-bound worker) by marking it `left`.
     if method == "team.force_leave" {
