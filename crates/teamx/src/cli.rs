@@ -1454,6 +1454,40 @@ pub enum DirectCmd {
         #[arg(long)]
         server: Option<String>,
     },
+    /// (provider, P1) Run the direct-connect mTLS listener and register it as
+    /// a candidate; validates one-time pairing tickets from peers.
+    Listen {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// bind address (default 0.0.0.0:0 = random port)
+        #[arg(long)]
+        bind: Option<String>,
+        /// LAN IP(s) to advertise (default: auto-detect via server route)
+        #[arg(long = "lan-ip")]
+        lan_ips: Vec<String>,
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// (consumer, P1) End-to-end direct ping: probe → pairing ticket → mTLS
+    /// connect → ticket validation → RTT measurement.
+    Ping {
+        #[arg(value_name = "MEMBER_ID")]
+        peer: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// number of ping/pong exchanges
+        #[arg(long, default_value_t = 4)]
+        count: u32,
+        /// probe/connect timeout (ms)
+        #[arg(long, default_value_t = 1500)]
+        timeout_ms: u64,
+        #[arg(long)]
+        server: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

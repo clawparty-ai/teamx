@@ -22,10 +22,36 @@
 - **台账**：`direct.advertised`。
 - **CLI**：`teamx direct advertise --lan-ip <ip> --port <p>` / `candidates <member>` / `probe <member>`。
 
+## P0.5 + P1（已实现：配对票据 + 限速 + listener/ping）
+
+讨论线程（Q1-Q5 收敛）定下的安全与端口口径落地。P0.5（票据+限速）由 owner PR #47
+先行合并；本节一并记录 P1 与 RPC 桥接：
+
+- **配对票据（P0.5，PR #47）**：`direct.probe` 探测即签发**一次性配对票据**
+  （uuid v4，TTL 60s，`used_at` 单次消费）；服务端进程内 `consume_ticket` 校验
+  （未知/错配/过期/重放全拒绝）。**知道 IP 不再能完成直连会话**。
+- **probe 限速（P0.5，PR #47）**：每 (member, peer) 对 60s 滑动窗口最多 10 次探测；
+  超限拒绝并落 `direct.rejected`（对齐 `im.rejected` 风格），收敛端口扫描面。
+- **`direct.ticket.check` RPC（P1 桥接）**：`consume_ticket` 是服务端进程内函数，
+  provider（独立进程）无法直调——新增该 RPC 把票据校验开放给 provider：caller 身份
+  取自 mTLS 证书（绑定 to=provider），requester 从票据行解析（不信任请求体），
+  失败全部审计 `direct.rejected`。
+- **`teamx direct listen`（P1，provider）**：rustls mTLS listener（成员证书为身份、
+  团队 CA 为客户端信任锚），随机端口 + 自动探测主 LAN IP（UDP-connect 路由法）并
+  `direct.advertise` 登记；入站连接先 TLS 握手（证明同 team）→ 读票据行 → 服务端校验 →
+  ping/pong 循环。Ctrl-C 停止。
+- **`teamx direct ping`（P1，consumer）**：candidates → probe（拿票据）→ 连最优候选 →
+  TLS 握手 → 呈递票据（`ok <requester>` 确认）→ N 次 ping/pong 测 RTT。
+- **TLS 名字策略**：成员证书无 SAN，成员间端点没有主机名——consumer 侧用
+  `CaChainVerifier`（链验证到团队 CA、**名字无关**，EKU=clientAuth）；身份绑定由
+  一次性票据 + 服务端审计承担，禁 TOFU/自签。
+- **测试**：单测 +1（ticket.check RPC 绑定 caller/重放拒绝/未知票据审计）+
+  `tests/direct-listen-ping-test.sh`（真实 serve + 双成员 mTLS 闭环 + 限速负例 +
+  `direct.rejected` 台账断言），注册 run-all 15i。
+
 ## 后续（未实现）
-- P1：provider `direct listen`（mTLS 直连 listener）+ consumer 直连握手 + `teamx direct ping`。
-- P2：tunnel 数据面**优先直连 + 自动回退**；台账 `direct.established` / `direct.failed`。
-- P3：QUIC（多路复用/0-RTT）、UPnP、质量上报。
+- P2：tunnel 数据面**优先直连 + 自动回退**（transport 抽象 + 迟滞切换；红线：relay 永远可用）；台账 `direct.established` / `direct.failed`。
+- P3：QUIC（多路复用/0-RTT）、STUN/UPnP（默认 off）、质量上报。
 
 ## 安全
 - 候选仅同 team 成员可查（`member_in_team` 校验）。

@@ -17,6 +17,7 @@ pub mod cli;
 pub mod commands;
 pub mod db;
 pub mod direct;
+pub mod direct_client;
 // dns_proxy + tun_dns 只服务 tun0 透明代理链路（被 tun_socks/tun_cli 使用），
 // 与 tun0 一样是 Unix-only；Windows 上 stub。
 #[cfg(any(target_os = "linux", target_os = "macos"))]
