@@ -655,6 +655,22 @@ pub enum TeamfileCmd {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Generate/update `.teamx/docs/_spec/<key>.json` document-contract snapshots
+    /// from TEAM.md (the same snapshots `team create` writes at bootstrap).
+    Sync {
+        /// path to TEAM.md (default: .teamx/TEAM.md)
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// docs dir to write (default: <TEAM.md dir>/docs/_spec)
+        #[arg(long)]
+        docs_dir: Option<PathBuf>,
+        /// show what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// also remove _spec files whose doc key is no longer declared in TEAM.md
+        #[arg(long)]
+        prune: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

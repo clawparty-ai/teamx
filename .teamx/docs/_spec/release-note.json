@@ -1,7 +1,24 @@
 {
-  "key": "release-note",
-  "title": "发布说明",
+  "approvers": [],
+  "creators": [
+    "owner"
+  ],
+  "doc": "release-note",
+  "incomplete": false,
+  "owner": "owner",
   "purpose": "汇总每次发布的功能、修复与已知问题",
+  "reactions": [
+    {
+      "action": "广播给全体成员",
+      "on": "released",
+      "to_role": null
+    }
+  ],
+  "states": [
+    "draft",
+    "review",
+    "released"
+  ],
   "template": [
     "版本",
     "日期",
@@ -9,21 +26,5 @@
     "修复",
     "已知问题"
   ],
-  "creators": [
-    "owner"
-  ],
-  "owner": "owner",
-  "approvers": [],
-  "states": [
-    "draft",
-    "review",
-    "released"
-  ],
-  "reactions": [
-    {
-      "on": "released",
-      "to_role": null,
-      "action": "广播给全体成员"
-    }
-  ]
+  "title": "发布说明"
 }
