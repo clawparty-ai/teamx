@@ -542,6 +542,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         },
         Command::Teamfile(tf) => match tf {
             TeamfileCmd::Validate { path } => cmd_teamfile_validate(path.as_deref())?,
+            TeamfileCmd::Sync { path, docs_dir, dry_run, prune } => {
+                cmd_teamfile_sync(path.as_deref(), docs_dir.as_deref(), *dry_run, *prune)?
+            }
         },
         Command::User(u) => match u {
             UserCmd::List { session, team } => cmd_user_list(conn, session, team.as_deref())?,
@@ -2319,22 +2322,7 @@ fn bootstrap_from_teamfile(
     let docs_dir = teamx_dir.join("docs").join("_spec");
     let mut docs_out = Vec::new();
     for d in &tf.docs {
-        let spec = json!({
-            "doc": d.key,
-            "title": d.title,
-            "purpose": d.purpose,
-            "template": d.template,
-            "creators": d.creators,
-            "owner": d.owner,
-            "approvers": d.approvers,
-            "states": d.states,
-            "reactions": d.reactions.iter().map(|r| json!({
-                "on": r.on,
-                "to_role": r.to_role,
-                "action": r.action,
-            })).collect::<Vec<_>>(),
-            "incomplete": d.is_incomplete(),
-        });
+        let spec = d.to_spec_json();
         if !d.is_incomplete() {
             std::fs::create_dir_all(&docs_dir).map_err(|e| AppError(format!("mkdir {docs_dir:?}: {e}")))?;
             let sp = docs_dir.join(format!("{}.json", d.key));
@@ -3385,8 +3373,114 @@ fn cmd_teamfile_validate(path: Option<&std::path::Path>) -> Result<Value> {
     }
 }
 
-fn resolve_user(
-    conn: &Connection,
+/// `teamx teamfile sync` — regenerate `.teamx/docs/_spec/<key>.json` document
+/// contract snapshots from TEAM.md (same shape `team create` writes at
+/// bootstrap), so an existing team can pick up TEAM.md edits without re-creating.
+fn cmd_teamfile_sync(
+    path: Option<&std::path::Path>,
+    docs_dir_override: Option<&std::path::Path>,
+    dry_run: bool,
+    prune: bool,
+) -> Result<Value> {
+    let cwd = std::env::current_dir().map_err(|e| AppError(format!("cwd: {e}")))?;
+    let team_md = match path {
+        Some(p) => p.to_path_buf(),
+        None => cwd.join(".teamx").join("TEAM.md"),
+    };
+    let (tf, errors, warnings) = crate::teamfile::load_and_validate_team_file(Some(&team_md))
+        .map_err(AppError)?;
+    if !errors.is_empty() {
+        return err(format!(
+            "TEAM.md invalid, refusing to sync: {}",
+            errors.join("; ")
+        ));
+    }
+    let docs_dir = match docs_dir_override {
+        Some(d) => d.to_path_buf(),
+        None => team_md
+            .parent()
+            .unwrap_or(&cwd)
+            .join("docs")
+            .join("_spec"),
+    };
+    let mut added = Vec::new();
+    let mut updated = Vec::new();
+    let mut unchanged = Vec::new();
+    let mut skipped = Vec::new();
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !dry_run {
+        std::fs::create_dir_all(&docs_dir)
+            .map_err(|e| AppError(format!("mkdir {docs_dir:?}: {e}")))?;
+    }
+    for d in &tf.docs {
+        declared.insert(d.key.clone());
+        if d.is_incomplete() {
+            skipped.push(json!({ "key": d.key, "reason": "缺少 所有者/状态流（incomplete）" }));
+            continue;
+        }
+        let sp = docs_dir.join(format!("{}.json", d.key));
+        // Same serialization as bootstrap (no trailing newline) so a
+        // bootstrap-written file is reported `unchanged`.
+        let text = serde_json::to_string_pretty(&d.to_spec_json())
+            .map_err(|e| AppError(format!("serialize doc spec: {e}")))?;
+        let existed = sp.exists();
+        if std::fs::read_to_string(&sp).map(|c| c == text).unwrap_or(false) {
+            unchanged.push(json!({ "key": d.key, "spec_file": sp.display().to_string() }));
+            continue;
+        }
+        if !dry_run {
+            std::fs::write(&sp, &text)
+                .map_err(|e| AppError(format!("write doc spec {sp:?}: {e}")))?;
+        }
+        let entry = json!({
+            "key": d.key,
+            "spec_file": sp.display().to_string(),
+            "states": d.states,
+        });
+        if existed {
+            updated.push(entry);
+        } else {
+            added.push(entry);
+        }
+    }
+    let mut pruned = Vec::new();
+    if prune {
+        if let Ok(rd) = std::fs::read_dir(&docs_dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(stem) = p.file_stem().and_then(|x| x.to_str()) else {
+                    continue;
+                };
+                if declared.contains(stem) {
+                    continue;
+                }
+                if !dry_run {
+                    std::fs::remove_file(&p)
+                        .map_err(|e| AppError(format!("remove {p:?}: {e}")))?;
+                }
+                pruned.push(json!({ "key": stem, "spec_file": p.display().to_string() }));
+            }
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "team": tf.team_name,
+        "team_file": team_md.display().to_string(),
+        "docs_dir": docs_dir.display().to_string(),
+        "dry_run": dry_run,
+        "added": added,
+        "updated": updated,
+        "unchanged": unchanged,
+        "skipped": skipped,
+        "pruned": pruned,
+        "warnings": warnings,
+    }))
+}
+
+fn resolve_user(    conn: &Connection,
     user_id: Option<&str>,
     user_name: Option<&str>,
     created_by: &str,

@@ -27,6 +27,7 @@
 //! ```
 
 use std::fs;
+use serde_json::json;
 use std::path::Path;
 
 /// A member profile parsed from a `### key` section of TEAM.md.
@@ -100,6 +101,28 @@ impl DocSpec {
     /// Such docs are parsed but skipped at bootstrap instantiation.
     pub fn is_incomplete(&self) -> bool {
         self.owner.is_empty() || self.states.is_empty()
+    }
+
+    /// JSON snapshot written to `.teamx/docs/_spec/<key>.json` — the executable
+    /// source of truth for the doc lifecycle (T3/T4). Shared by bootstrap
+    /// (`team create`) and `teamfile sync` so the two never drift.
+    pub fn to_spec_json(&self) -> serde_json::Value {
+        json!({
+            "doc": self.key,
+            "title": self.title,
+            "purpose": self.purpose,
+            "template": self.template,
+            "creators": self.creators,
+            "owner": self.owner,
+            "approvers": self.approvers,
+            "states": self.states,
+            "reactions": self.reactions.iter().map(|r| json!({
+                "on": r.on,
+                "to_role": r.to_role,
+                "action": r.action,
+            })).collect::<Vec<_>>(),
+            "incomplete": self.is_incomplete(),
+        })
     }
 }
 
@@ -843,5 +866,29 @@ mod tests {
             let err = parse_team_file_text(&text).unwrap_err();
             assert!(err.contains("unsafe TEAM.md member key"), "{key}: {err}");
         }
+    }
+
+    #[test]
+    fn doc_spec_json_round_trips() {
+        // The `_spec/<key>.json` snapshot shape written by bootstrap and
+        // `teamfile sync` must load back through DocSpec (key aliased `doc`).
+        let text = "# T\n\n## 文档\n\n### design\n\
+            - 标题: 设计文档\n- 用途: purpose\n- 模板: 背景 | 方案\n\
+            - 创建者: [tech-lead]\n- 所有者: tech-lead\n- 审批者: [owner]\n\
+            - 状态流: draft -> review -> done\n";
+        let tf = parse_team_file_text(text).unwrap();
+        let d = &tf.docs[0];
+        let j = d.to_spec_json();
+        assert_eq!(j["doc"], json!("design"));
+        assert_eq!(j["title"], json!("设计文档"));
+        assert_eq!(j["template"], json!(["背景", "方案"]));
+        assert_eq!(j["states"], json!(["draft", "review", "done"]));
+        assert_eq!(j["owner"], json!("tech-lead"));
+        assert_eq!(j["approvers"], json!(["owner"]));
+        assert_eq!(j["incomplete"], json!(false));
+        let back: DocSpec = serde_json::from_value(j).unwrap();
+        assert_eq!(back.key, "design");
+        assert_eq!(back.states, d.states);
+        assert!(!back.is_incomplete());
     }
 }
