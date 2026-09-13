@@ -61,15 +61,16 @@ pub fn page_html() -> String {
     </section>
   </div>
   <div class="view" id="view-discussions">
-    <section class="panel">
-      <div class="dsc-toolbar">
-        <h2 style="margin:0">Discussions</h2>
-        <button class="btn btn-mini" id="dscNew">+ 新建话题</button>
-        <button class="btn btn-mini" id="dscBack" style="display:none">← 返回列表</button>
-      </div>
-      <div id="dscList"></div>
-      <div id="dscThread" style="display:none"></div>
-    </section>
+    <div class="dsc-toolbar">
+      <h2 style="margin:0">Discussions</h2>
+      <button class="btn btn-mini" id="dscNew">+ 新建话题</button>
+    </div>
+    <div class="split">
+      <section class="panel split-list" id="dscListPanel">
+        <div id="dscList"></div>
+      </section>
+      <section class="panel split-detail" id="dscThread"></section>
+    </div>
   </div>
   <div class="view" id="view-documents">
     <div class="doc-nav" id="docNav"></div>
@@ -391,6 +392,12 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .doc-body { max-width:900px; }
  .doc-empty { color:var(--muted-fg); font-size:13px; padding:28px 8px; text-align:center; }
  @media (max-width:900px){ .doc-split { grid-template-columns:1fr; } .doc-detail-panel { position:static; } .doc-list-panel { max-height:none; } }
+ /* ---------- master-detail split (Discussions) ---------- */
+ .split { display:grid; grid-template-columns:minmax(300px, 38%) 1fr; gap:16px; align-items:start; }
+ .split-list { max-height:calc(100vh - 300px); overflow:auto; }
+ .split-detail { position:sticky; top:16px; min-height:220px; }
+ .dsc-row.sel { background:var(--primary-light); box-shadow:inset 3px 0 0 var(--primary); }
+ @media (max-width:900px){ .split { grid-template-columns:1fr; } .split-detail { position:static; } .split-list { max-height:none; } }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
   .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
@@ -861,12 +868,10 @@ async function dscAction(action, payload){
 }
 
 async function loadDiscussions(){
-  curDsc = null; dscReplyTo = null; stopDscPoll();
-  $("#dscBack").style.display="none"; $("#dscThread").style.display="none"; $("#dscList").style.display="";
-  $("#dscNew").style.display="";
+  dscReplyTo = null; stopDscPoll();
   const p = await panel("discussions"); setLast(p);
   const host=$("#dscList");
-  if(!p.ok){ host.innerHTML=""; $("#view-discussions .panel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  if(!p.ok){ host.innerHTML=""; $("#dscListPanel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
   const arr = ((p.data||{}).discussions)||[];
   host.innerHTML = arr.map(d=>{
     const closed = d.closed===true;
@@ -884,15 +889,26 @@ async function loadDiscussions(){
     if(jb) jb.addEventListener("click",(e)=>{ e.stopPropagation(); openDscOverlay({id:row.dataset.id, title:jb.dataset.title, mode:"thread"}); });
     row.addEventListener("click",()=>openDiscussion(row.dataset.id));
   });
+  // Keep the current selection if it still exists; otherwise show the prompt.
+  if(curDsc && arr.some(d=>d.discussion_id===curDsc)) openDiscussion(curDsc);
+  else { curDsc=null; curDscMeta=null; renderThreadEmpty(); }
+}
+
+function markDscSel(id){
+  document.querySelectorAll("#dscList .dsc-row").forEach(r=>r.classList.toggle("sel", r.dataset.id===id));
+}
+function renderThreadEmpty(){
+  const host=$("#dscThread");
+  if(host) host.innerHTML=`<div class="dsc-empty">← 从左侧列表选择一个讨论查看内容。</div>`;
 }
 
 async function openDiscussion(id){
   curDsc = id; dscReplyTo = null;
-  $("#dscList").style.display="none"; $("#dscNew").style.display="none"; $("#dscBack").style.display="";
-  $("#dscThread").style.display=""; $("#dscThread").innerHTML=`<div class="dsc-empty">加载中…</div>`;
+  markDscSel(id);
+  $("#dscThread").innerHTML=`<div class="dsc-empty">加载中…</div>`;
   const p = await panel("discussion?id="+encodeURIComponent(id)); setLast(p);
   const host=$("#dscThread");
-  if(!p.ok){ host.innerHTML=""; $("#view-discussions .panel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
+  if(!p.ok){ host.innerHTML=""; $("#dscListPanel").insertAdjacentHTML("afterbegin",errBox(p)); return; }
   const d = p.data||{};
   curDscMeta = d;
   renderThread(d);
@@ -957,9 +973,6 @@ function renderThread(d){
     </div>`}
   `;
   wireFloors(host);
-  const back=$("#dscBack");
-  back.onclick = ()=>loadDiscussions();
-  const newBtn=$("#dscNew"); newBtn.onclick = ()=>showNewForm();
   const jt=$("#dscJoinThread"); if(jt) jt.onclick = ()=>openDscOverlay({ id:curDsc, title, mode:"thread" });
   const send=$("#dscSend"); if(send) send.onclick = async ()=>{
     const input=$("#dscInput");
@@ -1079,7 +1092,7 @@ function openDscOverlay(o){
 }
 
 function showNewForm(){
-  $("#dscList").style.display="none"; $("#dscThread").style.display=""; $("#dscBack").style.display=""; $("#dscNew").style.display="none";
+  curDsc=null; curDscMeta=null; markDscSel(null);
   const host=$("#dscThread");
   host.innerHTML = `<div class="dsc-form">
     <b>新建话题</b>
@@ -1090,10 +1103,10 @@ function showNewForm(){
   $("#dscNewSubmit").onclick = async ()=>{
     const title=$("#dscNewTitle").value.trim(); if(!title){ alert("标题不能为空"); return; }
     const body=$("#dscNewBody").value.trim();
-    try{ const r=await dscAction("create",{title,body}); openDiscussion(r.data.discussion_id || r.data.id); }
+    try{ const r=await dscAction("create",{title,body}); loadDiscussions().then(()=>openDiscussion(r.data.discussion_id || r.data.id)); }
     catch(e){ alert(String(e.message||e)); }
   };
-  $("#dscNewCancel").onclick = ()=>loadDiscussions();
+  $("#dscNewCancel").onclick = ()=>{ loadDiscussions(); };
 }
 
 // SSE is the primary driver for live updates; this 60s poll is only a fallback
@@ -1102,9 +1115,8 @@ function showNewForm(){
 function startDscPoll(){ stopDscPoll(); dscTimer=setInterval(()=>{ if(curDsc) pollDiscussion(); },60000); }
 function stopDscPoll(){ if(dscTimer){ clearInterval(dscTimer); dscTimer=null; } }
 
-// Entry buttons (nav switch handles rendering; also ensure back/new work after full reload).
+// Entry buttons (nav switch handles rendering; new-topic form opens in the detail pane).
 $("#dscNew").addEventListener("click", showNewForm);
-$("#dscBack").addEventListener("click", loadDiscussions);
 
 /* ---------- Documents (TEAM.md `## 文档` contracts) ---------- */
 let docTypes=[], docAll=[], docCurType=null, docCur=null;
