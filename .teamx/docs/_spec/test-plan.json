@@ -1,0 +1,33 @@
+{
+  "key": "test-plan",
+  "title": "测试方案",
+  "purpose": "测试优先：定义测试范围/用例/环境/通过标准",
+  "template": [
+    "范围",
+    "用例",
+    "环境",
+    "通过标准"
+  ],
+  "creators": [
+    "contributor",
+    "tech-lead"
+  ],
+  "owner": "tech-lead",
+  "approvers": [
+    "owner",
+    "tech-lead"
+  ],
+  "states": [
+    "draft",
+    "review",
+    "approved",
+    "done"
+  ],
+  "reactions": [
+    {
+      "on": "approved",
+      "to_role": null,
+      "action": "进入开发与测试执行"
+    }
+  ]
+}

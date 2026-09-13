@@ -1,0 +1,40 @@
+{
+  "key": "issue",
+  "title": "缺陷 / 改进请求",
+  "purpose": "记录缺陷与改进请求，驱动修复流程",
+  "template": [
+    "描述",
+    "复现步骤",
+    "预期行为",
+    "实际行为",
+    "影响范围",
+    "优先级"
+  ],
+  "creators": [
+    "owner",
+    "tech-lead",
+    "contributor"
+  ],
+  "owner": "owner",
+  "approvers": [],
+  "states": [
+    "opened",
+    "triaged",
+    "assigned",
+    "fixing",
+    "verified",
+    "closed"
+  ],
+  "reactions": [
+    {
+      "on": "created",
+      "to_role": "owner",
+      "action": "分析并分诊"
+    },
+    {
+      "on": "verified",
+      "to_role": "owner",
+      "action": "关闭并记录到 release-note"
+    }
+  ]
+}

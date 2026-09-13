@@ -1,0 +1,29 @@
+{
+  "key": "release-note",
+  "title": "发布说明",
+  "purpose": "汇总每次发布的功能、修复与已知问题",
+  "template": [
+    "版本",
+    "日期",
+    "新功能",
+    "修复",
+    "已知问题"
+  ],
+  "creators": [
+    "owner"
+  ],
+  "owner": "owner",
+  "approvers": [],
+  "states": [
+    "draft",
+    "review",
+    "released"
+  ],
+  "reactions": [
+    {
+      "on": "released",
+      "to_role": null,
+      "action": "广播给全体成员"
+    }
+  ]
+}
