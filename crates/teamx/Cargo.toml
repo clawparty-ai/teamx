@@ -33,6 +33,9 @@ tun = "0.8.14"
 smoltcp = { version = "0.14.0", features = ["std", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "phy-tuntap_interface"] }
 libc = "0.2"
 serde_yaml = "0.9"
+# IM outbound notifier: blocking HTTPS client for the feishu live transport
+# (tenant_access_token + im/v1/messages). Used off the async runtime.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 
 # Desktop tray (L1) — optional: needs a desktop session (macOS menu bar /
 # Linux appindicator + GTK). Not required for headless servers.

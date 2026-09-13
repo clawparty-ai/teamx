@@ -9,10 +9,12 @@
 //! opencode/dsh clients).
 
 pub mod config;
+pub mod notifier;
 pub mod providers;
 pub mod types;
 
 pub use config::ImConfig;
+pub use notifier::Notifier;
 pub use providers::feishu::FeishuProvider;
 pub use providers::ImProvider;
 pub use types::{ImChannel, ImDelegatedContext, ImEvent, ImMessage};

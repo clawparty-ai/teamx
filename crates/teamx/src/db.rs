@@ -372,6 +372,34 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            PRIMARY KEY (member_id, team_id)
          );",
     )?;
+    // IM outbound notifier (docs/57): pending outbound pushes keyed by the
+    // ledger seq (idempotency: PRIMARY KEY (team_id, seq) makes re-collection
+    // after restart a no-op), plus a tiny kv store for the notifier's
+    // collection cursor / 429 backoff deadline. Converge-style: brand-new
+    // tables with no legacy data, so we deliberately do NOT bump
+    // user_version — the version numbering collided across product lines
+    // before (see converge_columns); a shape-check `CREATE TABLE IF NOT
+    // EXISTS` is idempotent and conflict-free with parallel schema bumps.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS im_outbox (
+           team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+           seq         INTEGER NOT NULL,
+           event_type  TEXT NOT NULL,
+           payload_json TEXT,
+           direct      INTEGER NOT NULL DEFAULT 0,
+           state      TEXT NOT NULL DEFAULT 'pending',
+           attempts   INTEGER NOT NULL DEFAULT 0,
+           last_error TEXT,
+           created_at TEXT NOT NULL,
+           pushed_at  TEXT,
+           PRIMARY KEY (team_id, seq)
+         );
+         CREATE INDEX IF NOT EXISTS idx_im_outbox_state ON im_outbox(state);
+         CREATE TABLE IF NOT EXISTS im_state (
+           key   TEXT PRIMARY KEY,
+           value TEXT NOT NULL
+         );",
+    )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     // v2-era rebuild only applies to legacy DBs that still have the `sessions`
