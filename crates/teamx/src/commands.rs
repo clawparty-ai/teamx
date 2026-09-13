@@ -7029,19 +7029,9 @@ mod tests {
     fn verified_rebroadcast_keeps_only_canonical_member_events() {
         let mut conn = test_conn();
         seed_team(&conn, "t1", "m1");
-        // second team with a different member
-        conn.execute(
-            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
-             VALUES ('t2', 'T2', 'm2', NULL, 'forming', 'tok', 'now', 'now')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
-             VALUES ('m2', 't2', 's', 'other', 'owner', 'active', 'now')",
-            [],
-        )
-        .unwrap();
+        // second team with a different member — reuse the fixture helper so the
+        // test tracks the schema instead of a hard-coded column list
+        seed_team(&conn, "t2", "m2");
         db::with_write(&mut conn, |tx| {
             crate::events::emit(tx, "t1", Some("m1"), "progress.published", Some(&json!({ "msg": "hi" })))?;
             crate::events::emit(tx, "t2", Some("m2"), "progress.published", None)?;
