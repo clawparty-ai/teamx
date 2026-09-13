@@ -476,8 +476,12 @@ fn log(conn: &mut Connection, team_id: &str, _member_id: &str, args: &Value) -> 
         .map_err(|e| format!("db: {e}"))?;
     // Payloads carry BOTH spellings (`task` + `id`); match either so log()
     // keeps working regardless of which key a future emitter writes.
-    let needle_task = format!("%\"task\": \"{id}\"%");
-    let needle_id = format!("%\"id\": \"{id}\"%");
+    // NOTE: payload_json is stored via serde_json::to_string (compact, no
+    // space after `:`), so the needles must NOT contain a space (issue #29:
+    // the original `": "` patterns never matched anything, so this test
+    // failed from the day it was introduced and CI never caught it).
+    let needle_task = format!("%\"task\":\"{id}\"%");
+    let needle_id = format!("%\"id\":\"{id}\"%");
     let rows: Vec<Value> = stmt
         .query_map(params![team_id, needle_task, needle_id], |r| {
             Ok(json!({
