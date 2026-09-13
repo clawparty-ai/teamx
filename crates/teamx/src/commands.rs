@@ -586,6 +586,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 DirectCmd::Advertise { server, .. } => server.as_deref(),
                 DirectCmd::Candidates { server, .. } => server.as_deref(),
                 DirectCmd::Probe { server, .. } => server.as_deref(),
+                DirectCmd::Listen { server, .. } => server.as_deref(),
+                DirectCmd::Ping { server, .. } => server.as_deref(),
             })?;
             let result = match cmd {
                 DirectCmd::Advertise { lan_ips, port, session, team, .. } => {
@@ -602,6 +604,33 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     crate::tunnel_client::rpc(&url, "direct.probe", json!({
                         "member_id": member_id, "timeout_ms": timeout_ms, "session": session, "team": team,
                     }))
+                }
+                // P1: the listen/ping flows are blocking + need the member's
+                // mTLS material for the direct TLS layer, so they live in
+                // direct_client and manage their own runtime/transport.
+                DirectCmd::Listen { session, team, bind, lan_ips, .. } => {
+                    return crate::direct_client::listen(
+                        &url,
+                        team.as_deref(),
+                        session,
+                        bind.as_deref(),
+                        None,
+                        lan_ips,
+                    )
+                    .map(|_| json!({ "ok": true, "cmd": "direct.listen" }))
+                    .map_err(AppError);
+                }
+                DirectCmd::Ping { peer, session, team, count, timeout_ms, .. } => {
+                    return crate::direct_client::ping(
+                        &url,
+                        team.as_deref(),
+                        session,
+                        peer,
+                        *count,
+                        *timeout_ms,
+                    )
+                    .map(|_| json!({ "ok": true, "cmd": "direct.ping" }))
+                    .map_err(AppError);
                 }
             };
             return result.map_err(AppError);

@@ -1009,6 +1009,12 @@ pub fn run_rpc_with_timeout(server_url: &str, method: &str, args: serde_json::Va
 /// Hardened with an overall timeout and an HTTP status check so a stalled
 /// server or an error page is surfaced as an error, not garbage JSON.
 async fn https_post(server_url: &str, path: &str, body: &str, config: &Arc<ClientConfig>, timeout_secs: u64) -> Result<String, String> {
+    https_post_shared(server_url, path, body, config, timeout_secs).await
+}
+
+/// Shared HTTPS POST used by the tunnel RPC path and the direct-connect
+/// client (listen/ping) so both reuse the same mTLS transport hardening.
+pub(crate) async fn https_post_shared(server_url: &str, path: &str, body: &str, config: &Arc<ClientConfig>, timeout_secs: u64) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
 

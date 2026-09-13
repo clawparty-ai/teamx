@@ -257,6 +257,49 @@ pub fn rpc(
                 "ticket_expires_at": expires,
             }))
         }
+        "direct.ticket.check" => {
+            // Called by the PROVIDER (the `to` side of the pairing) during the
+            // direct TLS handshake: wraps `consume_ticket` as an RPC so a
+            // member process can validate + burn the ticket server-side. The
+            // caller's identity comes from its mTLS cert (member_id), which
+            // binds the ticket to the exact member pair without trusting the
+            // request body. Failures are audited as `direct.rejected`.
+            let ticket = s("ticket")
+                .ok_or_else(|| "direct.ticket.check requires `ticket`".to_string())?;
+            let caller = member_id.to_string();
+            let from: Option<String> = conn
+                .query_row(
+                    "SELECT from_member FROM direct_tickets WHERE ticket = ?1",
+                    [&ticket],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let audit_reject = |conn: &mut Connection, reason: &str| -> Result<Value, String> {
+                let (mid, tid) = (caller.clone(), team_id.to_string());
+                let payload = json!({
+                    "reason_code": reason,
+                    "detail": "direct.ticket.check failed",
+                    "to_member": caller,
+                });
+                db::with_write(conn, |tx| {
+                    crate::events::emit(tx, &tid, Some(&mid), "direct.rejected", Some(&payload))
+                })
+                .map_err(|e: rusqlite::Error| e.to_string())?;
+                Err(format!("direct ticket rejected: {reason}"))
+            };
+            let Some(from) = from else {
+                return audit_reject(conn, "unknown ticket");
+            };
+            match consume_ticket(conn, &ticket, team_id, &from, &caller) {
+                Ok(()) => Ok(json!({
+                    "ok": true,
+                    "requester_id": from,
+                    "team_id": team_id,
+                })),
+                Err(e) => audit_reject(conn, &e),
+            }
+        }
         other => Err(format!("unknown direct method `{other}`")),
     }
 }
@@ -354,5 +397,56 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE team_id='t1' AND type='direct.rejected'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "rate-limit rejection must be audited");
+    }
+
+    #[test]
+    fn ticket_check_rpc_binds_caller_and_audits() {
+        let mut conn = test_conn();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        rpc("direct.advertise", &json!({"lan_ips":["127.0.0.1"], "listener_port": port}), &mut conn, "t1", "m-b", None).unwrap();
+        let p = rpc("direct.probe", &json!({"member_id":"m-b"}), &mut conn, "t1", "m-a", None).unwrap();
+        let t = p["ticket"].as_str().unwrap().to_string();
+
+        // The provider (m-b, caller from mTLS) validates via the RPC: the
+        // requester (from) is resolved from the ticket row, not the request.
+        let ok = rpc(
+            "direct.ticket.check",
+            &json!({"ticket": t}),
+            &mut conn,
+            "t1",
+            "m-b",
+            None,
+        )
+        .unwrap();
+        assert_eq!(ok["ok"], json!(true));
+        assert_eq!(ok["requester_id"], json!("m-a"));
+
+        // Replay via the RPC: rejected and audited.
+        assert!(rpc(
+            "direct.ticket.check",
+            &json!({"ticket": t}),
+            &mut conn,
+            "t1",
+            "m-b",
+            None,
+        )
+        .is_err());
+
+        // Unknown ticket: rejected and audited.
+        assert!(rpc(
+            "direct.ticket.check",
+            &json!({"ticket": "no-such-ticket"}),
+            &mut conn,
+            "t1",
+            "m-b",
+            None,
+        )
+        .is_err());
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE team_id='t1' AND type='direct.rejected'", [], |r| r.get(0))
+            .unwrap();
+        assert!(n >= 2, "replay + unknown rejections must be audited, got {n}");
     }
 }
