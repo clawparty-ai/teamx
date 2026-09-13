@@ -5361,6 +5361,49 @@ pub fn events_after(conn: &Connection, after_id: i64) -> rusqlite::Result<Vec<Va
     rows.collect()
 }
 
+/// Filter caller-supplied events for `events.rebroadcast` (N1): keep only
+/// rows that verifiably exist in this ledger (matched by `team_id` + `seq`)
+/// and that belong to teams the caller is an active member of, returning
+/// (team_id, canonical event) pairs for WS fan-out.
+///
+/// The canonical DB row is returned instead of the caller's copy, so a
+/// divergent local DB can never inject phantom events into the live stream:
+/// the broadcast stays a strict subset of the ledger.
+pub fn verified_rebroadcast_events(conn: &Connection, member_id: &str, events: &[Value]) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    for ev in events {
+        let Some(team_id) = ev.get("team_id").and_then(Value::as_str) else { continue };
+        let Some(seq) = ev.get("seq").and_then(Value::as_i64) else { continue };
+        if !member_in_team(conn, member_id, team_id).unwrap_or(false) {
+            continue;
+        }
+        let row = conn
+            .query_row(
+                "SELECT team_id, member_id, seq, type, payload_json, created_at
+                 FROM events WHERE team_id = ?1 AND seq = ?2",
+                params![team_id, seq],
+                |r| {
+                    let payload_json: Option<String> = r.get(4)?;
+                    let payload: Option<Value> = payload_json.and_then(|s| serde_json::from_str(&s).ok());
+                    Ok(json!({
+                        "team_id": r.get::<_, String>(0)?,
+                        "member_id": r.get::<_, Option<String>>(1)?,
+                        "seq": r.get::<_, i64>(2)?,
+                        "type": r.get::<_, String>(3)?,
+                        "payload": payload,
+                        "created_at": r.get::<_, String>(5)?,
+                    }))
+                },
+            )
+            .optional()
+            .unwrap_or(None);
+        if let Some(canonical) = row {
+            out.push((team_id.to_string(), canonical));
+        }
+    }
+    out
+}
+
 /// Team ids a member (by id) currently belongs to, for WS subscription.
 pub fn teams_for_member(conn: &Connection, member_id: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
@@ -7119,5 +7162,56 @@ mod tests {
                 .unwrap();
             assert_eq!(perm_count, 0, "no repo permissions should exist before members import");
         });
+    }
+
+    #[test]
+    fn verified_rebroadcast_keeps_only_canonical_member_events() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        // second team with a different member — reuse the fixture helper so the
+        // test tracks the schema instead of a hard-coded column list
+        seed_team(&conn, "t2", "m2");
+        db::with_write(&mut conn, |tx| {
+            crate::events::emit(tx, "t1", Some("m1"), "progress.published", Some(&json!({ "msg": "hi" })))?;
+            crate::events::emit(tx, "t2", Some("m2"), "progress.published", None)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let events = events_after(&conn, 0).unwrap();
+        // caller m1: only the t1 row comes back, as the canonical DB copy
+        let got = verified_rebroadcast_events(&conn, "m1", &events);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "t1");
+        assert_eq!(got[0].1["type"], "progress.published");
+        assert_eq!(got[0].1["payload"]["msg"], "hi");
+        assert_eq!(got[0].1["seq"], 1);
+        // caller m2: only the t2 row
+        let got2 = verified_rebroadcast_events(&conn, "m2", &events);
+        assert_eq!(got2.len(), 1);
+        assert_eq!(got2[0].0, "t2");
+    }
+
+    #[test]
+    fn verified_rebroadcast_skips_phantom_and_malformed_events() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        db::with_write(&mut conn, |tx| {
+            crate::events::emit(tx, "t1", Some("m1"), "e1", None)?;
+            Ok(())
+        })
+        .unwrap();
+        let phantom = vec![
+            json!({ "team_id": "t1", "seq": 999, "type": "e.fake" }), // not in ledger
+            json!({ "team_id": "t1" }),                              // missing seq
+            json!({ "seq": 1 }),                                     // missing team_id
+            json!({ "team_id": "ghost", "seq": 1 }),                 // unknown team
+        ];
+        assert!(verified_rebroadcast_events(&conn, "m1", &phantom).is_empty());
+        // the real row passes
+        let real = vec![json!({ "team_id": "t1", "seq": 1 })];
+        let got = verified_rebroadcast_events(&conn, "m1", &real);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1["type"], "e1");
     }
 }
