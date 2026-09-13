@@ -11,10 +11,80 @@
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 use crate::db;
+
+/// Probe rate-limit window / max probes per (from → to) pair.
+const PROBE_WINDOW_SECS: i64 = 60;
+const PROBE_MAX: i64 = 10;
+/// Pairing-ticket TTL (seconds).
+pub const TICKET_TTL_SECS: i64 = 60;
+
+/// True when the (from → to) pair has issued too many probes recently.
+fn rate_limited(conn: &Connection, team_id: &str, from: &str, to: &str) -> Result<bool, String> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(PROBE_WINDOW_SECS)).to_rfc3339();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM direct_tickets
+             WHERE team_id = ?1 AND from_member = ?2 AND to_member = ?3 AND created_at >= ?4",
+            params![team_id, from, to, cutoff],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n >= PROBE_MAX)
+}
+
+/// Issue a one-time pairing ticket bound to (from → to); the P1 handshake must
+/// present it, so knowing the peer's address is not enough to connect.
+fn issue_ticket(conn: &Connection, team_id: &str, from: &str, to: &str) -> Result<(String, String), String> {
+    let ticket = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
+    let created = now.to_rfc3339();
+    let expires = (now + chrono::Duration::seconds(TICKET_TTL_SECS)).to_rfc3339();
+    conn.execute(
+        "INSERT INTO direct_tickets (ticket, team_id, from_member, to_member, created_at, expires_at)
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        params![ticket, team_id, from, to, created, expires],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((ticket, expires))
+}
+
+/// Verify + consume a pairing ticket (used by the P1 direct handshake).
+/// Rejects unknown / mismatched-pair / expired / already-used tickets.
+pub fn consume_ticket(conn: &mut Connection, ticket: &str, team_id: &str, from: &str, to: &str) -> Result<(), String> {
+    let row: Option<(String, String, String, Option<String>, String)> = conn
+        .query_row(
+            "SELECT team_id, from_member, to_member, used_at, expires_at FROM direct_tickets WHERE ticket = ?1",
+            [ticket],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((t, f, to_m, used, expires)) = row else {
+        return Err("unknown ticket".to_string());
+    };
+    if t != team_id || f != from || to_m != to {
+        return Err("ticket does not match this member pair".to_string());
+    }
+    if used.is_some() {
+        return Err("ticket already used".to_string());
+    }
+    let expired = chrono::DateTime::parse_from_rfc3339(&expires)
+        .map(|e| e.with_timezone(&chrono::Utc) < chrono::Utc::now())
+        .unwrap_or(true);
+    if expired {
+        return Err("ticket expired".to_string());
+    }
+    conn.execute(
+        "UPDATE direct_tickets SET used_at = ?1 WHERE ticket = ?2",
+        params![chrono::Utc::now().to_rfc3339(), ticket],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 /// Load a member's advertised candidates (None when never advertised).
 fn endpoint(conn: &Connection, team_id: &str, member_id: &str) -> Result<Option<Value>, String> {
@@ -141,7 +211,26 @@ pub fn rpc(
             if !crate::commands::member_in_team(conn, &peer, team_id).map_err(|e| e.to_string())? {
                 return Err(format!("member {peer} is not in team {team_id}"));
             }
-            let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(800);
+            // Rate limit per (from → to) pair; rejections are audited.
+            if rate_limited(conn, team_id, member_id, &peer)? {
+                let payload = json!({
+                    "reason_code": "rate_limited",
+                    "from_member": member_id,
+                    "to_member": peer,
+                    "window_secs": PROBE_WINDOW_SECS,
+                    "max": PROBE_MAX,
+                });
+                let (mid, tid) = (member_id.to_string(), team_id.to_string());
+                db::with_write(conn, |tx| {
+                    crate::events::emit(tx, &tid, Some(&mid), "direct.rejected", Some(&payload))?;
+                    Ok(())
+                })
+                .map_err(|e: rusqlite::Error| e.to_string())?;
+                return Err(format!(
+                    "direct.probe rate limited for {peer} (max {PROBE_MAX}/{PROBE_WINDOW_SECS}s)"
+                ));
+            }
+            let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(1500);
             let timeout = Duration::from_millis(timeout_ms.max(50));
             let Some(ep) = endpoint(conn, team_id, &peer)? else {
                 return Ok(json!({ "ok": true, "peer": peer, "reachable": false, "results": [], "note": "peer has not advertised" }));
@@ -158,7 +247,15 @@ pub fn rpc(
                     Err(e) => results.push(json!({ "addr": a, "ok": false, "error": e })),
                 }
             }
-            Ok(json!({ "ok": true, "peer": peer, "reachable": reachable, "results": results }))
+            let (ticket, expires) = issue_ticket(conn, team_id, member_id, &peer)?;
+            Ok(json!({
+                "ok": true,
+                "peer": peer,
+                "reachable": reachable,
+                "results": results,
+                "ticket": ticket,
+                "ticket_expires_at": expires,
+            }))
         }
         other => Err(format!("unknown direct method `{other}`")),
     }
@@ -222,5 +319,40 @@ mod tests {
         let p = rpc("direct.probe", &json!({"member_id":"m-b", "timeout_ms": 500}), &mut conn, "t1", "m-a", None).unwrap();
         assert_eq!(p["reachable"], json!(true), "probe should reach the local listener: {p}");
         assert!(p["results"][0]["rtt_ms"].is_number());
+    }
+
+    #[test]
+    fn probe_issues_one_time_ticket() {
+        let mut conn = test_conn();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        rpc("direct.advertise", &json!({"lan_ips":["127.0.0.1"], "listener_port": port}), &mut conn, "t1", "m-b", None).unwrap();
+        let p = rpc("direct.probe", &json!({"member_id":"m-b"}), &mut conn, "t1", "m-a", None).unwrap();
+        let t = p["ticket"].as_str().unwrap().to_string();
+        // valid once for the bound pair (from m-a → to m-b)
+        consume_ticket(&mut conn, &t, "t1", "m-a", "m-b").unwrap();
+        // replay rejected
+        assert!(consume_ticket(&mut conn, &t, "t1", "m-a", "m-b").is_err());
+        // wrong pair rejected
+        let p2 = rpc("direct.probe", &json!({"member_id":"m-b"}), &mut conn, "t1", "m-a", None).unwrap();
+        let t2 = p2["ticket"].as_str().unwrap().to_string();
+        assert!(consume_ticket(&mut conn, &t2, "t1", "m-b", "m-a").is_err());
+    }
+
+    #[test]
+    fn probe_is_rate_limited_and_audited() {
+        let mut conn = test_conn();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        rpc("direct.advertise", &json!({"lan_ips":["127.0.0.1"], "listener_port": port}), &mut conn, "t1", "m-b", None).unwrap();
+        for _ in 0..PROBE_MAX {
+            rpc("direct.probe", &json!({"member_id":"m-b"}), &mut conn, "t1", "m-a", None).unwrap();
+        }
+        let err = rpc("direct.probe", &json!({"member_id":"m-b"}), &mut conn, "t1", "m-a", None).unwrap_err();
+        assert!(err.contains("rate limited"), "{err}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE team_id='t1' AND type='direct.rejected'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "rate-limit rejection must be audited");
     }
 }

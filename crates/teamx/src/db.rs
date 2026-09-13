@@ -816,8 +816,27 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 19 {
+        // v19: one-time pairing tickets for direct connections. `direct.probe`
+        // issues a short-TTL nonce bound to (from_member → to_member); the P1
+        // direct handshake must present it, so "knowing the IP" is not enough to
+        // connect. Also serves as the probe rate-limit ledger (recent rows).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS direct_tickets (
+               ticket      TEXT PRIMARY KEY,
+               team_id     TEXT NOT NULL,
+               from_member TEXT NOT NULL,
+               to_member   TEXT NOT NULL,
+               created_at  TEXT NOT NULL,
+               expires_at  TEXT NOT NULL,
+               used_at     TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_direct_tickets_pair ON direct_tickets(from_member, to_member, created_at);",
+        )?;
+    }
+
     converge_columns(conn)?;
-    conn.pragma_update(None, "user_version", 18)?;
+    conn.pragma_update(None, "user_version", 19)?;
     Ok(())
 }
 
@@ -1341,7 +1360,7 @@ mod tests {
 
         // Version converges to the current schema version.
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
 
         // Idempotent: migrating again must succeed and change nothing.
         migrate(&conn).unwrap();
@@ -1355,6 +1374,6 @@ mod tests {
         let gcols = table_columns(&conn, "goals").unwrap();
         assert!(gcols.iter().any(|c| c == "closed_at"));
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
     }
 }
