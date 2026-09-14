@@ -454,7 +454,14 @@ fn say_or_reply(
 
 fn list(conn: &Connection, all: bool, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
     let (_, _, team_id) = member_id_for_session(conn, session, team_opt)?;
-    let evs = events::list(conn, &team_id, None).map_err(|e| e.to_string())?;
+    list_for_team(conn, &team_id, all)
+}
+
+/// Team-scoped discussion listing — the shared engine behind the CLI
+/// `discussion list` path and the IM read-only query path (`im.query`),
+/// which has a resolved member identity instead of a session key.
+pub fn list_for_team(conn: &Connection, team_id: &str, all: bool) -> Result<Value, String> {
+    let evs = events::list(conn, team_id, None).map_err(|e| e.to_string())?;
     let numbers = discussion_numbers(&evs);
     // Group by discussion_id.
     let mut threads: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
