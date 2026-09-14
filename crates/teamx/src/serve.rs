@@ -1196,6 +1196,32 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         return crate::direct::rpc(method, args, conn, &tid, &member_id, reflexive);
     }
 
+    // IM access (P1): identity binding. The team is the caller's single team
+    // unless `team` is given; the certificate identity stays the only source of
+    // the actor, so a member can never act on another team's bindings.
+    if method.starts_with("im.") {
+        let tid = match s("team") {
+            Some(t) => t,
+            None => {
+                let teams = commands::teams_for_member(conn, &member_id).map_err(|e| e.to_string())?;
+                match teams.len() {
+                    1 => teams[0].clone(),
+                    0 => return Err("im: member has no active team".to_string()),
+                    _ => {
+                        return Err(format!(
+                            "im requires `team` (member belongs to {} teams)",
+                            teams.len()
+                        ))
+                    }
+                }
+            }
+        };
+        if !commands::member_in_team(conn, &member_id, &tid).map_err(|e| e.to_string())? {
+            return Err(format!("member `{member_id}` is not a member of team {tid}"));
+        }
+        return crate::im::rpc(method, args, conn, &member_id, &tid);
+    }
+
     // `team.force_leave` — owner/co-lead retires a stale member seat (e.g. an
     // old non-user-bound worker) by marking it `left`.
     if method == "team.force_leave" {

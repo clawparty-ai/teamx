@@ -156,6 +156,22 @@ else
 fi
 
 echo
+echo "== 15g IM binding test (one-time codes, local CLI) =="
+if [ -x target/debug/teamx ]; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/im-binding-test.sh
+else
+  echo "debug binary missing; skipping im-binding test"
+fi
+
+echo
+echo "== 15h IM binding RPC test (network, mTLS) =="
+if [ -x target/debug/teamx ]; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/im-binding-rpc-test.sh
+else
+  echo "debug binary missing; skipping im-binding-rpc test"
+fi
+
+echo
 echo "== 15i Direct listen/ping test (network, P1) =="
 if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && [ -x target/debug/teamx ]; then
   TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/direct-listen-ping-test.sh
