@@ -54,7 +54,7 @@ fn parse_key(pem: &str) -> Option<PrivateKeyDer<'static>> {
 
 /// Build an MtlsMaterial from raw PEM strings. Returns None (with a stderr
 /// note) instead of panicking on malformed material.
-fn material_from_pem(cert_pem: &str, key_pem: &str, ca_pem: &str, source: &str) -> Option<MtlsMaterial> {
+pub(crate) fn material_from_pem(cert_pem: &str, key_pem: &str, ca_pem: &str, source: &str) -> Option<MtlsMaterial> {
     let cert = match parse_cert(cert_pem) {
         Some(c) => c,
         None => {

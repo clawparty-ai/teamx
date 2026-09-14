@@ -1193,6 +1193,23 @@ fn dispatch_service(
         .and_then(Value::as_str)
         .ok_or_else(|| "service call requires `team`".to_string())?;
 
+    // Delegation verification (design §5.4): HMAC signature over the
+    // delegated fields + timestamp freshness ±5min + one-time nonce replay
+    // protection + per-(im_user, team) rate limit — every failure audited as
+    // `im.rejected` (gateway.rs pipeline, PR #51). Presence checks alone
+    // would let any service-cert holder impersonate a bound member (see
+    // .teamx/weiye-mini/reviews/pr-57.md finding ②).
+    let ctx = crate::im::types::ImDelegatedContext {
+        platform: platform.to_string(),
+        im_user_id: im_user_id.to_string(),
+        im_team: args.get("im_team").and_then(Value::as_str).map(str::to_string),
+        signature: args.get("signature").and_then(Value::as_str).map(str::to_string),
+        timestamp: args.get("timestamp").and_then(Value::as_i64).unwrap_or(0),
+        nonce: args.get("nonce").and_then(Value::as_str).unwrap_or_default().to_string(),
+    };
+    let cfg = crate::im::config::ImConfig::from_env();
+    crate::im::gateway::accept(conn, &cfg, team, &ctx)?;
+
     let resolved = match crate::im::binding::resolve_member(conn, platform, im_user_id, team)? {
         Some(v) => v,
         None => {
@@ -2735,7 +2752,30 @@ mod rpc_body_limit_tests {
         )
         .unwrap();
         let tunnels = crate::tunnel::TunnelRegistry::new();
-        let good = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1"});
+
+        // Delegations are cryptographically verified (gateway::accept), so the
+        // test env must carry the provider secret the signature is keyed on.
+        std::env::set_var("TEAMX_IM_FEISHU_APP_SECRET", "test-gw-secret");
+        let signed = |im_user: &str, nonce: &str| {
+            let mut ctx = crate::im::types::ImDelegatedContext {
+                platform: "feishu".into(),
+                im_user_id: im_user.into(),
+                im_team: None,
+                signature: None,
+                timestamp: chrono::Utc::now().timestamp(),
+                nonce: nonce.into(),
+            };
+            ctx.signature = Some(crate::im::gateway::sign_delegation("test-gw-secret", &ctx));
+            serde_json::json!({
+                "platform": ctx.platform,
+                "im_user_id": ctx.im_user_id,
+                "team": "t1",
+                "signature": ctx.signature,
+                "timestamp": ctx.timestamp,
+                "nonce": ctx.nonce,
+            })
+        };
+        let good = signed("u1", "nonce-good");
 
         // Unknown service identity → refused.
         assert!(
@@ -2751,17 +2791,30 @@ mod rpc_body_limit_tests {
                 .is_err()
         );
         // A caller-supplied member_id is never trusted.
-        let with_mid = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1","member_id":"m1"});
+        let mut with_mid = signed("u1", "nonce-mid");
+        with_mid["member_id"] = serde_json::json!("m1");
         let e = dispatch_service("im-gateway", "g1", "im.query", &with_mid, &mut conn, &tunnels, None, None)
             .unwrap_err();
         assert!(e.contains("member_id"), "{e}");
-        // Unbound delegation → refused + audited.
-        let e = dispatch_service("im-gateway", "g1", "im.query", &good, &mut conn, &tunnels, None, None)
+        // A forged signature → refused + audited (delegation must not be
+        // forgeable: pr-57 review finding ②).
+        let mut forged = signed("u1", "nonce-forged");
+        forged["signature"] = serde_json::json!("deadbeef");
+        let e = dispatch_service("im-gateway", "g1", "im.query", &forged, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("invalid_signature"), "{e}");
+        // An unsigned delegation (nonce present, signature absent) → refused.
+        let unsigned = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1","nonce":"nonce-unsigned","timestamp":chrono::Utc::now().timestamp()});
+        let e = dispatch_service("im-gateway", "g1", "im.query", &unsigned, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("missing_signature"), "{e}");
+        // Unbound (but correctly signed) delegation → refused + audited.
+        let e = dispatch_service("im-gateway", "g1", "im.query", &signed("u9", "nonce-unbound"), &mut conn, &tunnels, None, None)
             .unwrap_err();
         assert!(e.contains("unbound"), "{e}");
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM events WHERE type = 'im.rejected'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 1, "an unbound delegation must be audited as im.rejected");
+        assert!(n >= 3, "rejections must be audited as im.rejected (got {n})");
     }
 }

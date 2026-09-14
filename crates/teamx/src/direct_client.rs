@@ -61,10 +61,25 @@ pub fn listener_config(mtls: &MtlsMaterial) -> Result<Arc<ServerConfig>, String>
 pub struct CaChainVerifier {
     roots: Arc<RootCertStore>,
     provider: Arc<CryptoProvider>,
+    /// EKU required of the END ENTITY under verification: `client_auth` for
+    /// member-cert listeners (direct connect), `server_auth` for the real
+    /// mTLS `serve` (gateway process B connects to it).
+    server_eku: bool,
 }
 
 impl CaChainVerifier {
     pub fn new(mtls: &MtlsMaterial) -> Result<Arc<Self>, String> {
+        Self::with_eku(mtls, false)
+    }
+
+    /// Name-agnostic verifier requiring the **serverAuth** EKU on the end
+    /// entity — for clients dialing the real `serve` (its server cert is a
+    /// server cert, unlike the member-cert listeners of direct connect).
+    pub fn with_server_eku(mtls: &MtlsMaterial) -> Result<Arc<Self>, String> {
+        Self::with_eku(mtls, true)
+    }
+
+    fn with_eku(mtls: &MtlsMaterial, server_eku: bool) -> Result<Arc<Self>, String> {
         let mut roots = RootCertStore::empty();
         for c in &mtls.ca {
             roots.add(c.clone()).map_err(|e| format!("add CA: {e}"))?;
@@ -73,6 +88,7 @@ impl CaChainVerifier {
         Ok(Arc::new(Self {
             roots: Arc::new(roots),
             provider: Arc::new(provider),
+            server_eku,
         }))
     }
 }
@@ -93,12 +109,17 @@ impl ServerCertVerifier for CaChainVerifier {
         // binding is carried by the one-time pairing ticket (server-audited).
         let cert = webpki::EndEntityCert::try_from(end_entity)
             .map_err(|e| rustls::Error::General(format!("webpki parse: {e}")))?;
+        let usage = if self.server_eku {
+            webpki::KeyUsage::server_auth()
+        } else {
+            webpki::KeyUsage::client_auth()
+        };
         cert.verify_for_usage(
             &self.provider.signature_verification_algorithms.all[..],
             &self.roots.roots,
             intermediates,
             now,
-            webpki::KeyUsage::client_auth(),
+            usage,
             None,
             None,
         )
@@ -131,6 +152,21 @@ impl ServerCertVerifier for CaChainVerifier {
 
 /// Client TLS config for the direct connection: member client cert + CA-only
 /// (name-agnostic) verifier. See `CaChainVerifier` for the threat model.
+/// Client TLS config with an explicit server-cert verifier (gateway process
+/// B dials `serve` with the serverAuth EKU requirement; direct connect uses
+/// the client_auth variant).
+pub fn client_config_with_verifier(
+    mtls: &MtlsMaterial,
+    verifier: Arc<CaChainVerifier>,
+) -> Result<Arc<ClientConfig>, String> {
+    let builder = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(vec![mtls.cert.clone()], mtls.key.clone_key())
+        .map_err(|e| format!("gateway client config: {e}"))?;
+    Ok(Arc::new(builder))
+}
+
 pub fn direct_client_config(mtls: &MtlsMaterial) -> Result<Arc<ClientConfig>, String> {
     let verifier = CaChainVerifier::new(mtls)?;
     let builder = ClientConfig::builder()
@@ -164,7 +200,7 @@ pub fn detect_lan_ip(server_url: &str) -> Option<String> {
 
 /// Async RPC with an explicit client config (usable inside a tokio runtime —
 /// unlike `run_rpc`, which builds a nested one).
-async fn rpc_async(
+pub(crate) async fn rpc_async(
     server_url: &str,
     method: &str,
     args: serde_json::Value,

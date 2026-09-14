@@ -16,6 +16,7 @@
 pub mod binding;
 pub mod config;
 pub mod gateway;
+pub mod gateway_client;
 pub mod notifier;
 pub mod providers;
 pub mod query;
