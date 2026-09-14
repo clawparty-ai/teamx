@@ -58,8 +58,11 @@ for (const [label, parse] of [["opencode", oParse], ["dsh", dParse]] as const) {
     check(`${label}: method=team.status`, r.method === "team.status")
     check(`${label}: team=t1`, (r.args as Record<string, unknown>)["team"] === "t1")
     check(`${label}: --no-advance → no_advance=true`, (r.args as Record<string, unknown>)["no_advance"] === true)
-    const r2 = parse(["task", "ack", "task-1"])
-    check(`${label}: positional slot id`, (r2.args as Record<string, unknown>)["id"] === "task-1")
+    // Positional slot mapping. Use a method supported by BOTH plugin copies:
+    // dsh-plugin's cliArgsToRpc has no `task` group (dsh has no task tools),
+    // so `task ack <id>` only resolves on the opencode side.
+    const r2 = parse(["team", "approve", "member-1"])
+    check(`${label}: positional slot member_id`, (r2.args as Record<string, unknown>)["member_id"] === "member-1")
   })
 }
 
