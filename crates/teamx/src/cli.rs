@@ -181,6 +181,10 @@ pub enum Command {
     #[command(subcommand)]
     Plugin(PluginCmd),
 
+    /// Gateway process B: forward a delegated IM action via a service cert
+    #[command(subcommand)]
+    ImGateway(ImGatewayCmd),
+
     /// PKI management (mTLS certificates)
     #[command(subcommand)]
     Cert(CertCmd),
@@ -681,10 +685,51 @@ pub struct ServeCmd {
     pub san: Vec<String>,
 }
 
-#[derive(Subcommand, Debug)]
+/// `teamx im-gateway <subcommand>` — the gateway process (identity B).
+#[derive(Debug, Subcommand)]
+pub enum ImGatewayCmd {
+    /// End-to-end round trip: service cert mTLS → whitelist → delegation
+    /// verify → binding resolve → whitelisted read (im.query).
+    Check {
+        /// directory holding service.crt + service.key + ca.crt
+        #[arg(long)]
+        cert_dir: std::path::PathBuf,
+        /// server base URL (https://host:port)
+        #[arg(long)]
+        server: String,
+        /// team scope (optional when the instance has exactly one team)
+        #[arg(long)]
+        team: Option<String>,
+        /// provider platform (default feishu)
+        #[arg(long, default_value = "feishu")]
+        platform: String,
+        /// delegated IM user (open_id)
+        #[arg(long, value_name = "IM_USER")]
+        im_user: String,
+        /// im.query kind (status/goal/tasks/discussions/questions)
+        #[arg(long, default_value = "status")]
+        kind: String,
+    },
+}
+
+/// PKI management: CA/server/member/service certificate operations.
+#[derive(Debug, Subcommand)]
 pub enum CertCmd {
     /// Ensure the instance CA + server cert exist (create if absent)
     Init,
+    /// Issue a service certificate for a gateway process
+    /// (CN `service:<kind>:<instance>`, short TTL — design §5.3 identity B)
+    IssueService {
+        /// service kind (goes into the certificate CN, e.g. im-gateway)
+        #[arg(value_name = "KIND")]
+        kind: String,
+        /// instance name (goes into the certificate CN)
+        #[arg(value_name = "INSTANCE")]
+        instance: String,
+        /// write the certificate + key to this directory
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Issue a member client certificate (signed by the instance CA)
     Issue {
         /// member id (goes into the certificate CN)

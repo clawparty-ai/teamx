@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -540,8 +540,24 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::Fs(_) => {
             return err("`teamx fs` must be run as its own process")
         }
+        Command::ImGateway(cmd) => match cmd {
+            ImGatewayCmd::Check { cert_dir, server, team, platform, im_user, kind } => {
+                crate::im::gateway_client::check(crate::im::gateway_client::CheckArgs {
+                    cert_dir: cert_dir.clone(),
+                    server: server.clone(),
+                    team: team.clone(),
+                    platform: platform.clone(),
+                    im_user: im_user.clone(),
+                    kind: kind.clone(),
+                })
+                .map_err(AppError)?
+            }
+        },
         Command::Cert(c) => match c {
             CertCmd::Init => cmd_cert_init()?,
+            CertCmd::IssueService { kind, instance, out } => {
+                cmd_cert_issue_service(kind, instance, out.as_deref())?
+            }
             CertCmd::Issue { member_id, role, out } => cmd_cert_issue(member_id, role, out.as_deref())?,
             CertCmd::Ca => cmd_cert_ca()?,
         },
@@ -5942,6 +5958,34 @@ fn cmd_cert_issue(member_id: &str, role: &str, out: Option<&std::path::Path>) ->
             }))
         }
         None => Ok(json!({ "ok": true, "cn": cn, "serial": issued.serial_hex, "cert_pem": issued.cert_pem, "key_pem": issued.key_pem })),
+    }
+}
+
+/// `teamx cert issue-service <kind> <instance> [--out dir]` — issue a gateway
+/// process certificate (CN `service:<kind>:<instance>`, short TTL).
+fn cmd_cert_issue_service(kind: &str, instance: &str, out: Option<&std::path::Path>) -> Result<Value> {
+    if kind.is_empty() || instance.is_empty() {
+        return Err(AppError("cert issue-service: kind and instance are required".into()));
+    }
+    let home = teamx_home_dir();
+    let issued = pki::issue_service_cert(&home, kind, instance).map_err(AppError)?;
+    match out {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| AppError(format!("cannot create {}: {e}", dir.display())))?;
+            let cert_path = dir.join("service.crt");
+            let key_path = dir.join("service.key");
+            write_private(&cert_path, &issued.cert_pem)?;
+            write_private(&key_path, &issued.key_pem)?;
+            Ok(json!({
+                "ok": true,
+                "cn": issued.cn,
+                "serial": issued.serial_hex,
+                "cert": cert_path.display().to_string(),
+                "key": key_path.display().to_string(),
+            }))
+        }
+        None => Ok(json!({ "ok": true, "cn": issued.cn, "serial": issued.serial_hex, "cert_pem": issued.cert_pem, "key_pem": issued.key_pem })),
     }
 }
 

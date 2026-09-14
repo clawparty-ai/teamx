@@ -197,6 +197,14 @@ else
   echo "debug binary/curl/python3 missing; skipping im-p1-acceptance test"
 fi
 
+echo
+echo "== 15n IM gateway process B test (network) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/im-gateway-b-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping im-gateway-b test"
+fi
+
 echo "== 16/16 UI e2e (Playwright) test =="
 if [ "${TEAMX_RUN_UI_E2E:-0}" = "1" ] && command -v bun >/dev/null 2>&1; then
   (cd tests/ui-e2e && TEAMX_BIN="$ROOT/target/debug/teamx" npx playwright test)
