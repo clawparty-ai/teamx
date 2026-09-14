@@ -17,6 +17,7 @@ pub mod binding;
 pub mod config;
 pub mod notifier;
 pub mod providers;
+pub mod query;
 pub mod types;
 
 use rusqlite::Connection;
@@ -80,6 +81,17 @@ pub fn rpc(
             }
             let found = binding::resolve_member(conn, platform, im_user_id, team_id)?;
             Ok(serde_json::json!({ "ok": true, "bound": found.is_some(), "member": found }))
+        }
+        "im.query" => {
+            // IM read-only queries (P1): the identity comes from the binding
+            // (resolve_member), not from the RPC caller's certificate — a
+            // bound IM user reads their own team slice through the gateway.
+            let platform = s(args, "platform").unwrap_or("feishu");
+            let im_user_id =
+                s(args, "im_user_id").ok_or("im.query: `im_user_id` is required")?;
+            let kind = s(args, "kind").ok_or("im.query: `kind` is required")?;
+            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10);
+            query::query(conn, platform, im_user_id, team_id, kind, limit)
         }
         other => Err(format!("unknown im method `{other}`")),
     }
