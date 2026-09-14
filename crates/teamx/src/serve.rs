@@ -2639,8 +2639,7 @@ mod rpc_body_limit_tests {
     use tower::ServiceExt; // oneshot
 
     #[test]
-    fn service_method_whitelist_is_closed() {
-        // Allowed: the IM read-only query + the four P2 write actions.
+    fn service_method_whitelist_is_closed() {        // Allowed: the IM read-only query + the four P2 write actions.
         for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject"] {
             assert!(service_method_allowed(m), "{m} should be allowed");
         }
@@ -2717,5 +2716,52 @@ mod rpc_body_limit_tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn service_identity_whitelist_delegation_and_unbound() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1', 'T', 'm1', 'active', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m1', 't1', 's', 'M', 'contributor', 'active', 'now')",
+            [],
+        )
+        .unwrap();
+        let tunnels = crate::tunnel::TunnelRegistry::new();
+        let good = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1"});
+
+        // Unknown service identity → refused.
+        assert!(
+            dispatch_service("evil", "i", "im.query", &good, &mut conn, &tunnels, None, None).is_err()
+        );
+        // Non-whitelisted methods → refused (fail-closed).
+        assert!(
+            dispatch_service("im-gateway", "g1", "team.destroy", &good, &mut conn, &tunnels, None, None)
+                .is_err()
+        );
+        assert!(
+            dispatch_service("im-gateway", "g1", "git.receive", &good, &mut conn, &tunnels, None, None)
+                .is_err()
+        );
+        // A caller-supplied member_id is never trusted.
+        let with_mid = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1","member_id":"m1"});
+        let e = dispatch_service("im-gateway", "g1", "im.query", &with_mid, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("member_id"), "{e}");
+        // Unbound delegation → refused + audited.
+        let e = dispatch_service("im-gateway", "g1", "im.query", &good, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("unbound"), "{e}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE type = 'im.rejected'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "an unbound delegation must be audited as im.rejected");
     }
 }
