@@ -424,15 +424,24 @@ export function shouldAutoExecute(opts: {
   if ((opts.data?.teams?.length ?? 0) === 0) return false
   // A directed task NEWER than the last seq we already executed on triggers a
   // fresh auto-execute (so a member can be re-woken for later tasks). The
-  // owner/lead exemption and the assignee match are both evaluated per team
-  // (via the event's team_id), so a session that leads one team but works as a
-  // regular member in another still auto-executes the latter's tasks.
+  // assignee match is evaluated per team (via the event's team_id), so a session
+  // that leads one team but works as a regular member in another still
+  // auto-executes the latter's tasks.
+  //
+  // Broadcasts (no assignee) never wake a session — that is the owner/lead
+  // "drive, don't execute" rule. But an event explicitly DIRECTED at us
+  // (`assignee_member_id == our member id`) is a real task even for a lead
+  // session: a lead-role machine (e.g. a build node that also leads a team) must
+  // be wakeable by work assigned to it. To avoid self-wake loops we still ignore
+  // a lead's OWN directed publish (the event it emitted itself).
   return opts.events.some((e) => {
     if ((e.seq ?? 0) <= opts.lastExecutedSeq) return false
     const ctx = myTeamForEvent(opts.data, e)
-    if (!ctx?.memberId || ctx.isLead) return false
+    if (!ctx?.memberId) return false
     const aid = e.payload?.assignee_member_id
-    return typeof aid === "string" && aid === ctx.memberId
+    if (typeof aid !== "string" || aid !== ctx.memberId) return false
+    if (ctx.isLead && e.member_id === ctx.memberId) return false
+    return true
   })
 }
 
