@@ -392,13 +392,20 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   const flags: Record<string, string | boolean | number | null> = {}
   let i = 0
   while (i < argv.length) {
-    const a = argv[i]
+    const a: unknown = argv[i]
+    // Defensive: argv is typed string[], but a hole / undefined element from a
+    // misbuilt vector must never crash the parser (regression: `*.startsWith
+    // is not a function` on teamx_publish with long/assignee payloads).
+    if (typeof a !== "string") {
+      i += 1
+      continue
+    }
     if (a.startsWith("--")) {
       // Normalize the flag name so `--goal-title` and `--no-advance` arrive as
       // `goal_title` / `no_advance`, matching the RPC field names.
       const key = toSnake(a.slice(2))
-      const next = argv[i + 1]
-      if (next !== undefined && !next.startsWith("--")) {
+      const next: unknown = argv[i + 1]
+      if (typeof next === "string" && !next.startsWith("--")) {
         flags[key] = next
         i += 2
       } else {
