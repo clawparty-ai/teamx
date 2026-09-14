@@ -288,6 +288,68 @@ pub fn parse_member_identity(cn: &str) -> Option<(String, String, Option<String>
     }
 }
 
+/// Service certificate lifetime in days. Short TTL by design: the IM gateway
+/// service identity is rotated on this cadence (DQ-0004).
+pub const SERVICE_CERT_DAYS: i64 = 7;
+
+/// Issue a **service** client certificate (IM gateway identity, DQ-0004).
+///
+/// CN format: `service:<service>:<instance>` — deliberately in a different
+/// namespace from `member:<id>:<role>` so the server can (a) apply a
+/// method-level whitelist and (b) refuse to trust any delegated `member_id`.
+/// The certificate carries ClientAuth EKU and a short TTL.
+pub fn issue_service_cert(home: &Path, service: &str, instance: &str) -> PkiResult<IssuedCert> {
+    ensure_pki(home)?;
+    let dir = ca_dir(home);
+    let ca_cert_pem = read_pem(&dir.join("ca.crt"))?;
+    let ca_key_pem = read_pem(&dir.join("ca.key"))?;
+
+    let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| format!("load ca key: {e}"))?;
+    let ca_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem)
+        .map_err(|e| format!("parse ca cert: {e}"))?;
+    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("reconstruct ca: {e}"))?;
+
+    let cn = format!("service:{service}:{instance}");
+    let mut params = cert_params(&cn, &[], false)?;
+    // Short TTL overrides the long-lived leaf default.
+    params.not_after = now() + Duration::days(SERVICE_CERT_DAYS);
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let serial_bytes: [u8; 16] = uuid::Uuid::new_v4().into_bytes();
+    params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
+
+    let key = KeyPair::generate().map_err(|e| format!("service keygen: {e}"))?;
+    let cert = params
+        .signed_by(&key, &ca_cert, &ca_key)
+        .map_err(|e| format!("service sign: {e}"))?;
+
+    Ok(IssuedCert {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+        serial_hex: cert
+            .params()
+            .serial_number
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+        cn,
+    })
+}
+
+/// Parse a **service** identity out of a client certificate CN
+/// (`service:<service>:<instance>`). Returns `(service, instance)`.
+pub fn parse_service_cn(cn: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = cn.splitn(3, ':').collect();
+    if parts.len() == 3
+        && parts[0] == "service"
+        && !parts[1].is_empty()
+        && !parts[2].is_empty()
+    {
+        Some((parts[1].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
 /// The set of file paths for the instance PKI.
 #[derive(Debug, Clone)]
 pub struct PkiPaths {
@@ -362,6 +424,35 @@ mod tests {
 
         let empty_user = issue_member_cert(&home, "m3", "contributor", Some("")).unwrap();
         assert_eq!(empty_user.cn, "member:m3:contributor");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn parse_service_cn_shapes() {
+        assert_eq!(
+            parse_service_cn("service:im-gateway:g1"),
+            Some(("im-gateway".to_string(), "g1".to_string()))
+        );
+        // Member CNs must NOT parse as services (namespace isolation).
+        assert_eq!(parse_service_cn("member:m1:lead"), None);
+        assert_eq!(parse_service_cn("service:im-gateway"), None);
+        assert_eq!(parse_service_cn("service::g1"), None);
+        assert_eq!(parse_service_cn("service:im-gateway:"), None);
+        assert_eq!(parse_service_cn(""), None);
+        // A member parser must not accept service CNs either.
+        assert_eq!(parse_member_cn("service:im-gateway:g1"), None);
+    }
+
+    #[test]
+    fn issue_service_cert_cn_and_ttl() {
+        let home = std::env::temp_dir().join(format!("teamx-pki-svc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+
+        let c = issue_service_cert(&home, "im-gateway", "g1").unwrap();
+        assert_eq!(c.cn, "service:im-gateway:g1");
+        assert_eq!(parse_service_cn(&c.cn), Some(("im-gateway".to_string(), "g1".to_string())));
+        assert!(!c.cert_pem.is_empty() && !c.key_pem.is_empty());
 
         let _ = std::fs::remove_dir_all(&home);
     }

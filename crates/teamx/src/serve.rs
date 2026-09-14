@@ -1133,16 +1133,120 @@ fn parse_rows<T: serde::de::DeserializeOwned>(args: &Value) -> Vec<T> {
 
 /// Translate an RPC request into the same `Command` enum the CLI dispatches,
 /// then run it through `commands::execute`. The actor identity comes from the
+/// Methods an IM-gateway **service** identity may invoke (closed list,
+/// fail-closed). The gateway is zero-privilege: anything not listed is refused.
+/// Extending this list is a reviewed code change, not a runtime toggle.
+const SERVICE_METHOD_WHITELIST: &[&str] = &[
+    "im.query",                                        // P1 read-only
+    "im.approve", "im.deny", "im.verify", "im.reject", // P2 write actions (gated by gateway B)
+];
+
+/// Whether `method` is callable by a service identity.
+fn service_method_allowed(method: &str) -> bool {
+    SERVICE_METHOD_WHITELIST.contains(&method)
+}
+
+/// Dispatch a call made by a **service** identity (currently the IM gateway).
+///
+/// Security rules (DQ-0004):
+/// - fail-closed method whitelist;
+/// - the acting member is resolved from the delegation
+///   (`platform`/`im_user_id`/`team` → `im_bindings`), **never** from a
+///   caller-supplied `member_id` (a compromised gateway must not impersonate);
+/// - the resolved member is re-dispatched with a synthesized member CN so the
+///   downstream role/permission checks are unchanged (no privilege elevation).
+fn dispatch_service(
+    service: &str,
+    instance: &str,
+    method: &str,
+    args: &Value,
+    conn: &mut rusqlite::Connection,
+    tunnels: &crate::tunnel::TunnelRegistry,
+    peer: Option<SocketAddr>,
+    host: Option<&str>,
+) -> Result<Value, String> {
+    if service != "im-gateway" {
+        return Err(format!("unknown service identity `service:{service}:{instance}`"));
+    }
+    if !service_method_allowed(method) {
+        return Err(format!("service `{service}` may not call `{method}` (method whitelist)"));
+    }
+    // Never trust a caller-supplied member id.
+    if args
+        .get("member_id")
+        .and_then(Value::as_str)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
+        return Err("service call must not carry `member_id` (delegated identity required)".to_string());
+    }
+    let platform = args
+        .get("platform")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "service call requires `platform`".to_string())?;
+    let im_user_id = args
+        .get("im_user_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "service call requires `im_user_id`".to_string())?;
+    let team = args
+        .get("team")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "service call requires `team`".to_string())?;
+
+    let resolved = match crate::im::binding::resolve_member(conn, platform, im_user_id, team)? {
+        Some(v) => v,
+        None => {
+            let payload = serde_json::json!({
+                "platform": platform,
+                "im_user_id": im_user_id,
+                "im_msg_id": args.get("im_msg_id").and_then(Value::as_str),
+                "reason_code": "unbound",
+                "source": format!("im:{platform}"),
+            });
+            let _ = crate::db::with_write(conn, |tx| {
+                crate::events::emit(tx, team, None, "im.rejected", Some(&payload))?;
+                Ok(())
+            });
+            return Err("im.rejected: unbound".to_string());
+        }
+    };
+    let member_id = resolved
+        .get("member_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if member_id.is_empty() {
+        return Err("im.rejected: unbound (binding resolved without member id)".to_string());
+    }
+    // Role comes from the binding resolution (DB-backed), so the gateway cannot
+    // elevate privileges.
+    let role = resolved
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("member")
+        .to_string();
+    let cn = format!("member:{member_id}:{role}");
+    dispatch(method, args, conn, &cn, tunnels, peer, host)
+}
+
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
 fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry, peer: Option<SocketAddr>, host: Option<&str>) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
     let b = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
 
-    // Identity from the certificate: `member:<id>:<role>`.
-    let member_id = pki::parse_member_cn(actor_cn)
-        .map(|(id, _role)| id)
-        .ok_or_else(|| format!("no member identity in client certificate CN `{actor_cn}`"))?;
+    // Identity from the certificate: `member:<id>:<role>`, or a SERVICE
+    // identity `service:im-gateway:<instance>` which may act **only** for a
+    // delegated IM binding and only on whitelisted methods (DQ-0004).
+    let member_id = match pki::parse_member_cn(actor_cn) {
+        Some((id, _role)) => id,
+        None => {
+            if let Some((service, instance)) = pki::parse_service_cn(actor_cn) {
+                return dispatch_service(&service, &instance, method, args, conn, tunnels, peer, host);
+            }
+            return Err(format!("no member identity in client certificate CN `{actor_cn}`"));
+        }
+    };
 
     // taskx (server-backed tasks for network teams). The task's team is the
     // caller's single team unless `team` is given.
@@ -2535,6 +2639,25 @@ mod rpc_body_limit_tests {
     use tower::ServiceExt; // oneshot
 
     #[test]
+    fn service_method_whitelist_is_closed() {        // Allowed: the IM read-only query + the four P2 write actions.
+        for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject"] {
+            assert!(service_method_allowed(m), "{m} should be allowed");
+        }
+        // Fail-closed: everything else is refused, including dangerous methods.
+        for m in [
+            "team.destroy",
+            "goal.close",
+            "task.create",
+            "git.receive",
+            "im.binding",
+            "im.set",
+            "member.set_state",
+        ] {
+            assert!(!service_method_allowed(m), "{m} must be refused");
+        }
+    }
+
+    #[test]
     fn parse_threshold_defaults_and_overrides() {
         assert_eq!(parse_rpc_max_body(None), RPC_MAX_BODY_DEFAULT);
         assert_eq!(parse_rpc_max_body(Some("")), RPC_MAX_BODY_DEFAULT);
@@ -2593,5 +2716,52 @@ mod rpc_body_limit_tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn service_identity_whitelist_delegation_and_unbound() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1', 'T', 'm1', 'active', 'tok', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m1', 't1', 's', 'M', 'contributor', 'active', 'now')",
+            [],
+        )
+        .unwrap();
+        let tunnels = crate::tunnel::TunnelRegistry::new();
+        let good = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1"});
+
+        // Unknown service identity → refused.
+        assert!(
+            dispatch_service("evil", "i", "im.query", &good, &mut conn, &tunnels, None, None).is_err()
+        );
+        // Non-whitelisted methods → refused (fail-closed).
+        assert!(
+            dispatch_service("im-gateway", "g1", "team.destroy", &good, &mut conn, &tunnels, None, None)
+                .is_err()
+        );
+        assert!(
+            dispatch_service("im-gateway", "g1", "git.receive", &good, &mut conn, &tunnels, None, None)
+                .is_err()
+        );
+        // A caller-supplied member_id is never trusted.
+        let with_mid = serde_json::json!({"platform":"feishu","im_user_id":"u1","team":"t1","member_id":"m1"});
+        let e = dispatch_service("im-gateway", "g1", "im.query", &with_mid, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("member_id"), "{e}");
+        // Unbound delegation → refused + audited.
+        let e = dispatch_service("im-gateway", "g1", "im.query", &good, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(e.contains("unbound"), "{e}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE type = 'im.rejected'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "an unbound delegation must be audited as im.rejected");
     }
 }
