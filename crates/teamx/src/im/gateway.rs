@@ -99,7 +99,7 @@ fn audit(
 ) -> Result<(), String> {
     let payload = json!({
         "source": format!("im:{platform}"),
-        "im_user_id": im_user_id,
+        "im_user": im_user_id,
         "team_id": team_id,
         "reason_code": reason.map(|r| r.code()).unwrap_or("accepted"),
     });
