@@ -907,6 +907,21 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // IM inbound gateway (im-p1-inbound-gateway-security): one-time nonce
+    // replay protection. PRIMARY KEY(platform, nonce, team_id) makes a replay
+    // INSERT fail; rows older than the 7d TTL are pruned opportunistically.
+    // Converged-style: no user_version bump (same口径 as parallel tracks).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS im_seen (
+           platform   TEXT NOT NULL,
+           nonce      TEXT NOT NULL,
+           team_id    TEXT NOT NULL,
+           im_user_id TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (platform, nonce, team_id)
+         );",
+    )?;
+
     converge_columns(conn)?;
     conn.pragma_update(None, "user_version", 20)?;
     Ok(())

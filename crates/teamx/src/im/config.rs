@@ -49,6 +49,15 @@ impl ImConfig {
     }
 
     /// Whether feishu credentials are present (required for live sends).
+    /// The provider shared secret used to verify delegation signatures.
+    /// The gateway holds it; `serve` only uses it to *verify* (never to send).
+    pub fn secret_for(&self, platform: &str) -> Option<&str> {
+        match platform {
+            "feishu" => self.feishu_app_secret.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn feishu_configured(&self) -> bool {
         self.feishu_app_id.is_some() && self.feishu_app_secret.is_some()
     }

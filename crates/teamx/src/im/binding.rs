@@ -746,7 +746,8 @@ mod tests {
             platform: "feishu".to_string(),
             im_user_id: im_user.to_string(),
             im_team: None,
-            signature: None,
+            signature: None,        timestamp: 0,
+        nonce: String::new(),
         }
     }
 

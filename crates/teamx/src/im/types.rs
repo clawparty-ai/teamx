@@ -16,6 +16,11 @@ pub struct ImDelegatedContext {
     pub im_team: Option<String>,
     /// Provider signature over the delegated fields (verified by the gateway).
     pub signature: Option<String>,
+    /// Unix epoch seconds when the delegation was minted (±5min freshness).
+    pub timestamp: i64,
+    /// One-time nonce — the inbound idempotency key (`im_seen`, replay →
+    /// rejected). Empty for legacy/CLI-constructed contexts (no gateway).
+    pub nonce: String,
 }
 
 /// Where an outbound message goes.

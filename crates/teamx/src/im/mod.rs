@@ -15,6 +15,7 @@
 
 pub mod binding;
 pub mod config;
+pub mod gateway;
 pub mod notifier;
 pub mod providers;
 pub mod query;
@@ -60,6 +61,9 @@ pub fn rpc(
                 im_user_id: im_user_id.to_string(),
                 im_team: s(args, "im_team").map(str::to_string),
                 signature: s(args, "signature").map(str::to_string),
+                // CLI/RPC path (P1): no gateway envelope — minted now, no nonce.
+                timestamp: chrono::Utc::now().timestamp(),
+                nonce: String::new(),
             };
             binding::redeem_in_team(conn, &ctx, code, team_id)
         }
@@ -153,6 +157,9 @@ pub fn run(conn: &mut Connection, cmd: &crate::cli::ImCmd) -> Result<Value, Stri
                 im_user_id: im_user.clone(),
                 im_team: im_team.clone(),
                 signature: signature.clone(),
+                // CLI path (P1): no gateway envelope — minted now, no nonce.
+                timestamp: chrono::Utc::now().timestamp(),
+                nonce: String::new(),
             };
             // A code belongs to one team; the actor's team must match it.
             binding::redeem_in_team(conn, &ctx, code, &team_id)
