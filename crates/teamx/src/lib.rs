@@ -36,6 +36,7 @@ pub mod gui_panel;
 pub mod gui_member_panel;
 pub mod loopx;
 pub mod metrics;
+pub mod nudge_tpl;
 pub mod pki;
 pub mod procwatch;
 pub mod routes;

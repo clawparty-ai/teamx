@@ -492,6 +492,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         Command::AskCancel { ask_id, reason, session, team } => {
             cmd_ask_cancel(conn, ask_id, reason.as_deref(), session, team.as_deref())?
         }
+        Command::Nudge { action } => cmd_nudge(conn, action)?,
         Command::Events { after, team } => cmd_events(conn, *after, team.as_deref())?,
         Command::Log { team, session, limit, after } => {
             cmd_log(conn, team.as_deref(), session.as_deref(), *limit, *after)?
@@ -934,9 +935,22 @@ pub fn nudge_idle_teams(
         }
 
         let message = if team_state == "blocked" {
+            // The blocked variant keeps its built-in text (custom templates
+            // cover the regular idle reminder; a broken template can never
+            // mask a blocked-state alert).
             format!("团队「{team_name}」处于 blocked 状态，目标「{goal_title}」尚未完成。请成员说明阻塞原因，或尽快恢复推进。")
         } else {
-            format!("团队「{team_name}」的目标「{goal_title}」还未完成。你的任务是否执行完了？没完成请尽快完成，完成请提交产物。")
+            crate::nudge_tpl::render(
+                conn,
+                &team_id,
+                "idle_reminder",
+                &json!({
+                    "team_name": team_name,
+                    "goal_title": goal_title,
+                    "silent_for_secs": silent_for,
+                }),
+            )
+            .unwrap_or_else(|| format!("团队「{team_name}」的目标「{goal_title}」还未完成。你的任务是否执行完了？没完成请尽快完成，完成请提交产物。"))
         };
         let payload = json!({
             "kind": "idle_reminder",
@@ -1001,11 +1015,22 @@ pub fn nudge_idle_teams(
                         lead_names.join("、")
                     )
                 } else {
-                    format!(
+                    crate::nudge_tpl::render(
+                        conn,
+                        &team_id,
+                        "lead_reminder",
+                        &json!({
+                            "team_name": team_name,
+                            "goal_title": goal_title,
+                            "silent_for_secs": silent_for,
+                            "lead_names": lead_names.join("、"),
+                        }),
+                    )
+                    .unwrap_or_else(|| format!(
                         "团队「{team_name}」已静默 {silent} 秒，目标「{goal_title}」未完成。你是 team lead（{}），请协调推进：检查成员进度、审批入队、或广播下一步。",
                         lead_names.join("、"),
                         silent = silent_for,
-                    )
+                    ))
                 };
                 let lead_payload = json!({
                     "kind": "lead_reminder",
@@ -5290,6 +5315,61 @@ fn cmd_ask_cancel(
     Ok(json!({ "ok": true, "question_id": q.id, "state": "cancelled", "target_member_id": target }))
 }
 
+/// `teamx nudge set|get|reset` — owner/lead-configurable nudge templates
+/// (Issue #15). Rendering is pure placeholder substitution with fallback to
+/// the built-in defaults; see `nudge_tpl`.
+fn cmd_nudge(conn: &mut Connection, action: &crate::cli::NudgeAction) -> Result<Value> {
+    let (kind, session, team): (&str, &str, Option<&String>) = match action {
+        crate::cli::NudgeAction::Set { kind, session, team, .. }
+        | crate::cli::NudgeAction::Get { kind, session, team }
+        | crate::cli::NudgeAction::Reset { kind, session, team } => (kind, session, team.as_ref()),
+    };
+    let (actor, team) = resolve_actor(conn, session, team.map(|t| t.as_str()))?;
+    let team_id = team.id.clone();
+    let is_lead: bool = conn
+        .query_row(
+            "SELECT (t.owner_member_id = ?1 OR m.is_lead = 1)
+             FROM teams t JOIN members m ON m.team_id = t.id
+             WHERE t.id = ?2 AND m.id = ?1",
+            params![actor.id, team_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    match action {
+        crate::cli::NudgeAction::Get { .. } => {
+            let template = crate::nudge_tpl::get(conn, &team_id, kind)
+                .map_err(|e| AppError(format!("nudge get failed: {e}")))?;
+            Ok(json!({ "ok": true, "kind": kind, "template": template }))
+        }
+        crate::cli::NudgeAction::Set { template, template_file, .. } => {
+            if !is_lead {
+                return err("nudge set: only the team owner or a co-lead may customize templates");
+            }
+            let tpl = match (template, template_file) {
+                (Some(t), _) => t.clone(),
+                (None, Some(f)) => std::fs::read_to_string(f)
+                    .map_err(|e| AppError(format!("nudge set: read template file: {e}")))?,
+                (None, None) => {
+                    return err("nudge set: provide --template <TEXT> or --template-file <PATH>")
+                }
+            };
+            crate::nudge_tpl::set(conn, &team_id, kind, &tpl, &actor.id)
+                .map_err(AppError)?;
+            touch(conn, &actor.id).ok();
+            Ok(json!({ "ok": true, "kind": kind, "action": "set" }))
+        }
+        crate::cli::NudgeAction::Reset { .. } => {
+            if !is_lead {
+                return err("nudge reset: only the team owner or a co-lead may customize templates");
+            }
+            let deleted = crate::nudge_tpl::reset(conn, &team_id, kind, &actor.id)
+                .map_err(AppError)?;
+            touch(conn, &actor.id).ok();
+            Ok(json!({ "ok": true, "kind": kind, "action": "reset", "deleted": deleted }))
+        }
+    }
+}
+
 fn cmd_events(conn: &Connection, after: Option<i64>, team_opt: Option<&str>) -> Result<Value> {
     let team_id = team_opt.ok_or_else(|| AppError("teamx events requires --team <id>".to_string()))?;
     team_by_id(conn, team_id)?;
@@ -5520,11 +5600,20 @@ pub fn nudge_open_tasks(
             }
         }
         let names: Vec<&str> = tasks.iter().map(|t| t["title"].as_str().unwrap_or("-")).collect();
-        let message = format!(
+        let message = crate::nudge_tpl::render(
+            conn,
+            team_id,
+            "task_nudge",
+            &json!({
+                "count": tasks.len(),
+                "tasks": names.join("、"),
+            }),
+        )
+        .unwrap_or_else(|| format!(
             "你有 {} 个未完成任务：{}。请继续推进；如受阻可 task help 求助 lead。",
             tasks.len(),
             names.join("、")
-        );
+        ));
         let payload = json!({
             "kind": "task_reminder",
             "assignee_member_id": aid,
@@ -5609,10 +5698,20 @@ pub fn nudge_unclaimed_tasks(
             .map(|(id, title, _)| format!("`{id}`（{title}）"))
             .collect::<Vec<_>>()
             .join("、");
-        let message = format!(
+        let message = crate::nudge_tpl::render(
+            conn,
+            &team_id,
+            "claim_reminder",
+            &json!({
+                "team_name": team_name,
+                "count": tasks.len(),
+                "tasks": list,
+            }),
+        )
+        .unwrap_or_else(|| format!(
             "团队「{team_name}」有 {} 个待认领任务：{list}。请有意者 ack→claim→done 认领。",
             tasks.len()
-        );
+        ));
         let payload = json!({
             "kind": "claim_reminder",
             "team_name": team_name,
@@ -6287,6 +6386,64 @@ mod tests {
         .unwrap();
         let none = nudge_unclaimed_tasks(&mut conn, 300, Some(10_000 + 1000)).unwrap();
         assert!(none.is_empty(), "claimed task must not nudge: {none:?}");
+    }
+
+    #[test]
+    fn nudge_uses_custom_template_and_reset_falls_back() {
+        let mut conn = test_conn();
+        seed_active_goal(&conn, "t1", "g1", "in_progress");
+
+        // Custom template with placeholders replaces the default idle text.
+        crate::nudge_tpl::set(
+            &mut conn,
+            "t1",
+            "idle_reminder",
+            "自定义提醒：{team_name} 的「{goal_title}」已静默 {silent_for_secs} 秒",
+            "m1",
+        )
+        .unwrap();
+        // The set() audit event carries a real wall-clock timestamp, which
+        // would make the team look "active" against the test clock (10_000).
+        // Rewind it so the silence check still fires.
+        conn.execute("UPDATE events SET created_at = '1970-01-01T02:30:00+00:00' WHERE type = 'nudge.template'", []).unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        let idle = written
+            .iter()
+            .find(|e| e["type"] == "system.nudge")
+            .expect("idle nudge written");
+        assert_eq!(
+            idle["payload"]["message"],
+            json!("自定义提醒：目标团队 的「完成产品」已静默 1000 秒"),
+            "custom template rendered with placeholders: {}",
+            idle["payload"]["message"]
+        );
+
+        // Unknown placeholder in the template → render fails → default used.
+        crate::nudge_tpl::set(&mut conn, "t1", "idle_reminder", "坏模板 {bogus}", "m1").unwrap();
+        conn.execute("UPDATE events SET created_at = '1970-01-01T02:30:00+00:00' WHERE type = 'nudge.template'", []).unwrap();
+        // Pace window: force a re-nudge by removing the previous one.
+        conn.execute("DELETE FROM events WHERE type IN ('system.nudge','system.nudge_lead')", []).unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        let idle = written
+            .iter()
+            .find(|e| e["type"] == "system.nudge")
+            .expect("idle nudge written");
+        assert!(
+            idle["payload"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("团队「目标团队」的目标"),
+            "unknown placeholder falls back to the default: {:?}",
+            idle["payload"]["message"]
+        );
+
+        // Reset → built-in default again.
+        crate::nudge_tpl::reset(&mut conn, "t1", "idle_reminder", "m1").unwrap();
+        conn.execute("UPDATE events SET created_at = '1970-01-01T02:30:00+00:00' WHERE type = 'nudge.template'", []).unwrap();
+        conn.execute("DELETE FROM events WHERE type IN ('system.nudge','system.nudge_lead')", []).unwrap();
+        let written = nudge_idle_teams(&mut conn, 300, Some(10_000)).unwrap();
+        let idle = written.iter().find(|e| e["type"] == "system.nudge").unwrap();
+        assert!(idle["payload"]["message"].as_str().unwrap().starts_with("团队「目标团队」的目标"));
     }
 
     #[test]

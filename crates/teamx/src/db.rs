@@ -922,6 +922,21 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )?;
 
+    // Custom nudge templates (Issue #15): owner/lead-configurable message
+    // text for the four nudge kinds, per team. Converged-style (brand-new
+    // table, no legacy data — keeps user_version untouched; next free
+    // versioned slot is v21 per the team ledger).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS nudge_templates (
+           team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+           kind       TEXT NOT NULL,
+           template   TEXT NOT NULL,
+           updated_by TEXT NOT NULL,
+           updated_at TEXT NOT NULL,
+           PRIMARY KEY (team_id, kind)
+         );",
+    )?;
+
     converge_columns(conn)?;
     conn.pragma_update(None, "user_version", 20)?;
     Ok(())

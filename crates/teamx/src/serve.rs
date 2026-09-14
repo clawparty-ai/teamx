@@ -1778,6 +1778,29 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             session: sess(args),
             team: o("team"),
         },
+        "nudge.set" => Command::Nudge {
+            action: crate::cli::NudgeAction::Set {
+                kind: s("kind").ok_or_else(|| "nudge.set requires `kind`".to_string())?,
+                template: o("template"),
+                template_file: o("template_file"),
+                session: sess(args),
+                team: o("team"),
+            },
+        },
+        "nudge.get" => Command::Nudge {
+            action: crate::cli::NudgeAction::Get {
+                kind: s("kind").ok_or_else(|| "nudge.get requires `kind`".to_string())?,
+                session: sess(args),
+                team: o("team"),
+            },
+        },
+        "nudge.reset" => Command::Nudge {
+            action: crate::cli::NudgeAction::Reset {
+                kind: s("kind").ok_or_else(|| "nudge.reset requires `kind`".to_string())?,
+                session: sess(args),
+                team: o("team"),
+            },
+        },
         "events" => Command::Events {
             after: args.get("after").and_then(Value::as_i64),
             team: o("team"),

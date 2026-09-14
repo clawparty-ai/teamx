@@ -117,6 +117,12 @@ pub enum Command {
         team: Option<String>,
     },
 
+    /// Customize nudge message templates (owner/co-lead only; Issue #15).
+    Nudge {
+        #[command(subcommand)]
+        action: NudgeAction,
+    },
+
     /// List raw ledger events for a team
     Events {
         /// only events with seq greater than this
@@ -281,6 +287,42 @@ pub enum Command {
     /// tunnel port mappings (expose/forward/close) and toggle the SOCKS5
     /// proxy. Cross-platform (macOS / Linux / Windows); no privileged ops.
     GuiMember,
+}
+
+/// Sub-actions for `teamx nudge` (Issue #15).
+#[derive(Debug, clap::Subcommand)]
+pub enum NudgeAction {
+    /// Set a custom template for a nudge kind (owner/co-lead only).
+    Set {
+        /// nudge kind (idle_reminder / lead_reminder / claim_reminder / task_nudge)
+        kind: String,
+        /// template text with {placeholders}; max 2000 chars
+        #[arg(long)]
+        template: Option<String>,
+        /// read the template from a file instead of --template
+        #[arg(long)]
+        template_file: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show the configured template for a nudge kind (null when unset).
+    Get {
+        kind: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Remove the custom template (falls back to the built-in default).
+    Reset {
+        kind: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 /// `teamx tun0` subcommands.
