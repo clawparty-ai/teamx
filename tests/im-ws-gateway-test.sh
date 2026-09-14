@@ -172,6 +172,53 @@ rpc_service im.query "$FORGED" \
   || fail "a forged delegation must be rejected"
 pass "forged delegation rejected"
 
+step "A. chat audit: im.chat.log writes im.chat.in / im.chat.out"
+DELEG5=$(sign "ou-ws-newbie" "nonce-ws-chat-in")
+ARGS5=$(python3 -c "
+import json,sys
+d=json.loads('''$DELEG5''')
+d['team']='$TEAM_ID'; d['direction']='in'; d['text']='帮我看看今天的进展'
+print(json.dumps(d))
+")
+rpc_service im.chat.log "$ARGS5" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['ok'] and d['data']['ok'], d" \
+  || fail "im.chat.log(in) must succeed for a bound member"
+DELEG6=$(sign "ou-ws-newbie" "nonce-ws-chat-out")
+ARGS6=$(python3 -c "
+import json,sys
+d=json.loads('''$DELEG6''')
+d['team']='$TEAM_ID'; d['direction']='out'; d['text']='今天完成了 X'
+print(json.dumps(d))
+")
+rpc_service im.chat.log "$ARGS6" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['ok'] and d['data']['ok'], d" \
+  || fail "im.chat.log(out) must succeed"
+python3 - "$DB" <<'PY'
+import sqlite3, sys, json
+conn = sqlite3.connect(sys.argv[1])
+rows = [(t, json.loads(p)) for t, p in
+        conn.execute("SELECT type, payload_json FROM events WHERE type LIKE 'im.chat.%'").fetchall()]
+kinds = sorted({t for t, _ in rows})
+assert kinds == ['im.chat.in', 'im.chat.out'], kinds
+for t, p in rows:
+    assert p.get('source') == 'im:feishu' and p.get('im_user') and 'direction' in p, (t, p)
+print(f"  ok: {len(rows)} chat audit events, kinds={kinds}")
+PY
+pass "chat audit verified"
+
+step "A. negative: an unknown direction is refused"
+DELEG7=$(sign "ou-ws-newbie" "nonce-ws-chat-bad")
+BAD_DIR=$(python3 -c "
+import json,sys
+d=json.loads('''$DELEG7''')
+d['team']='$TEAM_ID'; d['direction']='sideways'; d['text']='x'
+print(json.dumps(d))
+")
+rpc_service im.chat.log "$BAD_DIR" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); assert not d.get('ok', False), d" \
+  || fail "an unknown direction must be refused"
+pass "unknown direction refused"
+
 step "B. im-gateway run refuses to start without provider credentials"
 OUT=$(env -u TEAMX_IM_FEISHU_APP_ID -u TEAMX_IM_FEISHU_APP_SECRET \
   "$TEAMX" im-gateway run --cert-dir "$GW_DIR" --server "https://127.0.0.1:$PORT" \

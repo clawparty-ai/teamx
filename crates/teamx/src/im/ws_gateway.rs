@@ -31,6 +31,7 @@ use lark_channel::{Error as LarkError, Result as LarkResult};
 use serde_json::{json, Value};
 
 use crate::direct_client;
+use crate::im::agent::AgentClient;
 use crate::im::config::ImConfig;
 use crate::im::providers::feishu::FeishuProvider;
 use crate::im::providers::ImProvider;
@@ -51,6 +52,13 @@ pub struct RunArgs {
     pub app_id: Option<String>,
     /// Feishu app secret (falls back to `TEAMX_IM_FEISHU_APP_SECRET`).
     pub app_secret: Option<String>,
+    /// Co-located `opencode serve` base URL. When set, free-text messages are
+    /// answered by the member's agent (sidecar); fixed commands keep the fast
+    /// path. When absent, only the fixed commands are served.
+    pub agent: Option<String>,
+    /// Where the agent session id is persisted (defaults to
+    /// `<teamx_home>/im-agent-session.json`).
+    pub session_file: Option<PathBuf>,
 }
 
 /// Minimal blocking `ureq` transport adapted to `lark-channel`'s async
@@ -122,6 +130,8 @@ struct GatewayRuntime {
     secret: String,
     tls: Arc<rustls::ClientConfig>,
     provider: Arc<FeishuProvider>,
+    /// The member's co-located agent (sidecar). `None` = commands only.
+    agent: Option<Arc<AgentClient>>,
 }
 
 impl GatewayRuntime {
@@ -167,6 +177,17 @@ impl GatewayRuntime {
             eprintln!("[im-gateway] reply to {chat_id} failed: {e}");
         }
     }
+
+    /// Best-effort ledger audit of one chat turn (direction `in`/`out`).
+    async fn chat_log(&self, im_user_id: &str, im_msg_id: &str, direction: &str, text: &str) {
+        let extra = json!({ "direction": direction, "text": text });
+        if let Err(e) = self
+            .call("im.chat.log", extra, im_user_id, im_msg_id)
+            .await
+        {
+            eprintln!("[im-gateway] chat audit ({direction}) failed: {e}");
+        }
+    }
 }
 
 /// Run the persistent-connection gateway until the process is stopped.
@@ -203,7 +224,17 @@ pub fn run(args: RunArgs) -> Result<Value, String> {
         secret: app_secret.clone(),
         tls,
         provider,
+        agent: args.agent.as_deref().map(|base| {
+            let session_file = args
+                .session_file
+                .clone()
+                .unwrap_or_else(|| crate::db::teamx_home().join("im-agent-session.json"));
+            Arc::new(AgentClient::new(base, session_file))
+        }),
     };
+    if runtime.agent.is_none() {
+        eprintln!("[im-gateway] no --agent configured: only the fixed commands are served");
+    }
 
     let channel = ChannelConfig::new(app_id, app_secret);
     let openapi = OpenApiClient::new(channel, UreqTransport);
@@ -271,20 +302,43 @@ async fn handle_message(rt: &GatewayRuntime, msg: NormalizedMessage) -> Result<(
     if text.is_empty() {
         return Ok(());
     }
-    let reply = match parse_command(&text) {
-        Some((method, extra)) => {
-            let kind = extra
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            match rt.call(method, extra, &msg.sender_id, &msg.message_id).await {
-                Ok(v) => render_reply(method, kind.as_deref(), &v),
-                Err(e) => format!("❌ {e}"),
-            }
-        }
-        None => HELP_TEXT.to_string(),
+    // 1. Fixed commands → the fast path (whitelisted RPCs, sub-second).
+    if let Some((method, extra)) = parse_command(&text) {
+        let kind = extra
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let reply = match rt.call(method, extra, &msg.sender_id, &msg.message_id).await {
+            Ok(v) => render_reply(method, kind.as_deref(), &v),
+            Err(e) => format!("❌ {e}"),
+        };
+        rt.reply(&msg.chat_id, &reply);
+        return Ok(());
+    }
+    // 2. Anything else → the member's agent (sidecar). The model can take a
+    //    while, so ack the event now, tell the user we're thinking, and push
+    //    the answer when it is ready.
+    let Some(agent) = rt.agent.clone() else {
+        rt.reply(&msg.chat_id, HELP_TEXT);
+        return Ok(());
     };
-    rt.reply(&msg.chat_id, &reply);
+    rt.reply(&msg.chat_id, "🤔 思考中…");
+    let rt = rt.clone();
+    let chat_id = msg.chat_id.clone();
+    let sender = msg.sender_id.clone();
+    let msg_id = msg.message_id.clone();
+    tokio::spawn(async move {
+        rt.chat_log(&sender, &msg_id, "in", &text).await;
+        let prompt = text.clone();
+        let result = tokio::task::spawn_blocking(move || agent.chat(&prompt)).await;
+        let reply = match result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => format!("❌ 处理失败：{e}"),
+            Err(e) => format!("❌ 任务异常：{e}"),
+        };
+        rt.chat_log(&sender, &msg_id, "out", &reply).await;
+        rt.reply(&chat_id, &reply);
+    });
     Ok(())
 }
 

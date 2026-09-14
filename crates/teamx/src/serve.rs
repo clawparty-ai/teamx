@@ -1146,6 +1146,9 @@ const SERVICE_METHOD_WHITELIST: &[&str] = &[
     // member, single-use, TTL'd, rate-limited) and the resulting binding always
     // carries the lowest role — no privilege elevation.
     "im.bind",
+    // IM chat audit (方案 1 sidecar): the gateway logs each free-text turn.
+    // Audit-only; it never mutates team state.
+    "im.chat.log",
 ];
 
 /// Whether `method` is callable by a service identity.
@@ -2674,7 +2677,7 @@ mod rpc_body_limit_tests {
 
     #[test]
     fn service_method_whitelist_is_closed() {        // Allowed: the IM read-only query + the four P2 write actions + binding.
-        for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject", "im.card.request", "im.card.execute", "im.bind"] {
+        for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject", "im.card.request", "im.card.execute", "im.bind", "im.chat.log"] {
             assert!(service_method_allowed(m), "{m} should be allowed");
         }
         // Fail-closed: everything else is refused, including dangerous methods.

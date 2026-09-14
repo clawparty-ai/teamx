@@ -573,7 +573,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 })
                 .map_err(AppError)?
             }
-            ImGatewayCmd::Run { cert_dir, server, team, platform, app_id, app_secret } => {
+            ImGatewayCmd::Run { cert_dir, server, team, platform, app_id, app_secret, agent, session_file } => {
                 crate::im::ws_gateway::run(crate::im::ws_gateway::RunArgs {
                     cert_dir: cert_dir.clone(),
                     server: server.clone(),
@@ -581,6 +581,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     platform: platform.clone(),
                     app_id: app_id.clone(),
                     app_secret: app_secret.clone(),
+                    agent: agent.clone(),
+                    session_file: session_file.clone(),
                 })
                 .map_err(AppError)?
             }

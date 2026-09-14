@@ -732,6 +732,15 @@ pub enum ImGatewayCmd {
         /// feishu app secret (defaults to TEAMX_IM_FEISHU_APP_SECRET)
         #[arg(long)]
         app_secret: Option<String>,
+        /// co-located `opencode serve` base URL (e.g. http://127.0.0.1:42630).
+        /// When set, free-text messages are answered by the member's agent;
+        /// fixed commands keep the fast path.
+        #[arg(long)]
+        agent: Option<String>,
+        /// where the agent session id is persisted
+        /// (defaults to <teamx_home>/im-agent-session.json)
+        #[arg(long)]
+        session_file: Option<std::path::PathBuf>,
     },
 }
 
