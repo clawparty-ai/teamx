@@ -244,6 +244,20 @@ pub fn run(args: RunArgs) -> Result<Value, String> {
 }
 
 async fn handle_event(rt: &GatewayRuntime, event: ChannelEvent) -> Result<(), String> {
+    match &event {
+        ChannelEvent::Message(m) => eprintln!(
+            "[im-gateway] message from {} chat={} text={:?}",
+            m.sender_id,
+            m.chat_id,
+            m.text.chars().take(80).collect::<String>()
+        ),
+        ChannelEvent::CardAction(a) => eprintln!(
+            "[im-gateway] card action from {:?} value={}",
+            a.operator.open_id,
+            a.action.value
+        ),
+        ChannelEvent::Unknown { .. } => {}
+    }
     match event {
         ChannelEvent::Message(msg) => handle_message(rt, *msg).await,
         ChannelEvent::CardAction(action) => handle_card_action(rt, *action).await,
