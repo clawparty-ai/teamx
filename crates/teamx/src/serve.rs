@@ -1140,6 +1140,12 @@ const SERVICE_METHOD_WHITELIST: &[&str] = &[
     "im.query",                                        // P1 read-only
     "im.approve", "im.deny", "im.verify", "im.reject", // P2 write actions (gated by gateway B)
     "im.card.request", "im.card.execute",              // P2 interactive cards (double confirmation)
+    // P2 binding: the one pre-binding action. The user is not yet a member, so
+    // `dispatch_service` skips member resolution for it (see below). The
+    // authorization is the one-time binding code (created by an authenticated
+    // member, single-use, TTL'd, rate-limited) and the resulting binding always
+    // carries the lowest role — no privilege elevation.
+    "im.bind",
 ];
 
 /// Whether `method` is callable by a service identity.
@@ -1209,7 +1215,17 @@ fn dispatch_service(
         nonce: args.get("nonce").and_then(Value::as_str).unwrap_or_default().to_string(),
     };
     let cfg = crate::im::config::ImConfig::from_env();
-    crate::im::gateway::accept(conn, &cfg, team, &ctx)?;
+    // `im.bind` is the only action that runs BEFORE a binding exists: the IM
+    // user is not a member yet, so there is no member to resolve. The
+    // one-time code (issued by an authenticated member, single-use, TTL'd)
+    // is the authorization; the new binding gets the lowest role. Every other
+    // whitelisted method must resolve its actor from `im_bindings`.
+    let is_bind = method == "im.bind";
+    crate::im::gateway::accept_with(conn, &cfg, team, &ctx, !is_bind)?;
+
+    if is_bind {
+        return crate::im::rpc(method, args, conn, "", team);
+    }
 
     let resolved = match crate::im::binding::resolve_member(conn, platform, im_user_id, team)? {
         Some(v) => v,
@@ -2657,8 +2673,8 @@ mod rpc_body_limit_tests {
     use tower::ServiceExt; // oneshot
 
     #[test]
-    fn service_method_whitelist_is_closed() {        // Allowed: the IM read-only query + the four P2 write actions.
-        for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject"] {
+    fn service_method_whitelist_is_closed() {        // Allowed: the IM read-only query + the four P2 write actions + binding.
+        for m in ["im.query", "im.approve", "im.deny", "im.verify", "im.reject", "im.card.request", "im.card.execute", "im.bind"] {
             assert!(service_method_allowed(m), "{m} should be allowed");
         }
         // Fail-closed: everything else is refused, including dangerous methods.
@@ -2669,6 +2685,7 @@ mod rpc_body_limit_tests {
             "git.receive",
             "im.binding",
             "im.set",
+            "im.unbind",
             "member.set_state",
         ] {
             assert!(!service_method_allowed(m), "{m} must be refused");
@@ -2817,5 +2834,70 @@ mod rpc_body_limit_tests {
             .query_row("SELECT COUNT(*) FROM events WHERE type = 'im.rejected'", [], |r| r.get(0))
             .unwrap();
         assert!(n >= 3, "rejections must be audited as im.rejected (got {n})");
+    }
+
+    /// 方案 A: `im.bind` is the one pre-binding action. A signed gateway
+    /// delegation carrying a valid one-time code must bind an IM user who is
+    /// not yet a member (member resolution is skipped for this method only).
+    #[test]
+    fn service_bind_is_allowed_before_a_binding_exists() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1','T','m1',NULL,'active','tok','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, is_lead, joined_at)
+             VALUES ('m1','t1','s1','M','contributor','active',0,'now')",
+            [],
+        )
+        .unwrap();
+        let tunnels = crate::tunnel::TunnelRegistry::new();
+        std::env::set_var("TEAMX_IM_FEISHU_APP_SECRET", "test-gw-secret");
+
+        let code = crate::im::binding::create_code(&mut conn, "m1", "t1", None).unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut ctx = crate::im::types::ImDelegatedContext {
+            platform: "feishu".into(),
+            im_user_id: "ou-newbie".into(),
+            im_team: None,
+            signature: None,
+            timestamp: chrono::Utc::now().timestamp(),
+            nonce: "nonce-bind".into(),
+        };
+        ctx.signature = Some(crate::im::gateway::sign_delegation("test-gw-secret", &ctx));
+        let args = serde_json::json!({
+            "platform": ctx.platform,
+            "im_user_id": ctx.im_user_id,
+            "team": "t1",
+            "signature": ctx.signature,
+            "timestamp": ctx.timestamp,
+            "nonce": ctx.nonce,
+            "code": code,
+        });
+
+        let out =
+            dispatch_service("im-gateway", "g1", "im.bind", &args, &mut conn, &tunnels, None, None)
+                .expect("a valid code must bind an unbound IM user");
+        assert_eq!(out["ok"], serde_json::json!(true));
+        let bound = crate::im::binding::resolve_member(&mut conn, "feishu", "ou-newbie", "t1").unwrap();
+        assert!(bound.is_some(), "binding must exist after im.bind");
+        // The code is single-use: a replay of the same delegation is refused.
+        let mut replay = args.clone();
+        replay["nonce"] = serde_json::json!("nonce-bind-2");
+        let mut ctx2 = ctx.clone();
+        ctx2.nonce = "nonce-bind-2".into();
+        ctx2.signature = Some(crate::im::gateway::sign_delegation("test-gw-secret", &ctx2));
+        replay["signature"] = serde_json::json!(ctx2.signature);
+        replay["timestamp"] = serde_json::json!(ctx2.timestamp);
+        let e = dispatch_service("im-gateway", "g1", "im.bind", &replay, &mut conn, &tunnels, None, None)
+            .unwrap_err();
+        assert!(!e.is_empty(), "a used code must not bind twice: {e}");
     }
 }

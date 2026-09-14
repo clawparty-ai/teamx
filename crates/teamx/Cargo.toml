@@ -49,6 +49,10 @@ egui = { version = "0.31", optional = true }
 # default-features = false keeps the Linux xdg-portal/wayland backends out of
 # the macOS/Windows builds (the native platform backends are auto-selected).
 rfd = { version = "0.17", optional = true, default-features = false }
+# IM inbound (P2): Feishu long-connection event subscription. `websocket`
+# only — `default-features = false` avoids pulling `reqwest` (the gateway's
+# single HTTP call is served by the ureq transport in `im::ws_gateway`).
+lark-channel = { version = "0.6.0", default-features = false, features = ["websocket"] }
 
 [features]
 default = []

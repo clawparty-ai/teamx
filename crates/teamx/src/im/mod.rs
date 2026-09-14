@@ -24,6 +24,7 @@ pub mod providers;
 pub mod query;
 pub mod types;
 pub mod whitelist;
+pub mod ws_gateway;
 
 use rusqlite::Connection;
 use serde_json::Value;

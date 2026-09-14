@@ -710,6 +710,29 @@ pub enum ImGatewayCmd {
         #[arg(long, default_value = "status")]
         kind: String,
     },
+    /// Run the persistent-connection gateway: dial Feishu's long-connection
+    /// event stream, normalize inbound events and forward delegated actions to
+    /// `serve` over mTLS. Long-lived (no public callback URL needed).
+    Run {
+        /// directory holding service.crt + service.key + ca.crt
+        #[arg(long)]
+        cert_dir: std::path::PathBuf,
+        /// server base URL (https://host:port)
+        #[arg(long)]
+        server: String,
+        /// team scope the gateway serves
+        #[arg(long)]
+        team: String,
+        /// provider platform (default feishu)
+        #[arg(long, default_value = "feishu")]
+        platform: String,
+        /// feishu app id (defaults to TEAMX_IM_FEISHU_APP_ID)
+        #[arg(long)]
+        app_id: Option<String>,
+        /// feishu app secret (defaults to TEAMX_IM_FEISHU_APP_SECRET)
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
 }
 
 /// PKI management: CA/server/member/service certificate operations.
