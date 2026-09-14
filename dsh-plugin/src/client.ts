@@ -360,11 +360,18 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   const flags: Record<string, string | boolean | number | null> = {}
   let i = 0
   while (i < argv.length) {
-    const a = argv[i]
+    const a: unknown = argv[i]
+    // Defensive: same guard as opencode-plugin — a hole / undefined element
+    // from a misbuilt vector must never crash the parser (`*.startsWith
+    // is not a function`). Keep both copies in sync.
+    if (typeof a !== 'string') {
+      i += 1
+      continue
+    }
     if (a.startsWith('--')) {
       const key = toSnake(a.slice(2))
-      const next = argv[i + 1]
-      if (next !== undefined && !next.startsWith('--')) {
+      const next: unknown = argv[i + 1]
+      if (typeof next === 'string' && !next.startsWith('--')) {
         flags[key] = next
         i += 2
       } else {

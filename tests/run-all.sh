@@ -57,6 +57,7 @@ if command -v bun >/dev/null 2>&1; then
   echo "-- plugin unit tests --"
   TEAMX_AUTO_EXECUTE=1 bun "$ROOT/tests/plugin-unit/auto-execute.test.ts"
   bun "$ROOT/tests/plugin-unit/ws.test.ts"
+  bun "$ROOT/tests/plugin-unit/argv-parse.test.ts"
 else
   echo "bun not found; skipping plugin checks"
 fi
