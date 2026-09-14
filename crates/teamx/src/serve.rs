@@ -1139,6 +1139,7 @@ fn parse_rows<T: serde::de::DeserializeOwned>(args: &Value) -> Vec<T> {
 const SERVICE_METHOD_WHITELIST: &[&str] = &[
     "im.query",                                        // P1 read-only
     "im.approve", "im.deny", "im.verify", "im.reject", // P2 write actions (gated by gateway B)
+    "im.card.request", "im.card.execute",              // P2 interactive cards (double confirmation)
 ];
 
 /// Whether `method` is callable by a service identity.

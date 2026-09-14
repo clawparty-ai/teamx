@@ -950,6 +950,22 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )?;
 
+    // IM interactive cards (im-p2-feishu-interactive-cards): one-time
+    // confirm tokens for the double-confirmation flow. PRIMARY KEY(token)
+    // + opportunistic TTL pruning; consumed on first use.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS im_card_tokens (
+           token      TEXT PRIMARY KEY,
+           action     TEXT NOT NULL,
+           task_id    TEXT NOT NULL,
+           team_id    TEXT NOT NULL,
+           im_user_id TEXT NOT NULL,
+           platform   TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           expires_at INTEGER NOT NULL
+         );",
+    )?;
+
     converge_columns(conn)?;
     conn.pragma_update(None, "user_version", 20)?;
     Ok(())
