@@ -922,6 +922,19 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )?;
 
+    // IM action whitelist (P2 foundation, design §5.3): the frozen
+    // method→min_role→source/phase surface, seeded idempotently from
+    // im/whitelist.rs. Converged-style (no user_version bump).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS im_action_whitelist (
+           action   TEXT PRIMARY KEY,
+           min_role TEXT NOT NULL,
+           source   TEXT NOT NULL,
+           phase    TEXT NOT NULL
+         );",
+    )?;
+    crate::im::whitelist::seed(conn)?;
+
     // Custom nudge templates (Issue #15): owner/lead-configurable message
     // text for the four nudge kinds, per team. Converged-style (brand-new
     // table, no legacy data — keeps user_version untouched; next free

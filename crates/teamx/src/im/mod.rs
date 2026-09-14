@@ -20,6 +20,7 @@ pub mod notifier;
 pub mod providers;
 pub mod query;
 pub mod types;
+pub mod whitelist;
 
 use rusqlite::Connection;
 use serde_json::Value;
@@ -97,6 +98,7 @@ pub fn rpc(
             let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(10);
             query::query(conn, platform, im_user_id, team_id, kind, limit)
         }
+        "im.whitelist" => whitelist::list(conn),
         other => Err(format!("unknown im method `{other}`")),
     }
 }
