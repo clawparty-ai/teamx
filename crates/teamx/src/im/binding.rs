@@ -482,6 +482,36 @@ pub fn active_binding_member(
     .map_err(|e| format!("db: {e}"))
 }
 
+/// Identity-consistency gate (fault drill L2, design §5.3 "永不信任入参").
+///
+/// On the **member-cert path** the caller supplies `platform`/`im_user_id` as
+/// plain RPC args; without this check any member could pass ANOTHER member's
+/// bound IM identity (e.g. the owner's) and act with their privileges — a
+/// privilege-escalation hole. The rule: the delegated IM identity must be
+/// bound to the certificate member itself.
+///
+/// The **gateway path** is unaffected: `dispatch_service` resolves the member
+/// from the binding first and re-dispatches as `member:<bound-id>`, so the
+/// check passes trivially there.
+pub fn ensure_identity_bound_to_member(
+    conn: &Connection,
+    platform: &str,
+    im_user_id: &str,
+    cert_member_id: &str,
+    team_id: &str,
+) -> Result<(), String> {
+    match active_binding_member(conn, platform, im_user_id, team_id)? {
+        Some(mid) if mid == cert_member_id => Ok(()),
+        Some(mid) => Err(format!(
+            "identity mismatch: {platform}:{im_user_id} is bound to member {mid}, \
+             not the certificate member {cert_member_id}"
+        )),
+        None => Err(format!(
+            "{platform}:{im_user_id} is not bound to any member in team {team_id}"
+        )),
+    }
+}
+
 /// IM identity currently bound to this member (active bindings only).
 fn active_binding_for_member(
     conn: &Connection,

@@ -109,7 +109,19 @@ pub fn rpc(
             let platform = s(args, "platform").unwrap_or("feishu");
             let im_user_id = s(args, "im_user_id")
                 .ok_or("im write action: `im_user_id` is required")?;
-            actions::handle(conn, method, args, &platform, &im_user_id, team_id)
+            // Identity consistency (fault drill L2): the delegated identity
+            // must be bound to the certificate member — otherwise any member
+            // could pass a lead's im_user_id and act with lead privileges.
+            // The gateway path passes trivially (it dispatches as the
+            // binding-resolved member already).
+            if let Err(e) =
+                binding::ensure_identity_bound_to_member(conn, platform, im_user_id, member_id, team_id)
+            {
+                // Audit the refused escalation attempt (L2 interception 留痕).
+                let _ = actions::audit_rejection(conn, team_id, platform, im_user_id, args, &e);
+                return Err(e);
+            }
+            actions::handle(conn, method, args, platform, im_user_id, team_id)
         }
         // Interactive cards (design §5.2): a card button first REQUESTS a
         // short-lived confirm token (audited), then EXECUTES the action with
@@ -206,5 +218,70 @@ pub fn run(conn: &mut Connection, cmd: &crate::cli::ImCmd) -> Result<Value, Stri
             let found = binding::resolve_member(conn, platform, im_user, &team_id)?;
             Ok(serde_json::json!({ "ok": true, "team_id": team_id, "bound": found.is_some(), "member": found }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use serde_json::json;
+
+    fn seed() -> (Connection, String) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").ok();
+        db::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES ('t1','T','m-owner',NULL,'active','tok','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, is_lead, joined_at)
+             VALUES ('m-owner','t1','s-owner','Owner','owner','active',1,'now'),
+                    ('m-worker','t1','s-worker','Worker','contributor','active',0,'now'),
+                    ('m-pending','t1','s-p','Pending','contributor','pending',0,'now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO im_bindings (platform, im_user_id, member_id, team_id, bound_at, bound_by)
+             VALUES ('feishu','u-owner','m-owner','t1','now','test')",
+            [],
+        )
+        .unwrap();
+        (conn, "t1".to_string())
+    }
+
+    #[test]
+    fn write_action_rejects_delegated_identity_not_bound_to_cert_member() {
+        // Fault drill L2 (privilege escalation): worker's certificate +
+        // the owner's im_user_id must be refused before any state change.
+        let mut conn;
+        let team;
+        (conn, team) = seed();
+        let args = json!({ "member_id": "m-pending", "im_user_id": "u-owner" });
+        let e = rpc("im.approve", &args, &mut conn, "m-worker", &team).unwrap_err();
+        assert!(e.contains("identity mismatch"), "{e}");
+        let state: String = conn
+            .query_row("SELECT state FROM members WHERE id='m-pending'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending", "no state change on the refused attempt");
+    }
+
+    #[test]
+    fn write_action_with_own_bound_identity_works() {
+        let mut conn;
+        let team;
+        (conn, team) = seed();
+        // u-owner is bound to m-owner (lead); cert member = m-owner → pass.
+        let args = json!({ "member_id": "m-pending", "im_user_id": "u-owner" });
+        let out = rpc("im.approve", &args, &mut conn, "m-owner", &team).unwrap();
+        assert_eq!(out["ok"], true);
+        let state: String = conn
+            .query_row("SELECT state FROM members WHERE id='m-pending'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "active");
     }
 }
