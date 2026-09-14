@@ -26,23 +26,34 @@ pub fn handle(
     im_user_id: &str,
     team_id: &str,
 ) -> Result<Value, String> {
+    // Resolve actor from binding (never trust caller-provided member_id).
+    let actor_member_id =
+        binding::active_binding_member(conn, platform, im_user_id, team_id)?.ok_or_else(|| {
+            format!("{method}: IM identity not bound to any member in team {team_id}")
+        })?;
+    handle_as_member(conn, method, args, &actor_member_id, platform, im_user_id, team_id)
+}
+
+/// Execute one write action where the actor is ALREADY resolved (member-cert
+/// path, or the interactive-card flow whose token carries the actor). The
+/// whitelist → role → idempotency → execution → audit pipeline is identical.
+pub fn handle_as_member(
+    conn: &mut Connection,
+    method: &str,
+    args: &Value,
+    actor_member_id: &str,
+    platform: &str,
+    im_user_id: &str,
+    team_id: &str,
+) -> Result<Value, String> {
     // 1. Whitelist gate (fail-closed: unknown actions are refused).
     let min_role = whitelist::min_role_for(conn, method)
         .map_err(|e| format!("whitelist: {e}"))?
         .ok_or_else(|| format!("{method}: not whitelisted"))?;
 
-    // 2. Resolve actor from binding (never trust caller-provided member_id).
-    let actor_member_id =
-        binding::active_binding_member(conn, platform, im_user_id, team_id)?
-            .ok_or_else(|| {
-                format!(
-                    "{method}: IM identity not bound to any member in team {team_id}"
-                )
-            })?;
-
     // 3. Role gate: "lead" requires owner or co-lead.
     if min_role == "lead"
-        && !binding::is_lead(conn, team_id, &actor_member_id)?
+        && !binding::is_lead(conn, team_id, actor_member_id)?
     {
         let reason = format!(
             "{method}: actor {actor_member_id} is not a lead (min_role={min_role})"
@@ -74,8 +85,8 @@ pub fn handle(
         "im.deny" => action_deny(conn, team_id, &actor_member_id, args),
         "im.verify" | "im.reject" => {
             // Delegate to server_tasks (task.verify / task.reject).
-            let task_method = method.strip_prefix("im.").unwrap();
-            server_tasks::rpc(task_method, args, conn, team_id, &actor_member_id)
+            let task_method = format!("task.{}", method.strip_prefix("im.").unwrap());
+            server_tasks::rpc(&task_method, args, conn, team_id, &actor_member_id)
         }
         other => return Err(format!("{other}: unknown write action")),
     };

@@ -13,7 +13,9 @@
 //! account. Everything inbound resolves its actor through `im_bindings` — the
 //! IM gateway itself stays privilege-free (design §5.3).
 
+pub mod actions;
 pub mod binding;
+pub mod cards;
 pub mod config;
 pub mod gateway;
 pub mod gateway_client;
@@ -100,6 +102,25 @@ pub fn rpc(
             query::query(conn, platform, im_user_id, team_id, kind, limit)
         }
         "im.whitelist" => whitelist::list(conn),
+        // P2 write actions (member approval / task acceptance) — the
+        // executor pipeline (whitelist → role → idempotency → state machine
+        // → audit) lives in im::actions.
+        "im.approve" | "im.deny" | "im.verify" | "im.reject" => {
+            let platform = s(args, "platform").unwrap_or("feishu");
+            let im_user_id = s(args, "im_user_id")
+                .ok_or("im write action: `im_user_id` is required")?;
+            actions::handle(conn, method, args, &platform, &im_user_id, team_id)
+        }
+        // Interactive cards (design §5.2): a card button first REQUESTS a
+        // short-lived confirm token (audited), then EXECUTES the action with
+        // that token (double confirmation). Both reuse the write-action
+        // pipeline; neither trusts a caller-supplied member_id.
+        "im.card.request" => {
+            cards::request(conn, args, s(args, "platform"), s(args, "im_user_id"), member_id, team_id)
+        }
+        "im.card.execute" => {
+            cards::execute(conn, args, s(args, "platform"), s(args, "im_user_id"), member_id, team_id)
+        }
         other => Err(format!("unknown im method `{other}`")),
     }
 }
