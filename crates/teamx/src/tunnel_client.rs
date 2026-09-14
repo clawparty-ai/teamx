@@ -622,6 +622,24 @@ async fn expose_once(server_url: &str, name: &str, port: u16, mode: &str, lan_ip
 
 /// Consumer side: listen on a local port and bridge each connection to the
 /// provider's tunnel through the server (`/tunnel/forward`). Runs forever.
+/// P2: resolve a direct candidate address for a tunnel. Returns the provider's
+/// LAN `direct_addr` only when the server judged the consumer to be on the same
+/// subnet (so we never dial a private address across networks); otherwise None
+/// and the relay is used.
+fn resolve_direct_addr(server_url: &str, name: &str) -> Option<String> {
+    let v = rpc(server_url, "tunnel.status", serde_json::json!({ "name": name })).ok()?;
+    if !v.get("same_subnet").and_then(|x| x.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    v.get("direct_addr").and_then(|x| x.as_str()).map(str::to_string)
+}
+
+/// Best-effort data-plane path telemetry → ledger (`direct.established` /
+/// `direct.failed` / `direct.handover`); never blocks the forward path.
+fn report_direct(server_url: &str, name: &str, event: &str, addr: &str) {
+    let _ = rpc(server_url, "direct.report", serde_json::json!({ "name": name, "event": event, "addr": addr }));
+}
+
 pub async fn run_forward(server_url: &str, name: &str, local_port: u16) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -630,11 +648,39 @@ pub async fn run_forward(server_url: &str, name: &str, local_port: u16) -> Resul
         .map_err(|e| format!("bind 127.0.0.1:{local_port}: {e}"))?;
     println!("ok forward: name={name} listening on 127.0.0.1:{local_port} (access like a local service)");
 
+    // P2: resolve a direct candidate once; prefer it per connection, fall back
+    // to the relay. Hysteresis: after 3 consecutive direct failures, stop
+    // trying direct for this session (relay is always available — red line).
+    let direct_addr = resolve_direct_addr(server_url, name);
+    let direct_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    if let Some(a) = &direct_addr {
+        println!("ok forward: direct candidate {a} (preferred; relay fallback)");
+    }
+
     loop {
         let (client, _peer) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
         let server_url = server_url.to_string();
         let name = name.to_string();
+        let direct_addr = direct_addr.clone();
+        let direct_failures = direct_failures.clone();
         tokio::spawn(async move {
+            // Prefer a direct path to the provider when reachable.
+            if let Some(addr) = direct_addr.clone() {
+                if direct_failures.load(std::sync::atomic::Ordering::Relaxed) < 3 {
+                    match tokio::net::TcpStream::connect(&addr).await {
+                        Ok(mut up) => {
+                            let mut c = client;
+                            let _ = tokio::io::copy_bidirectional(&mut c, &mut up).await;
+                            report_direct(&server_url, &name, "established", &addr);
+                            return;
+                        }
+                        Err(_) => {
+                            direct_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            report_direct(&server_url, &name, "failed", &addr);
+                        }
+                    }
+                }
+            }
             let (mut c_read, mut c_write) = client.into_split();
             let mtls = match mtls_for(&server_url) {
                 Some(m) => m,
