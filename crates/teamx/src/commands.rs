@@ -217,6 +217,27 @@ fn team_goal(conn: &Connection, team_id: &str) -> Result<Option<GoalRow>> {
     }
 }
 
+/// The goal to **display** for a team: the active goal while the pointer is
+/// set, otherwise the most recent goal row.
+///
+/// Closing a goal detaches it from the team (`teams.goal_id = NULL`) so a
+/// later `goal set` starts a fresh row (multi-goal history). Display paths
+/// (`team status`, the member console) should still show that last goal rather
+/// than "not set" — otherwise a completed team looks goal-less.
+fn display_goal(conn: &Connection, team_id: &str) -> Result<Option<GoalRow>> {
+    if let Some(g) = team_goal(conn, team_id)? {
+        return Ok(Some(g));
+    }
+    conn.query_row(
+        "SELECT id, team_id, title, body, state, closed_at FROM goals
+          WHERE team_id = ?1 ORDER BY updated_at DESC LIMIT 1",
+        [team_id],
+        goal_row,
+    )
+    .optional()
+    .map_err(|e| AppError(format!("db error: {e}")))
+}
+
 fn members_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead
@@ -2669,7 +2690,7 @@ fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
     let mut teams = Vec::new();
     for m in members {
         let team = team_by_id(conn, &m.team_id)?;
-        let goal = team_goal(conn, &team.id)?;
+        let goal = display_goal(conn, &team.id)?;
         teams.push(json!({
             "team_id": team.id,
             "name": team.name,
@@ -2685,7 +2706,7 @@ fn cmd_team_list(conn: &Connection, session: &str) -> Result<Value> {
 }
 
 fn team_status_json(conn: &Connection, team: &TeamRow) -> Result<Value> {
-    let goal = team_goal(conn, &team.id)?;
+    let goal = display_goal(conn, &team.id)?;
     // Show only live members: left/denied seats are history (visible in log).
     let members = members_for_team(conn, &team.id)
         .map_err(|e| AppError(format!("db error: {e}")))?
@@ -6129,6 +6150,34 @@ mod tests {
             params![owner_id, team_id],
         )
         .unwrap();
+    }
+
+    /// Closing a goal detaches it from the team (`teams.goal_id = NULL`) so a
+    /// later `goal set` starts a fresh row — but the display paths must keep
+    /// showing that last goal instead of reporting "no goal".
+    #[test]
+    fn display_goal_falls_back_to_the_last_closed_goal() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        cmd_goal_set_inner(&mut conn, "t1", "m-owner", "Ship v1", None).unwrap();
+        assert!(team_goal(&conn, "t1").unwrap().is_some(), "goal set attaches the pointer");
+
+        // A goal can only be closed from an active team.
+        cmd_goal_share(&mut conn, "s", None).unwrap();
+        cmd_goal_close(&mut conn, "s", None).unwrap();
+        assert!(
+            team_goal(&conn, "t1").unwrap().is_none(),
+            "close detaches the pointer (multi-goal history)"
+        );
+
+        let shown = display_goal(&conn, "t1").unwrap().expect("last goal stays visible");
+        assert_eq!(shown.title, "Ship v1");
+        assert_eq!(shown.state, "closed");
+
+        let team = team_by_id(&conn, "t1").unwrap();
+        let status = team_status_json(&conn, &team).unwrap();
+        assert_eq!(status["goal"]["title"], json!("Ship v1"));
+        assert_eq!(status["goal"]["state"], json!("closed"));
     }
 
     #[test]
