@@ -51,8 +51,9 @@ INSERT INTO events (team_id, member_id, seq, type, payload_json, created_at) VAL
  ('$TEAM_ID','m1',$((BASE+2)),'progress.published','{\"message\":\"real progress\"}','$NOW'),
  ('$TEAM_ID','m1',$((BASE+3)),'team.created',NULL,'$NOW'),
  ('$TEAM_ID','m1',$((BASE+4)),'doc.help_requested','{\"title\":\"救火\"}','$NOW'),
- ('$TEAM_ID','m1',$((BASE+5)),'decision.broadcast','{\"message\":\"广播\"}','$NOW');"
-pass "seeded 5 ledger events (1 heartbeat, 1 non-whitelisted, 2 digest, 1 direct)"
+ ('$TEAM_ID','m1',$((BASE+5)),'decision.broadcast','{\"message\":\"广播\"}','$NOW'),
+ ('$TEAM_ID','m1',$((BASE+6)),'budget.alert','{\"team_id\":\"$TEAM_ID\",\"member_id\":\"m1\",\"period\":\"cumulative\",\"usage_cost_usd\":12.5,\"threshold_usd\":10.0}','$NOW');"
+pass "seeded 6 ledger events (1 heartbeat, 1 non-whitelisted, 2 digest, 2 direct)"
 
 step "start serve with notifier (dry-run, interval 1s, digest window 3s)"
 TEAMX_IM_NOTIFY_GROUPS="oc_test" \
@@ -73,29 +74,31 @@ wait_rows(){ # state expected description timeout_secs
 }
 
 step "T-1/T-2 collect + immediate direct push"
-wait_rows pushed 1 "direct row pushed (逐条必达)" 15
+wait_rows pushed 2 "direct rows pushed (逐条必达)" 15
 N=$(dbq "SELECT COUNT(*) FROM im_outbox;")
-[ "$N" = "3" ] || fail "T-1 closed enum: expected 3 outbox rows, got $N (heartbeat/team.created must be skipped)"
+[ "$N" = "4" ] || fail "T-1 closed enum: expected 4 outbox rows, got $N (heartbeat/team.created must be skipped)"
 P=$(dbq "SELECT COUNT(*) FROM events WHERE type='im.push';")
 [ "$P" -ge 1 ] || fail "T-2 im.push audit missing"
 PUSHED=$(dbq "SELECT type FROM events WHERE type='im.push' AND payload_json LIKE '%\"digest\":false%' LIMIT 1;")
 [ "$PUSHED" = "im.push" ] || fail "T-2 direct im.push (digest=false) missing"
-pass "heartbeat + non-whitelisted skipped; direct row pushed with im.push(digest=false)"
+pass "heartbeat + non-whitelisted skipped; 2 direct rows pushed (help_requested + budget.alert)"
 
 step "T-3 digest aggregation after the (shrunk) window"
-wait_rows pushed 3 "digest rows aggregated and pushed" 20
+wait_rows pushed 4 "digest rows aggregated and pushed" 20
 D=$(dbq "SELECT COUNT(*) FROM events WHERE type='im.push' AND payload_json LIKE '%\"digest\":true%';")
 # one digest message per (team, event_type) group: progress.published + decision.broadcast
 [ "$D" = "2" ] || fail "T-3 expected 2 digest im.push (one per event_type group), got $D"
 pass "digest rows aggregated per (team, event_type) group after the window"
+B=$(dbq "SELECT COUNT(*) FROM im_outbox WHERE event_type='budget.alert';")
+[ "$B" -ge 1 ] || fail "budget.alert outbox row missing"
 
 step "T-4 no loop: audit events are not re-collected"
 sleep 4
 N=$(dbq "SELECT COUNT(*) FROM im_outbox;")
-[ "$N" = "3" ] || fail "T-4 outbox grew to $N — im.push events must never be re-collected"
+[ "$N" = "4" ] || fail "T-4 outbox grew to $N — im.push events must never be re-collected"
 F=$(dbq "SELECT COUNT(*) FROM events WHERE type='im.push_failed';")
 [ "$F" = "0" ] || fail "unexpected im.push_failed in dry-run"
-pass "outbox stable at 3 rows, zero failures"
+pass "outbox stable at 4 rows, zero failures"
 
 echo
 echo "IM NOTIFIER TEST PASSED"
