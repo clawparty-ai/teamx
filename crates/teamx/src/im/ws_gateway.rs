@@ -273,8 +273,12 @@ async fn handle_message(rt: &GatewayRuntime, msg: NormalizedMessage) -> Result<(
     }
     let reply = match parse_command(&text) {
         Some((method, extra)) => {
+            let kind = extra
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             match rt.call(method, extra, &msg.sender_id, &msg.message_id).await {
-                Ok(v) => render_reply(&v),
+                Ok(v) => render_reply(method, kind.as_deref(), &v),
                 Err(e) => format!("❌ {e}"),
             }
         }
@@ -309,7 +313,7 @@ async fn handle_card_action(rt: &GatewayRuntime, action: CardActionEvent) -> Res
     };
     let event_id = action.context.event_id.clone();
     let reply = match rt.call(method, extra, &operator, &event_id).await {
-        Ok(v) => render_reply(&v),
+        Ok(v) => render_reply(method, None, &v),
         Err(e) => format!("❌ {e}"),
     };
     // Card interactions happen inside a chat; answer there when we know it.
@@ -359,21 +363,156 @@ fn parse_command(text: &str) -> Option<(&'static str, Value)> {
     None
 }
 
-/// Render an RPC envelope as a short chat reply.
-fn render_reply(value: &Value) -> String {
+/// Render an RPC envelope as a short, human-readable chat reply.
+fn render_reply(method: &str, kind: Option<&str>, value: &Value) -> String {
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         if let Some(err) = value.get("error").and_then(Value::as_str) {
             return format!("❌ {err}");
         }
     }
     let data = value.get("data").unwrap_or(value);
-    let rendered = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
-    if rendered.chars().count() > 1500 {
-        let truncated: String = rendered.chars().take(1500).collect();
-        format!("{truncated}\n…（已截断）")
-    } else {
-        rendered
+    match method {
+        "im.bind" => render_bind(data),
+        "im.card.request" => {
+            let action = data.get("action").and_then(Value::as_str).unwrap_or("");
+            format!("⚠️ 已收到 `{action}` 请求，请在确认卡片上再点一次「确认执行」完成二次确认。")
+        }
+        "im.card.execute" => {
+            let action = data.get("action").and_then(Value::as_str).unwrap_or("");
+            format!("✅ 已执行 `{action}`。")
+        }
+        "im.query" => match kind {
+            Some("status") => render_status(data),
+            Some("goal") => render_goal(data),
+            Some("tasks") => render_tasks(data),
+            Some("discussions") => render_discussions(data),
+            Some("questions") => render_questions(data),
+            _ => render_fallback(data),
+        },
+        _ => render_fallback(data),
     }
+}
+
+fn render_bind(data: &Value) -> String {
+    let member = data
+        .get("member")
+        .and_then(|m| m.get("display_name"))
+        .and_then(Value::as_str)
+        .or_else(|| data.get("member_id").and_then(Value::as_str))
+        .unwrap_or("成员");
+    let role = data.get("role").and_then(Value::as_str).unwrap_or("");
+    format!("✅ 绑定成功：{member}（{role}）\n\n试试发「状态」「任务」查看团队进展。")
+}
+
+fn render_status(data: &Value) -> String {
+    let goal = data.get("goal").cloned().unwrap_or(Value::Null);
+    let title = goal
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("（暂无目标）");
+    let state = goal.get("state").and_then(Value::as_str).unwrap_or("-");
+    let tasks = data.get("my_open_tasks").and_then(Value::as_i64).unwrap_or(0);
+    let qs = data
+        .get("my_open_questions")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    format!(
+        "📊 团队状态\n\n🎯 目标：{title}\n状态：{state}\n\n📌 我的待办任务：{tasks}\n❓ 待我回答的问题：{qs}"
+    )
+}
+
+fn render_goal(data: &Value) -> String {
+    let goal = data.get("goal").cloned().unwrap_or(Value::Null);
+    if goal.is_null() {
+        return "🎯 当前没有目标".to_string();
+    }
+    let title = goal.get("title").and_then(Value::as_str).unwrap_or("");
+    let state = goal.get("state").and_then(Value::as_str).unwrap_or("-");
+    let body = goal.get("body").and_then(Value::as_str).unwrap_or("");
+    let body = truncate(body, 300);
+    if body.is_empty() {
+        format!("🎯 目标\n\n{title}\n状态：{state}")
+    } else {
+        format!("🎯 目标\n\n{title}\n状态：{state}\n\n{body}")
+    }
+}
+
+fn render_tasks(data: &Value) -> String {
+    let tasks = data
+        .get("tasks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if tasks.is_empty() {
+        return "📋 没有分配给你的任务".to_string();
+    }
+    let mut out = format!("📋 我的任务（{}）", tasks.len());
+    for t in tasks {
+        let id = t.get("id").and_then(Value::as_str).unwrap_or("");
+        let title = t.get("title").and_then(Value::as_str).unwrap_or("");
+        let state = t.get("state").and_then(Value::as_str).unwrap_or("");
+        let pri = t.get("priority").and_then(Value::as_str).unwrap_or("");
+        out.push_str(&format!("\n\n• {title}\n  状态：{state}｜优先级：{pri}\n  ID：{id}"));
+    }
+    out
+}
+
+fn render_discussions(data: &Value) -> String {
+    let ds = data
+        .get("discussions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if ds.is_empty() {
+        return "💬 没有讨论".to_string();
+    }
+    let mut out = format!("💬 讨论（{}）", ds.len());
+    for d in ds {
+        let num = d.get("number").and_then(Value::as_i64).unwrap_or(0);
+        let title = d.get("title").and_then(Value::as_str).unwrap_or("");
+        let msgs = d.get("messages").and_then(Value::as_i64).unwrap_or(0);
+        let closed = d.get("closed").and_then(Value::as_bool).unwrap_or(false);
+        out.push_str(&format!(
+            "\n\n{} #{num} {title}\n  {msgs} 条消息",
+            if closed { "✅" } else { "🟢" }
+        ));
+    }
+    out
+}
+
+fn render_questions(data: &Value) -> String {
+    let qs = data
+        .get("questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if qs.is_empty() {
+        return "❓ 没有待你回答的问题".to_string();
+    }
+    let mut out = format!("❓ 待我回答（{}）", qs.len());
+    for q in qs {
+        let text = truncate(q.get("question").and_then(Value::as_str).unwrap_or(""), 200);
+        let by = q.get("asked_by").and_then(Value::as_str).unwrap_or("");
+        let id = q.get("id").and_then(Value::as_str).unwrap_or("");
+        out.push_str(&format!("\n\n• {text}\n  — {by}（{id}）"));
+    }
+    out
+}
+
+/// Last-resort renderer for shapes without a bespoke view.
+fn render_fallback(data: &Value) -> String {
+    let rendered = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+    truncate(&rendered, 1500)
+}
+
+/// Truncate to `max` chars (UTF-8 safe) with an ellipsis marker.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push_str("…（已截断）");
+    out
 }
 
 const HELP_TEXT: &str = "teamx 机器人可用命令：\n\
@@ -447,10 +586,55 @@ mod tests {
 
     #[test]
     fn render_reply_surfaces_errors_and_truncates() {
-        assert_eq!(render_reply(&json!({"ok": false, "error": "boom"})), "❌ boom");
+        assert_eq!(
+            render_reply("im.query", Some("status"), &json!({"ok": false, "error": "boom"})),
+            "❌ boom"
+        );
         let long = json!({ "ok": true, "data": { "blob": "x".repeat(4000) } });
-        let rendered = render_reply(&long);
+        let rendered = render_reply("im.query", Some("unknown-kind"), &long);
         assert!(rendered.contains("已截断"));
         assert!(rendered.chars().count() < 1700);
+    }
+
+    #[test]
+    fn render_status_is_human_readable() {
+        let v = json!({
+            "ok": true,
+            "data": {
+                "goal": { "title": "开发 teamx 企业版", "state": "in_progress" },
+                "my_open_tasks": 3,
+                "my_open_questions": 1
+            }
+        });
+        let out = render_reply("im.query", Some("status"), &v);
+        assert!(out.contains("开发 teamx 企业版"), "{out}");
+        assert!(out.contains("我的待办任务：3"), "{out}");
+        assert!(!out.contains('{'), "must not dump raw JSON: {out}");
+    }
+
+    #[test]
+    fn render_tasks_lists_titles_without_json() {
+        let v = json!({
+            "ok": true,
+            "data": { "tasks": [
+                { "id": "task-1", "title": "Ship it", "state": "in_progress", "priority": "high" }
+            ] }
+        });
+        let out = render_reply("im.query", Some("tasks"), &v);
+        assert!(out.contains("Ship it"), "{out}");
+        assert!(out.contains("task-1"), "{out}");
+        assert!(!out.contains('{'), "must not dump raw JSON: {out}");
+    }
+
+    #[test]
+    fn render_bind_confirms_the_member() {
+        let v = json!({
+            "ok": true,
+            "data": { "ok": true, "member_id": "m1", "role": "owner",
+                      "member": { "display_name": "caishu" } }
+        });
+        let out = render_reply("im.bind", None, &v);
+        assert!(out.contains("绑定成功"), "{out}");
+        assert!(out.contains("caishu"), "{out}");
     }
 }
