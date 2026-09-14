@@ -67,6 +67,7 @@ pub fn query(
     let (mid, tid) = (member_id.clone(), team_id.to_string());
     let payload = json!({
         "source": format!("im:{platform}"),
+        "im_user": im_user_id,
         "kind": kind,
         "member_id": member_id,
         "limit": limit,
