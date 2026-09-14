@@ -300,6 +300,28 @@ pub fn rpc(
                 Err(e) => audit_reject(conn, &e),
             }
         }
+        "direct.report" => {
+            // Data-plane path telemetry from the tunnel consumer: records that a
+            // direct path was established / failed / handed over to the relay.
+            let name = s("name").unwrap_or_default();
+            let addr = s("addr").unwrap_or_default();
+            let event = s("event").unwrap_or_else(|| "unknown".to_string());
+            let ev_type = match event.as_str() {
+                "established" | "failed" | "handover" => format!("direct.{event}"),
+                _ => return Err(format!("direct.report: unknown event `{event}`")),
+            };
+            let payload = json!({
+                "name": name, "addr": addr, "path": "direct", "event": event,
+                "member_id": member_id,
+            });
+            let (mid, tid) = (member_id.to_string(), team_id.to_string());
+            db::with_write(conn, |tx| {
+                crate::events::emit(tx, &tid, Some(&mid), &ev_type, Some(&payload))?;
+                Ok(())
+            })
+            .map_err(|e: rusqlite::Error| e.to_string())?;
+            Ok(json!({ "ok": true, "event": ev_type }))
+        }
         other => Err(format!("unknown direct method `{other}`")),
     }
 }
@@ -397,6 +419,24 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE team_id='t1' AND type='direct.rejected'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "rate-limit rejection must be audited");
+    }
+
+    #[test]
+    fn report_records_path_telemetry() {
+        let mut conn = test_conn();
+        let out = rpc(
+            "direct.report",
+            &json!({"name":"web","event":"established","addr":"192.168.1.5:8080"}),
+            &mut conn, "t1", "m-a", None,
+        )
+        .unwrap();
+        assert_eq!(out["event"], json!("direct.established"));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE team_id='t1' AND type='direct.established'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        // unknown event is rejected
+        assert!(rpc("direct.report", &json!({"event":"bogus"}), &mut conn, "t1", "m-a", None).is_err());
     }
 
     #[test]
