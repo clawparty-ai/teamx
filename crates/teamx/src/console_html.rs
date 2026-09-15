@@ -30,6 +30,7 @@ pub fn page_html() -> String {
     <button data-view="events">Events</button>
     <button data-view="discussions">Discussions</button>
     <button data-view="documents">Documents</button>
+    <button data-view="files">File</button>
   </nav>
   <div class="header-right">
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
@@ -89,6 +90,16 @@ pub fn page_html() -> String {
         <table><thead><tr><th>ID</th><th>标题</th><th>State</th><th>Owner</th></tr></thead><tbody id="docRows"></tbody></table>
       </section>
       <section class="panel doc-detail-panel" id="docDetail"></section>
+    </div>
+  </div>
+  <div class="view" id="view-files">
+    <div class="files-toolbar">
+      <div class="fs-breadcrumb" id="flCrumb">/</div>
+      <div class="files-repos" id="flRepos"></div>
+    </div>
+    <div class="files-body">
+      <section class="panel files-list" id="flList"></section>
+      <section class="panel files-preview" id="flPreview"><div class="fs-preview-empty">选择文件预览</div></section>
     </div>
   </div>
 </div>
@@ -455,6 +466,26 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .fs-btn-actions .act:hover { color:var(--primary); }
 .fs-headbtns .btn-mini { font-size:16px; padding:4px 11px; }
 
+/* File panel (design docs/design/console-file-browser.md) */
+.files-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+.files-toolbar .fs-breadcrumb { flex:1; min-width:240px; border:1px solid var(--border); border-radius:var(--radius); }
+.fl-crumb { cursor:pointer; }
+.fl-crumb:hover { text-decoration:underline; }
+.files-repos { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.files-repos .repo { font-size:11.5px; font-family:var(--font-mono); border:1px solid var(--border); border-radius:999px; padding:2px 10px; cursor:pointer; background:var(--card); color:var(--primary); }
+.files-repos .repo:hover { background:var(--muted); }
+.files-repos .repo .br { color:var(--muted-fg); }
+.files-body { display:flex; gap:12px; align-items:flex-start; }
+.files-list { width:46%; min-width:300px; max-height:74vh; overflow:auto; padding:0; }
+.files-preview { flex:1; min-width:0; max-height:74vh; overflow:auto; }
+.files-preview pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre; overflow:auto; max-height:64vh; margin:0; }
+.files-preview img { max-width:100%; }
+.files-preview .ln { color:var(--muted-fg); user-select:none; display:inline-block; width:3.4em; text-align:right; margin-right:10px; }
+.files-meta { color:var(--muted-fg); font-size:12px; margin-bottom:8px; font-family:var(--font-mono); }
+.files-tag { font-size:10.5px; border:1px solid var(--border); border-radius:4px; padding:0 5px; margin-left:6px; color:var(--muted-fg); }
+.files-tag.warn { color:#b45309; border-color:#b45309; }
+@media (max-width: 980px){ .files-body{flex-direction:column;} .files-list{width:100%;} }
+
 /* overlay dialog inverts the page theme: light page → dark dialog, dark page → light dialog */
 .fs-dialog { color:var(--fg); }
 body:not(.dark) .fs-dialog { background:#22223A; color:#E0E0E0; border-color:#333355; }
@@ -521,6 +552,7 @@ async function renderView(name){
   else if(name==="events") loadEvents();
   else if(name==="discussions") loadDiscussions();
   else if(name==="documents") loadDocuments();
+  else if(name==="files") loadFiles();
 }
 $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.view)));
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
@@ -1122,6 +1154,68 @@ $("#dscNew").addEventListener("click", showNewForm);
 
 /* ---------- Documents (TEAM.md `## 文档` contracts) ---------- */
 let docTypes=[], docAll=[], docCurType=null, docCur=null;
+
+// ---- File panel (design docs/design/console-file-browser.md) ----
+// Backend: `files`/`file` panels read the workspace directly (local-only).
+let FL={path:"."};
+function fmtBytes(n){ if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(1)+" KB"; return (n/1048576).toFixed(1)+" MB"; }
+async function loadFiles(path){
+  if(path!==undefined) FL.path=path;
+  const q=(FL.path&&FL.path!==".")?("?id="+encodeURIComponent(FL.path)):"";
+  const p=await panel("files"+q);
+  if(!p.ok){ $("#flList").innerHTML=errBox(p); $("#flRepos").innerHTML=""; return; }
+  const d=p.data||{};
+  FL.path=d.path||".";
+  renderFlCrumb(d);
+  renderFlRepos(d.repos||[]);
+  renderFlList(d.entries||[]);
+  $("#flPreview").innerHTML='<div class="fs-preview-empty">选择文件预览</div>';
+}
+function renderFlCrumb(d){
+  const parts=(d.path&&d.path!=="."?d.path:"").split("/").filter(Boolean);
+  const base=d.root?d.root.split("/").filter(Boolean).pop():"/";
+  let html='<span class="fl-crumb" data-p=".">'+esc(base||"/")+'</span>';
+  let acc="";
+  parts.forEach(seg=>{ acc=acc?acc+"/"+seg:seg; html+=' / <span class="fl-crumb" data-p="'+esc(acc)+'">'+esc(seg)+'</span>'; });
+  $("#flCrumb").innerHTML=html;
+  $$("#flCrumb .fl-crumb").forEach(el=>el.addEventListener("click",()=>loadFiles(el.dataset.p)));
+}
+function renderFlRepos(repos){
+  if(!repos.length){ $("#flRepos").innerHTML=""; return; }
+  $("#flRepos").innerHTML='<span class="muted" style="font-size:11.5px">repos</span>'+
+    repos.map(r=>'<span class="repo" data-p="'+esc(r.path)+'" title="'+esc(r.path)+(r.branch?(" @"+r.branch):"")+'">'+esc(r.name)+(r.branch?(' <span class="br">@'+esc(r.branch)+'</span>'):"")+'</span>').join("");
+  $$("#flRepos .repo").forEach(el=>el.addEventListener("click",()=>loadFiles(el.dataset.p)));
+}
+function renderFlList(entries){
+  if(!entries.length){ $("#flList").innerHTML='<div class="muted" style="padding:12px">（空目录）</div>'; return; }
+  $("#flList").innerHTML=entries.map(e=>{
+    const ic=e.type==="directory"?"📁":"📄";
+    const tag=e.sensitive?'<span class="files-tag warn">sensitive</span>':"";
+    const meta=e.type==="directory"?"":fmtBytes(e.size||0);
+    return '<div class="fs-row" data-n="'+esc(e.name)+'" data-t="'+esc(e.type)+'"><span class="ic">'+ic+'</span><span class="nm">'+esc(e.name)+tag+'</span><span class="meta">'+meta+'</span></div>';
+  }).join("");
+  $$("#flList .fs-row").forEach(el=>el.addEventListener("click",()=>{
+    const n=el.dataset.n;
+    const child=(FL.path==="."?n:FL.path+"/"+n);
+    if(el.dataset.t==="directory") loadFiles(child); else openFile(child);
+  }));
+}
+async function openFile(path){
+  $("#flPreview").innerHTML='<div class="loading">loading …</div>';
+  const p=await panel("file?id="+encodeURIComponent(path));
+  if(!p.ok){ $("#flPreview").innerHTML=errBox(p); return; }
+  const d=p.data||{};
+  const head='<div class="files-meta">'+esc(d.path||path)+' · '+fmtBytes(d.size||0)+(d.truncated?' · <span class="files-tag warn">已截断</span>':"")+'</div>';
+  if(d.kind==="sensitive"||d.kind==="download"){ $("#flPreview").innerHTML=head+'<div class="muted">'+esc(d.note||"请下载查看")+'</div>'; return; }
+  if(d.kind==="image"){ $("#flPreview").innerHTML=head+'<img src="'+d.data_uri+'" alt="'+esc(d.name||"")+'">'; return; }
+  if(d.kind==="markdown"){ $("#flPreview").innerHTML=head+'<div class="md-render">'+mdRender(d.content||"")+'</div>'; return; }
+  $("#flPreview").innerHTML=head+'<pre>'+lineNumbers(d.content||"")+'</pre>';
+}
+function lineNumbers(text){
+  const lines=text.split("\n");
+  const w=String(lines.length).length;
+  return lines.map((l,i)=>'<span class="ln">'+String(i+1).padStart(w," ")+'</span>'+esc(l)).join("\n");
+}
 
 async function loadDocuments(){
   $("#docRows").innerHTML=`<tr><td colspan="4" class="loading">loading …</td></tr>`;

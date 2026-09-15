@@ -133,6 +133,13 @@ else
   echo "debug binary missing; skipping console-sse test"
 fi
 
+echo "== 15c2 Console File panel test (local) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/console-files-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping console-files test"
+fi
+
 echo "== 15d Local-team test (TEAM.md -> single-machine multi-agent) =="
 if [ -x target/debug/teamx ] && command -v opencode >/dev/null 2>&1; then
   TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/local-team-test.sh

@@ -226,6 +226,17 @@ pub fn fetch_panel(ctx: &Ctx, id: &str, query_id: Option<&str>) -> RunOut {
             let res = doc_data(ctx, query_id);
             finish("teamx doc", ctx.server_url().is_some(), res)
         }
+        // File browser (design docs/design/console-file-browser.md). Local-only
+        // by design: the console runs inside the workspace, so it reads the
+        // filesystem directly through the shared `fs::resolve_with` guard.
+        "files" => {
+            let res = files_data(ctx, query_id);
+            finish("teamx fs list", ctx.server_url().is_some(), res)
+        }
+        "file" => {
+            let res = file_data(ctx, query_id);
+            finish("teamx fs read", ctx.server_url().is_some(), res)
+        }
         other => RunOut {
             ok: false,
             mode: "cli",
@@ -306,8 +317,309 @@ fn discussion_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
     }
 }
 
-/// `docs` panel — document types + instances read from the workspace
-/// `<home>/docs/` (`.teamx/docs/`): `_spec/<key>.json` contracts and
+// ---------------------------------------------------------------------------
+// File panel (design docs/design/console-file-browser.md, DQ-0001…0006)
+// ---------------------------------------------------------------------------
+
+/// Workspace root the File panel browses: the directory holding `<cwd>/.teamx`.
+/// DQ-0001 anchors the browse root to the session cwd — never the whole disk.
+fn workspace_root(ctx: &Ctx) -> std::path::PathBuf {
+    ctx.home
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| ctx.home.clone())
+}
+
+/// Path of `p` relative to `root` (`.` for the root itself).
+fn rel_of(root: &std::path::Path, p: &std::path::Path) -> String {
+    match p.strip_prefix(root) {
+        Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),
+        _ => ".".to_string(),
+    }
+}
+
+/// Parent path for the breadcrumb (`None` at the root).
+fn parent_rel(rel: &str) -> Option<String> {
+    if rel == "." || rel.is_empty() {
+        return None;
+    }
+    match rel.rsplit_once('/') {
+        Some((head, _)) if !head.is_empty() => Some(head.to_string()),
+        _ => Some(".".to_string()),
+    }
+}
+
+/// Repo scan bounds (DQ-0006): depth 3, a hard cap, and the noise excludes.
+const MAX_REPOS: usize = 50;
+const REPO_SCAN_DEPTH: usize = 3;
+const REPO_EXCLUDES: [&str; 5] = ["node_modules", "target", "vendor", "dist", "build"];
+
+/// Panel `files`: one directory listing + the repo index.
+fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
+    let root = workspace_root(ctx);
+    // `resolve_with` canonicalizes, so compare against a canonical root
+    // (macOS `/var` → `/private/var` would otherwise break `rel_of`).
+    let canon_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let rel = rel.filter(|r| !r.is_empty()).unwrap_or(".");
+    let dir = crate::fs::resolve_with(&root, rel, crate::fs::PathPolicy::Console)?;
+    if !dir.is_dir() {
+        return Err(format!("`{rel}` is not a directory"));
+    }
+    let here = rel_of(&canon_root, &dir);
+    // The directory may itself be a repo's `.git` (e.g. `repo-a/.git`).
+    let in_git_dir = here == ".git" || here.ends_with("/.git");
+    let mut entries: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            // `.teamx` is never listed; `.git` internals are collapsed
+            // (DQ-0003).
+            if name == ".teamx" {
+                continue;
+            }
+            if in_git_dir && crate::fs::is_git_internal(&name) {
+                continue;
+            }
+            let md = std::fs::metadata(&p).ok();
+            let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            entries.push(json!({
+                "name": name,
+                "type": if is_dir { "directory" } else { "file" },
+                "size": md.as_ref().map(|m| m.len()).unwrap_or(0),
+                "modified": md.as_ref().and_then(|m| m.modified().ok()).map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+                }).unwrap_or(0),
+                // Metadata-only preview for credential-like files (DQ-0003).
+                "sensitive": !is_dir && crate::fs::is_sensitive_name(&name),
+            }));
+        }
+    }
+    entries.sort_by(|a, b| {
+        let ad = a["type"].as_str() == Some("directory");
+        let bd = b["type"].as_str() == Some("directory");
+        bd.cmp(&ad).then(a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    let repos = repos_index(&canon_root);
+    Ok(json!({
+        "ok": true,
+        "root": root.display().to_string(),
+        "path": here,
+        "parent": parent_rel(&here),
+        "entries": entries,
+        "repos": repos,
+    }))
+}
+
+/// Index the git repos under `root` (depth ≤ 3, noise excluded, capped).
+fn repos_index(root: &std::path::Path) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    scan_repos(root, root, 0, &mut out);
+    // Newest commit first; directory mtime breaks ties (DQ-0006).
+    out.sort_by(|a, b| {
+        let at = a["head_time"].as_i64().unwrap_or(0).max(a["mtime"].as_i64().unwrap_or(0));
+        let bt = b["head_time"].as_i64().unwrap_or(0).max(b["mtime"].as_i64().unwrap_or(0));
+        bt.cmp(&at)
+    });
+    out.truncate(MAX_REPOS);
+    out
+}
+
+fn scan_repos(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &mut Vec<Value>) {
+    if depth > REPO_SCAN_DEPTH || out.len() >= MAX_REPOS {
+        return;
+    }
+    if dir.join(".git").exists() {
+        out.push(repo_entry(root, dir));
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.starts_with('.') || REPO_EXCLUDES.contains(&name.as_str()) {
+            continue;
+        }
+        scan_repos(root, &p, depth + 1, out);
+    }
+}
+
+fn repo_entry(root: &std::path::Path, dir: &std::path::Path) -> Value {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| rel_of(root, dir));
+    let mtime = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    json!({
+        "path": rel_of(root, dir),
+        "name": name,
+        "branch": git_branch(dir),
+        "head_time": git_head_time(dir),
+        "mtime": mtime,
+    })
+}
+
+/// Resolve the real `.git` directory (it is a file for worktrees/submodules).
+fn git_dir(repo: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dot = repo.join(".git");
+    if dot.is_dir() {
+        return Some(dot);
+    }
+    let txt = std::fs::read_to_string(&dot).ok()?;
+    let p = txt.trim().strip_prefix("gitdir:")?.trim();
+    let p = std::path::PathBuf::from(p);
+    Some(if p.is_absolute() { p } else { repo.join(p) })
+}
+
+/// Current branch from `.git/HEAD` (zero-cost); a detached HEAD yields the
+/// short sha. `None` when unreadable.
+fn git_branch(repo: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(repo)?.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(r) = head.strip_prefix("ref: refs/heads/") {
+        return Some(r.to_string());
+    }
+    if let Some(r) = head.strip_prefix("ref: ") {
+        return Some(r.to_string());
+    }
+    // Detached: show a short sha.
+    Some(head.chars().take(8).collect())
+}
+
+/// HEAD commit time via the git CLI (cheap fallback to `None` when git is
+/// absent or the repo is empty).
+fn git_head_time(repo: &std::path::Path) -> i64 {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["log", "-1", "--format=%ct"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Preview caps (DQ-0004).
+const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
+const MAX_PREVIEW_LINES: usize = 5000;
+const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+const IMAGE_EXTS: [&str; 3] = ["png", "jpg", "jpeg"];
+const GIF_EXT: &str = "gif";
+
+/// Panel `file`: preview one file (text/markdown/image) or mark it for download.
+fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
+    let root = workspace_root(ctx);
+    let canon_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let rel = rel.filter(|r| !r.is_empty()).ok_or("file: `id` (path) is required")?;
+    let file = crate::fs::resolve_with(&root, rel, crate::fs::PathPolicy::Console)?;
+    if !file.is_file() {
+        return Err(format!("`{rel}` is not a file"));
+    }
+    let here = rel_of(&canon_root, &file);
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // DQ-0003: credential-like files are metadata-only.
+    if crate::fs::is_sensitive_name(&name) {
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "sensitive",
+            "note": "该文件可能是凭据/密钥，仅显示元数据，不提供预览。",
+        }));
+    }
+    // SVG renders as markup in a browser → XSS surface; download only (DQ-0004).
+    if ext == "svg" {
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "download", "note": "SVG 不内联预览（避免 XSS），请下载查看。",
+        }));
+    }
+    if IMAGE_EXTS.contains(&ext.as_str()) || ext == GIF_EXT {
+        if size > MAX_INLINE_IMAGE_BYTES {
+            return Ok(json!({
+                "ok": true, "path": here, "name": name, "size": size,
+                "kind": "download", "note": "图片超过 5 MiB，不内联预览。",
+            }));
+        }
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let mime = if ext == "png" {
+            "image/png"
+        } else if ext == GIF_EXT {
+            "image/gif"
+        } else {
+            "image/jpeg"
+        };
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "image", "mime": mime,
+            "data_uri": format!("data:{mime};base64,{b64}"),
+        }));
+    }
+
+    // Text-ish: read a bounded prefix and reject obvious binaries.
+    let raw = std::fs::read(&file).map_err(|e| e.to_string())?;
+    let truncated_bytes = raw.len() > MAX_PREVIEW_BYTES;
+    let slice = &raw[..raw.len().min(MAX_PREVIEW_BYTES)];
+    if slice.iter().take(8192).any(|b| *b == 0) {
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "download", "note": "二进制文件，请下载查看。",
+        }));
+    }
+    let text = String::from_utf8_lossy(slice).to_string();
+    let total_lines = text.lines().count();
+    let truncated_lines = total_lines > MAX_PREVIEW_LINES;
+    let content = if truncated_lines {
+        text.lines()
+            .take(MAX_PREVIEW_LINES)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        text
+    };
+    let kind = if ext == "md" || ext == "markdown" {
+        "markdown"
+    } else {
+        "text"
+    };
+    Ok(json!({
+        "ok": true, "path": here, "name": name, "size": size,
+        "kind": kind,
+        "content": content,
+        "lines": total_lines.min(MAX_PREVIEW_LINES),
+        "truncated": truncated_bytes || truncated_lines,
+    }))
+}
+
 /// `<key>/<id>.meta.json` + `<id>.md` instances. P0 is local-only (the console
 /// runs in the workspace); remote members without a clone see an empty state.
 fn docs_data(ctx: &Ctx) -> Result<Value, String> {
@@ -867,6 +1179,104 @@ mod tests {
         let ev = docs_data(&empty).unwrap();
         assert_eq!(ev["types"][0]["key"], json!("taskx"));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The File panel workspace fixture: a repo, a sensitive file and a
+    /// `.teamx` that must stay invisible.
+    fn file_fixture(tag: &str) -> (std::path::PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!("teamx-console-files-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join(".teamx");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("instance.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("README.md"), "# hi\nsecond line").unwrap();
+        std::fs::write(root.join("server.key"), "PRIVATE").unwrap();
+        std::fs::write(root.join("logo.svg"), "<svg/>").unwrap();
+        std::fs::create_dir_all(root.join("repo-a/.git/refs/heads")).unwrap();
+        std::fs::write(root.join("repo-a/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(root.join("repo-a/.git/COMMIT_EDITMSG"), "init\n").unwrap();
+        std::fs::create_dir_all(root.join("repo-a/.git/objects")).unwrap();
+        std::fs::write(root.join("repo-a/.git/objects/x"), "obj").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        let ctx = Ctx {
+            mode: Mode::Local,
+            session: None,
+            home: home.clone(),
+            config_path: root.join("console.json"),
+        };
+        (root, ctx)
+    }
+
+    #[test]
+    fn files_data_lists_root_hides_teamx_and_marks_sensitive() {
+        let (root, ctx) = file_fixture("list");
+        let v = files_data(&ctx, None).unwrap();
+        let entries = v["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(names.contains(&"src"), "{names:?}");
+        assert!(names.contains(&"README.md"), "{names:?}");
+        assert!(names.contains(&"server.key"), "{names:?}");
+        assert!(!names.contains(&".teamx"), "`.teamx` must never be listed: {names:?}");
+        assert_eq!(v["path"], json!("."));
+        assert!(v["parent"].is_null());
+        // Directories sort before files.
+        assert_eq!(entries[0]["type"], json!("directory"));
+        // Sensitive files are listed but flagged.
+        let key = entries.iter().find(|e| e["name"] == json!("server.key")).unwrap();
+        assert_eq!(key["sensitive"], json!(true));
+        let readme = entries.iter().find(|e| e["name"] == json!("README.md")).unwrap();
+        assert_eq!(readme["sensitive"], json!(false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn files_data_collapses_git_internals_but_keeps_head() {
+        let (root, ctx) = file_fixture("git");
+        let v = files_data(&ctx, Some("repo-a/.git")).unwrap();
+        let names: Vec<&str> = v["entries"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(names.contains(&"HEAD"), "{names:?}");
+        assert!(names.contains(&"COMMIT_EDITMSG"), "{names:?}");
+        assert!(!names.contains(&"objects"), "`.git/objects` must be collapsed: {names:?}");
+        // Reading an internal is refused outright.
+        assert!(files_data(&ctx, Some("repo-a/.git/objects")).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_data_previews_text_and_refuses_sensitive_and_svg() {
+        let (root, ctx) = file_fixture("read");
+        let ok = file_data(&ctx, Some("README.md")).unwrap();
+        assert_eq!(ok["kind"], json!("markdown"));
+        assert_eq!(ok["content"], json!("# hi\nsecond line"));
+
+        let txt = file_data(&ctx, Some("src")).unwrap_err();
+        assert!(txt.contains("not a file"), "{txt}");
+
+        let sen = file_data(&ctx, Some("server.key")).unwrap();
+        assert_eq!(sen["kind"], json!("sensitive"));
+        assert!(sen["content"].is_null(), "sensitive content must never be returned");
+
+        let svg = file_data(&ctx, Some("logo.svg")).unwrap();
+        assert_eq!(svg["kind"], json!("download"));
+
+        // Traversal + credential dirs are refused by the shared guard.
+        assert!(file_data(&ctx, Some("../etc/passwd")).is_err());
+        assert!(file_data(&ctx, Some(".teamx/instance.json")).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repos_index_finds_repos_reports_branch_and_skips_noise() {
+        let (root, ctx) = file_fixture("repos");
+        let _ = ctx;
+        let repos = repos_index(&root);
+        let a = repos.iter().find(|r| r["name"] == json!("repo-a")).expect("repo-a indexed");
+        assert_eq!(a["path"], json!("repo-a"));
+        assert_eq!(a["branch"], json!("main"));
+        // node_modules is excluded from the scan.
+        assert!(!repos.iter().any(|r| r["path"] == json!("node_modules/pkg")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
