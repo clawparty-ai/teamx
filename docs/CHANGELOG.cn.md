@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.3 — 2026-09-15
+
+### IM 双向对话 + Member Console「File」文件浏览器
+
+- **IM 持久连接网关（方案 1 sidecar）**：新增 `teamx im-gateway run`，用
+  `lark-channel` 建立飞书长连接（出站 WebSocket，无需公网域名/证书/回调地址），
+  归一化入站事件并经 mTLS 转发给 `serve`。固定命令走快路径，其余任意文本转发给
+  同机 `opencode serve`（`--agent <url>`），AI 回复推回飞书；双向落台账审计
+  （`im.chat.in` / `im.chat.out`）。`im.bind` 加入服务白名单（唯一的「绑定前」
+  动作，一次性 code 即授权）。设计见 `docs/TODO-im-agent.cn.md`。
+- **Member Console「File」一级菜单**：工作区文件浏览 + 预览。浏览根锚定会话 cwd；
+  复用 `fs.rs` 的同一套路径校验（`PathPolicy{Service,Console}`）；`.teamx` 必拒、
+  `.git` 可浏览但折叠 `objects/hooks/logs/lfs`、密钥文件仅显示元数据；预览支持
+  文本（行号）/markdown（`mdRender` 白名单）/图片内联，SVG 与二进制仅下载；
+  repo 快捷过滤（cwd 深度 3、显示当前分支）。设计见
+  `docs/design/console-file-browser.md`。
+- **修复**：目标关闭后 `teams.goal_id` 被置 NULL，导致 console / `team status`
+  显示「该团队尚未设置目标」——展示路径回退到该团队最近的 goal 行。
+- **修复**：`teamx worker --opencode-url` 在多工作区节点上极易 attach 到错误的
+  opencode 实例（默认 4199）；部署时务必显式指定。
+
 ## 0.2.2 — 2026-09-13
 
 ### teamx 空间改为项目级（`<cwd>/.teamx`），修复多会话证书混乱

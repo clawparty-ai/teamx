@@ -133,6 +133,13 @@ else
   echo "debug binary missing; skipping console-sse test"
 fi
 
+echo "== 15c2 Console File panel test (local) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/console-files-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping console-files test"
+fi
+
 echo "== 15d Local-team test (TEAM.md -> single-machine multi-agent) =="
 if [ -x target/debug/teamx ] && command -v opencode >/dev/null 2>&1; then
   TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/local-team-test.sh
@@ -211,6 +218,14 @@ if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v py
   TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/im-cards-test.sh
 else
   echo "debug binary/curl/python3 missing; skipping im-cards test"
+fi
+
+echo
+echo "== 15q IM persistent-connection gateway test (network) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/im-ws-gateway-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping im-ws-gateway test"
 fi
 
 echo "== 16/16 UI e2e (Playwright) test =="

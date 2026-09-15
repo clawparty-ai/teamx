@@ -29,6 +29,8 @@ code-review-codex-0817.md
 .teamx/console.json
 .teamx/console-server.json
 .teamx/nudge-cursor
+# server-managed git repositories (runtime state, created by `teamx serve`)
+.teamx/repos/
 
 # local scratch / tooling (not source)
 .codegraph/

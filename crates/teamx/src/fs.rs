@@ -31,7 +31,70 @@ use crate::cli::FsCmd;
 
 const MAX_UPLOAD: usize = 20 * 1024 * 1024;
 const MAX_PREVIEW: usize = 1024 * 1024;
-const DENIED_SEGMENTS: [&str; 2] = [".teamx", ".git"];
+/// Segments the `teamx fs` **service** refuses (credentials / mTLS material).
+/// The console File panel is looser: it browses `.teamx` so documents
+/// (`docs/`, `TEAM.md`) are reachable, and hides only the credential entries
+/// inside it (see `is_teamx_denied`).
+const SERVICE_DENIED_SEGMENTS: [&str; 2] = [".teamx", ".git"];
+/// `.teamx` children the console refuses outright: the CA/keys, the invitation
+/// letters, the per-member bootstrap dirs (they hold `*.letter` private keys)
+/// and the console token store.
+const TEAMX_DENIED_SEGMENTS: [&str; 3] = ["ca", "letters", "members"];
+const TEAMX_DENIED_FILES: [&str; 2] = ["console-server.json", "forwards.json"];
+/// `.git` internals the console File panel collapses (never listed/read):
+/// object store, hooks, reflogs and LFS pointers are noise at best and a
+/// credential/exec surface at worst. `.git/HEAD`, `COMMIT_EDITMSG` and the
+/// refs stay inspectable so "which branch / who committed" is answerable.
+const GIT_INTERNAL_SEGMENTS: [&str; 4] = ["objects", "hooks", "logs", "lfs"];
+
+/// Which hidden/credential paths a caller refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathPolicy {
+    /// The `teamx fs` service: refuse `.teamx` **and** `.git` entirely.
+    Service,
+    /// The console File panel (design `docs/design/console-file-browser.md`):
+    /// browse `.teamx` but hide its credential entries; allow `.git` but
+    /// collapse its internals.
+    Console,
+}
+
+/// File names that must never be previewed (metadata only). Matched on the
+/// base name, case-insensitively.
+const SENSITIVE_SUFFIXES: [&str; 6] = [".pem", ".key", ".crt", ".p12", ".pfx", ".letter"];
+const SENSITIVE_NAMES: [&str; 5] = [".env", "id_rsa", "id_ed25519", ".netrc", "credentials"];
+
+/// Whether a file name is credential-like: it may be LISTED (name/size/mtime)
+/// but its content is never previewed.
+pub fn is_sensitive_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if SENSITIVE_NAMES.contains(&lower.as_str()) {
+        return true;
+    }
+    if lower.starts_with(".env") {
+        return true;
+    }
+    SENSITIVE_SUFFIXES.iter().any(|s| lower.ends_with(s))
+}
+
+/// Whether a `.teamx` child must not appear in the console File panel at all:
+/// credential directories, invitation letters and the team database.
+pub fn is_teamx_denied(name: &str) -> bool {
+    if TEAMX_DENIED_SEGMENTS.contains(&name) || TEAMX_DENIED_FILES.contains(&name) {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    // SQLite database + its WAL/SHM sidecars, and the invitation-letter envelope.
+    lower.ends_with(".db")
+        || lower.ends_with(".db-wal")
+        || lower.ends_with(".db-shm")
+        || lower.ends_with(".letter")
+}
+
+/// Whether a `.git` child segment is an internal that the console collapses.
+pub fn is_git_internal(name: &str) -> bool {
+    GIT_INTERNAL_SEGMENTS.contains(&name)
+}
+
 
 type S = Arc<FsState>;
 
@@ -82,19 +145,50 @@ pub fn run(cmd: &FsCmd) -> Result<(), String> {
     })
 }
 
-/// Resolve a client-supplied relative path inside the root.
+/// Resolve a client-supplied relative path inside the root under the
+/// `teamx fs` **service** policy (refuses `.teamx` and `.git`).
 fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    resolve_with(root, rel, PathPolicy::Service)
+}
+
+/// Shared path guard: rejects `..`, escaping paths, symlink escapes and the
+/// policy's denied segments.
+///
+/// **Both** the `teamx fs` service and the console File panel call this — one
+/// implementation, so the two surfaces cannot drift (DQ-0002).
+pub fn resolve_with(root: &Path, rel: &str, policy: PathPolicy) -> Result<PathBuf, String> {
     let rel = if rel.is_empty() || rel == "/" { "." } else { rel.trim_start_matches('/') };
     let cand = root.join(rel);
-    // Reject escaping (`..`) and hidden credential dirs.
-    for c in cand.components() {
+    // Reject escaping (`..`), hidden credential dirs and — for the console —
+    // `.teamx` credential entries / `.git` internals (collapse, not reject the
+    // whole directory).
+    let mut prev: Option<String> = None;
+    let mut inside_teamx = false;
+    for c in Path::new(rel).components() {
         match c {
             Component::ParentDir => return Err("path escapes workspace".to_string()),
             Component::Normal(s) => {
-                let s = s.to_string_lossy();
-                if DENIED_SEGMENTS.contains(&s.as_ref()) {
-                    return Err("path not allowed (hidden/credential directory)".to_string());
+                let s = s.to_string_lossy().to_string();
+                match policy {
+                    PathPolicy::Service => {
+                        if SERVICE_DENIED_SEGMENTS.contains(&s.as_str()) {
+                            return Err("path not allowed (hidden/credential directory)".to_string());
+                        }
+                    }
+                    PathPolicy::Console => {
+                        // `.teamx` itself is browsable (documents live there);
+                        // its credential entries are refused at any depth.
+                        if s == ".teamx" {
+                            inside_teamx = true;
+                        } else if inside_teamx && is_teamx_denied(&s) {
+                            return Err("path not allowed (.teamx credential entry)".to_string());
+                        }
+                        if prev.as_deref() == Some(".git") && is_git_internal(&s) {
+                            return Err("path not allowed (.git internal)".to_string());
+                        }
+                    }
                 }
+                prev = Some(s);
             }
             _ => {}
         }
@@ -109,6 +203,11 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
         return Err("path escapes workspace (symlink)".to_string());
     }
     Ok(canon)
+}
+
+/// Whether the `teamx fs` service hides this entry from a listing.
+fn service_hidden(name: &str) -> bool {
+    SERVICE_DENIED_SEGMENTS.contains(&name)
 }
 
 fn entry(p: &Path) -> serde_json::Value {
@@ -138,7 +237,7 @@ async fn api_list(State(state): State<S>, Query(q): Query<Q>) -> Response {
         for e in rd.flatten() {
             let p = e.path();
             let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            if DENIED_SEGMENTS.contains(&name.as_str()) {
+            if service_hidden(&name) {
                 continue;
             }
             entries.push(entry(&p));
@@ -217,7 +316,7 @@ async fn api_upload(
     if !dir.is_dir() {
         return (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": "dir not found" }))).into_response();
     }
-    if DENIED_SEGMENTS.contains(&name.as_str()) {
+    if service_hidden(&name) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": "name not allowed" }))).into_response();
     }
     let bytes = match body_to_bytes(body, MAX_UPLOAD).await {

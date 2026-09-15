@@ -70,8 +70,10 @@ step "deny flow (second member)"
 expect_ok "$TEAMX" team join "$TOKEN" --name Carol --session s:carol
 CAROL=$($TEAMX team status --team "$TEAM_ID" --json | jget "['teams'][0]['members'][3]['id']")
 expect_ok "$TEAMX" team deny "$CAROL" --session s:owner
-DENIED=$($TEAMX team status --team "$TEAM_ID" --json | jget "['teams'][0]['members'][3]['state']")
-[ "$DENIED" = "denied" ] || fail "carol should be denied, got $DENIED"
+# Denied seats are hidden from `team status` (only live members are listed),
+# so assert the live count drops back to 3 rather than indexing the seat.
+LIVE=$($TEAMX team status --team "$TEAM_ID" --json | python3 -c "import json,sys; print(len(json.load(sys.stdin)['teams'][0]['members']))")
+[ "$LIVE" = "3" ] || fail "denied member should be hidden (expected 3 live members, got $LIVE)"
 # denied member cannot sync as a member
 expect_fail "$TEAMX" sync --session s:carol
 
@@ -241,8 +243,12 @@ step "leave flow"
 expect_ok "$TEAMX" team leave --session s:bob
 # leaving again fails (no membership)
 expect_fail "$TEAMX" team leave --session s:bob
-LEFT_STATE=$($TEAMX team status --team "$TEAM_ID" --json | jget "['teams'][0]['members'][1]['state']")
-[ "$LEFT_STATE" = "left" ] || fail "bob should be left, got $LEFT_STATE"
+# Left seats are hidden from `team status`, so assert the ledger records it.
+$TEAMX events --team "$TEAM_ID" --json | python3 -c "
+import json,sys
+evs=json.load(sys.stdin)['events']
+assert any(e.get('type')=='member.left' for e in evs), [e.get('type') for e in evs]
+" || fail "leave should be recorded as member.left in the ledger"
 
 step "member rejoin reactivates the same row (regression)"
 expect_ok "$TEAMX" team join "$TOKEN" --name Bob2 --session s:bob
@@ -311,7 +317,14 @@ expect_fail "$TEAMX" team import "$LETTER" --name Other --session s:other
 
 step "invite-list reflects used/revoked states"
 LIST=$($TEAMX team invite-list --session s:owner --json)
-[ "$(echo "$LIST" | jget "['invitations'][0]['state']")" = "used" ] || fail "invite-list should mark the imported letter as used"
+# Look the letter up by id: earlier steps already issued invitations, so
+# `invitations[0]` is not necessarily ours.
+USED=$(echo "$LIST" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(next((i['state'] for i in d['invitations'] if i['invitation_id']=='$INV_ID'), 'missing'))
+")
+[ "$USED" = "used" ] || fail "invite-list should mark the imported letter as used (got $USED)"
 # non-owner cannot list invitations
 expect_fail "$TEAMX" team invite-list --session s:tester
 
