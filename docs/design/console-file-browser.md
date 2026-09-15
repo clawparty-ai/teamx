@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: settled
 protocol_version: 2
 owner: caishu
 created_at: 2026-09-15
@@ -71,12 +71,30 @@ member console（`teamx console`，user-console）目前有 5 个一级菜单：
 
 ## Settled Decisions
 
-（待 grill 收敛）
+（Consensus Mode：每题一条；结论消息见 discussion `dsc_18d55ee86a6404d11de92d`）
+
+- **DQ-0001 浏览根与作用域**：**A + 顶部 repo 快捷过滤**；浏览根**锚定 opencode 会话 cwd**（可复现），cwd 之外的兄弟目录默认不展开（防整盘漫游）。— rationale: console 与工作区同机、用户心智是「这台机器上我有哪些文件」；dissent: 无；unanimity: **unanimous**；discussion: `#1801`（结论 `#1851`）。
+
+- **DQ-0002 数据源**：**A 本地直读**（新增 `files`/`file` panel 走 `/api/panels/{id}`）；B 仅留给 `#fsOverlay` 看远端机器。**硬要求**：后端必须**直接调用 `fs.rs` 的同一个路径校验函数**（不复制），否则两套校验必然漂移。— rationale: 同机直读零额外信任边界、隧道多一跳+一层鉴权+依赖在线；dissent: 无；unanimity: **unanimous**；discussion: `#1802`（结论 `#1853`）。
+
+- **DQ-0003 安全边界**：① `.teamx/` 必拒（mTLS 私钥/letters）；② `.git/` **只读展示**但 `objects`/`hooks` 等**折叠不可展开**；③ 密钥文件（`*.pem`/`*.key`/`.env`/`id_rsa`/`**/letters/`）**仅元数据** + `sensitive` 标记、拒绝预览；④ 路径/符号链接/绝对路径注入**复用 fs.rs 防护**；⑤ **只读**无写端点；⑥ workspace 外拒绝；⑦ markdown 预览**必须走 `mdRender` 白名单**。— rationale: .teamx 泄露即身份失陷、误点密钥风险 > 排查价值、mdRender 已审过 XSS 面；dissent: 无；unanimity: **unanimous**；discussion: `#1803`（结论 `#1854`）。
+
+- **DQ-0004 预览能力与上限**：文本/代码 `<pre>` 等宽 + 行号；markdown 复用 `mdRender`；图片内联 PNG/JPG/GIF（**SVG 仅下载**）；二进制仅下载；**不引入语法高亮库**（自包含单二进制 + CSP 面）；上限 **1 MiB 读盘 / ~5000 行 / 图片 5 MiB**，超限截断提示下载。— rationale: 等宽+行号已覆盖看代码、highlight.js 增体积与攻击面、SVG 当 HTML 渲染即 XSS；dissent: 无；unanimity: **unanimous**；discussion: `#1804`（结论 `#1855`）。
+
+- **DQ-0005 与 `#fsOverlay` 的关系**：**分层抽取** —— 后端复用 fs.rs 函数；前端渲染/预览 JS 抽共享函数（移动非重写，约半天）；**数据获取层不共享**（File→`/api/panels/{id}`，fsOverlay→`/api/cloud/{id}`）。命名：菜单 `File`、`data-view=files`、panel id `files`。— rationale: 避免本地/远端语义耦合进公共组件；dissent: 无；unanimity: **unanimous**；discussion: `#1805`（结论 `#1856`）。
+
+- **DQ-0006 repo 发现与排序**：cwd 为根扫 `.git`、**深度 3**，排除 `node_modules`/`target`/`vendor`/`dist`/`.teamx`；**repo 数量上限**（超限列前 N + 提示）；默认**最近修改**排序（**git HEAD 提交时间优先、目录 mtime 兜底**，口径写进文档），可切字母序；显示**当前分支**（读 `.git/HEAD`，symref 解析，detached 显示短 sha）；dirty **异步懒加载**、不作排序键。— rationale: 深度 3 覆盖 submodule、分支零成本、dirty 需逐 repo 调用不宜同步；dissent: 无；unanimity: **unanimous**；discussion: `#1806`（结论 `#1857`）。
 
 ## Current Frontier
 
-DQ-0001 … DQ-0006（全部待答）
+（无。DQ-0001…0006 全部收敛，均为 unanimous。）
 
 ## Remaining Branches
 
-（待补）
+- **实现任务**（建议拆 3 片）：
+  1. 后端 `files`/`file` panel + 复用 fs.rs 校验（含安全用例）
+  2. 前端 File 菜单 + 渲染函数抽取（File / fsOverlay 共用）
+  3. repo 发现/排序/分支显示 + repo 数上限
+- **无关但顺带发现的 footgun**：`teamx worker --opencode-url` 默认 `http://127.0.0.1:4199`，多工作区节点极易 attach 到错误的 opencode（本次 caicai 即因此看到 powernano 团队）。建议改为必填或从 `TEAMX_HOME` 推导，并记入 docs。
+- **grill 参与度**：本轮 2/5 在线（weiye-mini、caicai）；weiye 离线未参与，可后补 review。
+
