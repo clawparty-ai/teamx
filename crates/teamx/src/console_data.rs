@@ -366,8 +366,10 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
         return Err(format!("`{rel}` is not a directory"));
     }
     let here = rel_of(&canon_root, &dir);
-    // The directory may itself be a repo's `.git` (e.g. `repo-a/.git`).
+    // The directory may itself be a repo's `.git` (e.g. `repo-a/.git`) or live
+    // inside `.teamx` at any depth.
     let in_git_dir = here == ".git" || here.ends_with("/.git");
+    let in_teamx = here.split('/').any(|seg| seg == ".teamx");
     let mut entries: Vec<Value> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
@@ -376,9 +378,9 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // `.teamx` is never listed; `.git` internals are collapsed
-            // (DQ-0003).
-            if name == ".teamx" {
+            // Inside `.teamx` the credential entries are hidden (documents and
+            // `TEAM.md` stay browsable); inside `.git` the internals collapse.
+            if in_teamx && crate::fs::is_teamx_denied(&name) {
                 continue;
             }
             if in_git_dir && crate::fs::is_git_internal(&name) {
@@ -1183,13 +1185,26 @@ mod tests {
     }
 
     /// The File panel workspace fixture: a repo, a sensitive file and a
-    /// `.teamx` that must stay invisible.
+    /// `.teamx` whose credentials must stay invisible while its documents stay
+    /// browsable.
     fn file_fixture(tag: &str) -> (std::path::PathBuf, Ctx) {
         let root = std::env::temp_dir().join(format!("teamx-console-files-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join(".teamx");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join("instance.json"), "{}").unwrap();
+        std::fs::write(home.join("TEAM.md"), "# Team").unwrap();
+        std::fs::create_dir_all(home.join("docs/design")).unwrap();
+        std::fs::write(home.join("docs/design/001.md"), "# plan").unwrap();
+        // Credential material that must never surface.
+        std::fs::create_dir_all(home.join("ca")).unwrap();
+        std::fs::write(home.join("ca/ca.key"), "PRIVATE").unwrap();
+        std::fs::create_dir_all(home.join("letters/x")).unwrap();
+        std::fs::write(home.join("letters/x/client.key"), "PRIVATE").unwrap();
+        std::fs::create_dir_all(home.join("members/weiye")).unwrap();
+        std::fs::write(home.join("members/weiye/invitation.letter"), "PRIVATE").unwrap();
+        std::fs::write(home.join("teamx.db"), "SQLITE").unwrap();
+        std::fs::write(home.join("console-server.json"), "{}").unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("README.md"), "# hi\nsecond line").unwrap();
         std::fs::write(root.join("server.key"), "PRIVATE").unwrap();
@@ -1210,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn files_data_lists_root_hides_teamx_and_marks_sensitive() {
+    fn files_data_lists_root_and_marks_sensitive() {
         let (root, ctx) = file_fixture("list");
         let v = files_data(&ctx, None).unwrap();
         let entries = v["entries"].as_array().unwrap();
@@ -1218,7 +1233,8 @@ mod tests {
         assert!(names.contains(&"src"), "{names:?}");
         assert!(names.contains(&"README.md"), "{names:?}");
         assert!(names.contains(&"server.key"), "{names:?}");
-        assert!(!names.contains(&".teamx"), "`.teamx` must never be listed: {names:?}");
+        // `.teamx` is browsable now (documents live there).
+        assert!(names.contains(&".teamx"), "`.teamx` must be listed: {names:?}");
         assert_eq!(v["path"], json!("."));
         assert!(v["parent"].is_null());
         // Directories sort before files.
@@ -1228,6 +1244,38 @@ mod tests {
         assert_eq!(key["sensitive"], json!(true));
         let readme = entries.iter().find(|e| e["name"] == json!("README.md")).unwrap();
         assert_eq!(readme["sensitive"], json!(false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn files_data_shows_teamx_documents_but_hides_credentials() {
+        let (root, ctx) = file_fixture("teamx");
+        let v = files_data(&ctx, Some(".teamx")).unwrap();
+        let names: Vec<&str> = v["entries"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+        // Documents + config stay reachable.
+        assert!(names.contains(&"docs"), "{names:?}");
+        assert!(names.contains(&"TEAM.md"), "{names:?}");
+        assert!(names.contains(&"instance.json"), "{names:?}");
+        // Credential material never appears.
+        for denied in ["ca", "letters", "members", "teamx.db", "console-server.json"] {
+            assert!(!names.contains(&denied), "`{denied}` must be hidden: {names:?}");
+        }
+        // Documents are readable…
+        let doc = file_data(&ctx, Some(".teamx/docs/design/001.md")).unwrap();
+        assert_eq!(doc["kind"], json!("markdown"));
+        assert_eq!(doc["content"].as_str().unwrap().trim(), "# plan");
+        let team = file_data(&ctx, Some(".teamx/TEAM.md")).unwrap();
+        assert_eq!(team["kind"], json!("markdown"));
+        // …while credential paths are refused (any depth).
+        for p in [
+            ".teamx/ca/ca.key",
+            ".teamx/letters/x/client.key",
+            ".teamx/members/weiye/invitation.letter",
+            ".teamx/teamx.db",
+            ".teamx/console-server.json",
+        ] {
+            assert!(file_data(&ctx, Some(p)).is_err(), "`{p}` must be refused");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1261,9 +1309,8 @@ mod tests {
         let svg = file_data(&ctx, Some("logo.svg")).unwrap();
         assert_eq!(svg["kind"], json!("download"));
 
-        // Traversal + credential dirs are refused by the shared guard.
+        // Traversal is refused by the shared guard.
         assert!(file_data(&ctx, Some("../etc/passwd")).is_err());
-        assert!(file_data(&ctx, Some(".teamx/instance.json")).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 

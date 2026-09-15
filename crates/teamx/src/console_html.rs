@@ -476,7 +476,7 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .files-repos .repo:hover { background:var(--muted); }
 .files-repos .repo .br { color:var(--muted-fg); }
 .files-body { display:flex; gap:12px; align-items:flex-start; }
-.files-list { width:46%; min-width:300px; max-height:74vh; overflow:auto; padding:0; }
+.files-list { flex:0 0 300px; width:300px; min-width:200px; max-height:74vh; overflow:auto; padding:0; }
 .files-preview { flex:1; min-width:0; max-height:74vh; overflow:auto; }
 .files-preview pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre; overflow:auto; max-height:64vh; margin:0; }
 .files-preview img { max-width:100%; }
@@ -484,7 +484,7 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .files-meta { color:var(--muted-fg); font-size:12px; margin-bottom:8px; font-family:var(--font-mono); }
 .files-tag { font-size:10.5px; border:1px solid var(--border); border-radius:4px; padding:0 5px; margin-left:6px; color:var(--muted-fg); }
 .files-tag.warn { color:#b45309; border-color:#b45309; }
-@media (max-width: 980px){ .files-body{flex-direction:column;} .files-list{width:100%;} }
+@media (max-width: 980px){ .files-body{flex-direction:column;} .files-list{flex:1 1 auto;width:100%;} }
 
 /* overlay dialog inverts the page theme: light page → dark dialog, dark page → light dialog */
 .fs-dialog { color:var(--fg); }

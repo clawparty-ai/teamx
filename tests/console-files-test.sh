@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Console 「File」 first-level menu — backend acceptance
-# (design docs/design/console-file-browser.md, DQ-0001…0006).
+# (design docs/design/console-file-browser.md).
 #
 # Local-only panel: the console runs inside the workspace and reads the
 # filesystem through the shared `fs::resolve_with` guard. This test drives the
-# real HTTP panel API and asserts the settled safety/limit decisions.
+# real HTTP panel API and asserts the settled safety/limit decisions, including
+# the `.teamx` rule: documents browsable, credential entries hidden.
 #
 # Requires: curl, python3.
 set -euo pipefail
@@ -24,9 +25,16 @@ trap cleanup EXIT
 command -v curl >/dev/null 2>&1 || { echo "skipped: curl missing"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skipped: python3 missing"; exit 0; }
 
-step "setup: workspace + .teamx + files + a git repo"
-mkdir -p "$WS/.teamx" "$WS/src" "$WS/repo-a/.git/refs/heads" "$WS/repo-a/.git/objects" "$WS/node_modules/pkg"
+step "setup: workspace + files + a git repo + a .teamx with credentials"
+mkdir -p "$WS/src" "$WS/repo-a/.git/refs/heads" "$WS/repo-a/.git/objects" "$WS/node_modules/pkg"
+mkdir -p "$WS/.teamx/ca" "$WS/.teamx/letters/x" "$WS/.teamx/members/weiye" "$WS/.teamx/docs/design"
 echo '{}' > "$WS/.teamx/instance.json"
+printf '# Team\n' > "$WS/.teamx/TEAM.md"
+printf '# plan\n' > "$WS/.teamx/docs/design/001.md"
+printf 'PRIVATE\n' > "$WS/.teamx/ca/ca.key"
+printf 'PRIVATE\n' > "$WS/.teamx/letters/x/client.key"
+printf 'PRIVATE\n' > "$WS/.teamx/members/weiye/invitation.letter"
+printf 'SQLITE\n' > "$WS/.teamx/teamx.db"
 printf '# hello\nsecond line\n' > "$WS/README.md"
 printf 'PRIVATE KEY\n' > "$WS/server.key"
 printf '<svg/>' > "$WS/logo.svg"
@@ -49,7 +57,7 @@ pass "console up (token=$TOKEN)"
 
 panel() { curl -sk --max-time 15 "$BASE/api/panels/$1" -H "$C"; }
 
-step "files: root listing hides .teamx, flags sensitive, indexes repos"
+step "files: root listing, sensitive flags, repo index"
 panel "files" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -57,7 +65,7 @@ assert d['ok'], d
 data=d['data']
 names=[e['name'] for e in data['entries']]
 assert 'src' in names and 'README.md' in names, names
-assert '.teamx' not in names, names
+assert '.teamx' in names, '.teamx must be browsable now: %s' % names
 assert data['entries'][0]['type']=='directory', data['entries'][0]
 key=[e for e in data['entries'] if e['name']=='server.key'][0]
 assert key['sensitive'] is True, key
@@ -71,6 +79,37 @@ assert branch=='main', branch
 print('  ok: entries + sensitive flags + repos', repos, 'branch', branch)
 "
 pass "files panel"
+
+step ".teamx: documents browsable, credential entries hidden"
+panel "files?id=.teamx" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+names=[e['name'] for e in d['data']['entries']]
+for want in ('docs','TEAM.md','instance.json'):
+    assert want in names, '%s missing: %s' % (want, names)
+for denied in ('ca','letters','members','teamx.db','console-server.json'):
+    assert denied not in names, '%s must be hidden: %s' % (denied, names)
+print('  ok: .teamx entries', names)
+"
+panel "file?id=.teamx/docs/design/001.md" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='markdown', d
+assert d['data']['content'].strip()=='# plan', d
+"
+pass ".teamx documents browsable"
+
+step ".teamx credentials are refused at any depth"
+for p in ".teamx/ca/ca.key" ".teamx/letters/x/client.key" ".teamx/members/weiye/invitation.letter" ".teamx/teamx.db" ".teamx/console-server.json"; do
+  panel "file?id=$p" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert not d['ok'], d
+" || fail "must refuse: $p"
+done
+pass ".teamx credential paths refused"
 
 step "files: .git is browsable but its internals are collapsed"
 panel "files?id=repo-a/.git" | python3 -c "
@@ -116,15 +155,15 @@ assert d.get('data_uri') is None, d
 "
 pass "sensitive + SVG download-only"
 
-step "negatives: traversal, .teamx and .git internals are refused"
-for p in "../../../etc/passwd" ".teamx/instance.json" "repo-a/.git/objects"; do
+step "negatives: traversal and .git internals are refused"
+for p in "../../../etc/passwd" "repo-a/.git/objects"; do
   panel "file?id=$p" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 assert not d['ok'], d
 " || fail "must refuse: $p"
 done
-pass "traversal / .teamx / .git internals refused"
+pass "traversal / .git internals refused"
 
 echo
 echo "ALL CONSOLE FILE TESTS PASSED"
