@@ -124,6 +124,20 @@ pub fn accept(
     team_id: &str,
     ctx: &ImDelegatedContext,
 ) -> Result<Value, String> {
+    accept_with(conn, cfg, team_id, ctx, true)
+}
+
+/// Like [`accept`], but `require_binding = false` skips step 6 (binding
+/// resolution). The only caller that needs this is `im.bind`: binding an IM
+/// user is precisely the act of creating the binding, so the user cannot be
+/// bound yet. Every other delegated action keeps the fail-closed requirement.
+pub fn accept_with(
+    conn: &mut Connection,
+    cfg: &ImConfig,
+    team_id: &str,
+    ctx: &ImDelegatedContext,
+    require_binding: bool,
+) -> Result<Value, String> {
     let platform = ctx.platform.clone();
     let im_user_id = ctx.im_user_id.clone();
     let reject = |conn: &mut Connection, reason: Rejection| -> String {
@@ -170,10 +184,15 @@ pub fn accept(
         format!("im gateway rejected: duplicate ({e})")
     })?;
 
-    // 6. Binding resolution — unbound or revoked → no actor.
-    let ident = match binding::resolve_member(conn, &platform, &im_user_id, team_id)? {
-        Some(v) => v,
-        None => return Err(reject(conn, Rejection::Unbound)),
+    // 6. Binding resolution — unbound or revoked → no actor. Skipped for the
+    // pre-binding `im.bind` flow (the code is the authorization there).
+    let ident = if require_binding {
+        match binding::resolve_member(conn, &platform, &im_user_id, team_id)? {
+            Some(v) => v,
+            None => return Err(reject(conn, Rejection::Unbound)),
+        }
+    } else {
+        json!({ "member_id": "", "display_name": "", "role": "" })
     };
     let member_id = ident["member_id"].as_str().unwrap_or_default().to_string();
 

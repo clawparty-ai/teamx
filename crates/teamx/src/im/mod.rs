@@ -14,6 +14,7 @@
 //! IM gateway itself stays privilege-free (design §5.3).
 
 pub mod actions;
+pub mod agent;
 pub mod binding;
 pub mod cards;
 pub mod config;
@@ -24,6 +25,7 @@ pub mod providers;
 pub mod query;
 pub mod types;
 pub mod whitelist;
+pub mod ws_gateway;
 
 use rusqlite::Connection;
 use serde_json::Value;
@@ -102,6 +104,38 @@ pub fn rpc(
             query::query(conn, platform, im_user_id, team_id, kind, limit)
         }
         "im.whitelist" => whitelist::list(conn),
+        // IM chat audit (方案 1 sidecar): the gateway logs each turn of a
+        // free-text conversation with the member's agent. Audit only — it
+        // mutates no state; the reply itself travels gateway → Feishu.
+        "im.chat.log" => {
+            let platform = s(args, "platform").unwrap_or("feishu");
+            let im_user_id =
+                s(args, "im_user_id").ok_or("im.chat.log: `im_user_id` is required")?;
+            let direction = s(args, "direction").ok_or("im.chat.log: `direction` is required")?;
+            let event_type = match direction {
+                "in" => "im.chat.in",
+                "out" => "im.chat.out",
+                other => {
+                    return Err(format!("im.chat.log: unknown direction `{other}` (in|out)"))
+                }
+            };
+            let text: String = s(args, "text").unwrap_or("").chars().take(2000).collect();
+            let payload = serde_json::json!({
+                "source": format!("im:{platform}"),
+                "im_user": im_user_id,
+                "direction": direction,
+                "text": text,
+                "im_msg_id": s(args, "im_msg_id"),
+            });
+            let tid = team_id.to_string();
+            let mid = member_id.to_string();
+            crate::db::with_write(conn, |tx| {
+                crate::events::emit(tx, &tid, Some(&mid), event_type, Some(&payload))?;
+                Ok(())
+            })
+            .map_err(|e: rusqlite::Error| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
         // P2 write actions (member approval / task acceptance) — the
         // executor pipeline (whitelist → role → idempotency → state machine
         // → audit) lives in im::actions.

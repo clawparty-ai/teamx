@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.2.4 — 2026-09-15
+
+### File panel: `.teamx` browsable (credentials hidden) + narrower list column
+
+- **`.teamx` is now browsable** (DQ-0003 originally refused it outright, which
+  defeated the "browse documents" goal): credential entries are hidden at any
+  depth — `ca/`, `letters/`, `members/`, `*.db`/`*.db-wal`/`*.db-shm`,
+  `*.letter`, `console-server.json`, `forwards.json`; everything else
+  (`docs/`, `TEAM.md`, `instance.json`, `console.json`, `nudge-cursor`,
+  `repos/`) stays browsable and previewable.
+- **List column width**: the File panel's file list is a fixed `300px` instead
+  of `46%` (falls back to full width below 980px).
+- **Fixes**: three assertions that had gone stale as the code evolved.
+- DQ-0003 in `docs/design/console-file-browser.md` records this revision.
+
+## 0.2.3 — 2026-09-15
+
+### Bidirectional IM chat + Member Console "File" browser
+
+- **IM persistent-connection gateway (sidecar)**: `teamx im-gateway run` dials
+  Feishu's long connection (outbound WebSocket — no public domain, certificate or
+  callback URL), normalizes inbound events and forwards delegated actions to
+  `serve` over mTLS. Fixed commands keep the fast path; any other text is answered
+  by a co-located `opencode serve` (`--agent <url>`) and pushed back to Feishu.
+  Both directions are audited in the ledger (`im.chat.in` / `im.chat.out`).
+  `im.bind` joins the service whitelist as the only pre-binding action.
+- **Member Console "File" menu**: workspace file browser + preview. Browse root is
+  anchored to the session cwd; path validation is shared with `fs.rs`
+  (`PathPolicy{Service,Console}`); `.teamx` is refused, `.git` is browsable with
+  `objects/hooks/logs/lfs` collapsed, credential-like files are metadata-only;
+  previews cover text (line numbers), markdown (`mdRender` allow-list) and inline
+  images, while SVG and binaries are download-only; repos are indexed at depth 3
+  with the current branch shown.
+- **Fix**: closing a goal detaches `teams.goal_id`, which made the console report
+  "no goal set" — display paths now fall back to the team's most recent goal.
+- **Fix**: `teamx worker --opencode-url` defaults to port 4199 and easily attaches
+  to the wrong opencode on multi-workspace nodes; always pass it explicitly.
+
 ## 0.2.2 — 2026-09-13
 
 ### teamx space moved to project scope (`<cwd>/.teamx`), fixing multi-session certificate confusion
