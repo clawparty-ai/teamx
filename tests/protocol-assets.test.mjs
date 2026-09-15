@@ -27,15 +27,23 @@ for (const invariant of [
   assert.ok(protocol.includes(invariant), `canonical protocol is missing: ${invariant}`)
 }
 
+let protocolVersion = null
 for (const name of ["team-grill.md", "team-grill.en.md"]) {
   const asset = read("opencode-plugin", "assets", "command", name)
   assert.match(asset, /^---\ndescription: .+\nagent: teamx\n---/)
   assert.ok(asset.includes("User arguments: $ARGUMENTS") || asset.includes("用户参数: $ARGUMENTS"))
-  assert.ok(asset.includes(`protocol v1; sha256 ${hash}`))
+  // The generator stamps `protocol v<N>; sha256 <hash>`. Assert the hash is
+  // current and that both assets agree on the version — without pinning a
+  // literal that has to be hand-edited on every protocol bump.
+  const marker = asset.match(/protocol v(\d+); sha256 ([0-9a-f]+)/)
+  assert.ok(marker, `${name} must embed a "protocol v<N>; sha256 <hash>" marker`)
+  assert.equal(marker[2], hash, `${name} hash must match protocols/grill-with-docs.md`)
+  if (protocolVersion === null) protocolVersion = marker[1]
+  else assert.equal(marker[1], protocolVersion, "the two assets disagree on the protocol version")
 }
 
 const dshAdapter = read("dsh-plugin", "src", "grill-with-docs.generated.ts")
-assert.ok(dshAdapter.includes("TEAMX_GRILL_PROTOCOL_VERSION = 1"))
+assert.ok(dshAdapter.includes(`TEAMX_GRILL_PROTOCOL_VERSION = ${protocolVersion}`))
 assert.ok(dshAdapter.includes(`TEAMX_GRILL_PROTOCOL_SHA256 = '${hash}'`))
 assert.ok(dshAdapter.includes("name: 'teamx-grill-with-docs'"))
 
