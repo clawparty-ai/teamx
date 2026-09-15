@@ -42,10 +42,12 @@ const SERVICE_DENIED_SEGMENTS: [&str; 2] = [".teamx", ".git"];
 const TEAMX_DENIED_SEGMENTS: [&str; 3] = ["ca", "letters", "members"];
 const TEAMX_DENIED_FILES: [&str; 2] = ["console-server.json", "forwards.json"];
 /// `.git` internals the console File panel collapses (never listed/read):
-/// object store, hooks, reflogs and LFS pointers are noise at best and a
-/// credential/exec surface at worst. `.git/HEAD`, `COMMIT_EDITMSG` and the
-/// refs stay inspectable so "which branch / who committed" is answerable.
-const GIT_INTERNAL_SEGMENTS: [&str; 4] = ["objects", "hooks", "logs", "lfs"];
+/// object store, hooks, reflogs, LFS pointers and **`config`** — the remote
+/// URL routinely embeds a PAT (`https://user:ghp_xxx@…`), so one careless
+/// click leaks a credential (weiye post-hoc review, seq 1870). `.git/HEAD`,
+/// `COMMIT_EDITMSG` and the refs stay inspectable so "which branch / who
+/// committed" remains answerable.
+const GIT_INTERNAL_SEGMENTS: [&str; 5] = ["objects", "hooks", "logs", "lfs", "config"];
 
 /// Which hidden/credential paths a caller refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,3 +332,123 @@ async fn api_upload(
     Json(json!({ "ok": true, "path": dir.join(&name).display().to_string(), "size": bytes.len() })).into_response()
 }
 
+#[cfg(test)]
+mod tests {
+    //! 双策略安全用例集（原 weiye #64/#66 的防漂移 battery，移植到已合并的
+    //! `resolve_with` 之上）：逃逸/绝对路径/符号链接在两策略下判定必须一致；
+    //! 策略差异只允许出现在设计声明的面上（Console 可见 .teamx 文档与
+    //! .git 非内部项）。另含 .git/config（PAT 泄露面）与敏感名回归。
+
+    use super::*;
+
+    struct Fixture(PathBuf);
+    fn fixture() -> Fixture {
+        let root = std::env::temp_dir().join(format!(
+            "teamx-fs-pol-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(root.join(".teamx/ca")).unwrap();
+        std::fs::create_dir_all(root.join(".teamx/letters")).unwrap();
+        std::fs::create_dir_all(root.join(".teamx/docs/taskx")).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            root.join(".git/config"),
+            "[remote \"origin\"]\nurl = https://x:ghp_TOKEN@h/r\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".git/objects/pack.bin"), "PACK").unwrap();
+        std::fs::write(root.join(".teamx/ca/ca.key"), "CA KEY").unwrap();
+        std::fs::write(root.join(".teamx/team.db"), "DB").unwrap();
+        std::fs::write(root.join(".teamx/docs/taskx/t1.md"), "# doc\n").unwrap();
+        std::fs::write(root.join("id_rsa"), "PRIVATE").unwrap();
+        let outside = root.with_file_name(format!(
+            "{}-outside.txt",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&outside, "OUT").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("sub"), root.join("link_in")).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("link_out")).unwrap();
+        }
+        Fixture(root)
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+            let outside = self.0.with_file_name(format!(
+                "{}-outside.txt",
+                self.0.file_name().unwrap().to_string_lossy()
+            ));
+            let _ = std::fs::remove_file(outside);
+        }
+    }
+
+    /// Escape/traversal cases: BOTH policies must refuse identically.
+    const ESCAPE_CASES: &[&str] = &[
+        "..",
+        "../x",
+        "sub/../../etc/passwd",
+        "/etc/passwd",
+        "sub/../..",
+        "link_out",
+    ];
+    /// Existing, non-sensitive paths: BOTH policies must accept.
+    const OK_BOTH: &[&str] = &[".", "a.txt", "sub", "link_in"];
+
+    #[test]
+    fn both_policies_agree_on_traversal() {
+        let f = fixture();
+        for rel in ESCAPE_CASES {
+            assert!(resolve_with(&f.0, rel, PathPolicy::Service).is_err(), "svc {rel}");
+            assert!(resolve_with(&f.0, rel, PathPolicy::Console).is_err(), "con {rel}");
+        }
+        for rel in OK_BOTH {
+            assert!(resolve_with(&f.0, rel, PathPolicy::Service).is_ok(), "svc {rel}");
+            assert!(resolve_with(&f.0, rel, PathPolicy::Console).is_ok(), "con {rel}");
+        }
+    }
+
+    #[test]
+    fn service_policy_refuses_hidden_dirs_wholesale() {
+        let f = fixture();
+        for rel in [".teamx", ".teamx/docs/taskx/t1.md", ".git", ".git/HEAD"] {
+            assert!(resolve_with(&f.0, rel, PathPolicy::Service).is_err(), "svc {rel}");
+        }
+    }
+
+    #[test]
+    fn console_policy_browses_docs_hides_credentials() {
+        let f = fixture();
+        // .teamx documents reachable…
+        assert!(resolve_with(&f.0, ".teamx/docs/taskx/t1.md", PathPolicy::Console).is_ok());
+        // …but credential entries refused at any depth.
+        for rel in [".teamx/ca", ".teamx/ca/ca.key", ".teamx/letters", ".teamx/team.db"] {
+            let err = resolve_with(&f.0, rel, PathPolicy::Console).unwrap_err();
+            assert!(err.contains("credential"), "{rel}: {err}");
+        }
+        // .git: HEAD inspectable, internals collapsed — incl. config (PAT).
+        assert!(resolve_with(&f.0, ".git/HEAD", PathPolicy::Console).is_ok());
+        for rel in [".git/config", ".git/objects", ".git/objects/pack.bin", ".git/logs"] {
+            let err = resolve_with(&f.0, rel, PathPolicy::Console).unwrap_err();
+            assert!(err.contains(".git internal"), "{rel}: {err}");
+        }
+    }
+
+    #[test]
+    fn sensitive_names_metadata_only() {
+        for n in ["id_rsa", ".env", ".env.local", "cert.pem", "client.key", "x.letter", "credentials"] {
+            assert!(is_sensitive_name(n), "{n}");
+        }
+        for n in ["readme.md", "config.toml", "keynote.txt"] {
+            assert!(!is_sensitive_name(n), "{n}");
+        }
+    }
+}
