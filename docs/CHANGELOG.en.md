@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.4 — 2026-09-15
+
+### File panel: `.teamx` browsable (credentials hidden) + narrower list column
+
+- **`.teamx` is now browsable** (DQ-0003 originally refused it outright, which
+  defeated the "browse documents" goal): credential entries are hidden at any
+  depth — `ca/`, `letters/`, `members/`, `*.db`/`*.db-wal`/`*.db-shm`,
+  `*.letter`, `console-server.json`, `forwards.json`; everything else
+  (`docs/`, `TEAM.md`, `instance.json`, `console.json`, `nudge-cursor`,
+  `repos/`) stays browsable and previewable.
+- **List column width**: the File panel's file list is a fixed `300px` instead
+  of `46%` (falls back to full width below 980px).
+- **Fixes**: three assertions that had gone stale as the code evolved.
+- DQ-0003 in `docs/design/console-file-browser.md` records this revision.
+
 ## 0.2.3 — 2026-09-15
 
 ### Bidirectional IM chat + Member Console "File" browser

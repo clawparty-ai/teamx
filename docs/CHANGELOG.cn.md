@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.4 — 2026-09-15
+
+### File 面板：`.teamx` 可浏览（凭据隐藏）+ 左栏改窄
+
+- **`.teamx` 现在可浏览**（原 DQ-0003 定为「必拒」，会让「文档浏览」这一核心诉求
+  落空）：凭据类条目在**任意深度**隐藏 —— `ca/`、`letters/`、`members/`、
+  `*.db`/`*.db-wal`/`*.db-shm`、`*.letter`、`console-server.json`、`forwards.json`；
+  其余（`docs/`、`TEAM.md`、`instance.json`、`console.json`、`nudge-cursor`、
+  `repos/`）正常浏览与预览。
+- **左栏宽度**：File 面板文件列表由 `46%` 改为固定 `300px`（窄屏 <980px 回退整行）。
+- **修复**：三处随功能演进失效的断言（`team status` 隐藏 left/denied 席位后仍按
+  索引取值；协议升 v2 后资产测试仍写死 v1）。
+- 设计文档 `docs/design/console-file-browser.md` 的 DQ-0003 已记录本次修订。
+
 ## 0.2.3 — 2026-09-15
 
 ### IM 双向对话 + Member Console「File」文件浏览器
