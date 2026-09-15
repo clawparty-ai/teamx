@@ -62,41 +62,63 @@ pub enum PathPolicy {
 
 /// File names that must never be previewed (metadata only). Matched on the
 /// base name, case-insensitively.
-const SENSITIVE_SUFFIXES: [&str; 6] = [".pem", ".key", ".crt", ".p12", ".pfx", ".letter"];
-const SENSITIVE_NAMES: [&str; 5] = [".env", "id_rsa", "id_ed25519", ".netrc", "credentials"];
+/// Directory names that hold credentials — never listed, never read.
+const PRIVATE_DIRS: [&str; 8] = [
+    ".ssh", ".aws", ".gnupg", ".docker", ".kube", "secrets", ".secrets", "credentials",
+];
 
-/// Whether a file name is credential-like: it may be LISTED (name/size/mtime)
-/// but its content is never previewed.
-pub fn is_sensitive_name(name: &str) -> bool {
+/// Exact file names that are private.
+const PRIVATE_NAMES: [&str; 12] = [
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials", ".htpasswd", ".pgpass",
+    "auth.json", "kubeconfig", "console-server.json", "forwards.json",
+    "id_rsa", "id_ed25519",
+];
+
+/// Suffixes that mark a file as private (keys, databases, letter envelopes).
+const PRIVATE_SUFFIXES: [&str; 18] = [
+    ".pem", ".key", ".crt", ".cer", ".p12", ".pfx", ".jks", ".keystore", ".kdbx",
+    ".ovpn", ".token", ".secret", ".letter", ".db", ".db-wal", ".db-shm",
+    ".sqlite", ".sqlite3",
+];
+
+/// Whether an entry is private/credential material: it must never be listed in
+/// the console File panel, and its content must never be read.
+///
+/// Deliberately broad — "private and credential material is not browsable at
+/// all" is the requirement; a false positive only costs a missing row, while a
+/// false negative leaks a secret.
+pub fn is_private(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    if SENSITIVE_NAMES.contains(&lower.as_str()) {
+    if PRIVATE_DIRS.contains(&lower.as_str()) || PRIVATE_NAMES.contains(&lower.as_str()) {
         return true;
     }
-    if lower.starts_with(".env") {
+    if lower.starts_with(".env")
+        || lower.starts_with("id_")
+        || lower.starts_with("credentials")
+        || lower.starts_with("secrets")
+        || lower.starts_with("service-account")
+    {
         return true;
     }
-    SENSITIVE_SUFFIXES.iter().any(|s| lower.ends_with(s))
+    PRIVATE_SUFFIXES.iter().any(|s| lower.ends_with(s))
 }
 
-/// Whether a `.teamx` child must not appear in the console File panel at all:
-/// credential directories, invitation letters and the team database.
+/// The console preview path treats private files as "sensitive" (metadata
+/// only). Alias kept so both call sites share one rule.
+pub fn is_sensitive_name(name: &str) -> bool {
+    is_private(name)
+}
+
+/// Whether a `.teamx` child must not appear in the console File panel: the
+/// global private rules plus `.teamx`-specific credential entries.
 pub fn is_teamx_denied(name: &str) -> bool {
-    if TEAMX_DENIED_SEGMENTS.contains(&name) || TEAMX_DENIED_FILES.contains(&name) {
-        return true;
-    }
-    let lower = name.to_ascii_lowercase();
-    // SQLite database + its WAL/SHM sidecars, and the invitation-letter envelope.
-    lower.ends_with(".db")
-        || lower.ends_with(".db-wal")
-        || lower.ends_with(".db-shm")
-        || lower.ends_with(".letter")
+    is_private(name) || TEAMX_DENIED_SEGMENTS.contains(&name) || TEAMX_DENIED_FILES.contains(&name)
 }
 
 /// Whether a `.git` child segment is an internal that the console collapses.
 pub fn is_git_internal(name: &str) -> bool {
     GIT_INTERNAL_SEGMENTS.contains(&name)
 }
-
 
 type S = Arc<FsState>;
 
@@ -171,6 +193,10 @@ pub fn resolve_with(root: &Path, rel: &str, policy: PathPolicy) -> Result<PathBu
             Component::ParentDir => return Err("path escapes workspace".to_string()),
             Component::Normal(s) => {
                 let s = s.to_string_lossy().to_string();
+                // Private/credential entries are refused under EVERY policy.
+                if is_private(&s) {
+                    return Err("path not allowed (private/credential entry)".to_string());
+                }
                 match policy {
                     PathPolicy::Service => {
                         if SERVICE_DENIED_SEGMENTS.contains(&s.as_str()) {

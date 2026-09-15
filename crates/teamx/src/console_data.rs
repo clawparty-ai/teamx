@@ -378,8 +378,13 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // Inside `.teamx` the credential entries are hidden (documents and
-            // `TEAM.md` stay browsable); inside `.git` the internals collapse.
+            // Private/credential entries are hidden EVERYWHERE (they are not
+            // listed at all, not merely un-previewable); inside `.teamx` the
+            // extra credential dirs go too, and inside `.git` the internals
+            // collapse.
+            if crate::fs::is_private(&name) {
+                continue;
+            }
             if in_teamx && crate::fs::is_teamx_denied(&name) {
                 continue;
             }
@@ -395,8 +400,6 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
                 "modified": md.as_ref().and_then(|m| m.modified().ok()).map(|t| {
                     t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
                 }).unwrap_or(0),
-                // Metadata-only preview for credential-like files (DQ-0003).
-                "sensitive": !is_dir && crate::fs::is_sensitive_name(&name),
             }));
         }
     }
@@ -1208,6 +1211,9 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("README.md"), "# hi\nsecond line").unwrap();
         std::fs::write(root.join("server.key"), "PRIVATE").unwrap();
+        std::fs::write(root.join(".npmrc"), "//registry:_authToken=x").unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_ed25519"), "PRIVATE").unwrap();
         std::fs::write(root.join("logo.svg"), "<svg/>").unwrap();
         std::fs::create_dir_all(root.join("repo-a/.git/refs/heads")).unwrap();
         std::fs::write(root.join("repo-a/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -1225,25 +1231,22 @@ mod tests {
     }
 
     #[test]
-    fn files_data_lists_root_and_marks_sensitive() {
+    fn files_data_lists_root_and_hides_private_entries() {
         let (root, ctx) = file_fixture("list");
         let v = files_data(&ctx, None).unwrap();
         let entries = v["entries"].as_array().unwrap();
         let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(names.contains(&"src"), "{names:?}");
         assert!(names.contains(&"README.md"), "{names:?}");
-        assert!(names.contains(&"server.key"), "{names:?}");
         // `.teamx` is browsable now (documents live there).
         assert!(names.contains(&".teamx"), "`.teamx` must be listed: {names:?}");
+        // Private material is NOT listed at all (not merely un-previewable).
+        assert!(!names.contains(&"server.key"), "`server.key` must be hidden: {names:?}");
+        assert!(!names.contains(&".npmrc"), "`.npmrc` must be hidden: {names:?}");
         assert_eq!(v["path"], json!("."));
         assert!(v["parent"].is_null());
         // Directories sort before files.
         assert_eq!(entries[0]["type"], json!("directory"));
-        // Sensitive files are listed but flagged.
-        let key = entries.iter().find(|e| e["name"] == json!("server.key")).unwrap();
-        assert_eq!(key["sensitive"], json!(true));
-        let readme = entries.iter().find(|e| e["name"] == json!("README.md")).unwrap();
-        assert_eq!(readme["sensitive"], json!(false));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1302,9 +1305,9 @@ mod tests {
         let txt = file_data(&ctx, Some("src")).unwrap_err();
         assert!(txt.contains("not a file"), "{txt}");
 
-        let sen = file_data(&ctx, Some("server.key")).unwrap();
-        assert_eq!(sen["kind"], json!("sensitive"));
-        assert!(sen["content"].is_null(), "sensitive content must never be returned");
+        // Private files are refused outright now (hidden from listings too).
+        assert!(file_data(&ctx, Some("server.key")).is_err());
+        assert!(file_data(&ctx, Some(".npmrc")).is_err());
 
         let svg = file_data(&ctx, Some("logo.svg")).unwrap();
         assert_eq!(svg["kind"], json!("download"));

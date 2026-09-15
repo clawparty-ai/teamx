@@ -1190,9 +1190,8 @@ function renderFlList(entries){
   if(!entries.length){ $("#flList").innerHTML='<div class="muted" style="padding:12px">（空目录）</div>'; return; }
   $("#flList").innerHTML=entries.map(e=>{
     const ic=e.type==="directory"?"📁":"📄";
-    const tag=e.sensitive?'<span class="files-tag warn">sensitive</span>':"";
     const meta=e.type==="directory"?"":fmtBytes(e.size||0);
-    return '<div class="fs-row" data-n="'+esc(e.name)+'" data-t="'+esc(e.type)+'"><span class="ic">'+ic+'</span><span class="nm">'+esc(e.name)+tag+'</span><span class="meta">'+meta+'</span></div>';
+    return '<div class="fs-row" data-n="'+esc(e.name)+'" data-t="'+esc(e.type)+'"><span class="ic">'+ic+'</span><span class="nm">'+esc(e.name)+'</span><span class="meta">'+meta+'</span></div>';
   }).join("");
   $$("#flList .fs-row").forEach(el=>el.addEventListener("click",()=>{
     const n=el.dataset.n;
