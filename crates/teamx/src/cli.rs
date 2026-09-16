@@ -563,7 +563,9 @@ pub struct WorkerCmd {
     /// opencode binary to run headless turns (default: opencode)
     #[arg(long)]
     pub opencode: Option<String>,
-    /// the node's resident opencode serve URL (default http://127.0.0.1:4199)
+    /// the node's resident opencode serve URL (required: no default —
+    /// a silent 4199 default attached to the wrong workspace on
+    /// multi-workspace nodes; falls back to TEAMX_OPENCODE_URL)
     #[arg(long)]
     pub opencode_url: Option<String>,
 }
