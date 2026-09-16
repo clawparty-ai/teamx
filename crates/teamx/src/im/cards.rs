@@ -150,6 +150,21 @@ pub fn request(
             (Some(p), Some(u)) if !p.is_empty() && !u.is_empty() => {
                 let mid = binding::active_binding_member(conn, p, u, team_id)?
                     .ok_or_else(|| "im.card.request: IM identity not bound".to_string())?;
+                // Identity consistency (fault drill L2): a member-cert caller
+                // may only act as their OWN bound IM identity — never as
+                // another member's (e.g. the owner's). The gateway path is
+                // unaffected (it dispatches as the binding-resolved member).
+                if mid != member_id {
+                    let reason = format!(
+                        "im.card.request: identity mismatch: {p}:{u} is bound to {mid}, \
+                         not the certificate member {member_id}"
+                    );
+                    // Audit the refused escalation attempt (L2 interception 留痕).
+                    let _ = super::actions::audit_rejection(
+                        conn, team_id, p, u, args, &reason,
+                    );
+                    return Err(reason);
+                }
                 (mid, u.to_string())
             }
             _ => (member_id.to_string(), member_id.to_string()),
@@ -262,9 +277,20 @@ pub fn execute(
     // member path that IS the member; on the gateway path resolve via binding.
     let actor = match (platform, im_user_id) {
         (Some(p), Some(u)) if !p.is_empty() && !u.is_empty() => {
-            binding::active_binding_member(conn, p, u, team_id)?.ok_or_else(|| {
+            let mid = binding::active_binding_member(conn, p, u, team_id)?.ok_or_else(|| {
                 "im.card.execute: IM identity not bound".to_string()
-            })?
+            })?;
+            // Identity consistency (fault drill L2): same rule as request —
+            // the delegated identity must belong to the certificate member.
+            if mid != member_id {
+                let reason = format!(
+                    "im.card.execute: identity mismatch: {p}:{u} is bound to {mid}, \
+                     not the certificate member {member_id}"
+                );
+                let _ = super::actions::audit_rejection(conn, team_id, p, u, args, &reason);
+                return Err(reason);
+            }
+            mid
         }
         _ => member_id.to_string(),
     };
@@ -344,6 +370,86 @@ mod tests {
     }
 
     #[test]
+    fn request_rejects_delegated_identity_not_bound_to_cert_member() {
+        // Fault drill L2: a member-cert caller passing ANOTHER member's bound
+        // im_user_id must never act with that member's privileges.
+        let mut conn;
+        let team;
+        (conn, team) = seed();
+        bind(&conn, "u-owner", "m-owner"); // owner is lead
+
+        let e = request(
+            &mut conn,
+            &req_args("task-1", "m-escalate"),
+            Some("feishu"),
+            Some("u-owner"),   // forged: belongs to m-owner (lead)
+            "m-worker",        // cert identity: m-worker (not lead)
+            &team,
+        )
+        .unwrap_err();
+        assert!(e.contains("identity mismatch"), "{e}");
+
+        // Legitimate: identity bound to the cert member works.
+        bind(&conn, "u-owner-ok", "m-owner");
+        let ok = request(
+            &mut conn,
+            &req_args("task-1", "m-ok"),
+            Some("feishu"),
+            Some("u-owner-ok"),
+            "m-owner",
+            &team,
+        )
+        .unwrap();
+        assert_eq!(ok["ok"], true);
+    }
+
+    #[test]
+    fn execute_rejects_delegated_identity_not_bound_to_cert_member() {
+        let mut conn;
+        let team;
+        (conn, team) = seed();
+        bind(&conn, "u-owner", "m-owner");
+
+        // Owner (cert) requests a token via their own bound identity.
+        bind(&conn, "u-owner-self", "m-owner");
+        let req = request(
+            &mut conn,
+            &req_args("task-1", "m-exec"),
+            Some("feishu"),
+            Some("u-owner-self"),
+            "m-owner",
+            &team,
+        )
+        .unwrap();
+        let token = req["confirm_token"].as_str().unwrap().to_string();
+
+        // Attacker (worker cert) tries to execute with the owner's identity.
+        let args = json!({ "action": "im.verify", "task_id": "task-1", "confirm_token": token });
+        let e = execute(
+            &mut conn,
+            &args,
+            Some("feishu"),
+            Some("u-owner"),
+            "m-worker",
+            &team,
+        )
+        .unwrap_err();
+        // Token identity check fires first (token belongs to u-owner-self) —
+        // either refusal is a pass; assert refusal, then assert the token was
+        // NOT consumed by the failed attempt... note: identity check happens
+        // BEFORE consume, so the token survives for the rightful owner.
+        assert!(!e.is_empty());
+        let still = conn
+            .query_row(
+                "SELECT COUNT(*) FROM im_card_tokens WHERE token = ?1",
+                rusqlite::params![token],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(still, 1, "failed execute must not consume the token");
+    }
+
+    #[test]
     fn action_card_carries_callback_payload() {
         let card = task_action_card("im.verify", "task-1", "Ship", "msg-1");
         let btns = &card["elements"][2]["actions"];
@@ -392,7 +498,7 @@ mod tests {
     fn non_lead_request_is_refused() {
         let (mut conn, team) = seed();
         bind(&conn, "u2", "m-worker");
-        let e = request(&mut conn, &req_args("task-1", "m-2"), Some("feishu"), Some("u2"), "m-owner", &team).unwrap_err();
+        let e = request(&mut conn, &req_args("task-1", "m-2"), Some("feishu"), Some("u2"), "m-worker", &team).unwrap_err();
         assert!(e.contains("not a lead"), "{e}");
     }
 

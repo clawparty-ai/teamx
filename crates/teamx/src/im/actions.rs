@@ -247,7 +247,7 @@ fn audit_event(
     .map_err(|e| format!("audit: {e}"))
 }
 
-fn audit_rejection(
+pub(crate) fn audit_rejection(
     conn: &mut Connection,
     team_id: &str,
     platform: &str,
