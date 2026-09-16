@@ -2,6 +2,14 @@
 
 本文件为 AI 助手（agent）在此仓库中工作时必须遵守的项目级规则。
 
+## 团队目标（team goal）治理规则 — 硬约束
+
+- **AI agent 不得自行 `set_goal` / `share_goal` / `close_goal`，也不得为「止提醒」而关闭或调整目标。**
+- **team goal 的开启、调整、关闭只能由 team lead / owner 本人（真人）操作。**
+- agent 遇到目标状态与事实不符（例如目标已 `closed` 但工作仍在继续）时，**只报告 + 给出建议**，等待真人决定；不得擅自代劳。
+- 背景：2026-09-14 agent 为停止服务端「目标未完成」提醒，自行把 goal 关为 `closed`；`closed` 是状态机终态（`goal_transition` 无 `Closed -> *`），只能同名新建才能重开，造成 09-15 的返工。
+- 成员汇报进度若被 `no goal set yet (team completed)` 拒绝，说明目标处于非 active 状态——报告 owner，不要自行重开。
+
 ## 分支与 Git 规则
 
 - **不要 push `enterprise` 分支到任何 remote**：`enterprise` 分支仅保留在本地，不得 push 到 `origin` 或其他任何 remote。
