@@ -5,6 +5,19 @@
 //! 1. the notifier renders a `task_action_card` with action buttons (the
 //!    button `value` carries the callback payload: action + task_id + a
 //!    per-card `im_msg_id`);
+//!
+//! C4 (task-18) semantics:
+//! - **first-strike idempotency**: a `request` carrying `im_msg_id` is keyed
+//!   on (action, task_id, team_id, im_msg_id) — a duplicate (double-click)
+//!   returns the SAME token and skips the duplicate `im.card.requested`
+//!   audit. When `im_msg_id` is absent there is no key: every call issues a
+//!   fresh token (documented fallback; card callbacks always carry one).
+//! - **audit symmetry**: every `request` rejection (unknown action / missing
+//!   task_id / not whitelisted / identity not bound / not a lead) lands in
+//!   `im.rejected` via `actions::audit_rejection_with`, mirroring `execute`'s
+//!   rejection audits; the source label follows the same per-path convention
+//!   as the success-path audit (`im:{platform}` gateway / `member:{actor}`
+//!   member-cert).
 //! 2. the first click reaches the server as **`im.card.request`** — the
 //!    server checks the action against the whitelist + the actor's role,
 //!    then issues a short-lived `confirm_token` (TTL 5 min, one-time) and
@@ -120,22 +133,48 @@ pub fn request(
     member_id: &str,
     team_id: &str,
 ) -> Result<Value, String> {
+    let im_msg_id = args
+        .get("im_msg_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    // C4 audit symmetry: every rejection below lands in `im.rejected` via
+    // actions::audit_rejection_with, using the same source vocabulary as the
+    // success-path audit (gateway `im:{p}` / member `member:{actor}`).
+    // Rejection audits propagate their error (same as actions::handle), so an
+    // audit write failure surfaces instead of silently dropping the trace.
+    macro_rules! reject {
+        ($source:expr, $im_user:expr, $reason:expr) => {{
+            let reason: String = $reason;
+            super::actions::audit_rejection_with(
+                conn,
+                team_id,
+                &$source,
+                $im_user,
+                &im_msg_id,
+                &reason,
+            )?;
+            return Err(reason);
+        }};
+    }
+
     let action = args
         .get("action")
         .and_then(Value::as_str)
         .ok_or("im.card.request: `action` is required")?;
     if !CARD_ACTIONS.contains(&action) {
-        return Err(format!("im.card.request: unknown action `{action}`"));
+        let source = match (platform, im_user_id) {
+            (Some(p), Some(u)) if !p.is_empty() && !u.is_empty() => format!("im:{p}"),
+            _ => format!("member:{member_id}"),
+        };
+        let im_user = im_user_id.filter(|u| !u.is_empty()).unwrap_or(member_id);
+        reject!(source, im_user, format!("im.card.request: unknown action `{action}`"));
     }
     let task_id = args
         .get("task_id")
         .and_then(Value::as_str)
         .ok_or("im.card.request: `task_id` is required")?
-        .to_string();
-    let _im_msg_id = args
-        .get("im_msg_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
         .to_string();
 
     // Same gates the real action will apply (fail early, before any token).
@@ -145,48 +184,94 @@ pub fn request(
     let min_role = whitelist::min_role_for(conn, action)
         .map_err(|e| format!("whitelist: {e}"))?
         .ok_or_else(|| format!("im.card.request: `{action}` is not whitelisted"))?;
-    let (actor, im_user): (String, String) =
-        match (platform, im_user_id) {
-            (Some(p), Some(u)) if !p.is_empty() && !u.is_empty() => {
-                let mid = binding::active_binding_member(conn, p, u, team_id)?
-                    .ok_or_else(|| "im.card.request: IM identity not bound".to_string())?;
+    let gateway = matches!((platform, im_user_id), (Some(p), Some(u)) if !p.is_empty() && !u.is_empty());
+    let (actor, im_user, source): (String, String, String) = if gateway {
+        let p = platform.unwrap_or_default();
+        let u = im_user_id.unwrap_or_default();
+        match binding::active_binding_member(conn, p, u, team_id) {
+            Ok(Some(mid)) => {
                 // Identity consistency (fault drill L2): a member-cert caller
                 // may only act as their OWN bound IM identity — never as
                 // another member's (e.g. the owner's). The gateway path is
                 // unaffected (it dispatches as the binding-resolved member).
                 if mid != member_id {
-                    let reason = format!(
-                        "im.card.request: identity mismatch: {p}:{u} is bound to {mid}, \
-                         not the certificate member {member_id}"
+                    reject!(
+                        format!("im:{p}"),
+                        u,
+                        format!(
+                            "im.card.request: identity mismatch: {p}:{u} is bound to {mid}, \
+                             not the certificate member {member_id}"
+                        )
                     );
-                    // Audit the refused escalation attempt (L2 interception 留痕).
-                    let _ = super::actions::audit_rejection(
-                        conn, team_id, p, u, args, &reason,
-                    );
-                    return Err(reason);
                 }
-                (mid, u.to_string())
+                (mid, u.to_string(), format!("im:{p}"))
             }
-            _ => (member_id.to_string(), member_id.to_string()),
-        };
+            Ok(None) => {
+                reject!(
+                    format!("im:{p}"),
+                    u,
+                    "im.card.request: IM identity not bound".to_string()
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        (
+            member_id.to_string(),
+            member_id.to_string(),
+            format!("member:{member_id}"),
+        )
+    };
     if min_role == "lead" && !binding::is_lead(conn, team_id, &actor)? {
-        return Err(format!(
-            "im.card.request: actor {actor} is not a lead (min_role={min_role})"
-        ));
+        reject!(
+            source,
+            &im_user,
+            format!("im.card.request: actor {actor} is not a lead (min_role={min_role})")
+        );
+    }
+
+    // C4 first-strike idempotency: a `request` with the same
+    // (action, task_id, team_id, im_msg_id) returns the SAME live token —
+    // a double-click must not mint a second one. Keyed only when im_msg_id
+    // is present; without it there is no key, so each call issues a fresh
+    // token (documented fallback).
+    let now = chrono::Utc::now().timestamp();
+    if !im_msg_id.is_empty() {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT token FROM im_card_tokens
+                  WHERE action = ?1 AND task_id = ?2 AND team_id = ?3
+                    AND im_msg_id = ?4 AND expires_at > ?5
+                  ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![action, task_id, team_id, im_msg_id, now],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(token) = existing {
+            return Ok(json!({
+                "ok": true,
+                "idempotent": true,
+                "action": action,
+                "task_id": task_id,
+                "confirm_token": token,
+                "expires_in": CONFIRM_TTL_SECS,
+                "card": confirm_card(action, &task_id, &token),
+            }));
+        }
     }
 
     // Issue the one-time token (converged table, opportunistic pruning).
     let token = format!("ct-{}", uuid::Uuid::new_v4().simple());
-    let now = chrono::Utc::now().timestamp();
     conn.execute(
         "DELETE FROM im_card_tokens WHERE expires_at < ?1",
         rusqlite::params![now],
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO im_card_tokens (token, action, task_id, team_id, im_user_id, platform, created_at, expires_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        rusqlite::params![token, action, task_id, team_id, im_user, platform.unwrap_or("feishu"), now, now + CONFIRM_TTL_SECS],
+        "INSERT INTO im_card_tokens (token, action, task_id, team_id, im_user_id, platform, im_msg_id, created_at, expires_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        rusqlite::params![token, action, task_id, team_id, im_user, platform.unwrap_or("feishu"), im_msg_id, now, now + CONFIRM_TTL_SECS],
     )
     .map_err(|e| e.to_string())?;
 
@@ -516,6 +601,86 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("unknown action"), "{e}");
+    }
+
+    #[test]
+    fn duplicate_request_with_same_msg_returns_same_token() {
+        let (mut conn, team) = seed();
+        bind(&conn, "u1", "m-owner");
+        let args = &json!({"action":"im.verify","task_id":"task-1","im_msg_id":"msg-9"});
+        let v1 = request(&mut conn, args, Some("feishu"), Some("u1"), "m-owner", &team).unwrap();
+        let v2 = request(&mut conn, args, Some("feishu"), Some("u1"), "m-owner", &team).unwrap();
+        assert_eq!(v1["confirm_token"], v2["confirm_token"], "double-click must reuse the token");
+        assert_eq!(v2["idempotent"], json!(true));
+        // Only one token row and one im.card.requested audit for the pair.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM im_card_tokens WHERE im_msg_id='msg-9'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        let a: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE type='im.card.requested'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(a, 1, "duplicate must not double-audit");
+    }
+
+    #[test]
+    fn request_without_msg_id_issues_fresh_tokens_each_call() {
+        let (mut conn, team) = seed();
+        bind(&conn, "u1", "m-owner");
+        let args = &json!({"action":"im.verify","task_id":"task-1"});
+        let v1 = request(&mut conn, args, Some("feishu"), Some("u1"), "m-owner", &team).unwrap();
+        let v2 = request(&mut conn, args, Some("feishu"), Some("u1"), "m-owner", &team).unwrap();
+        // No key → no idempotency: documented fallback issues fresh tokens.
+        assert_ne!(v1["confirm_token"], v2["confirm_token"]);
+    }
+
+    #[test]
+    fn request_rejections_are_audited_im_rejected() {
+        let (mut conn, team) = seed();
+        bind(&conn, "u2", "m-worker");
+
+        // unknown action
+        let e = request(
+            &mut conn,
+            &json!({"action":"im.destroy","task_id":"task-1","im_msg_id":"r1"}),
+            Some("feishu"), Some("u2"), "m-owner", &team,
+        )
+        .unwrap_err();
+        assert!(e.contains("unknown action"), "{e}");
+        // identity not bound (u3 has no binding)
+        let e = request(
+            &mut conn,
+            &req_args("task-1", "m-2"),
+            Some("feishu"), Some("u3"), "m-owner", &team,
+        )
+        .unwrap_err();
+        assert!(e.contains("not bound"), "{e}");
+        // not a lead — cert member must match u2's binding (m-worker),
+        // otherwise the L2 identity gate refuses first (see
+        // request_rejects_delegated_identity_not_bound_to_cert_member).
+        let e = request(
+            &mut conn,
+            &req_args("task-1", "m-2"),
+            Some("feishu"), Some("u2"), "m-worker", &team,
+        )
+        .unwrap_err();
+        assert!(e.contains("not a lead"), "{e}");
+
+        // All three rejections audited as im.rejected with reason payload.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE type='im.rejected'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "expected 3 rejection audits, got {n}");
+        let (s1, s2): (String, String) = conn
+            .query_row(
+                "SELECT payload_json, json_extract(payload_json,'$.reason') FROM events
+                  WHERE type='im.rejected' ORDER BY id LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(s1.contains("unknown action"), "{s1}");
+        assert_eq!(s2, "im.card.request: unknown action `im.destroy`");
     }
 
     #[test]

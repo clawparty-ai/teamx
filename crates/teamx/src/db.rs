@@ -961,10 +961,15 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            team_id    TEXT NOT NULL,
            im_user_id TEXT NOT NULL,
            platform   TEXT NOT NULL,
+           im_msg_id  TEXT,
            created_at INTEGER NOT NULL,
            expires_at INTEGER NOT NULL
          );",
     )?;
+
+    // C4 first-strike idempotency: issue-token dedup keyed by im_msg_id.
+    // Converge for DBs created by 0.2.4 (column added post-release).
+    ensure_column(conn, "im_card_tokens", "im_msg_id", "TEXT")?;
 
     converge_columns(conn)?;
     conn.pragma_update(None, "user_version", 20)?;
