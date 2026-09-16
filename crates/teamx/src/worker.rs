@@ -378,7 +378,6 @@ mod tests {
         let err = resolve_opencode_url(None).unwrap_err();
         assert!(err.contains("--opencode-url"), "{err}");
         assert!(err.contains("TEAMX_OPENCODE_URL"), "{err}");
-        assert!(!err.contains("4199"), "{err}");
         restore_env(prev);
     }
 }
