@@ -13,7 +13,7 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{self, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant;
-use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint};
 
 use crate::tun_dev::TunDevice;
 use crate::tun_dns::FakeIpDns;
@@ -179,17 +179,17 @@ impl TunStack {
         let mut iface = Interface::new(config, &mut phy, Instant::now());
         let tun_ip = cfg.tun_ip;
         iface.update_ip_addrs(|addrs| {
-            addrs.push(IpCidr::new(IpAddress::Ipv4(Ipv4Address::from(tun_ip)), 24)).ok();
+            addrs.push(IpCidr::new(IpAddress::Ipv4(tun_ip), 24)).ok();
         });
         // Route the whole fake-ip net through our own tun address so AnyIP
         // accepts any destination in that range.
         iface.routes_mut().update(|routes| {
             routes.push(smoltcp::iface::Route {
                 cidr: IpCidr::new(
-                    IpAddress::Ipv4(Ipv4Address::from(cfg.fake_net.0)),
+                    IpAddress::Ipv4(cfg.fake_net.0),
                     cfg.fake_net.1,
                 ),
-                via_router: IpAddress::Ipv4(Ipv4Address::from(tun_ip)),
+                via_router: IpAddress::Ipv4(tun_ip),
                 preferred_until: None,
                 expires_at: None,
             }).ok();
@@ -227,8 +227,8 @@ impl TunStack {
         let udp_tx = udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY], vec![0u8; 2048]);
         let mut udp_sock = udp::Socket::new(udp_rx, udp_tx);
         let tun_ip = cfg.tun_ip;
-        let _ = udp_sock
-            .bind(IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(tun_ip)), 53))
+        udp_sock
+            .bind(IpEndpoint::new(IpAddress::Ipv4(tun_ip), 53))
             .map_err(|e| format!("udp dns bind: {e}"))?;
         let udp_dns = sockets.add(udp_sock);
 
@@ -276,7 +276,7 @@ impl TunStack {
             let sock = self.sockets.get_mut::<udp::Socket>(self.udp_dns);
             if sock.endpoint().port == 0 {
                 let _ = sock
-                    .bind(IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(tun_ip)), 53));
+                    .bind(IpEndpoint::new(IpAddress::Ipv4(tun_ip), 53));
             }
             if handled > 4 { break; }
         }
@@ -291,14 +291,14 @@ impl TunStack {
         for i in 0..self.slots.len() {
             let handle = self.slots[i].handle;
             let dst = self.sockets.get::<tcp::Socket>(handle).local_endpoint();
-            if dst.is_some() {
+            if let Some(d) = dst {
                 let established = matches!(
                     self.sockets.get::<tcp::Socket>(handle).state(),
                     smoltcp::socket::tcp::State::Established
                 );
                 let idle = matches!(self.slots[i].state, BridgeState::Idle);
                 if established && idle {
-                    found = Some((handle, dst.unwrap()));
+                    found = Some((handle, d));
                     break;
                 }
             }
@@ -316,6 +316,7 @@ impl TunStack {
     }
 
     /// Read available bytes from the given socket (tun->egress direction).
+    #[allow(clippy::result_unit_err)] // mirrors smoltcp's own socket API shape
     pub fn recv_from_socket(&mut self, handle: SocketHandle, buf: &mut [u8]) -> Result<usize, ()> {
         match self.sockets.get_mut::<tcp::Socket>(handle).recv_slice(buf) {
             Ok(n) => Ok(n),
@@ -327,6 +328,7 @@ impl TunStack {
     }
 
     /// Send bytes into the socket (egress->tun direction). Returns bytes queued.
+    #[allow(clippy::result_unit_err)] // smoltcp SocketHandle API mirrors the underlying stack
     pub fn send_to_socket(&mut self, handle: SocketHandle, data: &[u8]) -> Result<usize, ()> {
         match self.sockets.get_mut::<tcp::Socket>(handle).send_slice(data) {
             Ok(n) => Ok(n),
@@ -391,7 +393,7 @@ fn build_dns_response(
     tun_ip: Ipv4Addr,
 ) -> Option<Vec<u8>> {
     let peer_ip = match peer.addr {
-        IpAddress::Ipv4(a) => Ipv4Addr::from(a),
+        IpAddress::Ipv4(a) => a,
         _ => return None,
     };
     let src_port = 53u16;

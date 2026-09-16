@@ -32,10 +32,8 @@ pub fn stats(store: &mut CaptureStore) -> Result<serde_json::Value, String> {
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
             .map_err(|e| e.to_string())?;
-        for row in rows {
-            if let Ok(r) = row {
-                protos.push(r);
-            }
+        for r in rows.flatten() {
+            protos.push(r);
         }
     }
     // top SNIs
@@ -50,10 +48,8 @@ pub fn stats(store: &mut CaptureStore) -> Result<serde_json::Value, String> {
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
             .map_err(|e| e.to_string())?;
-        for row in rows {
-            if let Ok(r) = row {
-                top_sni.push(r);
-            }
+        for r in rows.flatten() {
+            top_sni.push(r);
         }
     }
     let decrypted: i64 = c
@@ -193,10 +189,8 @@ pub fn load_traffic_secrets(
                 ))
             })
             .ok()?;
-        for row in iter {
-            if let Ok(r) = row {
-                rows.push(r);
-            }
+        for r in iter.flatten() {
+            rows.push(r);
         }
     }
     let mut client = None;
@@ -302,7 +296,7 @@ fn hex_encode(b: &[u8]) -> String {
 
 #[allow(dead_code)]
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16)).collect::<Result<Vec<_>, _>>().ok()

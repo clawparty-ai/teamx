@@ -872,7 +872,7 @@ pub fn discussion_action(ctx: &Ctx, action: &str, body: &Value) -> Result<Value,
                     }
                     net_rpc(url, "discussion.close", args)
                 }
-                _ => return Err(format!("unknown discussion action `{action}`")),
+                _ => Err(format!("unknown discussion action `{action}`")),
             }
         }
         Mode::Local => {
@@ -1018,10 +1018,10 @@ fn find_me_in(status: &Value, id: &str) -> Option<Value> {
     let teams = status.get("teams")?.as_array()?;
     for team in teams {
         if let Some(members) = team.get("members").and_then(Value::as_array) {
-            if let Some(m) = members.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(&id)) {
+            if let Some(m) = members.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)) {
                 return Some(json!({
                     "id": id,
-                    "name": m.get("display_name").and_then(Value::as_str).unwrap_or(&id),
+                    "name": m.get("display_name").and_then(Value::as_str).unwrap_or(id),
                     "role": m.get("role").and_then(Value::as_str).unwrap_or(""),
                     "state": m.get("state").and_then(Value::as_str).unwrap_or(""),
                     "is_lead": m.get("is_lead").and_then(Value::as_bool).unwrap_or(false),

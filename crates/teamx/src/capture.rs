@@ -327,12 +327,12 @@ impl CaptureStore {
 }
 
 fn db_file_size(conn: &Connection) -> Result<u64, String> {
-    let path: PathBuf = conn.path().map(|p| std::path::PathBuf::from(p)).unwrap_or_default();
+    let path: PathBuf = conn.path().map(std::path::PathBuf::from).unwrap_or_default();
     Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(());
     }
     (0..s.len())
@@ -443,23 +443,18 @@ pub fn spawn_writer(
     std::thread::spawn(move || {
         let mut store = store;
         let mut batch: Vec<TapEvent> = Vec::with_capacity(256);
-        loop {
+        while let Ok(ev) = rx.recv() {
             // Block until the first event arrives (zero-cost idle), then drain
             // the queue up to the batch cap and commit atomically.
-            match rx.recv() {
-                Ok(ev) => {
-                    batch.push(ev);
-                    while batch.len() < 512 {
-                        match rx.try_recv() {
-                            Ok(ev) => batch.push(ev),
-                            Err(_) => break,
-                        }
-                    }
-                    if let Err(e) = store.apply_batch(std::mem::take(&mut batch)) {
-                        eprintln!("capture: batch write failed: {e}");
-                    }
+            batch.push(ev);
+            while batch.len() < 512 {
+                match rx.try_recv() {
+                    Ok(ev) => batch.push(ev),
+                    Err(_) => break,
                 }
-                Err(_) => break,
+            }
+            if let Err(e) = store.apply_batch(std::mem::take(&mut batch)) {
+                eprintln!("capture: batch write failed: {e}");
             }
         }
         if !batch.is_empty() {
@@ -646,8 +641,8 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("teamx-cap-test-{}-{}.db", std::process::id(), name));
         let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(&p.with_extension("db-wal"));
-        let _ = std::fs::remove_file(&p.with_extension("db-shm"));
+        let _ = std::fs::remove_file(p.with_extension("db-wal"));
+        let _ = std::fs::remove_file(p.with_extension("db-shm"));
         p
     }
 

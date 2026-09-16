@@ -1081,6 +1081,7 @@ pub fn close_connection(conn: &Connection, member_id: &str, endpoint: &str) -> r
 /// Upsert an active reverse-tunnel registration (server side). The server's
 /// in-memory `TunnelRegistry` is authoritative; this table is a mirror that
 /// lets DB-reading tools (admin-console /api/topology) show live edges.
+#[allow(clippy::too_many_arguments)] // mirrors the tunnel table column set
 pub fn tunnel_upsert(
     conn: &Connection,
     team_id: &str,

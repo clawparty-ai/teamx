@@ -136,10 +136,7 @@ fn device_exists(_name: &str) -> bool {
         let out = std::process::Command::new("ifconfig")
             .arg(_name)
             .output();
-        match out {
-            Ok(o) if o.status.success() => true,
-            _ => false,
-        }
+        matches!(out, Ok(o) if o.status.success())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

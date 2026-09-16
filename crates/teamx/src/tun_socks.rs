@@ -305,7 +305,6 @@ fn resolve_target(
 ) -> crate::socks5::SocksTarget {
     let port = remote.port;
     if let smoltcp::wire::IpAddress::Ipv4(v4) = remote.addr {
-        let v4 = Ipv4Addr::from(v4);
         // IP-routing mode: real IP -> domain (preserves SNI for TLS).
         if let Some(m) = ip_map {
             if let Some(domain) = m.lock().unwrap().get(&v4) {

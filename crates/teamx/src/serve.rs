@@ -467,7 +467,7 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
         let db = state.db.clone();
         let mid = member_id.clone();
         let tid = team_id.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap();
             let _ = crate::db::log_connection(&conn, &mid, &tid, &ip, "tunnel");
         });
@@ -583,12 +583,12 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                             _ => {}
                         }
                     }
-                    Some(Ok(Message::Binary(buf))) => {
+                    Some(Ok(Message::Binary(buf)))
                         // Provider → consumer data frame ([4B stream_id][payload]).
                         // A provider may register several tunnels over one WS and
                         // stream ids come from one server-wide counter, so exactly
                         // one owned tunnel holds each id.
-                        if !owned.is_empty() {
+                        if !owned.is_empty() => {
                             crate::tunnel::route_provider_data_owned(
                                 &registry,
                                 &team_id,
@@ -596,7 +596,6 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
                                 buf.as_ref(),
                             );
                         }
-                    }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                     _ => {}
                 }
@@ -636,7 +635,7 @@ async fn handle_tunnel_ws(mut socket: WebSocket, state: AppState, identity: Peer
     {
         let db = state.db.clone();
         let mid = member_id;
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap();
             let _ = crate::db::close_connection(&conn, &mid, "tunnel");
         });
@@ -878,7 +877,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
             let db = state.db.clone();
             let mid = member_id.clone();
             let tid = tid.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap();
                 let _ = crate::db::log_connection(&conn, &mid, &tid, &ip, "ws");
             });
@@ -957,7 +956,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, identity: PeerIdentit
     {
         let db = state.db.clone();
         let mid = member_id;
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let conn = db.lock().unwrap();
             let _ = crate::db::close_connection(&conn, &mid, "ws");
         });
@@ -1054,13 +1053,12 @@ async fn rpc(
         let team_ids: Vec<String> = {
             let db = state.db.clone();
             let mid = mid.clone().unwrap_or_default();
-            match tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let conn = db.lock().unwrap();
                 commands::teams_for_member(&conn, &mid).unwrap_or_default()
-            }).await {
-                Ok(v) => v,
-                Err(_) => Vec::new(),
-            }
+            })
+            .await
+            .unwrap_or_default()
         };
         for tid in team_ids {
             if let Some((sid, rx)) = tunnels.resolve(&tid, &exit, &name) {
@@ -1165,6 +1163,7 @@ fn service_method_allowed(method: &str) -> bool {
 ///   caller-supplied `member_id` (a compromised gateway must not impersonate);
 /// - the resolved member is re-dispatched with a synthesized member CN so the
 ///   downstream role/permission checks are unchanged (no privilege elevation).
+#[allow(clippy::too_many_arguments)] // delegation envelope fields are all required
 fn dispatch_service(
     service: &str,
     instance: &str,
@@ -2385,7 +2384,7 @@ async fn git_grant_permission(
     let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     // Check permission
-    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+    let repo = crate::git_service::get_repo(&db, team_id, &repo_name)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     
@@ -2417,7 +2416,7 @@ async fn git_clone_repo(
     let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     // Check permission
-    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+    let repo = crate::git_service::get_repo(&db, team_id, &repo_name)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     
@@ -2450,7 +2449,7 @@ async fn git_pull_repo(
     let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     // Check permission
-    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+    let repo = crate::git_service::get_repo(&db, team_id, &repo_name)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     
@@ -2483,7 +2482,7 @@ async fn git_push_repo(
     let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     // Check permission
-    let repo = crate::git_service::get_repo(&db, &team_id, &repo_name)
+    let repo = crate::git_service::get_repo(&db, team_id, &repo_name)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     

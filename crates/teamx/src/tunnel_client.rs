@@ -410,7 +410,7 @@ pub async fn open_tunnel_bridge(
                                     continue;
                                 }
                             };
-                            if ws_out.send(Message::Binary(frame.into())).await.is_err() {
+                            if ws_out.send(Message::Binary(frame)).await.is_err() {
                                 return;
                             }
                         }
