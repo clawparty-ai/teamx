@@ -197,7 +197,7 @@ pub fn request(
                 if mid != member_id {
                     reject!(
                         format!("im:{p}"),
-                        u.to_string(),
+                        u,
                         format!(
                             "im.card.request: identity mismatch: {p}:{u} is bound to {mid}, \
                              not the certificate member {member_id}"
@@ -655,11 +655,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("not bound"), "{e}");
-        // not a lead
+        // not a lead — cert member must match u2's binding (m-worker),
+        // otherwise the L2 identity gate refuses first (see
+        // request_rejects_delegated_identity_not_bound_to_cert_member).
         let e = request(
             &mut conn,
             &req_args("task-1", "m-2"),
-            Some("feishu"), Some("u2"), "m-owner", &team,
+            Some("feishu"), Some("u2"), "m-worker", &team,
         )
         .unwrap_err();
         assert!(e.contains("not a lead"), "{e}");
