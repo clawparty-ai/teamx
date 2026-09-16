@@ -47,6 +47,7 @@ impl TeamState {
             TeamState::Destroyed => "destroyed",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "forming" => TeamState::Forming,
@@ -71,6 +72,7 @@ impl MemberState {
             MemberState::Denied => "denied",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "pending" => MemberState::Pending,
@@ -96,6 +98,7 @@ impl GoalState {
             GoalState::Closed => "closed",
         }
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "proposed" => GoalState::Proposed,

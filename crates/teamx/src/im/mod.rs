@@ -143,7 +143,7 @@ pub fn rpc(
             let platform = s(args, "platform").unwrap_or("feishu");
             let im_user_id = s(args, "im_user_id")
                 .ok_or("im write action: `im_user_id` is required")?;
-            actions::handle(conn, method, args, &platform, &im_user_id, team_id)
+            actions::handle(conn, method, args, platform, im_user_id, team_id)
         }
         // Interactive cards (design §5.2): a card button first REQUESTS a
         // short-lived confirm token (audited), then EXECUTES the action with

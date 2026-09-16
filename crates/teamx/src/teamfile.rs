@@ -366,21 +366,18 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
                     let fld = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
                     if let Some((canon, value)) = field_name(fld) {
                         match canon {
-                            "display_name" => {
-                                if !value.is_empty() {
+                            "display_name"
+                                if !value.is_empty() => {
                                     m.display_name = value.to_string();
                                 }
-                            }
-                            "role" => {
-                                if !value.is_empty() {
+                            "role"
+                                if !value.is_empty() => {
                                     m.role = Some(value.to_string());
                                 }
-                            }
-                            "description" => {
-                                if !value.is_empty() {
+                            "description"
+                                if !value.is_empty() => {
                                     m.description = Some(value.to_string());
                                 }
-                            }
                             "skills" => m.skills = split_list(value),
                             "outputs" => m.outputs = split_list(value),
                             _ => {}
@@ -415,23 +412,20 @@ pub fn parse_team_file_text(text: &str) -> Result<TeamFile, String> {
                     let fld = trimmed.strip_prefix("- ").unwrap_or(trimmed).trim();
                     if let Some((canon, value)) = doc_field_name(fld) {
                         match canon {
-                            "title" => {
-                                if !value.is_empty() {
+                            "title"
+                                if !value.is_empty() => {
                                     d.title = value.to_string();
                                 }
-                            }
-                            "purpose" => {
-                                if !value.is_empty() {
+                            "purpose"
+                                if !value.is_empty() => {
                                     d.purpose = Some(value.to_string());
                                 }
-                            }
                             "template" => d.template = doc_list(value),
                             "creators" => d.creators = doc_list(value),
-                            "owner" => {
-                                if !value.is_empty() {
+                            "owner"
+                                if !value.is_empty() => {
                                     d.owner = value.to_string();
                                 }
-                            }
                             "approvers" => d.approvers = doc_list(value),
                             "states" => d.states = split_states(value),
                             "reactions" => {

@@ -58,6 +58,7 @@ fn with_registry_lock<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, Str
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 struct Registry {
     instances: BTreeMap<String, Instance>,
 }
@@ -73,11 +74,6 @@ struct Instance {
     log: Option<String>,
 }
 
-impl Default for Registry {
-    fn default() -> Self {
-        Registry { instances: BTreeMap::new() }
-    }
-}
 
 fn now_iso() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();

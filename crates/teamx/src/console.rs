@@ -218,7 +218,7 @@ async fn api_panel(
     }
     let ctx = state.ctx.clone();
     let id = id.clone();
-    let query_id = params.get("id").map(|s| s.clone());
+    let query_id = params.get("id").cloned();
     let out: RunOut = tokio::task::spawn_blocking(move || fetch_panel(&ctx, &id, query_id.as_deref()))
         .await
         .unwrap_or_else(|_| RunOut {
@@ -259,34 +259,36 @@ async fn api_stream(State(state): State<S>, headers: HeaderMap) -> axum::respons
                 .await
                 .map_err(|e| e.to_string())?
         }
-        loop {
-            if let Some(row) = pending.pop() {
-                let seq = row.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
-                let ev = SseEvent::default().event("event").json_data(row).unwrap_or_else(|_| SseEvent::default());
-                return Some((ev, (ctx, seq.max(last), pending)));
+        // No `loop` here: stream::unfold re-invokes this future with the new
+        // state after every `Some`, so this body already runs once per SSE
+        // poll (a `loop` whose every path returns would be flagged
+        // never_loop and is dead structure).
+        if let Some(row) = pending.pop() {
+            let seq = row.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+            let ev = SseEvent::default().event("event").json_data(row).unwrap_or_else(|_| SseEvent::default());
+            return Some((ev, (ctx, seq.max(last), pending)));
+        }
+        if last == 0 {
+            // first pass: snapshot latest seq only (no history replay)
+            if let Ok((_hist, max)) = poll(&ctx, 0).await {
+                return Some((heartbeat(), (ctx, max, pending)));
             }
-            if last == 0 {
-                // first pass: snapshot latest seq only (no history replay)
-                if let Ok((_hist, max)) = poll(&ctx, 0).await {
-                    return Some((heartbeat(), (ctx, max, pending)));
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-            match poll(&ctx, last).await {
-                Ok((rows, max)) => {
-                    if rows.is_empty() {
-                        return Some((heartbeat(), (ctx, last, pending)));
-                    }
-                    let new_last = max;
-                    for r in rows.into_iter().rev() {
-                        pending.push(r);
-                    }
-                    return Some((heartbeat(), (ctx, new_last, pending)));
-                }
-                Err(e) => {
-                    eprintln!("teamx console: sse poll error: {e}");
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        match poll(&ctx, last).await {
+            Ok((rows, max)) => {
+                if rows.is_empty() {
                     return Some((heartbeat(), (ctx, last, pending)));
                 }
+                let new_last = max;
+                for r in rows.into_iter().rev() {
+                    pending.push(r);
+                }
+                Some((heartbeat(), (ctx, new_last, pending)))
+            }
+            Err(e) => {
+                eprintln!("teamx console: sse poll error: {e}");
+                Some((heartbeat(), (ctx, last, pending)))
             }
         }
     });

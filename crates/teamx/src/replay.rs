@@ -317,7 +317,8 @@ pub fn export_har(store: &mut CaptureStore) -> Result<serde_json::Value, String>
         .conn()
         .prepare("SELECT id, flow_id, method, url, host, request_headers, status, response_headers, started_at FROM http_exchanges ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, i64, String, String, String, String, i64, String, f64)> = stmt
+    type ReplayRow = (i64, i64, String, String, String, String, i64, String, f64);
+    let rows: Vec<ReplayRow> = stmt
         .query_map([], |r| {
             Ok((
                 r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
@@ -461,7 +462,7 @@ pub async fn http_send(
         .await
         .map_err(|e| format!("connect {host}:{port}: {e}"))?;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let path = url.strip_prefix("http://").unwrap_or(&url).splitn(2, '/').nth(1).map(|p| format!("/{p}")).unwrap_or_else(|| "/".into());
+    let path = url.strip_prefix("http://").unwrap_or(&url).split_once('/').map(|x| x.1).map(|p| format!("/{p}")).unwrap_or_else(|| "/".into());
     let mut req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", e.method, path, host);
     req.push_str(&e.request_headers);
     // Ensure the header section is terminated by a single blank line.

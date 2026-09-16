@@ -81,12 +81,12 @@ pub fn handle_as_member(
 
     // 5. Dispatch the action.
     let result = match method {
-        "im.approve" => action_approve(conn, team_id, &actor_member_id, args),
-        "im.deny" => action_deny(conn, team_id, &actor_member_id, args),
+        "im.approve" => action_approve(conn, team_id, actor_member_id, args),
+        "im.deny" => action_deny(conn, team_id, actor_member_id, args),
         "im.verify" | "im.reject" => {
             // Delegate to server_tasks (task.verify / task.reject).
             let task_method = format!("task.{}", method.strip_prefix("im.").unwrap());
-            server_tasks::rpc(&task_method, args, conn, team_id, &actor_member_id)
+            server_tasks::rpc(&task_method, args, conn, team_id, actor_member_id)
         }
         other => return Err(format!("{other}: unknown write action")),
     };

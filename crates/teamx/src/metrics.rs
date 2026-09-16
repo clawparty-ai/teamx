@@ -78,7 +78,7 @@ impl MetricsRegistry {
         let elapsed = now.duration_since(start).as_secs_f64().max(0.001);
         // To keep rates responsive, use the min(elapsed, 2s) window but at
         // least 0.2s so a single burst doesn't report absurd bps.
-        let window = elapsed.min(2.0).max(0.2);
+        let window = elapsed.clamp(0.2, 2.0);
         let rx_bps = (c.rx_bytes as f64 / window).round() as u64;
         let tx_bps = (c.tx_bytes as f64 / window).round() as u64;
 

@@ -115,7 +115,7 @@ impl ServerCertVerifier for CaChainVerifier {
             webpki::KeyUsage::client_auth()
         };
         cert.verify_for_usage(
-            &self.provider.signature_verification_algorithms.all[..],
+            self.provider.signature_verification_algorithms.all,
             &self.roots.roots,
             intermediates,
             now,
