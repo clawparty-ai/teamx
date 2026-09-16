@@ -375,13 +375,6 @@ export async function runCliLocal(
   args: string[],
   opts?: { cwd?: string; timeoutMs?: number },
 ): Promise<any> {
-  const { execFileAsync } = (() => {
-    // local import to keep the top of the file unchanged
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const cp = require('node:child_process') as typeof import('node:child_process')
-    const { promisify } = require('node:util') as typeof import('node:util')
-    return { execFileAsync: promisify(cp.execFile) }
-  })()
   try {
     const { stdout } = await execFileAsync(TEAMX_BIN, [...args, '--json'], {
       timeout: opts?.timeoutMs ?? 120_000,
