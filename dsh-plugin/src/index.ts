@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent'
 import { registerTeamTools, registerGoalTools, registerMemberTools, registerInteractionTools, registerDiscussionTools } from './tools.js'
+import { registerTaskTools, registerGitTools, registerServeTools, registerConsoleTools, registerTunnelTools, registerMiscTools } from './tools-extra.js'
 import { registerCommands } from './commands.js'
 import { TEAMX_SKILL } from './skill.js'
 import { TEAMX_GRILL_WITH_DOCS_SKILL } from './grill-with-docs.generated.js'
@@ -108,6 +109,14 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerMemberTools(ctx)
   registerInteractionTools(ctx)
   registerDiscussionTools(ctx)
+  // Tool alignment batch 2 (task-9): tasks/git/serve/console/tunnels/misc —
+  // brings dsh-plugin to parity with opencode-plugin's tool surface.
+  registerTaskTools(ctx)
+  registerGitTools(ctx)
+  registerServeTools(ctx)
+  registerConsoleTools(ctx)
+  registerTunnelTools(ctx)
+  registerMiscTools(ctx)
   registerCommands(ctx)
   ctx.effect(() => ctx.skills.register(TEAMX_SKILL))
   ctx.effect(() => ctx.skills.register(TEAMX_GRILL_WITH_DOCS_SKILL))
