@@ -1395,7 +1395,7 @@ mod tests {
         )
         .unwrap();
         let map = presence_for_members(&conn).unwrap();
-        assert!(map.get("m1").is_none(), "stale presence should be dropped");
+        assert!(!map.contains_key("m1"), "stale presence should be dropped");
     }
 
     #[test]

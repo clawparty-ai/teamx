@@ -78,7 +78,14 @@ member console（`teamx console`，user-console）目前有 5 个一级菜单：
 - **DQ-0002 数据源**：**A 本地直读**（新增 `files`/`file` panel 走 `/api/panels/{id}`）；B 仅留给 `#fsOverlay` 看远端机器。**硬要求**：后端必须**直接调用 `fs.rs` 的同一个路径校验函数**（不复制），否则两套校验必然漂移。— rationale: 同机直读零额外信任边界、隧道多一跳+一层鉴权+依赖在线；dissent: 无；unanimity: **unanimous**；discussion: `#1802`（结论 `#1853`）。
 
 - **DQ-0003 安全边界**：① `.teamx/` 必拒（mTLS 私钥/letters）；② `.git/` **只读展示**但 `objects`/`hooks` 等**折叠不可展开**；③ 密钥文件（`*.pem`/`*.key`/`.env`/`id_rsa`/`**/letters/`）**仅元数据** + `sensitive` 标记、拒绝预览；④ 路径/符号链接/绝对路径注入**复用 fs.rs 防护**；⑤ **只读**无写端点；⑥ workspace 外拒绝；⑦ markdown 预览**必须走 `mdRender` 白名单**。— rationale: .teamx 泄露即身份失陷、误点密钥风险 > 排查价值、mdRender 已审过 XSS 面；dissent: 无；unanimity: **unanimous**；discussion: `#1803`（结论 `#1854`）。
-  - **⚠️ 修订（owner，2026-09-15）**：① 改为 —— **`.teamx` 可浏览**，但**凭据类条目在任意深度隐藏**（`ca/`、`letters/`、`members/`、`*.db`/`*.db-wal`/`*.db-shm`、`*.letter`、`console-server.json`、`forwards.json`）；其余（`docs/`、`TEAM.md`、`instance.json`、`console.json`、`nudge-cursor`、`repos/`）正常浏览与预览。理由：`.teamx` 里存着团队文档与 `TEAM.md`，一律拒绝会让「文档浏览」这一核心诉求落空；凭据则按名精确拒绝即可。②③④⑤⑥⑦ 不变。
+  - **⚠️ 修订 1（owner，2026-09-15）**：① 改为 —— **`.teamx` 可浏览**，但凭据类条目在任意深度隐藏；其余（`docs/`、`TEAM.md`、`instance.json`、`console.json`、`nudge-cursor`、`repos/`）正常浏览与预览。理由：`.teamx` 里存着团队文档与 `TEAM.md`，一律拒绝会让「文档浏览」这一核心诉求落空。
+  - **⚠️ 修订 2（owner，2026-09-15）**：③ 由「仅元数据 + `sensitive` 标记」**升级为「一律隐藏、不可浏览」**，且规则**全局生效**（不再只作用于 `.teamx`）。新增 `fs::is_private()`：
+    - 私有目录：`.ssh`、`.aws`、`.gnupg`、`.docker`、`.kube`、`secrets`、`.secrets`、`credentials`
+    - 精确名：`.npmrc`、`.pypirc`、`.netrc`、`.git-credentials`、`.htpasswd`、`.pgpass`、`auth.json`、`kubeconfig`、`console-server.json`、`forwards.json`、`id_rsa`、`id_ed25519`
+    - 前缀：`.env*`、`id_*`、`credentials*`、`secrets*`、`service-account*`
+    - 后缀：`.pem`、`.key`、`.crt`、`.cer`、`.p12`、`.pfx`、`.jks`、`.keystore`、`.kdbx`、`.ovpn`、`.token`、`.secret`、`.letter`、`.db`、`.db-wal`、`.db-shm`、`.sqlite`、`.sqlite3`
+    - `.git/config` 一并折叠（remote URL 可能内嵌 token）
+    - 理由：owner 要求「所有隐私/私有信息都不可浏览」；宁可漏列一行，不可泄露一个密钥。
 
 - **DQ-0004 预览能力与上限**：文本/代码 `<pre>` 等宽 + 行号；markdown 复用 `mdRender`；图片内联 PNG/JPG/GIF（**SVG 仅下载**）；二进制仅下载；**不引入语法高亮库**（自包含单二进制 + CSP 面）；上限 **1 MiB 读盘 / ~5000 行 / 图片 5 MiB**，超限截断提示下载。— rationale: 等宽+行号已覆盖看代码、highlight.js 增体积与攻击面、SVG 当 HTML 渲染即 XSS；dissent: 无；unanimity: **unanimous**；discussion: `#1804`（结论 `#1855`）。
 

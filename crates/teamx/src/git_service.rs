@@ -476,11 +476,10 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> usize {
             if std::fs::create_dir_all(&to).is_ok() {
                 count += copy_tree(&from, &to, depth + 1);
             }
-        } else if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            if std::fs::copy(&from, &to).is_ok() {
+        } else if e.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && std::fs::copy(&from, &to).is_ok() {
                 count += 1;
             }
-        }
     }
     count
 }

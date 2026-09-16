@@ -90,6 +90,7 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/api/stream", get(api_stream))
         .route("/api/discussion/{action}", post(api_discussion))
         .route("/api/me", get(api_me))
+        .route("/api/file", get(api_file))
         .route("/api/cloud", get(api_cloud_get).post(api_cloud_post))
         .route(
             "/api/cloud/{id}",
@@ -218,7 +219,7 @@ async fn api_panel(
     }
     let ctx = state.ctx.clone();
     let id = id.clone();
-    let query_id = params.get("id").map(|s| s.clone());
+    let query_id = params.get("id").cloned();
     let out: RunOut = tokio::task::spawn_blocking(move || fetch_panel(&ctx, &id, query_id.as_deref()))
         .await
         .unwrap_or_else(|_| RunOut {
@@ -239,6 +240,92 @@ async fn api_panel(
 /// SSE, so Discussion / Events views update without page polling. The initial
 /// poll only snapshots the current seq (no history replay). Local mode emits
 /// only heartbeats (no live channel).
+/// GET /api/file?path=<rel> — download one workspace file as an attachment.
+/// Used by the File panel's "下载原文 PDF" link (and any binary preview).
+async fn api_file(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let Some(rel) = params.get("path").cloned().filter(|s| !s.is_empty()) else {
+        return err_json(StatusCode::BAD_REQUEST, "file: `path` is required".to_string());
+    };
+    let ctx = state.ctx.clone();
+    let out = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), String> {
+        let root = crate::console_data::workspace_root(&ctx);
+        let file = crate::fs::resolve_with(&root, &rel, crate::fs::PathPolicy::Console)?;
+        if !file.is_file() {
+            return Err(format!("`{rel}` is not a file"));
+        }
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "download".to_string());
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        Ok((bytes, name))
+    })
+    .await;
+    match out {
+        Ok(Ok((bytes, name))) => {
+            let mut resp = Response::new(Body::from(bytes));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                content_type_for(&name).parse().unwrap(),
+            );
+            // Inline for types the browser renders safely (PDF/images/plain
+            // text) so the File panel can embed them; everything else stays an
+            // attachment download. SVG is deliberately NOT in the inline list
+            // (served as octet-stream → download) to avoid script execution.
+            let disp = format!(
+                "{}; filename=\"{}\"",
+                if is_inline_type(&name) { "inline" } else { "attachment" },
+                name.replace('"', "")
+            );
+            resp.headers_mut()
+                .insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
+            resp
+        }
+        Ok(Err(e)) => err_json(StatusCode::BAD_REQUEST, e),
+        Err(_) => err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "file task panicked".to_string(),
+        ),
+    }
+}
+
+/// Whether a file may be rendered **inline** by the browser (rather than
+/// downloaded). Kept narrow and XSS-safe: no SVG, no HTML.
+fn is_inline_type(name: &str) -> bool {
+    matches!(
+        content_type_for(name),
+        "application/pdf"
+            | "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "text/plain; charset=utf-8"
+            | "text/csv; charset=utf-8"
+            | "application/json"
+    )
+}
+
+fn content_type_for(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" | "md" | "markdown" => "text/plain; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "json" => "application/json",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
 async fn api_stream(State(state): State<S>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = guard(&state, &headers) {
         return resp;
@@ -259,34 +346,36 @@ async fn api_stream(State(state): State<S>, headers: HeaderMap) -> axum::respons
                 .await
                 .map_err(|e| e.to_string())?
         }
-        loop {
-            if let Some(row) = pending.pop() {
-                let seq = row.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
-                let ev = SseEvent::default().event("event").json_data(row).unwrap_or_else(|_| SseEvent::default());
-                return Some((ev, (ctx, seq.max(last), pending)));
+        // No `loop` here: stream::unfold re-invokes this future with the new
+        // state after every `Some`, so this body already runs once per SSE
+        // poll (a `loop` whose every path returns would be flagged
+        // never_loop and is dead structure).
+        if let Some(row) = pending.pop() {
+            let seq = row.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
+            let ev = SseEvent::default().event("event").json_data(row).unwrap_or_else(|_| SseEvent::default());
+            return Some((ev, (ctx, seq.max(last), pending)));
+        }
+        if last == 0 {
+            // first pass: snapshot latest seq only (no history replay)
+            if let Ok((_hist, max)) = poll(&ctx, 0).await {
+                return Some((heartbeat(), (ctx, max, pending)));
             }
-            if last == 0 {
-                // first pass: snapshot latest seq only (no history replay)
-                if let Ok((_hist, max)) = poll(&ctx, 0).await {
-                    return Some((heartbeat(), (ctx, max, pending)));
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-            match poll(&ctx, last).await {
-                Ok((rows, max)) => {
-                    if rows.is_empty() {
-                        return Some((heartbeat(), (ctx, last, pending)));
-                    }
-                    let new_last = max;
-                    for r in rows.into_iter().rev() {
-                        pending.push(r);
-                    }
-                    return Some((heartbeat(), (ctx, new_last, pending)));
-                }
-                Err(e) => {
-                    eprintln!("teamx console: sse poll error: {e}");
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        match poll(&ctx, last).await {
+            Ok((rows, max)) => {
+                if rows.is_empty() {
                     return Some((heartbeat(), (ctx, last, pending)));
                 }
+                let new_last = max;
+                for r in rows.into_iter().rev() {
+                    pending.push(r);
+                }
+                Some((heartbeat(), (ctx, new_last, pending)))
+            }
+            Err(e) => {
+                eprintln!("teamx console: sse poll error: {e}");
+                Some((heartbeat(), (ctx, last, pending)))
             }
         }
     });

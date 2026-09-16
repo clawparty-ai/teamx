@@ -68,37 +68,33 @@ pub fn parse_rules_yaml(text: &str, fallback_default: &str) -> Result<RouteTable
             }
 
             match rule_type.as_str() {
-                "DOMAIN-SUFFIX" => {
-                    if !arg.is_empty() {
+                "DOMAIN-SUFFIX"
+                    if !arg.is_empty() => {
                         rules.push(RouteRule {
                             match_type: MatchType::SuffixDomain,
                             pattern: format!("*.{arg}"),
                             exit: action.to_string(),
                         });
                     }
-                }
-                "DOMAIN" => {
-                    if !arg.is_empty() {
+                "DOMAIN"
+                    if !arg.is_empty() => {
                         rules.push(RouteRule {
                             match_type: MatchType::ExactDomain,
                             pattern: arg.to_string(),
                             exit: action.to_string(),
                         });
                     }
-                }
-                "IP-CIDR" | "IP-CIDR6" => {
-                    if !arg.is_empty() {
+                "IP-CIDR" | "IP-CIDR6"
+                    if !arg.is_empty()
                         // Validate it parses as a CIDR (routes.rs does at resolve time,
                         // but catch obvious mistakes here).
-                        if arg.contains('/') {
+                        && arg.contains('/') => {
                             rules.push(RouteRule {
                                 match_type: MatchType::Cidr,
                                 pattern: arg.to_string(),
                                 exit: action.to_string(),
                             });
                         }
-                    }
-                }
                 // Unknown rule types (GEOIP, PROCESS-NAME, etc.) are ignored.
                 _ => {}
             }

@@ -86,6 +86,27 @@ fn rpc(url: &str, method: &str, args: Value) -> Result<Value, String> {
     crate::tunnel_client::run_rpc(url, method, args)
 }
 
+/// Resolve which local opencode server the worker attaches to.
+///
+/// Precedence: `--opencode-url` flag, then `TEAMX_OPENCODE_URL`, then a hard
+/// error. There is deliberately NO port-4199 fallback: on nodes hosting
+/// several workspaces (each opencode serve on its own port) a silent default
+/// attaches to whatever happens to listen on 4199 — potentially another
+/// workspace's session — and runs that member's tasks in the wrong place.
+fn resolve_opencode_url(flag: Option<&str>) -> Result<String, String> {
+    if let Some(u) = flag.filter(|u| !u.is_empty()) {
+        return Ok(u.to_string());
+    }
+    if let Some(u) = std::env::var("TEAMX_OPENCODE_URL").ok().filter(|u| !u.is_empty()) {
+        return Ok(u);
+    }
+    Err("teamx worker: refusing to guess the opencode server URL (the old \
+         http://127.0.0.1:4199 default attached to the wrong workspace on \
+         multi-workspace nodes). Pass --opencode-url <url> (e.g. the port \
+         from `opencode serve --port <4199+k>`) or set TEAMX_OPENCODE_URL."
+        .to_string())
+}
+
 /// Entry: long-running loop (or `--once` single pass).
 pub fn run(cmd: &WorkerCmd) -> Result<(), String> {
     let url = cmd
@@ -100,14 +121,14 @@ pub fn run(cmd: &WorkerCmd) -> Result<(), String> {
     let interval = cmd.interval.max(10);
     let cooldown = Duration::from_secs(cmd.cooldown.max(60));
     let opencode_bin = cmd.opencode.clone().unwrap_or_else(|| "opencode".to_string());
-    let opencode_url = cmd
-        .opencode_url
-        .clone()
-        .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:4199".to_string());
+    // No silent default: on a multi-workspace node the 4199 default used to
+    // attach to whatever opencode happened to listen there (possibly another
+    // workspace's session). Fail fast instead — pass --opencode-url or set
+    // TEAMX_OPENCODE_URL.
+    let opencode_url = resolve_opencode_url(cmd.opencode_url.as_deref())?;
 
     eprintln!(
-        "teamx worker: member inbox worker (server {url})\n  workspace: {}\n  execute={} interval={interval}s cooldown={}s",
+        "teamx worker: member inbox worker (server {url})\n  workspace: {}\n  opencode: {opencode_url}\n  execute={} interval={interval}s cooldown={}s",
         std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(),
         enabled,
         cooldown.as_secs()
@@ -304,4 +325,59 @@ fn poll_once(
     let _ = rpc(url, "team.inbox", serde_json::json!({ "ack": true }));
     *last_run_at = Instant::now();
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Save + clear the env var, returning the previous value for restore.
+    fn stash_env() -> Option<String> {
+        let prev = std::env::var("TEAMX_OPENCODE_URL").ok();
+        std::env::remove_var("TEAMX_OPENCODE_URL");
+        prev
+    }
+
+    fn restore_env(prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var("TEAMX_OPENCODE_URL", v),
+            None => std::env::remove_var("TEAMX_OPENCODE_URL"),
+        }
+    }
+
+    #[test]
+    fn explicit_flag_wins_over_env() {
+        let prev = stash_env();
+        std::env::set_var("TEAMX_OPENCODE_URL", "http://127.0.0.1:4201");
+        let got = resolve_opencode_url(Some("http://127.0.0.1:4301")).unwrap();
+        assert_eq!(got, "http://127.0.0.1:4301");
+        restore_env(prev);
+    }
+
+    #[test]
+    fn env_is_used_when_no_flag() {
+        let prev = stash_env();
+        std::env::set_var("TEAMX_OPENCODE_URL", "http://127.0.0.1:4201");
+        let got = resolve_opencode_url(None).unwrap();
+        assert_eq!(got, "http://127.0.0.1:4201");
+        restore_env(prev);
+    }
+
+    #[test]
+    fn empty_flag_falls_through_to_env() {
+        let prev = stash_env();
+        std::env::set_var("TEAMX_OPENCODE_URL", "http://127.0.0.1:4201");
+        let got = resolve_opencode_url(Some("")).unwrap();
+        assert_eq!(got, "http://127.0.0.1:4201");
+        restore_env(prev);
+    }
+
+    #[test]
+    fn missing_everywhere_is_a_hard_error_not_a_silent_default() {
+        let prev = stash_env();
+        let err = resolve_opencode_url(None).unwrap_err();
+        assert!(err.contains("--opencode-url"), "{err}");
+        assert!(err.contains("TEAMX_OPENCODE_URL"), "{err}");
+        restore_env(prev);
+    }
 }

@@ -297,7 +297,7 @@ export function clearMemberCache(agentId?: string): void {
 // runCli — spawn teamx binary (local mode)
 // ---------------------------------------------------------------------------
 
-const TEAMX_BIN = process.env.TEAMX_BIN || 'teamx'
+export const TEAMX_BIN = process.env.TEAMX_BIN || 'teamx'
 const DEFAULT_TIMEOUT_MS = 30_000
 
 /**
@@ -355,6 +355,42 @@ function toSnake(s: string): string {
  * CLI shape: `[group] <subcommand> [positional...] [--flag value | --flag]...`
  * Positional slots are mapped to their RPC field names per method.
  */
+/** Workspace teamx dir (instance-level in dsh: TEAMX_HOME). */
+export function teamxDir(): string {
+  return TEAMX_HOME
+}
+
+/** The teamx binary path (env override supported). */
+export function teamxBin(): string {
+  return TEAMX_BIN
+}
+
+/**
+ * Run a teamx CLI invocation ALWAYS as a local child process, even in
+ * network mode. Used by git operations that act on the local checkout /
+ * local git config (clone/pull/push/setup/commit), which must not be
+ * shipped to the server as RPC.
+ */
+export async function runCliLocal(
+  args: string[],
+  opts?: { cwd?: string; timeoutMs?: number },
+): Promise<any> {
+  try {
+    const { stdout } = await execFileAsync(TEAMX_BIN, [...args, '--json'], {
+      timeout: opts?.timeoutMs ?? 120_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env },
+      cwd: opts?.cwd,
+    })
+    return JSON.parse(stdout.trim())
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      throw new Error(`teamx binary not found. Install teamx or set TEAMX_BIN. Searched: ${TEAMX_BIN}`)
+    }
+    throw new Error(`teamx ${args[0]} failed: ${err.stderr || err.message}`)
+  }
+}
+
 export function cliArgsToRpc(argv: string[]): { method: string; args: Record<string, string | boolean | number | null> } {
   const positional: string[] = []
   const flags: Record<string, string | boolean | number | null> = {}
@@ -388,7 +424,7 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
   // Grouped commands (team.*, goal.*, member.*, role.*, loopx.*, tunnel.*,
   // activity.*, discussion.*) use a two-token method; top-level commands
   // (publish/ask/respond/events/log/sync) treat every positional as a parameter.
-  const GROUPED = new Set(['team', 'goal', 'member', 'role', 'loopx', 'tunnel', 'activity', 'discussion'])
+  const GROUPED = new Set(['team', 'goal', 'member', 'role', 'loopx', 'tunnel', 'activity', 'discussion', 'task', 'git'])
   const p0 = positional[0] ?? ''
   const p1 = positional[1] ?? ''
   let method: string
@@ -427,6 +463,21 @@ export function cliArgsToRpc(argv: string[]): { method: string; args: Record<str
      'loopx.report': ['project'],
      'tunnel.status': ['name'],
      'tunnel.close': ['name'],
+     // Tasks (server-side taskx docs; keep in sync with opencode-plugin).
+     'task.create': ['title'],
+     'task.ack': ['id'],
+     'task.claim': ['id'],
+     'task.update': ['id'],
+     'task.help': ['id'],
+     'task.done': ['id'],
+     'task.verify': ['id'],
+     'task.reject': ['id'],
+     'task.log': ['id'],
+     // Git repo management (server RPC for create/delete/list/grant/permissions).
+     'git.create': ['name'],
+     'git.delete': ['name'],
+     'git.grant': ['name', 'member_id'],
+     'git.permissions': ['name'],
      'publish': ['type'],
      'ask': ['member_id'],
      'respond': ['ask_id', 'answer'],

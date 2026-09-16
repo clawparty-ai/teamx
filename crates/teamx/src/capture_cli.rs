@@ -85,12 +85,12 @@ pub fn handle_capture(cmd: &crate::cli::CaptureCmd) -> Result<serde_json::Value,
             let db = capture_home();
             let mut store = CaptureStore::open(&db)?;
             if let Some(kpath) = keylog {
-                let n = crate::capture::export_keylog(&mut store, &kpath)
+                let n = crate::capture::export_keylog(&mut store, kpath)
                     .map_err(|e| e.to_string())?;
                 return Ok(serde_json::json!({ "ok": true, "exported": n, "path": kpath.display().to_string() }));
             }
             if let (Some(fid), Some(ppath)) = (flow, pcap) {
-                let n = crate::capture::export_pcap(&mut store, *fid, &ppath)
+                let n = crate::capture::export_pcap(&mut store, *fid, ppath)
                     .map_err(|e| e.to_string())?;
                 return Ok(serde_json::json!({ "ok": true, "packets": n, "path": ppath.display().to_string() }));
             }
@@ -116,7 +116,8 @@ fn list_flows(
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let pattern = sni.map(|s| s.replace('*', "%")).unwrap_or_default();
-    let q = |r: &rusqlite::Row| -> rusqlite::Result<(i64, f64, String, String, String, Option<String>, i64, i64, i64)> {
+    type FlowRow = (i64, f64, String, String, String, Option<String>, i64, i64, i64);
+    let q = |r: &rusqlite::Row| -> rusqlite::Result<FlowRow> {
         Ok((
             r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
             r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?

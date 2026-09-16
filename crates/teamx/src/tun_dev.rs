@@ -266,7 +266,6 @@ pub fn restore_system_dns() -> Result<(), String> {
 /// Set system DNS to a single server with no fallback.
 /// NOTE: superseded by `set_system_dns` (keeps the original DNS as fallback).
 /// macOS only; no-op elsewhere.
-
 /// Per-service DNS snapshot saved across a tun0 session.
 #[cfg(target_os = "macos")]
 #[derive(serde::Serialize, serde::Deserialize, Default)]

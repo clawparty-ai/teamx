@@ -4,6 +4,7 @@
 //! Reuses:
 //!   - teamfile parser (`.teamx/TEAM.md` member/role/duties/skills)
 //!   - agents spawn/list/stop (headless `opencode serve` registry)
+//!
 //! New in this module: per-member workspace + persona (AGENTS.md) + optional
 //! shared-repo clone + optional ttyd web TUI per member.
 
@@ -364,9 +365,8 @@ pub fn run(cmd: &LocalTeamCmd) -> Result<serde_json::Value, String> {
             });
 
             let mut launched = Vec::new();
-            let mut idx: u16 = 0;
             let mut ttyd_idx: u16 = 0;
-            for m in members {
+            for (idx, m) in (0_u16..).zip(members) {
                 let dir = base_dir.join(&m.key);
                 std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
 
@@ -395,7 +395,6 @@ pub fn run(cmd: &LocalTeamCmd) -> Result<serde_json::Value, String> {
                 let _ = repo_dir;
 
                 let port = base.saturating_add(idx);
-                idx += 1;
                 let spawned = crate::agents::spawn_agent(&m.key, Some(&dir), Some(port), Some(&opencode_bin), &envs, false)?;
                 let actual_port = spawned.get("port").and_then(|p| p.as_u64()).map(|p| p as u16).unwrap_or(port);
 

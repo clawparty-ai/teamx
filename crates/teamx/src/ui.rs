@@ -3463,16 +3463,16 @@ async fn bridge_pty(
         while let Some(Ok(msg)) = b_stream.next().await {
             match msg {
                 WsMessage::Text(t) => {
-                    if m_sink.send(TMessage::Text(t.to_string().into())).await.is_err() { break; }
+                    if m_sink.send(TMessage::Text(t.to_string())).await.is_err() { break; }
                 }
                 WsMessage::Binary(b) => {
-                    if m_sink.send(TMessage::Binary(b.to_vec().into())).await.is_err() { break; }
+                    if m_sink.send(TMessage::Binary(b.to_vec())).await.is_err() { break; }
                 }
                 WsMessage::Ping(p) => {
-                    if m_sink.send(TMessage::Ping(p.to_vec().into())).await.is_err() { break; }
+                    if m_sink.send(TMessage::Ping(p.to_vec())).await.is_err() { break; }
                 }
                 WsMessage::Pong(p) => {
-                    if m_sink.send(TMessage::Pong(p.to_vec().into())).await.is_err() { break; }
+                    if m_sink.send(TMessage::Pong(p.to_vec())).await.is_err() { break; }
                 }
                 WsMessage::Close(_) => break,
             }
@@ -3966,8 +3966,7 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
             // stream = every other activity kind (tool_call / file_edit /
             // step_finish / human_*) so each column shows fine-grained work,
             // similar to the fishbone timeline.
-            if let Some(rows) = crate::activity::rows(&c, team, Some(&mid), None, Some("work_session"), from, to, limit)
-                .ok()
+            if let Ok(rows) = crate::activity::rows(&c, team, Some(&mid), None, Some("work_session"), from, to, limit)
             {
                 if let Some(arr) = rows.as_array() {
                     for t in arr {
@@ -3980,8 +3979,7 @@ async fn api_kanban(State(state): State<S>, Query(params): Query<HashMap0>, head
                     }
                 }
             }
-            if let Some(rows) = crate::activity::rows(&c, team, Some(&mid), None, None, from, to, limit * 2)
-                .ok()
+            if let Ok(rows) = crate::activity::rows(&c, team, Some(&mid), None, None, from, to, limit * 2)
             {
                 if let Some(arr) = rows.as_array() {
                     for t in arr {
