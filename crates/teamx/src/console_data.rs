@@ -323,7 +323,7 @@ fn discussion_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
 
 /// Workspace root the File panel browses: the directory holding `<cwd>/.teamx`.
 /// DQ-0001 anchors the browse root to the session cwd — never the whole disk.
-fn workspace_root(ctx: &Ctx) -> std::path::PathBuf {
+pub(crate) fn workspace_root(ctx: &Ctx) -> std::path::PathBuf {
     ctx.home
         .parent()
         .map(|p| p.to_path_buf())
@@ -527,6 +527,9 @@ fn git_head_time(repo: &std::path::Path) -> i64 {
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEW_LINES: usize = 5000;
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// PDFs are embedded via the native browser viewer; cap so a huge file does
+/// not stall the panel (the raw endpoint would still serve it on download).
+const MAX_INLINE_PDF_BYTES: u64 = 32 * 1024 * 1024;
 const IMAGE_EXTS: [&str; 3] = ["png", "jpg", "jpeg"];
 const GIF_EXT: &str = "gif";
 
@@ -566,6 +569,22 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "kind": "download", "note": "SVG 不内联预览（避免 XSS），请下载查看。",
         }));
     }
+    // PDFs render in the browser's NATIVE viewer through the raw `/api/file`
+    // endpoint — no PDF.js, no extra bundle weight. The panel embeds an
+    // <iframe> pointing at that endpoint.
+    if ext == "pdf" {
+        if size > MAX_INLINE_PDF_BYTES {
+            return Ok(json!({
+                "ok": true, "path": here, "name": name, "size": size,
+                "kind": "download",
+                "note": format!("PDF 超过 {} MiB，请下载查看。", MAX_INLINE_PDF_BYTES / 1024 / 1024),
+            }));
+        }
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "pdf",
+        }));
+    }
     if IMAGE_EXTS.contains(&ext.as_str()) || ext == GIF_EXT {
         if size > MAX_INLINE_IMAGE_BYTES {
             return Ok(json!({
@@ -587,6 +606,41 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "ok": true, "path": here, "name": name, "size": size,
             "kind": "image", "mime": mime,
             "data_uri": format!("data:{mime};base64,{b64}"),
+        }));
+    }
+
+    // PDF: preview the matching extracted text (same stem) and offer the
+    // original for download. PDFs are binary, so an inline preview is useless;
+    // the useful thing is the plain-text extract produced by the KB pipeline.
+    if ext == "pdf" {
+        let matched = find_pdf_text(&root, &file);
+        let (content, text_path, truncated) = match &matched {
+            Some(tp) => {
+                let raw = std::fs::read(tp).unwrap_or_default();
+                let trunc_bytes = raw.len() > MAX_PREVIEW_BYTES;
+                let slice = &raw[..raw.len().min(MAX_PREVIEW_BYTES)];
+                let text = String::from_utf8_lossy(slice).to_string();
+                let total_lines = text.lines().count();
+                let trunc_lines = total_lines > MAX_PREVIEW_LINES;
+                let content = if trunc_lines {
+                    text.lines()
+                        .take(MAX_PREVIEW_LINES)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    text
+                };
+                (content, Some(rel_of(&canon_root, tp)), trunc_bytes || trunc_lines)
+            }
+            None => (String::new(), None, false),
+        };
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "pdf",
+            "content": content,
+            "text_path": text_path,
+            "truncated": truncated,
+            "download_path": here,
         }));
     }
 
@@ -623,6 +677,29 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
         "lines": total_lines.min(MAX_PREVIEW_LINES),
         "truncated": truncated_bytes || truncated_lines,
     }))
+}
+
+/// Locate the plain-text extract for a PDF: a same-stem `.txt` next to it, or
+/// under the common pipeline output dirs (`docs/text/`, `papers/txt/`).
+fn find_pdf_text(root: &std::path::Path, pdf: &std::path::Path) -> Option<std::path::PathBuf> {
+    let stem = pdf.file_stem()?;
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = pdf.parent() {
+        // Same directory, then walk up looking for the pipeline output dirs.
+        candidates.push(dir.join(stem).with_extension("txt"));
+        let mut anc = Some(dir);
+        for _ in 0..5 {
+            let Some(a) = anc else { break };
+            candidates.push(a.join("txt").join(stem).with_extension("txt"));
+            candidates.push(a.join("docs/text").join(stem).with_extension("txt"));
+            anc = a.parent();
+        }
+    }
+    candidates.push(root.join("docs/text").join(stem).with_extension("txt"));
+    candidates.push(root.join("papers/txt").join(stem).with_extension("txt"));
+    candidates.into_iter().find(|p| {
+        p.is_file() && std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+    })
 }
 
 /// `<key>/<id>.meta.json` + `<id>.md` instances. P0 is local-only (the console

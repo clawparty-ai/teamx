@@ -480,6 +480,7 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .files-preview { flex:1; min-width:0; max-height:74vh; overflow:auto; }
 .files-preview pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre; overflow:auto; max-height:64vh; margin:0; }
 .files-preview img { max-width:100%; }
+.files-preview .files-pdf { width:100%; height:64vh; border:1px solid var(--border); border-radius:var(--radius); background:var(--card); }
 .files-preview .ln { color:var(--muted-fg); user-select:none; display:inline-block; width:3.4em; text-align:right; margin-right:10px; }
 .files-meta { color:var(--muted-fg); font-size:12px; margin-bottom:8px; font-family:var(--font-mono); }
 .files-tag { font-size:10.5px; border:1px solid var(--border); border-radius:4px; padding:0 5px; margin-left:6px; color:var(--muted-fg); }
@@ -1206,8 +1207,19 @@ async function openFile(path){
   const d=p.data||{};
   const head='<div class="files-meta">'+esc(d.path||path)+' · '+fmtBytes(d.size||0)+(d.truncated?' · <span class="files-tag warn">已截断</span>':"")+'</div>';
   if(d.kind==="sensitive"||d.kind==="download"){ $("#flPreview").innerHTML=head+'<div class="muted">'+esc(d.note||"请下载查看")+'</div>'; return; }
+  // PDF: embed the browser's native viewer via the raw endpoint (inline
+  // Content-Disposition). No PDF.js, no extra bundle weight.
+  if(d.kind==="pdf"){ $("#flPreview").innerHTML=head+'<iframe class="files-pdf" title="'+esc(d.name||"PDF")+'" src="/api/file?path='+encodeURIComponent(d.path||path)+'"></iframe>'; return; }
   if(d.kind==="image"){ $("#flPreview").innerHTML=head+'<img src="'+d.data_uri+'" alt="'+esc(d.name||"")+'">'; return; }
   if(d.kind==="markdown"){ $("#flPreview").innerHTML=head+'<div class="md-render">'+mdRender(d.content||"")+'</div>'; return; }
+  if(d.kind==="pdf"){
+    const dl='/api/file?path='+encodeURIComponent(d.download_path||path);
+    const link='<div style="margin:6px 0 10px"><a class="btn" href="'+dl+'" download>⬇ 下载原文 PDF</a></div>';
+    const body=d.text_path
+      ? '<pre>'+lineNumbers(d.content||"")+'</pre>'
+      : '<div class="muted">未找到对应文本抽取（docs/text/&lt;同名&gt;.txt），仅可下载原文 PDF。</div>';
+    $("#flPreview").innerHTML=head+link+body; return;
+  }
   $("#flPreview").innerHTML=head+'<pre>'+lineNumbers(d.content||"")+'</pre>';
 }
 function lineNumbers(text){
