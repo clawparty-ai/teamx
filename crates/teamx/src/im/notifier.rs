@@ -70,8 +70,11 @@ const DIGEST_TYPES: &[&str] = &[
 ];
 
 /// Management/action-ish event types — pushed one by one, immediately
-/// (逐条必达). Closed enum as above.
-const DIRECT_TYPES: &[&str] = &["doc.help_requested", "task.nudge"];
+/// (逐条必达). Closed enum as above. `budget.alert` is deliberately DIRECT
+/// (DQ-0006: 预算告警全员默认 + 穿透静默时段): it is crossing-triggered and
+/// emit-once per member per threshold at the source (activity.rs), so there
+/// is no flooding concern to digest away.
+const DIRECT_TYPES: &[&str] = &["doc.help_requested", "task.nudge", "budget.alert"];
 
 fn is_digestable(event_type: &str) -> bool {
     DIGEST_TYPES.contains(&event_type)
@@ -473,8 +476,12 @@ fn render_digest_body(event_type: &str, seqs: &[i64]) -> String {
 }
 
 fn render_direct_body(event_type: &str, seq: i64, payload: Option<&str>) -> String {
+    let parsed = payload.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    if event_type == "budget.alert" {
+        return render_budget_alert(seq, parsed.as_ref());
+    }
     let mut parts = vec![format!("【teamx】[{event_type}] seq {seq}")];
-    if let Some(p) = payload.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) {
+    if let Some(p) = parsed {
         for k in ["title", "task", "id", "message", "detail"] {
             if let Some(s) = p.get(k).and_then(|v| v.as_str()) {
                 if !s.is_empty() {
@@ -487,10 +494,36 @@ fn render_direct_body(event_type: &str, seq: i64, payload: Option<&str>) -> Stri
     parts.join(" ")
 }
 
+/// Budget alert rendering (DQ-0006: 全员默认，紧急必达): member, cumulative
+/// usage, threshold, and the over-ratio. Falls back to the generic shape when
+/// the payload is malformed.
+fn render_budget_alert(seq: i64, payload: Option<&serde_json::Value>) -> String {
+    let Some(p) = payload else {
+        return format!("【teamx·预算告警】seq {seq}");
+    };
+    let member = p
+        .get("member_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let usage = p.get("usage_cost_usd").and_then(|v| v.as_f64());
+    let threshold = p.get("threshold_usd").and_then(|v| v.as_f64());
+    match (usage, threshold) {
+        (Some(u), Some(t)) if t > 0.0 => {
+            let ratio = u / t * 100.0;
+            format!(
+                "【teamx·预算告警】成员 {} 累计消耗 ${:.2} 已达阈值 ${:.2}（{:.0}%）",
+                member, u, t, ratio
+            )
+        }
+        _ => format!("【teamx·预算告警】成员 {member} 触发预算告警（seq {seq}）"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
+    use serde_json::json;
     use std::sync::Mutex;
 
     fn test_conn() -> Connection {
@@ -531,6 +564,78 @@ mod tests {
             provider: Arc::new(OkProvider),
             digest_window_secs: DIGEST_WINDOW_SECS,
         }
+    }
+
+    #[test]
+    fn budget_alert_renders_readable_alert() {
+        let payload = json!({
+            "team_id": "t1", "member_id": "m1", "period": "cumulative",
+            "usage_cost_usd": 12.5, "threshold_usd": 10.0,
+        });
+        let body = render_budget_alert(42, Some(&payload));
+        assert!(body.contains("预算告警"), "{body}");
+        assert!(body.contains("m1"), "{body}");
+        assert!(body.contains("$12.50"), "{body}");
+        assert!(body.contains("$10.00"), "{body}");
+        assert!(body.contains("125%"), "{body}");
+    }
+
+    #[test]
+    fn budget_alert_malformed_payload_falls_back() {
+        let body = render_budget_alert(7, Some(&json!({"foo": 1})));
+        assert!(body.contains("预算告警"), "{body}");
+        assert!(body.contains("seq 7"), "{body}");
+        let body = render_budget_alert(7, None);
+        assert!(body.contains("seq 7"), "{body}");
+    }
+
+    #[test]
+    fn budget_alert_flows_direct_to_im() {
+        let conn = test_conn();
+        seed_team(&conn, "t1");
+        let mut conn = conn;
+        let n = notifier();
+        // Emit a budget.alert event; run collect → direct flush.
+        emit(&mut conn, "t1", "budget.alert", Some(&json!({
+            "team_id": "t1", "member_id": "m1", "period": "cumulative",
+            "usage_cost_usd": 12.5, "threshold_usd": 10.0,
+        })));
+        let stats = n.run_once(&mut conn, 1000);
+        assert_eq!(stats.collected, 1, "budget.alert must be collected");
+        assert_eq!(stats.pushed, 1, "budget.alert must push directly (not digest)");
+        // It landed in im_outbox as direct.
+        let direct: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM im_outbox WHERE event_type='budget.alert' AND direct=1 AND state='pushed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct, 1);
+    }
+
+    #[test]
+    fn budget_alert_is_never_digested() {
+        let conn = test_conn();
+        seed_team(&conn, "t1");
+        let mut conn = conn;
+        let n = notifier();
+        emit(&mut conn, "t1", "budget.alert", Some(&json!({
+            "team_id": "t1", "member_id": "m1",
+            "usage_cost_usd": 5.0, "threshold_usd": 10.0,
+        })));
+        let stats = n.run_once(&mut conn, 1000);
+        assert_eq!(stats.collected, 1);
+        // Not digest-aggregated: the direct flag is set, no digest window wait.
+        let direct: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM im_outbox WHERE event_type='budget.alert' AND direct=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(direct, 1);
+        let _ = stats;
     }
 
     struct OkProvider;
