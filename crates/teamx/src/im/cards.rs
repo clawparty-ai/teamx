@@ -151,7 +151,7 @@ pub fn request(
                 conn,
                 team_id,
                 &$source,
-                &$im_user,
+                $im_user,
                 &im_msg_id,
                 &reason,
             )?;
@@ -169,7 +169,7 @@ pub fn request(
             _ => format!("member:{member_id}"),
         };
         let im_user = im_user_id.filter(|u| !u.is_empty()).unwrap_or(member_id);
-        reject!(source, im_user.to_string(), format!("im.card.request: unknown action `{action}`"));
+        reject!(source, im_user, format!("im.card.request: unknown action `{action}`"));
     }
     let task_id = args
         .get("task_id")
@@ -209,7 +209,7 @@ pub fn request(
             Ok(None) => {
                 reject!(
                     format!("im:{p}"),
-                    u.to_string(),
+                    u,
                     "im.card.request: IM identity not bound".to_string()
                 );
             }
@@ -225,7 +225,7 @@ pub fn request(
     if min_role == "lead" && !binding::is_lead(conn, team_id, &actor)? {
         reject!(
             source,
-            im_user,
+            &im_user,
             format!("im.card.request: actor {actor} is not a lead (min_role={min_role})")
         );
     }
