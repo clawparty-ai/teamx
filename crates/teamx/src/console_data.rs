@@ -323,7 +323,7 @@ fn discussion_data(ctx: &Ctx, id: Option<&str>) -> Result<Value, String> {
 
 /// Workspace root the File panel browses: the directory holding `<cwd>/.teamx`.
 /// DQ-0001 anchors the browse root to the session cwd — never the whole disk.
-fn workspace_root(ctx: &Ctx) -> std::path::PathBuf {
+pub(crate) fn workspace_root(ctx: &Ctx) -> std::path::PathBuf {
     ctx.home
         .parent()
         .map(|p| p.to_path_buf())
@@ -378,8 +378,13 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // Inside `.teamx` the credential entries are hidden (documents and
-            // `TEAM.md` stay browsable); inside `.git` the internals collapse.
+            // Private/credential entries are hidden EVERYWHERE (they are not
+            // listed at all, not merely un-previewable); inside `.teamx` the
+            // extra credential dirs go too, and inside `.git` the internals
+            // collapse.
+            if crate::fs::is_private(&name) {
+                continue;
+            }
             if in_teamx && crate::fs::is_teamx_denied(&name) {
                 continue;
             }
@@ -395,8 +400,6 @@ fn files_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
                 "modified": md.as_ref().and_then(|m| m.modified().ok()).map(|t| {
                     t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
                 }).unwrap_or(0),
-                // Metadata-only preview for credential-like files (DQ-0003).
-                "sensitive": !is_dir && crate::fs::is_sensitive_name(&name),
             }));
         }
     }
@@ -524,6 +527,9 @@ fn git_head_time(repo: &std::path::Path) -> i64 {
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEW_LINES: usize = 5000;
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// PDFs are embedded via the native browser viewer; cap so a huge file does
+/// not stall the panel (the raw endpoint would still serve it on download).
+const MAX_INLINE_PDF_BYTES: u64 = 32 * 1024 * 1024;
 const IMAGE_EXTS: [&str; 3] = ["png", "jpg", "jpeg"];
 const GIF_EXT: &str = "gif";
 
@@ -563,6 +569,22 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "kind": "download", "note": "SVG 不内联预览（避免 XSS），请下载查看。",
         }));
     }
+    // PDFs render in the browser's NATIVE viewer through the raw `/api/file`
+    // endpoint — no PDF.js, no extra bundle weight. The panel embeds an
+    // <iframe> pointing at that endpoint.
+    if ext == "pdf" {
+        if size > MAX_INLINE_PDF_BYTES {
+            return Ok(json!({
+                "ok": true, "path": here, "name": name, "size": size,
+                "kind": "download",
+                "note": format!("PDF 超过 {} MiB，请下载查看。", MAX_INLINE_PDF_BYTES / 1024 / 1024),
+            }));
+        }
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "pdf",
+        }));
+    }
     if IMAGE_EXTS.contains(&ext.as_str()) || ext == GIF_EXT {
         if size > MAX_INLINE_IMAGE_BYTES {
             return Ok(json!({
@@ -584,6 +606,41 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "ok": true, "path": here, "name": name, "size": size,
             "kind": "image", "mime": mime,
             "data_uri": format!("data:{mime};base64,{b64}"),
+        }));
+    }
+
+    // PDF: preview the matching extracted text (same stem) and offer the
+    // original for download. PDFs are binary, so an inline preview is useless;
+    // the useful thing is the plain-text extract produced by the KB pipeline.
+    if ext == "pdf" {
+        let matched = find_pdf_text(&root, &file);
+        let (content, text_path, truncated) = match &matched {
+            Some(tp) => {
+                let raw = std::fs::read(tp).unwrap_or_default();
+                let trunc_bytes = raw.len() > MAX_PREVIEW_BYTES;
+                let slice = &raw[..raw.len().min(MAX_PREVIEW_BYTES)];
+                let text = String::from_utf8_lossy(slice).to_string();
+                let total_lines = text.lines().count();
+                let trunc_lines = total_lines > MAX_PREVIEW_LINES;
+                let content = if trunc_lines {
+                    text.lines()
+                        .take(MAX_PREVIEW_LINES)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    text
+                };
+                (content, Some(rel_of(&canon_root, tp)), trunc_bytes || trunc_lines)
+            }
+            None => (String::new(), None, false),
+        };
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "pdf",
+            "content": content,
+            "text_path": text_path,
+            "truncated": truncated,
+            "download_path": here,
         }));
     }
 
@@ -620,6 +677,29 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
         "lines": total_lines.min(MAX_PREVIEW_LINES),
         "truncated": truncated_bytes || truncated_lines,
     }))
+}
+
+/// Locate the plain-text extract for a PDF: a same-stem `.txt` next to it, or
+/// under the common pipeline output dirs (`docs/text/`, `papers/txt/`).
+fn find_pdf_text(root: &std::path::Path, pdf: &std::path::Path) -> Option<std::path::PathBuf> {
+    let stem = pdf.file_stem()?;
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = pdf.parent() {
+        // Same directory, then walk up looking for the pipeline output dirs.
+        candidates.push(dir.join(stem).with_extension("txt"));
+        let mut anc = Some(dir);
+        for _ in 0..5 {
+            let Some(a) = anc else { break };
+            candidates.push(a.join("txt").join(stem).with_extension("txt"));
+            candidates.push(a.join("docs/text").join(stem).with_extension("txt"));
+            anc = a.parent();
+        }
+    }
+    candidates.push(root.join("docs/text").join(stem).with_extension("txt"));
+    candidates.push(root.join("papers/txt").join(stem).with_extension("txt"));
+    candidates.into_iter().find(|p| {
+        p.is_file() && std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+    })
 }
 
 /// `<key>/<id>.meta.json` + `<id>.md` instances. P0 is local-only (the console
@@ -1208,6 +1288,9 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("README.md"), "# hi\nsecond line").unwrap();
         std::fs::write(root.join("server.key"), "PRIVATE").unwrap();
+        std::fs::write(root.join(".npmrc"), "//registry:_authToken=x").unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_ed25519"), "PRIVATE").unwrap();
         std::fs::write(root.join("logo.svg"), "<svg/>").unwrap();
         std::fs::create_dir_all(root.join("repo-a/.git/refs/heads")).unwrap();
         std::fs::write(root.join("repo-a/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -1225,25 +1308,22 @@ mod tests {
     }
 
     #[test]
-    fn files_data_lists_root_and_marks_sensitive() {
+    fn files_data_lists_root_and_hides_private_entries() {
         let (root, ctx) = file_fixture("list");
         let v = files_data(&ctx, None).unwrap();
         let entries = v["entries"].as_array().unwrap();
         let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(names.contains(&"src"), "{names:?}");
         assert!(names.contains(&"README.md"), "{names:?}");
-        assert!(names.contains(&"server.key"), "{names:?}");
         // `.teamx` is browsable now (documents live there).
         assert!(names.contains(&".teamx"), "`.teamx` must be listed: {names:?}");
+        // Private material is NOT listed at all (not merely un-previewable).
+        assert!(!names.contains(&"server.key"), "`server.key` must be hidden: {names:?}");
+        assert!(!names.contains(&".npmrc"), "`.npmrc` must be hidden: {names:?}");
         assert_eq!(v["path"], json!("."));
         assert!(v["parent"].is_null());
         // Directories sort before files.
         assert_eq!(entries[0]["type"], json!("directory"));
-        // Sensitive files are listed but flagged.
-        let key = entries.iter().find(|e| e["name"] == json!("server.key")).unwrap();
-        assert_eq!(key["sensitive"], json!(true));
-        let readme = entries.iter().find(|e| e["name"] == json!("README.md")).unwrap();
-        assert_eq!(readme["sensitive"], json!(false));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1302,9 +1382,9 @@ mod tests {
         let txt = file_data(&ctx, Some("src")).unwrap_err();
         assert!(txt.contains("not a file"), "{txt}");
 
-        let sen = file_data(&ctx, Some("server.key")).unwrap();
-        assert_eq!(sen["kind"], json!("sensitive"));
-        assert!(sen["content"].is_null(), "sensitive content must never be returned");
+        // Private files are refused outright now (hidden from listings too).
+        assert!(file_data(&ctx, Some("server.key")).is_err());
+        assert!(file_data(&ctx, Some(".npmrc")).is_err());
 
         let svg = file_data(&ctx, Some("logo.svg")).unwrap();
         assert_eq!(svg["kind"], json!("download"));

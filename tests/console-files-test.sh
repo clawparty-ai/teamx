@@ -37,7 +37,26 @@ printf 'PRIVATE\n' > "$WS/.teamx/members/weiye/invitation.letter"
 printf 'SQLITE\n' > "$WS/.teamx/teamx.db"
 printf '# hello\nsecond line\n' > "$WS/README.md"
 printf 'PRIVATE KEY\n' > "$WS/server.key"
+printf '//registry:_authToken=secret\n' > "$WS/.npmrc"
+mkdir -p "$WS/.ssh"
+printf 'PRIVATE\n' > "$WS/.ssh/id_ed25519"
+printf '[remote "origin"]\n\turl = https://user:token@example.com/x.git\n' > "$WS/repo-a/.git/config"
 printf '<svg/>' > "$WS/logo.svg"
+python3 - "$WS/report.pdf" <<'PYEOF'
+import sys
+objs=[b"<< /Type /Catalog /Pages 2 0 R >>",
+      b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+      b"<< /Length 44 >>\nstream\nBT /F1 18 Tf 20 40 Td (teamx pdf) Tj ET\nendstream",
+      b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+out=bytearray(b"%PDF-1.4\n"); offs=[]
+for i,o in enumerate(objs,1):
+    offs.append(len(out)); out+=str(i).encode()+b" 0 obj\n"+o+b"\nendobj\n"
+x=len(out); out+=b"xref\n0 "+str(len(objs)+1).encode()+b"\n0000000000 65535 f \n"
+for o in offs: out+=("%010d 00000 n \n"%o).encode()
+out+=b"trailer\n<< /Size "+str(len(objs)+1).encode()+b" /Root 1 0 R >>\nstartxref\n"+str(x).encode()+b"\n%%EOF\n"
+open(sys.argv[1],"wb").write(bytes(out))
+PYEOF
 printf 'fn main(){}\n' > "$WS/src/main.rs"
 printf 'ref: refs/heads/main\n' > "$WS/repo-a/.git/HEAD"
 printf 'init\n' > "$WS/repo-a/.git/COMMIT_EDITMSG"
@@ -67,16 +86,15 @@ names=[e['name'] for e in data['entries']]
 assert 'src' in names and 'README.md' in names, names
 assert '.teamx' in names, '.teamx must be browsable now: %s' % names
 assert data['entries'][0]['type']=='directory', data['entries'][0]
-key=[e for e in data['entries'] if e['name']=='server.key'][0]
-assert key['sensitive'] is True, key
-readme=[e for e in data['entries'] if e['name']=='README.md'][0]
-assert readme['sensitive'] is False, readme
+# Private/credential entries are hidden entirely.
+for priv in ('server.key','.npmrc','.ssh'):
+    assert priv not in names, '%s must be hidden: %s' % (priv, names)
 repos=[r['name'] for r in data['repos']]
 assert 'repo-a' in repos, repos
 assert 'pkg' not in repos, repos
 branch=[r['branch'] for r in data['repos'] if r['name']=='repo-a'][0]
 assert branch=='main', branch
-print('  ok: entries + sensitive flags + repos', repos, 'branch', branch)
+print('  ok: entries + private hidden + repos', repos, 'branch', branch)
 "
 pass "files panel"
 
@@ -119,6 +137,8 @@ assert d['ok'], d
 names=[e['name'] for e in d['data']['entries']]
 assert 'HEAD' in names and 'COMMIT_EDITMSG' in names, names
 assert 'objects' not in names, names
+# .git/config may embed a token in a remote URL -> collapsed.
+assert 'config' not in names, names
 print('  ok: .git entries', names)
 "
 pass ".git collapsed"
@@ -140,13 +160,14 @@ assert d['kind']=='text' and 'fn main' in d['content'], d
 "
 pass "text + markdown preview"
 
-step "file: sensitive + SVG are never previewed inline"
-panel "file?id=server.key" | python3 -c "
+step "file: private entries are refused; SVG is download-only"
+for priv in "server.key" ".npmrc" ".ssh/id_ed25519" ".teamx/ca/ca.key"; do
+  panel "file?id=$priv" | python3 -c "
 import json,sys
-d=json.load(sys.stdin)['data']
-assert d['kind']=='sensitive', d
-assert d.get('content') is None, d
-"
+d=json.load(sys.stdin)
+assert not d['ok'], d
+" || fail "must refuse: $priv"
+done
 panel "file?id=logo.svg" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)['data']
@@ -164,6 +185,21 @@ assert not d['ok'], d
 " || fail "must refuse: $p"
 done
 pass "traversal / .git internals refused"
+
+step "pdf: classified for inline viewing + raw endpoint serves it inline"
+panel "file?id=report.pdf" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='pdf', d
+print('  ok: kind=pdf size=%s' % d['data']['size'])
+"
+curl -sk -D- -o /tmp/teamx-pdf-out --max-time 15 "$BASE/api/file?path=report.pdf" -H "$C" > /tmp/teamx-pdf-hdr 2>&1
+grep -qi '^content-type: application/pdf' /tmp/teamx-pdf-hdr || { cat /tmp/teamx-pdf-hdr; fail "pdf content-type"; }
+grep -qi '^content-disposition: inline' /tmp/teamx-pdf-hdr || { cat /tmp/teamx-pdf-hdr; fail "pdf must be inline"; }
+head -c 5 /tmp/teamx-pdf-out | grep -q '%PDF-' || fail "pdf bytes not served"
+rm -f /tmp/teamx-pdf-out /tmp/teamx-pdf-hdr
+pass "pdf inline viewing"
 
 echo
 echo "ALL CONSOLE FILE TESTS PASSED"
