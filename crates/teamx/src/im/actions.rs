@@ -247,6 +247,34 @@ fn audit_event(
     .map_err(|e| format!("audit: {e}"))
 }
 
+/// Core rejection audit. `source` follows the per-path convention used by the
+/// success-path audits (`im:{platform}` for the gateway path,
+/// `member:{actor}` for the member-cert path) so rejected and accepted
+/// events share one source vocabulary. Errors propagate (fail-loud, not
+/// `let _ =` — an audit write failure must not go unnoticed).
+pub(crate) fn audit_rejection_with(
+    conn: &mut Connection,
+    team_id: &str,
+    source: &str,
+    im_user: &str,
+    im_msg_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let payload = json!({
+        "source": source,
+        "im_user": im_user,
+        "im_msg_id": im_msg_id,
+        "reason": reason,
+    });
+    db::with_write(conn, |tx| {
+        events::emit(tx, team_id, None, "im.rejected", Some(&payload))?;
+        Ok(())
+    })
+    .map_err(|e| format!("audit: {e}"))
+}
+
+/// Gateway-path wrapper: derives the source from `platform`. Kept `pub(crate)`
+/// because the member write-action path (`im::rpc`) audits through it.
 pub(crate) fn audit_rejection(
     conn: &mut Connection,
     team_id: &str,
@@ -256,17 +284,14 @@ pub(crate) fn audit_rejection(
     reason: &str,
 ) -> Result<(), String> {
     let im_msg_id = args.get("im_msg_id").and_then(Value::as_str).unwrap_or("");
-    let payload = json!({
-        "source": format!("im:{platform}"),
-        "im_user": im_user_id,
-        "im_msg_id": im_msg_id,
-        "reason": reason,
-    });
-    db::with_write(conn, |tx| {
-        events::emit(tx, team_id, None, "im.rejected", Some(&payload))?;
-        Ok(())
-    })
-    .map_err(|e| format!("audit: {e}"))
+    audit_rejection_with(
+        conn,
+        team_id,
+        &format!("im:{platform}"),
+        im_user_id,
+        im_msg_id,
+        reason,
+    )
 }
 
 fn record_im_msg_id(
