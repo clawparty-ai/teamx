@@ -461,6 +461,11 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
 .fs-right pre { background:var(--muted); border:1px solid var(--border); border-radius:var(--radius); padding:12px; font-family:var(--font-mono); font-size:12px; white-space:pre-wrap; word-break:break-word; max-height:640px; overflow:auto; }
 .fs-right img { max-width:100%; }
 .md-render { font-size:14px; line-height:1.6; } .md-render h1,.md-render h2,.md-render h3,.md-render h4 { margin:0.5em 0 0.3em; } .md-render p { margin:0.4em 0; } .md-render code { background:var(--muted); padding:1px 4px; border-radius:3px; } .md-render pre { background:var(--muted); padding:10px; border-radius:6px; overflow:auto; }
+.md-render .md-table-wrap { overflow:auto; margin:0.6em 0; }
+.md-render table { border-collapse:collapse; width:100%; font-size:13px; }
+.md-render th, .md-render td { border:1px solid var(--border); padding:6px 10px; text-align:left; vertical-align:top; line-height:1.5; }
+.md-render thead th { background:var(--muted); font-weight:700; white-space:nowrap; }
+.md-render tbody tr:nth-child(even) { background:#fbfdff; }
 .fs-btn-actions { display:flex; gap:6px; align-items:center; }
 .fs-btn-actions .act { font-size:12px; cursor:pointer; color:var(--muted-fg); }
 .fs-btn-actions .act:hover { color:var(--primary); }
@@ -806,9 +811,29 @@ function mdRender(src){
     });
   const flush=()=>{ if(inCode){ out.push("<pre><code>"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; } };
   const closeList=()=>{ if(inList){ out.push("</ul>"); inList=false; } };
-  for(const ln of lines){
+  // GFM tables: a header row containing `|` followed by a delimiter row
+  // (`|---|:--:|`) opens a table; rows end at the first line without a `|`.
+  const tCells=(r)=>{ let t=r.trim(); if(t.startsWith("|")) t=t.slice(1); if(t.endsWith("|")) t=t.slice(0,-1); return t.split("|").map(c=>c.trim()); };
+  const tAlign=(c)=>{ const s=c.trim(); if(!s) return ""; if(s.startsWith(":")&&s.endsWith(":")) return "center"; if(s.endsWith(":")) return "right"; if(s.startsWith(":")) return "left"; return ""; };
+  const tIsDelim=(r)=>{ if(!r||!/^[\s|:-]+$/.test(r)) return false; const cs=tCells(r); return cs.length>0 && cs.every(c=>/^:?-+:?$/.test(c)); };
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
     if(/^```/.test(ln)){ closeList(); if(inCode){flush();} else { inCode=true; } continue; }
     if(inCode){ code.push(ln); continue; }
+    if(ln.includes("|") && i+1<lines.length && tIsDelim(lines[i+1])){
+      closeList();
+      const head=tCells(ln), al=tCells(lines[i+1]).map(tAlign);
+      const cell=(tag,c,ci)=>"<"+tag+(al[ci]?' style="text-align:'+al[ci]+'"':"")+">"+inline(c)+"</"+tag+">";
+      out.push('<div class="md-table-wrap"><table><thead><tr>'+head.map((h,ci)=>cell("th",h,ci)).join("")+'</tr></thead><tbody>');
+      i+=2;
+      while(i<lines.length && lines[i].includes("|") && !/^\s*$/.test(lines[i])){
+        out.push("<tr>"+tCells(lines[i]).map((c,ci)=>cell("td",c,ci)).join("")+"</tr>");
+        i++;
+      }
+      i--;
+      out.push("</tbody></table></div>");
+      continue;
+    }
     if(/^####\s+/.test(ln)){ closeList(); out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>"); }
     else if(/^###\s+/.test(ln)){ closeList(); out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>"); }
     else if(/^##\s+/.test(ln)){ closeList(); out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>"); }

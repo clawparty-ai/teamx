@@ -36,6 +36,7 @@ printf 'PRIVATE\n' > "$WS/.teamx/letters/x/client.key"
 printf 'PRIVATE\n' > "$WS/.teamx/members/weiye/invitation.letter"
 printf 'SQLITE\n' > "$WS/.teamx/teamx.db"
 printf '# hello\nsecond line\n' > "$WS/README.md"
+printf '| 名称 | 数量 | 说明 |\n|:--|--:|:--:|\n| A | 1 | 左 |\n| B | 22 | 中 |\n' > "$WS/TABLE.md"
 printf 'PRIVATE KEY\n' > "$WS/server.key"
 printf '//registry:_authToken=secret\n' > "$WS/.npmrc"
 mkdir -p "$WS/.ssh"
@@ -200,6 +201,42 @@ grep -qi '^content-disposition: inline' /tmp/teamx-pdf-hdr || { cat /tmp/teamx-p
 head -c 5 /tmp/teamx-pdf-out | grep -q '%PDF-' || fail "pdf bytes not served"
 rm -f /tmp/teamx-pdf-out /tmp/teamx-pdf-hdr
 pass "pdf inline viewing"
+
+step "markdown: GFM tables render (client mdRender)"
+panel "file?id=TABLE.md" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='markdown', d
+assert '| 名称 |' in d['data']['content'], d
+print('  ok: panel returns markdown table source')
+"
+if command -v node >/dev/null 2>&1; then
+  curl -sk --max-time 15 "$BASE/" -H "$C" > "$WS/page.html"
+  node - "$WS/page.html" <<'NODEEOF'
+const fs=require("fs");
+const html=fs.readFileSync(process.argv[2],"utf8");
+// The renderer lives inline in the served console page; extract it by its
+// top-level closing brace (the body is uniformly indented).
+const m=html.match(/function mdRender\(src\)\{[\s\S]*?\n\}/);
+if(!m){ console.error("FAIL: mdRender not found in console HTML"); process.exit(1); }
+const mdRender=eval("("+m[0]+")");
+const md="| 名称 | 数量 | 说明 |\n|:--|--:|:--:|\n| A | 1 | 左 |\n| B | 22 | 中 |\n";
+const out=mdRender(md);
+if(!/<table>/.test(out)||!/<thead>/.test(out)||!/<tbody>/.test(out)){ console.error("FAIL: no table markup\n"+out); process.exit(1); }
+if(!/<th[^>]*>名称<\/th>/.test(out)){ console.error("FAIL: header cells missing\n"+out); process.exit(1); }
+if(!/<td[^>]*>A<\/td>/.test(out)||!/<td[^>]*>B<\/td>/.test(out)){ console.error("FAIL: body cells missing\n"+out); process.exit(1); }
+if(!/text-align:left/.test(out)||!/text-align:right/.test(out)||!/text-align:center/.test(out)){ console.error("FAIL: alignment not applied\n"+out); process.exit(1); }
+// A pipe row inside a fenced code block must stay code, not become a table.
+if(/<table>/.test(mdRender("```\n| a | b |\n|---|---|\n```\n"))){ console.error("FAIL: table inside code fence"); process.exit(1); }
+// A lone pipe row with no delimiter row stays a paragraph.
+if(/<table>/.test(mdRender("| a | b |\n"))){ console.error("FAIL: table without delimiter row"); process.exit(1); }
+console.log("  ok: mdRender -> table/thead/tbody + alignment; fences & delimiter-less rows untouched");
+NODEEOF
+else
+  echo "  (node missing; skipped client mdRender check)"
+fi
+pass "markdown tables"
 
 echo
 echo "ALL CONSOLE FILE TESTS PASSED"
