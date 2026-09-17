@@ -240,8 +240,75 @@ async fn api_panel(
 /// SSE, so Discussion / Events views update without page polling. The initial
 /// poll only snapshots the current seq (no history replay). Local mode emits
 /// only heartbeats (no live channel).
-/// GET /api/file?path=<rel> — download one workspace file as an attachment.
-/// Used by the File panel's "下载原文 PDF" link (and any binary preview).
+/// A single `bytes=` range from the request. Multi-range requests are ignored
+/// (the whole file is served) — `<video>` only ever asks for one range.
+#[derive(Clone, Copy)]
+enum ByteRange {
+    /// `bytes=<start>-`
+    From(u64),
+    /// `bytes=-<suffix>` (last N bytes)
+    Suffix(u64),
+    /// `bytes=<start>-<end>` (inclusive)
+    Span(u64, u64),
+}
+
+impl ByteRange {
+    /// Resolve to an inclusive `(start, end)` for a file of `len` bytes.
+    fn resolve(self, len: u64) -> Result<(u64, u64), FileErr> {
+        if len == 0 {
+            return Err(FileErr::Unsatisfiable(0));
+        }
+        let last = len - 1;
+        let (start, end) = match self {
+            ByteRange::From(s) => (s, last),
+            ByteRange::Suffix(n) => (len.saturating_sub(n), last),
+            ByteRange::Span(s, e) => (s, e.min(last)),
+        };
+        if start > end || start >= len {
+            return Err(FileErr::Unsatisfiable(len));
+        }
+        Ok((start, end))
+    }
+}
+
+fn parse_range(v: &str) -> Option<ByteRange> {
+    let spec = v.strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
+    let (a, b) = (a.trim(), b.trim());
+    if a.is_empty() {
+        return b.parse::<u64>().ok().map(ByteRange::Suffix);
+    }
+    let start = a.parse::<u64>().ok()?;
+    if b.is_empty() {
+        return Some(ByteRange::From(start));
+    }
+    b.parse::<u64>().ok().map(|e| ByteRange::Span(start, e))
+}
+
+enum FileErr {
+    /// Range cannot be satisfied → 416 with `Content-Range: bytes */<len>`.
+    Unsatisfiable(u64),
+    Other(String),
+}
+
+struct FileOut {
+    bytes: Vec<u8>,
+    name: String,
+    len: u64,
+    start: u64,
+    end: u64,
+    partial: bool,
+}
+
+/// GET /api/file?path=<rel> — serve one workspace file.
+///
+/// Backs every inline preview in the File panel (`<iframe>` for PDF/HTML,
+/// `<img>` for images, `<video>` for video) plus the "download original"
+/// links. Supports single-range `Range: bytes=` requests so a `<video>` can
+/// seek without the whole file being read into memory.
 async fn api_file(
     State(state): State<S>,
     headers: HeaderMap,
@@ -253,42 +320,95 @@ async fn api_file(
     let Some(rel) = params.get("path").cloned().filter(|s| !s.is_empty()) else {
         return err_json(StatusCode::BAD_REQUEST, "file: `path` is required".to_string());
     };
+    let wanted = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_range);
     let ctx = state.ctx.clone();
-    let out = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), String> {
+    let out = tokio::task::spawn_blocking(move || -> Result<FileOut, FileErr> {
         let root = crate::console_data::workspace_root(&ctx);
-        let file = crate::fs::resolve_with(&root, &rel, crate::fs::PathPolicy::Console)?;
+        let file = crate::fs::resolve_with(&root, &rel, crate::fs::PathPolicy::Console)
+            .map_err(FileErr::Other)?;
         if !file.is_file() {
-            return Err(format!("`{rel}` is not a file"));
+            return Err(FileErr::Other(format!("`{rel}` is not a file")));
         }
         let name = file
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "download".to_string());
-        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-        Ok((bytes, name))
+        let len = std::fs::metadata(&file)
+            .map_err(|e| FileErr::Other(e.to_string()))?
+            .len();
+        let (start, end) = match wanted {
+            Some(r) => r.resolve(len)?,
+            None => (0, len.saturating_sub(1)),
+        };
+        let n = if len == 0 { 0 } else { end - start + 1 };
+        let mut bytes = vec![0u8; n as usize];
+        if n > 0 {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = std::fs::File::open(&file).map_err(|e| FileErr::Other(e.to_string()))?;
+            f.seek(SeekFrom::Start(start))
+                .map_err(|e| FileErr::Other(e.to_string()))?;
+            f.read_exact(&mut bytes)
+                .map_err(|e| FileErr::Other(e.to_string()))?;
+        }
+        Ok(FileOut {
+            bytes,
+            name,
+            len,
+            start,
+            end,
+            partial: wanted.is_some(),
+        })
     })
     .await;
     match out {
-        Ok(Ok((bytes, name))) => {
-            let mut resp = Response::new(Body::from(bytes));
-            resp.headers_mut().insert(
+        Ok(Ok(f)) => {
+            let mut resp = Response::new(Body::from(f.bytes));
+            if f.partial {
+                *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+            }
+            let h = resp.headers_mut();
+            h.insert(
                 header::CONTENT_TYPE,
-                content_type_for(&name).parse().unwrap(),
+                content_type_for(&f.name).parse().unwrap(),
             );
-            // Inline for types the browser renders safely (PDF/images/plain
-            // text) so the File panel can embed them; everything else stays an
-            // attachment download. SVG is deliberately NOT in the inline list
-            // (served as octet-stream → download) to avoid script execution.
+            h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+            // Script-capable documents (HTML / SVG) are sandboxed so a workspace
+            // file cannot script the console's own origin. See `inline_csp`.
+            if let Some(csp) = inline_csp(&f.name) {
+                h.insert(
+                    axum::http::HeaderName::from_static("content-security-policy"),
+                    csp.parse().unwrap(),
+                );
+            }
             let disp = format!(
                 "{}; filename=\"{}\"",
-                if is_inline_type(&name) { "inline" } else { "attachment" },
-                name.replace('"', "")
+                if is_inline_type(&f.name) { "inline" } else { "attachment" },
+                f.name.replace('"', "")
             );
-            resp.headers_mut()
-                .insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
+            h.insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
+            if f.partial {
+                h.insert(
+                    header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", f.start, f.end, f.len).parse().unwrap(),
+                );
+            }
             resp
         }
-        Ok(Err(e)) => err_json(StatusCode::BAD_REQUEST, e),
+        Ok(Err(FileErr::Unsatisfiable(len))) => {
+            let mut resp = err_json(
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                "requested range is not satisfiable".to_string(),
+            );
+            resp.headers_mut().insert(
+                header::CONTENT_RANGE,
+                format!("bytes */{len}").parse().unwrap(),
+            );
+            resp
+        }
+        Ok(Err(FileErr::Other(e))) => err_json(StatusCode::BAD_REQUEST, e),
         Err(_) => err_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "file task panicked".to_string(),
@@ -297,7 +417,9 @@ async fn api_file(
 }
 
 /// Whether a file may be rendered **inline** by the browser (rather than
-/// downloaded). Kept narrow and XSS-safe: no SVG, no HTML.
+/// downloaded). Widened to cover images, video and HTML/ SVG, which are all
+/// sandboxed by `inline_csp()` — see its docs for why that is what keeps this
+/// list XSS-safe.
 fn is_inline_type(name: &str) -> bool {
     matches!(
         content_type_for(name),
@@ -305,10 +427,40 @@ fn is_inline_type(name: &str) -> bool {
             | "image/png"
             | "image/jpeg"
             | "image/gif"
+            | "image/webp"
+            | "image/bmp"
+            | "image/x-icon"
+            | "image/avif"
+            | "image/svg+xml"
+            | "video/mp4"
+            | "video/webm"
+            | "video/quicktime"
+            | "video/ogg"
             | "text/plain; charset=utf-8"
             | "text/csv; charset=utf-8"
+            | "text/html; charset=utf-8"
             | "application/json"
     )
+}
+
+/// `Content-Security-Policy` for inline responses that can carry script:
+/// HTML and SVG. Both are rendered by the browser as documents when navigated
+/// to directly, so a workspace file could otherwise run script in the console's
+/// origin and drive its authenticated `/api/*` routes.
+///
+/// `sandbox` (with no `allow-same-origin`) puts the document in an opaque
+/// origin: scripts may still run for HTML previews, but they cannot read the
+/// console cookie (which is also `HttpOnly`) nor read back same-origin
+/// responses. SVG gets no `allow-scripts` at all — its preview path is
+/// `<img>`, where scripts never run anyway.
+///
+/// Returns `None` for every other type (nothing to sandbox).
+fn inline_csp(name: &str) -> Option<&'static str> {
+    match content_type_for(name) {
+        "text/html; charset=utf-8" => Some("sandbox allow-scripts"),
+        "image/svg+xml" => Some("sandbox"),
+        _ => None,
+    }
 }
 
 fn content_type_for(name: &str) -> &'static str {
@@ -318,9 +470,19 @@ fn content_type_for(name: &str) -> &'static str {
         "txt" | "md" | "markdown" => "text/plain; charset=utf-8",
         "csv" => "text/csv; charset=utf-8",
         "json" => "application/json",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "ogv" => "video/ogg",
         "zip" => "application/zip",
         _ => "application/octet-stream",
     }

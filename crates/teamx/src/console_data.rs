@@ -526,12 +526,67 @@ fn git_head_time(repo: &std::path::Path) -> i64 {
 /// Preview caps (DQ-0004).
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEW_LINES: usize = 5000;
-const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// Images preview through the raw `/api/file` endpoint (not a base64 data
+/// URI), so the cap guards against stalling the browser rather than payload
+/// size.
+const MAX_INLINE_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 /// PDFs are embedded via the native browser viewer; cap so a huge file does
 /// not stall the panel (the raw endpoint would still serve it on download).
 const MAX_INLINE_PDF_BYTES: u64 = 32 * 1024 * 1024;
-const IMAGE_EXTS: [&str; 3] = ["png", "jpg", "jpeg"];
-const GIF_EXT: &str = "gif";
+/// HTML renders in a sandboxed `<iframe>`; capped like PDF.
+const MAX_INLINE_HTML_BYTES: u64 = 32 * 1024 * 1024;
+/// Video streams over the ranged `/api/file` endpoint, so seeking works and the
+/// whole file is never held in memory. This only rejects absurd sizes.
+const MAX_INLINE_VIDEO_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Raster images previewed inline as `<img>`.
+const IMAGE_EXTS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"];
+/// Vector images. `<img>` never executes script inside an SVG — unlike a
+/// top-level navigation to the same URL, which `console::inline_csp` sandboxes
+/// — so SVG previews safely through the same `<img>` path (DQ-0004 revised).
+const VECTOR_EXTS: [&str; 1] = ["svg"];
+const VIDEO_EXTS: [&str; 5] = ["mp4", "m4v", "webm", "mov", "ogv"];
+const HTML_EXTS: [&str; 2] = ["html", "htm"];
+
+/// Extension → highlight.js language id for the File panel's syntax
+/// highlighting. Unknown extensions return `None` and the frontend falls back
+/// to highlight.js auto-detection.
+fn highlight_lang(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "rs" => "rust",
+        "py" | "pyi" => "python",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "go" => "go",
+        "sh" | "bash" | "zsh" => "bash",
+        "json" | "jsonc" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "ini",
+        "ini" | "cfg" | "conf" => "ini",
+        "sql" => "sql",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" => "cpp",
+        "cs" => "csharp",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "rb" => "ruby",
+        "php" => "php",
+        "pl" | "pm" => "perl",
+        "lua" => "lua",
+        "r" => "r",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "xml" | "html" | "htm" | "svg" | "vue" => "xml",
+        "md" | "markdown" => "markdown",
+        "dockerfile" | "makefile" | "mk" => "makefile",
+        "diff" | "patch" => "diff",
+        "graphql" | "gql" => "graphql",
+        "tf" | "hcl" => "ini",
+        _ => return None,
+    })
+}
 
 /// Panel `file`: preview one file (text/markdown/image) or mark it for download.
 fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
@@ -562,13 +617,6 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "note": "该文件可能是凭据/密钥，仅显示元数据，不提供预览。",
         }));
     }
-    // SVG renders as markup in a browser → XSS surface; download only (DQ-0004).
-    if ext == "svg" {
-        return Ok(json!({
-            "ok": true, "path": here, "name": name, "size": size,
-            "kind": "download", "note": "SVG 不内联预览（避免 XSS），请下载查看。",
-        }));
-    }
     // PDFs render in the browser's NATIVE viewer through the raw `/api/file`
     // endpoint — no PDF.js, no extra bundle weight. The panel embeds an
     // <iframe> pointing at that endpoint.
@@ -585,62 +633,52 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
             "kind": "pdf",
         }));
     }
-    if IMAGE_EXTS.contains(&ext.as_str()) || ext == GIF_EXT {
+    // HTML renders in a sandboxed <iframe> — see `console::inline_csp`. Scripts
+    // may run, but in an opaque origin that cannot reach the console's own
+    // authenticated routes.
+    if HTML_EXTS.contains(&ext.as_str()) {
+        if size > MAX_INLINE_HTML_BYTES {
+            return Ok(json!({
+                "ok": true, "path": here, "name": name, "size": size,
+                "kind": "download",
+                "note": format!("HTML 超过 {} MiB，请下载查看。", MAX_INLINE_HTML_BYTES / 1024 / 1024),
+            }));
+        }
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "html",
+        }));
+    }
+    // Video streams from the ranged endpoint so the browser can seek without
+    // the whole file being buffered.
+    if VIDEO_EXTS.contains(&ext.as_str()) {
+        if size > MAX_INLINE_VIDEO_BYTES {
+            return Ok(json!({
+                "ok": true, "path": here, "name": name, "size": size,
+                "kind": "download",
+                "note": format!("视频超过 {} MiB，请下载查看。", MAX_INLINE_VIDEO_BYTES / 1024 / 1024),
+            }));
+        }
+        return Ok(json!({
+            "ok": true, "path": here, "name": name, "size": size,
+            "kind": "video",
+        }));
+    }
+    // Images (raster + SVG) preview through the same raw endpoint as `<img>`.
+    // Embedding an SVG in `<img>` never executes its script, which is what lets
+    // it share this path (DQ-0004 revised; the endpoint also sandboxes a
+    // top-level navigation to the SVG itself).
+    if IMAGE_EXTS.contains(&ext.as_str()) || VECTOR_EXTS.contains(&ext.as_str()) {
         if size > MAX_INLINE_IMAGE_BYTES {
             return Ok(json!({
                 "ok": true, "path": here, "name": name, "size": size,
-                "kind": "download", "note": "图片超过 5 MiB，不内联预览。",
+                "kind": "download",
+                "note": format!("图片超过 {} MiB，不内联预览。", MAX_INLINE_IMAGE_BYTES / 1024 / 1024),
             }));
         }
-        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-        use base64::Engine as _;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let mime = if ext == "png" {
-            "image/png"
-        } else if ext == GIF_EXT {
-            "image/gif"
-        } else {
-            "image/jpeg"
-        };
         return Ok(json!({
             "ok": true, "path": here, "name": name, "size": size,
-            "kind": "image", "mime": mime,
-            "data_uri": format!("data:{mime};base64,{b64}"),
-        }));
-    }
-
-    // PDF: preview the matching extracted text (same stem) and offer the
-    // original for download. PDFs are binary, so an inline preview is useless;
-    // the useful thing is the plain-text extract produced by the KB pipeline.
-    if ext == "pdf" {
-        let matched = find_pdf_text(&root, &file);
-        let (content, text_path, truncated) = match &matched {
-            Some(tp) => {
-                let raw = std::fs::read(tp).unwrap_or_default();
-                let trunc_bytes = raw.len() > MAX_PREVIEW_BYTES;
-                let slice = &raw[..raw.len().min(MAX_PREVIEW_BYTES)];
-                let text = String::from_utf8_lossy(slice).to_string();
-                let total_lines = text.lines().count();
-                let trunc_lines = total_lines > MAX_PREVIEW_LINES;
-                let content = if trunc_lines {
-                    text.lines()
-                        .take(MAX_PREVIEW_LINES)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                } else {
-                    text
-                };
-                (content, Some(rel_of(&canon_root, tp)), trunc_bytes || trunc_lines)
-            }
-            None => (String::new(), None, false),
-        };
-        return Ok(json!({
-            "ok": true, "path": here, "name": name, "size": size,
-            "kind": "pdf",
-            "content": content,
-            "text_path": text_path,
-            "truncated": truncated,
-            "download_path": here,
+            "kind": "image",
         }));
     }
 
@@ -673,33 +711,12 @@ fn file_data(ctx: &Ctx, rel: Option<&str>) -> Result<Value, String> {
     Ok(json!({
         "ok": true, "path": here, "name": name, "size": size,
         "kind": kind,
+        // highlight.js language id; null means "let the frontend auto-detect".
+        "lang": highlight_lang(&ext),
         "content": content,
         "lines": total_lines.min(MAX_PREVIEW_LINES),
         "truncated": truncated_bytes || truncated_lines,
     }))
-}
-
-/// Locate the plain-text extract for a PDF: a same-stem `.txt` next to it, or
-/// under the common pipeline output dirs (`docs/text/`, `papers/txt/`).
-fn find_pdf_text(root: &std::path::Path, pdf: &std::path::Path) -> Option<std::path::PathBuf> {
-    let stem = pdf.file_stem()?;
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(dir) = pdf.parent() {
-        // Same directory, then walk up looking for the pipeline output dirs.
-        candidates.push(dir.join(stem).with_extension("txt"));
-        let mut anc = Some(dir);
-        for _ in 0..5 {
-            let Some(a) = anc else { break };
-            candidates.push(a.join("txt").join(stem).with_extension("txt"));
-            candidates.push(a.join("docs/text").join(stem).with_extension("txt"));
-            anc = a.parent();
-        }
-    }
-    candidates.push(root.join("docs/text").join(stem).with_extension("txt"));
-    candidates.push(root.join("papers/txt").join(stem).with_extension("txt"));
-    candidates.into_iter().find(|p| {
-        p.is_file() && std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
-    })
 }
 
 /// `<key>/<id>.meta.json` + `<id>.md` instances. P0 is local-only (the console
@@ -1292,6 +1309,9 @@ mod tests {
         std::fs::create_dir_all(root.join(".ssh")).unwrap();
         std::fs::write(root.join(".ssh/id_ed25519"), "PRIVATE").unwrap();
         std::fs::write(root.join("logo.svg"), "<svg/>").unwrap();
+        std::fs::write(root.join("page.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(root.join("clip.mp4"), "NOT-REALLY-MP4").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
         std::fs::create_dir_all(root.join("repo-a/.git/refs/heads")).unwrap();
         std::fs::write(root.join("repo-a/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(root.join("repo-a/.git/COMMIT_EDITMSG"), "init\n").unwrap();
@@ -1373,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn file_data_previews_text_and_refuses_sensitive_and_svg() {
+    fn file_data_previews_text_and_refuses_sensitive() {
         let (root, ctx) = file_fixture("read");
         let ok = file_data(&ctx, Some("README.md")).unwrap();
         assert_eq!(ok["kind"], json!("markdown"));
@@ -1386,12 +1406,42 @@ mod tests {
         assert!(file_data(&ctx, Some("server.key")).is_err());
         assert!(file_data(&ctx, Some(".npmrc")).is_err());
 
-        let svg = file_data(&ctx, Some("logo.svg")).unwrap();
-        assert_eq!(svg["kind"], json!("download"));
-
         // Traversal is refused by the shared guard.
         assert!(file_data(&ctx, Some("../etc/passwd")).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_data_classifies_previewable_media() {
+        let (root, ctx) = file_fixture("media");
+
+        // SVG previews now: `<img>` never runs script inside an SVG, and the
+        // raw endpoint sandboxes a top-level navigation to it (DQ-0004 revised).
+        let svg = file_data(&ctx, Some("logo.svg")).unwrap();
+        assert_eq!(svg["kind"], json!("image"));
+
+        // HTML embeds in a sandboxed <iframe>; video streams from the ranged
+        // endpoint so the browser can seek.
+        assert_eq!(file_data(&ctx, Some("page.html")).unwrap()["kind"], json!("html"));
+        assert_eq!(file_data(&ctx, Some("clip.mp4")).unwrap()["kind"], json!("video"));
+
+        // Text previews carry the highlight.js language for the frontend.
+        let rs = file_data(&ctx, Some("main.rs")).unwrap();
+        assert_eq!(rs["kind"], json!("text"));
+        assert_eq!(rs["lang"], json!("rust"));
+
+        // Unknown extensions fall back to auto-detect.
+        assert_eq!(file_data(&ctx, Some("README.md")).unwrap()["kind"], json!("markdown"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn highlight_lang_maps_common_extensions() {
+        assert_eq!(highlight_lang("rs"), Some("rust"));
+        assert_eq!(highlight_lang("ts"), Some("typescript"));
+        assert_eq!(highlight_lang("yml"), Some("yaml"));
+        assert_eq!(highlight_lang("toml"), Some("ini"));
+        assert_eq!(highlight_lang("unknown-ext"), None);
     }
 
     #[test]

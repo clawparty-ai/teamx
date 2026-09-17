@@ -88,6 +88,12 @@ member console（`teamx console`，user-console）目前有 5 个一级菜单：
     - 理由：owner 要求「所有隐私/私有信息都不可浏览」；宁可漏列一行，不可泄露一个密钥。
 
 - **DQ-0004 预览能力与上限**：文本/代码 `<pre>` 等宽 + 行号；markdown 复用 `mdRender`；图片内联 PNG/JPG/GIF（**SVG 仅下载**）；二进制仅下载；**不引入语法高亮库**（自包含单二进制 + CSP 面）；上限 **1 MiB 读盘 / ~5000 行 / 图片 5 MiB**，超限截断提示下载。— rationale: 等宽+行号已覆盖看代码、highlight.js 增体积与攻击面、SVG 当 HTML 渲染即 XSS；dissent: 无；unanimity: **unanimous**；discussion: `#1804`（结论 `#1855`）。
+  - **⚠️ 修订 1（owner，2026-09-17）**：预览能力整体放宽，**四项同时改**：
+    1. **引入 highlight.js**（v11.9.0 common build，36 语言）内嵌进 `console_html.rs` 的 `HLJS_JS`/`HLJS_CSS` 常量——仍是**自包含单二进制、零外部请求**，只是体积 +120 KB。后端 `console_data::highlight_lang()` 按扩展名给出语言 id（`lang` 字段），前端由 `MutationObserver` 自动高亮任何进入 DOM 的 `pre code`（文件预览 + 事件/讨论/文档里的 markdown 围栏一并受益）；代码预览改为「行号 gutter 列 + 代码列」两栏，行号不再随横向滚动跑掉。
+    2. **HTML 改为 `<iframe>` 预览**（原为当文本显示源码）。安全靠**沙箱**而非禁用：iframe 带 `sandbox="allow-scripts"`（**不含 `allow-same-origin`**），且 `/api/file` 对 HTML 响应加 `Content-Security-Policy: sandbox allow-scripts`（直接新标签打开同样受保护）。脚本可跑，但处于不透明源，读不到 console 的 cookie（本身也 `HttpOnly`）也读不回同源 `/api/*` 响应。
+    3. **视频（mp4/m4v/webm/mov/ogv）在线播放**：`/api/file` 新增**单区间 `Range` 支持**（206 + `Content-Range` + `Accept-Ranges: bytes`，越界 416），按需 seek 读取而非整文件入内存，`<video controls preload="metadata">` 因此可拖动进度条。
+    4. **SVG 放开预览**（原「仅下载」）：`<img>` 中的 SVG **不会执行脚本**，故与位图共用预览路径；同时 `/api/file` 对 SVG 响应加 `Content-Security-Policy: sandbox`（不含 `allow-scripts`），使得「直接导航到该 SVG」这一路径也不执行脚本。图片一律改走 `/api/file` 原始端点（不再 base64 data URI），上限由 5 MiB 提到 32 MiB；图片扩展名扩到 png/jpg/jpeg/gif/webp/bmp/ico/avif/svg。
+    - 顺带清理：删除 `console_data.rs` / `console_html.rs` 中各一处**不可达的第二个 `if ext == "pdf"` 分支**（及其唯一调用者 `find_pdf_text`）——PDF 早已在前一个分支全部 return，旧「PDF 文本抽取预览」路径是死代码。
 
 - **DQ-0005 与 `#fsOverlay` 的关系**：**分层抽取** —— 后端复用 fs.rs 函数；前端渲染/预览 JS 抽共享函数（移动非重写，约半天）；**数据获取层不共享**（File→`/api/panels/{id}`，fsOverlay→`/api/cloud/{id}`）。命名：菜单 `File`、`data-view=files`、panel id `files`。— rationale: 避免本地/远端语义耦合进公共组件；dissent: 无；unanimity: **unanimous**；discussion: `#1805`（结论 `#1856`）。
 

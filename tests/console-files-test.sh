@@ -43,6 +43,10 @@ mkdir -p "$WS/.ssh"
 printf 'PRIVATE\n' > "$WS/.ssh/id_ed25519"
 printf '[remote "origin"]\n\turl = https://user:token@example.com/x.git\n' > "$WS/repo-a/.git/config"
 printf '<svg/>' > "$WS/logo.svg"
+printf '<!doctype html><h1>hi</h1>' > "$WS/page.html"
+# A real (tiny) MP4 is not needed — the panel classifies by extension and the
+# ranged endpoint only has to prove byte-range arithmetic.
+printf 'FAKEMP4-0123456789abcdef' > "$WS/clip.mp4"
 python3 - "$WS/report.pdf" <<'PYEOF'
 import sys
 objs=[b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -161,7 +165,7 @@ assert d['kind']=='text' and 'fn main' in d['content'], d
 "
 pass "text + markdown preview"
 
-step "file: private entries are refused; SVG is download-only"
+step "file: private entries are refused"
 for priv in "server.key" ".npmrc" ".ssh/id_ed25519" ".teamx/ca/ca.key"; do
   panel "file?id=$priv" | python3 -c "
 import json,sys
@@ -169,13 +173,7 @@ d=json.load(sys.stdin)
 assert not d['ok'], d
 " || fail "must refuse: $priv"
 done
-panel "file?id=logo.svg" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)['data']
-assert d['kind']=='download', d
-assert d.get('data_uri') is None, d
-"
-pass "sensitive + SVG download-only"
+pass "sensitive refused"
 
 step "negatives: traversal and .git internals are refused"
 for p in "../../../etc/passwd" "repo-a/.git/objects"; do
@@ -237,6 +235,76 @@ else
   echo "  (node missing; skipped client mdRender check)"
 fi
 pass "markdown tables"
+
+step "html: classified for sandboxed iframe + raw endpoint carries CSP"
+panel "file?id=page.html" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='html', d
+print('  ok: kind=html')
+"
+curl -sk -D- -o /dev/null --max-time 15 "$BASE/api/file?path=page.html" -H "$C" > /tmp/teamx-html-hdr 2>&1
+grep -qi '^content-type: text/html' /tmp/teamx-html-hdr || { cat /tmp/teamx-html-hdr; fail "html content-type"; }
+grep -qi '^content-disposition: inline' /tmp/teamx-html-hdr || { cat /tmp/teamx-html-hdr; fail "html must be inline"; }
+grep -qi '^content-security-policy: sandbox allow-scripts' /tmp/teamx-html-hdr || { cat /tmp/teamx-html-hdr; fail "html must be sandboxed (no allow-same-origin)"; }
+pass "html sandboxed iframe"
+
+step "svg: now previews as an image, and is sandboxed when opened directly"
+panel "file?id=logo.svg" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='image', d
+assert 'data_uri' not in d['data'], 'SVG must stream from the raw endpoint, not a data URI'
+print('  ok: kind=image')
+"
+curl -sk -D- -o /dev/null --max-time 15 "$BASE/api/file?path=logo.svg" -H "$C" > /tmp/teamx-svg-hdr 2>&1
+grep -qi '^content-type: image/svg+xml' /tmp/teamx-svg-hdr || { cat /tmp/teamx-svg-hdr; fail "svg content-type"; }
+grep -qi '^content-security-policy: sandbox' /tmp/teamx-svg-hdr || { cat /tmp/teamx-svg-hdr; fail "svg must be sandboxed"; }
+grep -qi 'allow-scripts' /tmp/teamx-svg-hdr && fail "svg sandbox must not allow scripts"
+pass "svg image preview"
+
+step "video: classified for inline playback + ranged endpoint supports seeking"
+panel "file?id=clip.mp4" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='video', d
+print('  ok: kind=video')
+"
+# Whole file: 200 + Accept-Ranges.
+curl -sk -D- -o /tmp/teamx-mp4-full --max-time 15 "$BASE/api/file?path=clip.mp4" -H "$C" > /tmp/teamx-mp4-hdr 2>&1
+grep -qi '^content-type: video/mp4' /tmp/teamx-mp4-hdr || { cat /tmp/teamx-mp4-hdr; fail "mp4 content-type"; }
+grep -qi '^accept-ranges: bytes' /tmp/teamx-mp4-hdr || { cat /tmp/teamx-mp4-hdr; fail "mp4 must advertise Accept-Ranges"; }
+[ "$(wc -c < /tmp/teamx-mp4-full | tr -d ' ')" = "24" ] || fail "mp4 full body length"
+# Byte range: 206 + Content-Range + exactly the requested slice.
+code=$(curl -sk -D /tmp/teamx-range-hdr -o /tmp/teamx-range-body --max-time 15 -H "Range: bytes=7-12" "$BASE/api/file?path=clip.mp4" -H "$C" -w '%{http_code}')
+[ "$code" = "206" ] || { cat /tmp/teamx-range-hdr; fail "range must return 206 (got $code)"; }
+grep -qi '^content-range: bytes 7-12/24' /tmp/teamx-range-hdr || { cat /tmp/teamx-range-hdr; fail "content-range header"; }
+[ "$(cat /tmp/teamx-range-body)" = "-01234" ] || fail "range body: $(cat /tmp/teamx-range-body)"
+# Suffix range + unsatisfiable range.
+curl -sk -o /tmp/teamx-suffix --max-time 15 -H "Range: bytes=-4" "$BASE/api/file?path=clip.mp4" -H "$C" >/dev/null
+[ "$(cat /tmp/teamx-suffix)" = "cdef" ] || fail "suffix range body: $(cat /tmp/teamx-suffix)"
+code=$(curl -sk -o /dev/null --max-time 15 -H "Range: bytes=999-1200" "$BASE/api/file?path=clip.mp4" -H "$C" -w '%{http_code}')
+[ "$code" = "416" ] || fail "unsatisfiable range must return 416 (got $code)"
+pass "video ranged playback"
+
+step "text: language hint is sent for syntax highlighting"
+panel "file?id=src/main.rs" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['ok'], d
+assert d['data']['kind']=='text', d
+assert d['data']['lang']=='rust', d
+print('  ok: lang=rust')
+"
+curl -sk --max-time 15 "$BASE/" -H "$C" > "$WS/page.html.out"
+grep -q 'Highlight.js v11' "$WS/page.html.out" || fail "highlight.js must be embedded in the console page"
+grep -q 'hljs.highlightElement' "$WS/page.html.out" || fail "console must call hljs.highlightElement"
+grep -q 'code-gutter' "$WS/page.html.out" || fail "code gutter CSS missing"
+pass "syntax highlighting"
+rm -f /tmp/teamx-html-hdr /tmp/teamx-svg-hdr /tmp/teamx-mp4-hdr /tmp/teamx-mp4-full /tmp/teamx-range-hdr /tmp/teamx-range-body /tmp/teamx-suffix
 
 echo
 echo "ALL CONSOLE FILE TESTS PASSED"
