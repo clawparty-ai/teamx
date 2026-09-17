@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.5 — 2026-09-17
+
+### Console: Markdown table rendering
+
+- **`mdRender` now supports GFM tables**: previously `| a | b |` was rendered as
+  a plain paragraph, so tables showed up as raw text in File preview /
+  Documents / discussions / goal bodies. A header row followed by a delimiter
+  row (`|---|:--:|`) now opens a table; body rows are read until the first line
+  without a `|`.
+- **Alignment**: `:--` (left) / `--:` (right) / `:--:` (center) map to
+  `style="text-align:…"`.
+- **Two guards**: `|` rows inside fenced code blocks stay code; a lone `|` row
+  without a delimiter row stays a paragraph.
+- **Safety**: cell content still goes through `inline()` escaping, so no new
+  XSS surface.
+- **Styling**: `.md-table-wrap` horizontal scroll, collapsed borders, header
+  background, zebra striping.
+- **Tests**: `tests/console-files-test.sh` gains a markdown tables step (panel
+  assertion + extracting `mdRender` from the served console page and running it
+  under node, covering table structure / alignment / both guards).
+
 ## 0.2.4 — 2026-09-15
 
 ### File panel: `.teamx` browsable (credentials hidden) + narrower list column
