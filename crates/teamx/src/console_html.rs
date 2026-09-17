@@ -141,6 +141,9 @@ pub fn page_html() -> String {
 {hljs_js}
 </script>
 <script>
+{mdrender_js}
+</script>
+<script>
 {js}
 </script>
 </body>
@@ -148,6 +151,7 @@ pub fn page_html() -> String {
         hljs_css = HLJS_CSS,
         css = CSS,
         hljs_js = HLJS_JS,
+        mdrender_js = MDRENDER_JS,
         js = JS
     )
 }
@@ -1466,7 +1470,7 @@ className:"meta",begin:/^[\t ]*@/,end:/(?=#)|$/,contains:[u,m,l]}]}},
 grmr_python_repl:e=>({aliases:["pycon"],contains:[{className:"meta.prompt",
 starts:{end:/ |$/,starts:{end:"$",subLanguage:"python"}},variants:[{
 begin:/^>>>(?=[ ]|$)/},{begin:/^\.\.\.(?=[ ]|$)/}]}]}),grmr_r:e=>{
-const n=e.regex,t=/(?:(?:[a-zA-Z]|\.[._a-zA-Z])[._a-zA-Z0-9]*)|\.(?!\d)/,a=n.either(/0[xX][0-9a-fA-F]+\.[0-9a-fA-F]*[pP][+-]?\d+i?/,/0[xX][0-9a-fA-F]+(?:[pP][+-]?\d+)?[Li]?/,/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[Li]?/),i=/[=!<>:]=|\|\||&&|:::?|<-|<<-|->>|->|\|>|[-+*\/?!const JS: &str = r##"|:<=>@^~]|\*\*/,r=n.either(/[()]/,/[{}]/,/\[\[/,/[[\]]/,/\\/,/,/)
+const n=e.regex,t=/(?:(?:[a-zA-Z]|\.[._a-zA-Z])[._a-zA-Z0-9]*)|\.(?!\d)/,a=n.either(/0[xX][0-9a-fA-F]+\.[0-9a-fA-F]*[pP][+-]?\d+i?/,/0[xX][0-9a-fA-F]+(?:[pP][+-]?\d+)?[Li]?/,/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[Li]?/),i=/[=!<>:]=|\|\||&&|:::?|<-|<<-|->>|->|\|>|[-+*\/?!$&|:<=>@^~]|\*\*/,r=n.either(/[()]/,/[{}]/,/\[\[/,/[[\]]/,/\\/,/,/)
 ;return{name:"R",keywords:{$pattern:t,
 keyword:"function if in break next repeat else for while",
 literal:"NULL NA TRUE FALSE Inf NaN NA_integer_|10 NA_real_|10 NA_character_|10 NA_complex_|10",
@@ -1631,7 +1635,7 @@ contains:k},M=e=>{const n=b(e,/\//),t=b(/\//,e);return{begin:n,end:t,
 contains:[...k,{scope:"comment",begin:`#(?!.*${t})`,end:/$/}]}},S={
 scope:"regexp",variants:[M("###"),M("##"),M("#"),x]},A={match:b(/`/,Fe,/`/)
 },C=[A,{className:"variable",match:/\$\d+/},{className:"variable",
-match:`\\${ze}+`}],T=[{match:/(@|#(un)?)available/,scope:"keyword",starts:{
+match:`\\$${ze}+`}],T=[{match:/(@|#(un)?)available/,scope:"keyword",starts:{
 contains:[{begin:/\(/,end:/\)/,keywords:Pe,contains:[...p,f,O]}]}},{
 scope:"keyword",match:b(/@/,m(...je))},{scope:"meta",match:b(/@/,Fe)}],R={
 match:d(/\b[A-Z]/),relevance:0,contains:[{className:"type",
@@ -1764,6 +1768,225 @@ const n=e.replace("grmr_","").replace("_","-");He.registerLanguage(n,Ke[e])}
 return He}()
 ;"object"==typeof exports&&"undefined"!=typeof module&&(module.exports=hljs);"####;
 
+/// Stylesheet for the standalone print view (`/print/discussion`).
+///
+/// Deliberately **not** the console stylesheet: this document is paper-first,
+/// so it drops every interactive affordance, forces a light palette (a dark
+/// theme would print as a black page), lets code blocks wrap instead of
+/// clipping at the page edge, and pins page-break rules so a floor is never
+/// split across two sheets.
+const PRINT_CSS: &str = r##"
+:root { --fg:#111; --muted-fg:#666; --muted:#f4f4f4; --border:#d0d0d0; --primary:#1a5fb4; }
+* { box-sizing:border-box; }
+body { margin:0; padding:24px 28px; background:#fff; color:var(--fg); font-size:12.5px; line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; }
+.loading, .empty { color:var(--muted-fg); }
+.err { color:#b00020; }
+.doc-head { border-bottom:2px solid var(--fg); padding-bottom:8px; margin-bottom:14px; }
+.doc-head h1 { font-size:18px; margin:0 0 6px; line-height:1.35; }
+.doc-no { color:var(--primary); }
+.doc-meta { display:flex; flex-wrap:wrap; gap:4px 16px; color:var(--muted-fg); font-size:11px; }
+.summary { background:var(--muted); border:1px solid var(--border); border-left:4px solid var(--primary);
+  border-radius:4px; padding:8px 10px; margin:0 0 14px; page-break-inside:avoid; }
+.summary-head { font-weight:600; font-size:11px; color:var(--muted-fg); margin-bottom:4px; }
+.floor { border-bottom:1px solid var(--border); padding:8px 0 10px; page-break-inside:avoid; }
+.floor-head { display:flex; align-items:baseline; gap:8px; font-size:11px; color:var(--muted-fg); margin-bottom:4px; }
+.floor-no { font-weight:700; color:var(--primary); }
+.floor-author { font-weight:600; color:var(--fg); }
+.quote { border-left:3px solid var(--border); background:var(--muted); padding:5px 8px; margin:5px 0; font-size:11.5px; }
+.quote-who { font-weight:600; color:var(--muted-fg); font-size:10.5px; margin-bottom:2px; }
+.md-render h1,.md-render h2,.md-render h3,.md-render h4 { margin:.6em 0 .3em; line-height:1.3; }
+.md-render h1 { font-size:16px; } .md-render h2 { font-size:14.5px; }
+.md-render h3 { font-size:13.5px; } .md-render h4 { font-size:13px; }
+.md-render p { margin:.4em 0; }
+.md-render ul { margin:.4em 0; padding-left:1.4em; }
+.md-render code { background:var(--muted); padding:1px 4px; border-radius:3px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+/* Wrap rather than clip: a wide code line would run off the paper edge. */
+.md-render pre { background:var(--muted); border:1px solid var(--border); border-radius:4px; padding:8px;
+  white-space:pre-wrap; word-break:break-word; page-break-inside:avoid; }
+.md-render pre code { background:transparent; padding:0; font-size:11px; }
+.md-render table { border-collapse:collapse; width:100%; font-size:11.5px; margin:.5em 0; }
+.md-render th,.md-render td { border:1px solid var(--border); padding:4px 7px; text-align:left; vertical-align:top; }
+.md-render thead th { background:var(--muted); }
+.md-render a { color:var(--primary); text-decoration:none; }
+.md-render blockquote { margin:.4em 0; padding-left:10px; border-left:3px solid var(--border); color:#444; }
+.doc-foot { margin-top:16px; padding-top:6px; border-top:1px solid var(--border); color:var(--muted-fg); font-size:10.5px; }
+@page { size:A4; margin:18mm 16mm; }
+@media print {
+  body { padding:0; }
+  /* Printed links are dead — spell the target out. */
+  .md-render a[href^="http"]::after { content:" (" attr(href) ")"; font-size:9pt; color:#666; word-break:break-all; }
+  .doc-head h1 { page-break-after:avoid; }
+}
+"##;
+
+/// Script for the standalone print view. Fetches the thread through the same
+/// panel API the console uses (the auth cookie rides along), renders it with
+/// the shared `mdRender`, highlights, then opens the browser's print dialog —
+/// "Save as PDF" there is the actual PDF export.
+const PRINT_JS: &str = r####"
+const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const tf=(iso)=>{ if(!iso) return "—"; const d=new Date(iso); return isNaN(d)?iso:d.toLocaleString(); };
+function quoteHtml(m){
+  let h="";
+  if(m.reply_to && typeof m.reply_to==="object"){
+    h += '<div class="quote"><div class="quote-who">引用</div><div class="md-render">'+mdRender(m.reply_to.text||m.reply_to.body||"")+'</div></div>';
+  }
+  (Array.isArray(m.quotes)?m.quotes:[]).forEach(x=>{
+    h += '<div class="quote"><div class="quote-who">引用 '+esc(x.kind||"")+'</div><div class="md-render">'+mdRender(x.text||"")+'</div></div>';
+  });
+  return h;
+}
+function render(d){
+  // Floors arrive newest-first; paper reads oldest-first, so renumber.
+  const msgs=(d.messages||[]).slice().sort((a,b)=>String(a.created_at||"").localeCompare(String(b.created_at||"")));
+  const authors=Array.from(new Set(msgs.map(m=>m.author).filter(Boolean)));
+  const closed=d.closed===true;
+  const floors=msgs.map((m,i)=>
+    '<section class="floor">'
+    + '<div class="floor-head"><span class="floor-no">#'+(i+1)+'</span>'
+    + '<span class="floor-author">'+esc(m.author||"")+'</span>'
+    + '<span class="floor-time">'+esc(tf(m.created_at))+'</span></div>'
+    + quoteHtml(m)
+    + '<div class="md-render">'+mdRender(m.body||"")+'</div>'
+    + '</section>').join("");
+  document.getElementById("doc").innerHTML =
+    '<header class="doc-head"><h1>'+(d.number?'<span class="doc-no">#'+esc(String(d.number))+'</span> ':"")
+      + esc(d.title||"(无标题)")+(closed?" 🔒":"")+'</h1>'
+    + '<div class="doc-meta">'
+      + '<span>状态：'+(closed?"已关闭":"进行中")+'</span>'
+      + '<span>楼层：'+msgs.length+'</span>'
+      + (authors.length?'<span>参与人：'+authors.map(esc).join("、")+'</span>':"")
+      + '<span>导出时间：'+esc(tf(new Date().toISOString()))+'</span>'
+    + '</div></header>'
+    + (closed && d.summary
+        ? '<section class="summary"><div class="summary-head">📋 讨论摘要'+(d.summary_auto?"（自动生成）":"")
+          +(d.closed_by?' · 由 '+esc(d.closed_by)+' 关闭':"")+'</div><div class="md-render">'+mdRender(d.summary)+'</div></section>'
+        : "")
+    + '<main>'+(floors||'<div class="empty">暂无消息。</div>')+'</main>'
+    + '<footer class="doc-foot">Teamx Console · 讨论'+(d.number?" #"+esc(String(d.number)):"")+' 导出</footer>';
+}
+async function run(){
+  const id=new URLSearchParams(location.search).get("id")||"";
+  const host=document.getElementById("doc");
+  let d;
+  try{
+    const r=await fetch("/api/panels/discussion?id="+encodeURIComponent(id));
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||"加载失败");
+    d=j.data||{};
+  }catch(e){
+    host.innerHTML='<div class="err">无法加载讨论：'+esc(e&&e.message||e)+'</div>';
+    return;
+  }
+  render(d);
+  document.title=(d.number?"#"+d.number+" ":"")+(d.title||"讨论")+" · Teamx";
+  if(typeof hljs!=="undefined"){
+    document.querySelectorAll("pre code").forEach(el=>{ try{ hljs.highlightElement(el); }catch(_){} });
+  }
+  window.focus();
+  // One tick for fonts + highlighting to settle before the dialog opens.
+  setTimeout(()=>window.print(),150);
+}
+run();
+"####;
+
+/// Standalone, chrome-free view of one discussion thread, meant to be opened
+/// in a new tab and printed to PDF. Sharing `mdRender` with the console keeps
+/// the paper copy identical to what the reader saw on screen.
+pub fn print_discussion_html() -> String {
+    format!(
+        r####"<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>讨论 · Teamx Console</title>
+<style>
+{hljs_css}
+{print_css}
+</style>
+</head>
+<body>
+<div id="doc"><div class="loading">正在生成…</div></div>
+<script>
+{hljs_js}
+</script>
+<script>
+{mdrender_js}
+</script>
+<script>
+{print_js}
+</script>
+</body>
+</html>"####,
+        hljs_css = HLJS_CSS,
+        print_css = PRINT_CSS,
+        hljs_js = HLJS_JS,
+        mdrender_js = MDRENDER_JS,
+        print_js = PRINT_JS
+    )
+}
+
+/// Markdown renderer shared by the main console page and the standalone
+/// print view (`/print/discussion`). Kept separate so the print page does not
+/// have to pull in the whole console script (which wires up SSE, polling, …).
+const MDRENDER_JS: &str = r##"function mdRender(src){
+  const esc2=(t)=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let lines=(src||"").replace(/\r\n/g,"\n").split("\n");
+  let out=[]; let inCode=false, code=[], codeLang=""; let inList=false;
+  const inline=(t)=>esc2(t)
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
+    .replace(/\*([^*]+)\*/g,"<i>$1</i>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,text,url)=>{
+      const u=String(url).trim();
+      // Only allow safe schemes; anything else (javascript:/data:/vbscript:…) is
+      // rendered as inert code text, never as an href (stored-XSS guard).
+      if(/^https?:\/\//i.test(u) || /^mailto:/i.test(u)){
+        return `<a href="${u}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      }
+      return `<code>${text} (${u})</code>`;
+    });
+  // The fence's info string becomes the highlight.js language class, so
+  // ```rust fences get highlighted like a .rs file does.
+  const flush=()=>{ if(inCode){ out.push("<pre><code"+(codeLang?' class="language-'+esc2(codeLang)+'"':"")+">"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; codeLang=""; } };
+  const closeList=()=>{ if(inList){ out.push("</ul>"); inList=false; } };
+  // GFM tables: a header row containing `|` followed by a delimiter row
+  // (`|---|:--:|`) opens a table; rows end at the first line without a `|`.
+  const tCells=(r)=>{ let t=r.trim(); if(t.startsWith("|")) t=t.slice(1); if(t.endsWith("|")) t=t.slice(0,-1); return t.split("|").map(c=>c.trim()); };
+  const tAlign=(c)=>{ const s=c.trim(); if(!s) return ""; if(s.startsWith(":")&&s.endsWith(":")) return "center"; if(s.endsWith(":")) return "right"; if(s.startsWith(":")) return "left"; return ""; };
+  const tIsDelim=(r)=>{ if(!r||!/^[\s|:-]+$/.test(r)) return false; const cs=tCells(r); return cs.length>0 && cs.every(c=>/^:?-+:?$/.test(c)); };
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    if(/^```/.test(ln)){ closeList(); if(inCode){flush();} else { inCode=true; codeLang=(ln.slice(3).trim().split(/\s+/)[0]||""); } continue; }
+    if(inCode){ code.push(ln); continue; }
+    if(ln.includes("|") && i+1<lines.length && tIsDelim(lines[i+1])){
+      closeList();
+      const head=tCells(ln), al=tCells(lines[i+1]).map(tAlign);
+      const cell=(tag,c,ci)=>"<"+tag+(al[ci]?' style="text-align:'+al[ci]+'"':"")+">"+inline(c)+"</"+tag+">";
+      out.push('<div class="md-table-wrap"><table><thead><tr>'+head.map((h,ci)=>cell("th",h,ci)).join("")+'</tr></thead><tbody>');
+      i+=2;
+      while(i<lines.length && lines[i].includes("|") && !/^\s*$/.test(lines[i])){
+        out.push("<tr>"+tCells(lines[i]).map((c,ci)=>cell("td",c,ci)).join("")+"</tr>");
+        i++;
+      }
+      i--;
+      out.push("</tbody></table></div>");
+      continue;
+    }
+    if(/^####\s+/.test(ln)){ closeList(); out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>"); }
+    else if(/^###\s+/.test(ln)){ closeList(); out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>"); }
+    else if(/^##\s+/.test(ln)){ closeList(); out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>"); }
+    else if(/^#\s+/.test(ln)){ closeList(); out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>"); }
+    else if(/^[-*]\s+/.test(ln)){ if(!inList){ out.push("<ul>"); inList=true; } out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>"); }
+    else if(/^\s*$/.test(ln)){ closeList(); out.push(""); }
+    else { closeList(); out.push("<p>"+inline(ln)+"</p>"); }
+  }
+  flush(); closeList();
+  return out.join("\n");
+}"##;
 const JS: &str = r##"
 const $=(s)=>document.querySelector(s);
 const $$=(s)=>Array.from(document.querySelectorAll(s));
@@ -2039,61 +2262,6 @@ function fsDownload(path,name){
   if(name) a.download=name;
   document.body.appendChild(a); a.click(); a.remove();
 }
-function mdRender(src){
-  const esc2=(t)=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  let lines=(src||"").replace(/\r\n/g,"\n").split("\n");
-  let out=[]; let inCode=false, code=[], codeLang=""; let inList=false;
-  const inline=(t)=>esc2(t)
-    .replace(/`([^`]+)`/g,"<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
-    .replace(/\*([^*]+)\*/g,"<i>$1</i>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,text,url)=>{
-      const u=String(url).trim();
-      // Only allow safe schemes; anything else (javascript:/data:/vbscript:…) is
-      // rendered as inert code text, never as an href (stored-XSS guard).
-      if(/^https?:\/\//i.test(u) || /^mailto:/i.test(u)){
-        return `<a href="${u}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-      }
-      return `<code>${text} (${u})</code>`;
-    });
-  // The fence's info string becomes the highlight.js language class, so
-  // ```rust fences get highlighted like a .rs file does.
-  const flush=()=>{ if(inCode){ out.push("<pre><code"+(codeLang?' class="language-'+esc2(codeLang)+'"':"")+">"+code.map(esc2).join("\n")+"</code></pre>"); code=[]; inCode=false; codeLang=""; } };
-  const closeList=()=>{ if(inList){ out.push("</ul>"); inList=false; } };
-  // GFM tables: a header row containing `|` followed by a delimiter row
-  // (`|---|:--:|`) opens a table; rows end at the first line without a `|`.
-  const tCells=(r)=>{ let t=r.trim(); if(t.startsWith("|")) t=t.slice(1); if(t.endsWith("|")) t=t.slice(0,-1); return t.split("|").map(c=>c.trim()); };
-  const tAlign=(c)=>{ const s=c.trim(); if(!s) return ""; if(s.startsWith(":")&&s.endsWith(":")) return "center"; if(s.endsWith(":")) return "right"; if(s.startsWith(":")) return "left"; return ""; };
-  const tIsDelim=(r)=>{ if(!r||!/^[\s|:-]+$/.test(r)) return false; const cs=tCells(r); return cs.length>0 && cs.every(c=>/^:?-+:?$/.test(c)); };
-  for(let i=0;i<lines.length;i++){
-    const ln=lines[i];
-    if(/^```/.test(ln)){ closeList(); if(inCode){flush();} else { inCode=true; codeLang=(ln.slice(3).trim().split(/\s+/)[0]||""); } continue; }
-    if(inCode){ code.push(ln); continue; }
-    if(ln.includes("|") && i+1<lines.length && tIsDelim(lines[i+1])){
-      closeList();
-      const head=tCells(ln), al=tCells(lines[i+1]).map(tAlign);
-      const cell=(tag,c,ci)=>"<"+tag+(al[ci]?' style="text-align:'+al[ci]+'"':"")+">"+inline(c)+"</"+tag+">";
-      out.push('<div class="md-table-wrap"><table><thead><tr>'+head.map((h,ci)=>cell("th",h,ci)).join("")+'</tr></thead><tbody>');
-      i+=2;
-      while(i<lines.length && lines[i].includes("|") && !/^\s*$/.test(lines[i])){
-        out.push("<tr>"+tCells(lines[i]).map((c,ci)=>cell("td",c,ci)).join("")+"</tr>");
-        i++;
-      }
-      i--;
-      out.push("</tbody></table></div>");
-      continue;
-    }
-    if(/^####\s+/.test(ln)){ closeList(); out.push("<h4>"+inline(ln.replace(/^####\s+/,""))+"</h4>"); }
-    else if(/^###\s+/.test(ln)){ closeList(); out.push("<h3>"+inline(ln.replace(/^###\s+/,""))+"</h3>"); }
-    else if(/^##\s+/.test(ln)){ closeList(); out.push("<h2>"+inline(ln.replace(/^##\s+/,""))+"</h2>"); }
-    else if(/^#\s+/.test(ln)){ closeList(); out.push("<h1>"+inline(ln.replace(/^#\s+/,""))+"</h1>"); }
-    else if(/^[-*]\s+/.test(ln)){ if(!inList){ out.push("<ul>"); inList=true; } out.push("<li>"+inline(ln.replace(/^[-*]\s+/,""))+"</li>"); }
-    else if(/^\s*$/.test(ln)){ closeList(); out.push(""); }
-    else { closeList(); out.push("<p>"+inline(ln)+"</p>"); }
-  }
-  flush(); closeList();
-  return out.join("\n");
-}
 function bindFsOverlay(){
   document.getElementById("fsClose").addEventListener("click",fsCloseOverlay);
   document.getElementById("fsRefresh").addEventListener("click",()=>fsLoad(FS.path));
@@ -2266,11 +2434,12 @@ function renderThread(d){
     ? `<div class="dsc-replybar">引用回复 ${esc(dscReplyTo.mid)} <button class="btn btn-mini" id="dscClearReply">✕</button></div>` : "";
   host.innerHTML = `
     <div class="dsc-toolbar"><h3 style="margin:0">${d.number?`<span class="dsc-thread-no">#${esc(String(d.number))}</span> `:""}${esc(title)} ${closed?"🔒":""}</h3>
-      ${closed?`<span class="muted">已关闭</span>`:`
-        <div class="dsc-thread-actions">
+      <div class="dsc-thread-actions">
+        ${closed?`<span class="muted">已关闭</span>`:`
           <button class="btn btn-mini" id="dscJoinThread">💬 参与讨论</button>
-          <button class="btn btn-mini" id="dscCloseThread" title="关闭讨论">关闭讨论</button>
-        </div>`}
+          <button class="btn btn-mini" id="dscCloseThread" title="关闭讨论">关闭讨论</button>`}
+        <button class="btn btn-mini" id="dscDownloadPdf" title="在新窗口打开该讨论，用浏览器打印为 PDF">⬇ Download PDF</button>
+      </div>
     </div>
     <div class="dsc-toolbar-sub">${closed?`<span class="muted">该讨论已关闭，仅可浏览。</span>`:replyBar}</div>
     ${closed && d.summary ? `<div class="dsc-summary"><div class="dsc-summary-head">📋 讨论摘要${d.summary_auto?"（自动生成）":""}${d.closed_by?` · 由 ${esc(d.closed_by)} 关闭`:""}</div><div class="md-render">${mdRender(d.summary)}</div></div>` : ""}
@@ -2283,6 +2452,12 @@ function renderThread(d){
   `;
   wireFloors(host);
   const jt=$("#dscJoinThread"); if(jt) jt.onclick = ()=>openDscOverlay({ id:curDsc, title, mode:"thread" });
+  // "Download PDF": hand the thread to the chrome-free print view, which
+  // re-renders it with the same mdRender and opens the browser's print dialog —
+  // "Save as PDF" there is the actual export.
+  const pdf=$("#dscDownloadPdf"); if(pdf) pdf.onclick = ()=>{
+    window.open("/print/discussion?id="+encodeURIComponent(curDsc), "_blank");
+  };
   const send=$("#dscSend"); if(send) send.onclick = async ()=>{
     const input=$("#dscInput");
     const text=(input?input.value:"").trim(); if(!text) return;

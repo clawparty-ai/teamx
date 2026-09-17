@@ -34,7 +34,9 @@ use crate::console_data::{
     config_path, discussion_action, fetch_me, fetch_panel, load_config, resolve_mode, save_config, slugify,
     valid_node_url, Ctx, Mode, RunOut,
 };
-use crate::console_html::{login_html, not_found_html, page_html, unauthorized_html};
+use crate::console_html::{
+    login_html, not_found_html, page_html, print_discussion_html, unauthorized_html,
+};
 use crate::pki;
 
 /// Cookie name holding the auth token.
@@ -86,6 +88,9 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
+        // Chrome-free thread view opened in a new tab, then printed to PDF by
+        // the browser ("Download PDF" in the discussion toolbar).
+        .route("/print/discussion", get(print_discussion_page))
         .route("/api/panels/{id}", get(api_panel))
         .route("/api/stream", get(api_stream))
         .route("/api/discussion/{action}", post(api_discussion))
@@ -189,6 +194,22 @@ async fn login_page() -> Html<String> {
 
 async fn not_found_page() -> (StatusCode, Html<String>) {
     (StatusCode::NOT_FOUND, Html(not_found_html()))
+}
+
+/// GET /print/discussion?id=<id> — the print/PDF view of one thread.
+///
+/// A page, not an API: unauthenticated requests bounce to `/login` like `/`
+/// does, rather than getting the bare 401 `guard` hands to `/api/*`. The page
+/// then fetches the thread through `/api/panels/discussion` with the cookie, so
+/// no thread content is ever embedded in the served HTML.
+async fn print_discussion_page(
+    State(state): State<S>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if authorized(&state, headers.get(header::COOKIE).and_then(|v| v.to_str().ok())) {
+        return Html(print_discussion_html()).into_response();
+    }
+    axum::response::Redirect::to("/login").into_response()
 }
 
 #[allow(clippy::result_large_err)]

@@ -306,5 +306,30 @@ grep -q 'code-gutter' "$WS/page.html.out" || fail "code gutter CSS missing"
 pass "syntax highlighting"
 rm -f /tmp/teamx-html-hdr /tmp/teamx-svg-hdr /tmp/teamx-mp4-hdr /tmp/teamx-mp4-full /tmp/teamx-range-hdr /tmp/teamx-range-body /tmp/teamx-suffix
 
+step "print view: /print/discussion is auth-gated and chrome-free"
+# Same cookie guard as every other page.
+code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/print/discussion?id=x")
+[ "$code" = "303" ] || fail "print view must require auth (got $code)"
+curl -sk --max-time 15 "$BASE/print/discussion?id=x" -H "$C" > "$WS/print.html"
+grep -q 'id="doc"' "$WS/print.html" || fail "print view must carry the #doc host"
+# Paper-first CSS: A4 page box + no-split floors.
+grep -q '@page' "$WS/print.html" || fail "print view must set @page (A4)"
+grep -q 'page-break-inside:avoid' "$WS/print.html" || fail "print view must pin page breaks"
+grep -q 'white-space:pre-wrap' "$WS/print.html" || fail "print view must wrap code (no clipping)"
+# Reuses the shared renderer + highlighter, so the paper copy matches the screen.
+grep -q 'function mdRender(src)' "$WS/print.html" || fail "print view must reuse mdRender"
+grep -q 'Highlight.js v11' "$WS/print.html" || fail "print view must include highlight.js"
+grep -q 'window.print()' "$WS/print.html" || fail "print view must open the print dialog"
+# And it must NOT drag in the console shell (nav, views, SSE wiring).
+grep -q 'view-discussions' "$WS/print.html" && fail "print view must not include the console shell"
+grep -q 'connectStream' "$WS/print.html" && fail "print view must not include the console script"
+pass "print view"
+
+step "discussion: Download PDF button is wired"
+curl -sk --max-time 15 "$BASE/" -H "$C" > "$WS/page.html.out"
+grep -q 'dscDownloadPdf' "$WS/page.html.out" || fail "Download PDF button missing from the console page"
+grep -q 'print/discussion?id=' "$WS/page.html.out" || fail "Download PDF must open the print view"
+pass "download pdf button"
+
 echo
 echo "ALL CONSOLE FILE TESTS PASSED"
