@@ -1,0 +1,15 @@
+{
+  "doc": "design",
+  "id": "002-muse-egress-via-teammate",
+  "state": "draft",
+  "owner": "owner",
+  "created_at": "2026-09-18T02:40:00+00:00",
+  "updated_at": "2026-09-18T02:40:00+00:00",
+  "history": [
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-18T02:40:00+00:00"
+    }
+  ]
+}
