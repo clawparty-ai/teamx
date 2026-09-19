@@ -2668,9 +2668,7 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
                     // （systemd 会警告 "unit globs expand to loaded units, so start
                     // will usually have no effect"）。改为先枚举单元文件再逐个 start。
                     let script = format!(
-                        "for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do \
-                           sudo systemctl start "$u" || true; \
-                         done; echo STARTED"
+                        "for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do sudo systemctl start \"$u\" || true; done; echo STARTED"
                     );
                     let _ = crate::provision::RemoteExec::run_as(
                         &crate::provision::SshExec,
