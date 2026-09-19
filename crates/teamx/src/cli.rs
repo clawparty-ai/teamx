@@ -1155,6 +1155,15 @@ pub enum DiscussionCmd {
         /// optional associated task id
         #[arg(long)]
         task: Option<String>,
+        /// brainstorm mode (design/007): divergent ideation instead of convergence
+        #[arg(long)]
+        mode: Option<String>,
+        /// brainstorm window in seconds (default 86400)
+        #[arg(long)]
+        window_secs: Option<i64>,
+        /// brainstorm minimum `kind=idea` per participant, checked at close (default 3)
+        #[arg(long)]
+        min_ideas: Option<i64>,
         #[arg(long)]
         session: String,
         #[arg(long)]
@@ -1191,6 +1200,9 @@ pub enum DiscussionCmd {
         /// JSON array of quote objects: [{"kind":"message"|"event"|"task","message_id"|"seq"|"task_id":...,"text":"..."}]
         #[arg(long)]
         quotes: Option<String>,
+        /// brainstorm message kind: idea|concern|question|reference (required in the diverging window)
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long)]
         session: String,
         #[arg(long)]
@@ -1207,6 +1219,9 @@ pub enum DiscussionCmd {
         /// reply body
         #[arg(value_name = "BODY")]
         body: String,
+        /// brainstorm message kind: idea|concern|question|reference (concern must reply to an idea)
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long)]
         session: String,
         #[arg(long)]
@@ -1220,6 +1235,29 @@ pub enum DiscussionCmd {
         /// optional closing summary (markdown) shown under the topic; auto-generated digest if omitted
         #[arg(long)]
         summary: Option<String>,
+        /// brainstorm only: JSON array of directions, e.g.
+        /// [{"direction_id":"d1","title":"...","source_message_ids":["dsc_x#12"],"next_step":"..."}]
+        #[arg(long)]
+        directions: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Hand off one harvested direction to a new discussion/task (owner/lead; design/007 P1b)
+    Handoff {
+        /// source brainstorm discussion id (must be harvested)
+        #[arg(value_name = "ID")]
+        id: String,
+        /// direction id inside that thread's directions[]
+        #[arg(long)]
+        direction_id: String,
+        /// target kind: discussion | task
+        #[arg(long)]
+        target_kind: String,
+        /// target id (discussion id or taskx task id)
+        #[arg(long)]
+        target_id: String,
         #[arg(long)]
         session: String,
         #[arg(long)]

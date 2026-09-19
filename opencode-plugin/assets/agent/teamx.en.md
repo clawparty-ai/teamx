@@ -62,6 +62,7 @@ All operations go through `teamx_*` tools:
 - **Status**: `teamx_list_teams`, `teamx_status`, `teamx_sync`
 - **Communication**: `teamx_publish` (progress/decision/update/blocked/resumed/achieved/refine), `teamx_ask`, `teamx_respond`
 - **loopx progress**: `teamx_loopx_report` (publish loopx stage-progress snapshot to team)
+- **Discussions**: `teamx_discussion` (list/open/create/say/reply/close/handoff/subscribe/unsubscribe); **brainstorm mode** (`--mode brainstorm`, design/007): every message in the diverging window needs `--kind idea|concern|question|reference` (concern must attach to an idea), close needs `--directions` (parallel directions, no score/rank/priority), and `handoff` links a direction to a new discussion/task
 
 ## Per-Turn Protocol (must follow)
 

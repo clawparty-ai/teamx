@@ -1032,7 +1032,7 @@ export const tools = {
       "participate themselves (instead of only receiving discussion events).",
     args: {
       action: tool.schema
-        .enum(["list", "open", "create", "say", "reply", "close", "subscribe", "unsubscribe"])
+        .enum(["list", "open", "create", "say", "reply", "close", "handoff", "subscribe", "unsubscribe"])
         .describe("discussion action"),
       id: tool.schema.string().optional().describe("discussion id (open/say/reply/close/subscribe/unsubscribe)"),
       title: tool.schema.string().optional().describe("thread title (create)"),
@@ -1044,6 +1044,20 @@ export const tools = {
         .string()
         .optional()
         .describe("close: optional closing summary (markdown) shown under the topic; auto-generated digest if omitted"),
+      kind: tool.schema
+        .string()
+        .optional()
+        .describe("brainstorm: message kind idea|concern|question|reference (required in the diverging window; concern must reply to an idea)"),
+      mode: tool.schema.string().optional().describe("create: `brainstorm` for divergent ideation (design/007)"),
+      window_secs: tool.schema.number().optional().describe("create: brainstorm window in seconds (default 86400)"),
+      min_ideas: tool.schema.number().optional().describe("create: brainstorm minimum kind=idea per participant (default 3)"),
+      directions: tool.schema
+        .string()
+        .optional()
+        .describe('close: brainstorm directions JSON array, e.g. [{"direction_id":"d1","source_message_ids":["dsc_x#12"],"next_step":"..."}]'),
+      direction_id: tool.schema.string().optional().describe("handoff: direction id inside directions[]"),
+      target_kind: tool.schema.string().optional().describe("handoff: discussion | task"),
+      target_id: tool.schema.string().optional().describe("handoff: target discussion id or taskx task id"),
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
@@ -1057,13 +1071,25 @@ export const tools = {
         parts.push(args.id ?? "", args.body ?? "")
       } else if (a === "reply") {
         parts.push(args.id ?? "", args.message_id ?? "", args.body ?? "")
+      } else if (a === "handoff") {
+        parts.push(args.id ?? "")
       } else {
         // open / close / subscribe / unsubscribe
         parts.push(args.id ?? "")
       }
       if (a === "create" && args.body) parts.push("--body", args.body)
       if (a === "create" && args.task) parts.push("--task", args.task)
+      if (a === "create" && args.mode) parts.push("--mode", args.mode)
+      if (a === "create" && args.window_secs) parts.push("--window-secs", String(args.window_secs))
+      if (a === "create" && args.min_ideas) parts.push("--min-ideas", String(args.min_ideas))
+      if ((a === "say" || a === "reply") && args.kind) parts.push("--kind", args.kind)
       if (a === "close" && args.summary) parts.push("--summary", args.summary)
+      if (a === "close" && args.directions) parts.push("--directions", args.directions)
+      if (a === "handoff") {
+        if (args.direction_id) parts.push("--direction-id", args.direction_id)
+        if (args.target_kind) parts.push("--target-kind", args.target_kind)
+        if (args.target_id) parts.push("--target-id", args.target_id)
+      }
       if (args.team) parts.push("--team", args.team)
       return tx(context.sessionID, context.directory, parts)
     },

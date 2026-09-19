@@ -652,7 +652,7 @@ export function registerDiscussionTools(ctx: Context): void {
       action: {
         type: 'string',
         required: true,
-        enum: ['list', 'open', 'create', 'say', 'reply', 'close', 'subscribe', 'unsubscribe'] as readonly string[],
+        enum: ['list', 'open', 'create', 'say', 'reply', 'close', 'handoff', 'subscribe', 'unsubscribe'] as readonly string[],
         description: 'Discussion action',
       },
       id: { type: 'string', description: 'Discussion id (open/say/reply/close/subscribe/unsubscribe)' },
@@ -662,6 +662,14 @@ export function registerDiscussionTools(ctx: Context): void {
       task: { type: 'string', description: 'Associated task id (create)' },
       all: { type: 'boolean', description: 'List: include closed threads (default false)' },
       summary: { type: 'string', description: 'Close: optional closing summary (markdown) shown under the topic; auto-generated digest if omitted' },
+      kind: { type: 'string', description: 'Brainstorm: message kind idea|concern|question|reference (required in the diverging window; concern must reply to an idea)' },
+      mode: { type: 'string', description: 'Create: `brainstorm` for divergent ideation (design/007)' },
+      window_secs: { type: 'string', description: 'Create: brainstorm window in seconds (default 86400)' },
+      min_ideas: { type: 'string', description: 'Create: brainstorm minimum kind=idea per participant (default 3)' },
+      directions: { type: 'string', description: 'Close: brainstorm directions JSON array (no score/rank/priority; each needs source_message_ids[] + next_step)' },
+      direction_id: { type: 'string', description: 'Handoff: direction id inside directions[]' },
+      target_kind: { type: 'string', description: 'Handoff: discussion | task' },
+      target_id: { type: 'string', description: 'Handoff: target discussion id or taskx task id' },
       team: { type: 'string', description: 'Team ID (optional if only one team)' },
     },
     output: {
@@ -682,13 +690,25 @@ export function registerDiscussionTools(ctx: Context): void {
         parts.push(args.id ?? '', args.body ?? '')
       } else if (action === 'reply') {
         parts.push(args.id ?? '', args.message_id ?? '', args.body ?? '')
+      } else if (action === 'handoff') {
+        parts.push(args.id ?? '')
       } else {
         // open / close / subscribe / unsubscribe
         parts.push(args.id ?? '')
       }
       if (action === 'create' && args.body) parts.push('--body', args.body)
       if (action === 'create' && args.task) parts.push('--task', args.task)
+      if (action === 'create' && args.mode) parts.push('--mode', args.mode)
+      if (action === 'create' && args.window_secs) parts.push('--window-secs', String(args.window_secs))
+      if (action === 'create' && args.min_ideas) parts.push('--min-ideas', String(args.min_ideas))
+      if ((action === 'say' || action === 'reply') && args.kind) parts.push('--kind', args.kind)
       if (action === 'close' && args.summary) parts.push('--summary', args.summary)
+      if (action === 'close' && args.directions) parts.push('--directions', args.directions)
+      if (action === 'handoff') {
+        if (args.direction_id) parts.push('--direction-id', args.direction_id)
+        if (args.target_kind) parts.push('--target-kind', args.target_kind)
+        if (args.target_id) parts.push('--target-id', args.target_id)
+      }
       const res = await runCli([
         ...parts,
         '--session', getKey(exec),

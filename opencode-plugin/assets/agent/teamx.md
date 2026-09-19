@@ -62,6 +62,7 @@ permission:
 - 状态：`teamx_list_teams`、`teamx_status`、`teamx_sync`
 - 通信：`teamx_publish`（progress/decision/update/blocked/resumed/achieved/refine）、`teamx_ask`、`teamx_respond`
 - loopx 进度：`teamx_loopx_report`（把成员绑定的 loopx 项目阶段性进度快照发布给团队）
+- 讨论：`teamx_discussion`（list/open/create/say/reply/close/handoff/subscribe/unsubscribe）；**brainstorm 模式**（`--mode brainstorm`，design/007）：发散窗口内发言必填 `--kind idea|concern|question|reference`（concern 须挂在某条 idea 下），收窗需 `--directions`（并列方向清单，禁 score/rank/priority），harvested 后可用 `handoff` 把某方向交接给新讨论/任务
 
 ## 每回合协议（必须遵守）
 

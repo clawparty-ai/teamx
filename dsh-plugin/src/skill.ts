@@ -79,7 +79,7 @@ All operations go through \`teamx_*\` tools:
 - **Roles**: \`teamx_set_role\` (member self-service); custom roles: \`teamx_role_propose\` (member proposes) -> \`teamx_role_approve\` / \`teamx_role_deny\` (owner approves/denies) -> approved role auto-granted to proposer; \`teamx_role_update\` (owner updates role name/description)
 - **Working state**: \`teamx_set_state\` (idle = finished current slice / active = resumed)
 - **Status**: \`teamx_list_teams\`, \`teamx_status\`, \`teamx_sync\`
-- **Communication**: \`teamx_publish\` (progress/decision/update/blocked/resumed/achieved/refine), \`teamx_ask\`, \`teamx_respond\`, \`teamx_discussion\` (discussion threads: list/open/create/say/reply/close/subscribe/unsubscribe)
+- **Communication**: \`teamx_publish\` (progress/decision/update/blocked/resumed/achieved/refine), \`teamx_ask\`, \`teamx_respond\`, \`teamx_discussion\` (discussion threads: list/open/create/say/reply/close/subscribe/unsubscribe) (\`--mode brainstorm\`: divergent ideation — \`--kind idea|concern|question|reference\` required in the window, close needs \`--directions\`; design/007)
 - **loopx progress**: \`teamx_loopx_report\` (publish loopx stage-progress snapshot to team)
 - **Cloud hosts (design/006)**: \`teamx_node_list\`, \`teamx_node_status\`, \`teamx_node_provision\` (owner/lead; reuse-first), \`teamx_node_stop\` / \`teamx_node_start\`, \`teamx_node_destroy\`
 

@@ -245,5 +245,8 @@ fi
 echo "== 17/17 node provisioning E2E (design/006, fake provider, zero AWS) =="
 ./tests/node-provision-test.sh
 
+echo "== 18/18 brainstorm discussion mode E2E (design/007, local) =="
+./tests/brainstorm-test.sh
+
 echo
 echo "ALL TEST SUITES PASSED"
