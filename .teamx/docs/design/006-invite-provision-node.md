@@ -23,6 +23,7 @@
 | A | **AWS 凭据形态** | 优先 **instance profile / IAM role**（server 在 EC2 上则无需落 access key）；否则用 owner 提供的 access key，**加密存 server** |
 | B | **IAM 最小权限** | 仅 `ec2:RunInstances` / `TerminateInstances` / `DescribeInstances` + keypair + 打标签；**不给通配** |
 | C | **SSH 私钥** | **per-node keypair**（单台可吊销）+ server 侧**加密存储** |
+| D | **云主机规格** | **默认选该 region 最便宜的机型**，规格下限 **1 vCPU / 2 GiB**（可 `--size` 覆盖） |
 
 **沿用既有裁决**：默认 S 规格 + TTL 30d 可续 + 空闲 auto-stop（CPU<5% 30min）+ 每 user 常驻上限 1 台 + `destroy` 可验证清单（terminate + 清 key/secret + 吊销 member 证书）+ region 白名单（开通时校验）+ 凭据/私钥加密存储·可轮换·全审计 + `budget.alert` 熔断前移 T3 + 计量落台账。
 
