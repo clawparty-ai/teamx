@@ -1,0 +1,27 @@
+{
+  "doc": "design",
+  "id": "005-t1-impl-test",
+  "state": "review",
+  "owner": "tech-lead",
+  "created_at": "2026-09-19T02:09:13+00:00",
+  "updated_at": "2026-09-19T02:09:13+00:00",
+  "source": {
+    "repo": "teamx-ent",
+    "path": ".teamx/docs/design/t1-impl-test.md",
+    "commit": "ad77556"
+  },
+  "history": [
+    {
+      "state": "draft",
+      "by": "caicai",
+      "at": "2026-09-19T02:09:13+00:00",
+      "note": "T1 设计初稿（源自台账仓 teamx-ent）"
+    },
+    {
+      "state": "review",
+      "by": "caishu",
+      "at": "2026-09-19T02:09:13+00:00",
+      "note": "登记进标准文档目录并启动评审（owner 替代 weiye）"
+    }
+  ]
+}
