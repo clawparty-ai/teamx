@@ -741,6 +741,10 @@ pub fn set_node_state(conn: &mut Connection, node_id: &str, to: &str) -> Result<
     let from: String = conn
         .query_row("SELECT state FROM nodes WHERE id = ?1", params![node_id], |r| r.get(0))
         .map_err(|e| format!("node {node_id} not found: {e}"))?;
+    // 同态幂等：runner 的多个步骤可能各自做一次状态归一，X -> X 不算非法迁移。
+    if from == to {
+        return Ok(());
+    }
     node_transition(&from, to)?;
     let now = db::now();
     db::with_write(conn, |tx| {
@@ -1392,6 +1396,35 @@ mod tests {
         assert!(node_transition("terminated", "ready").is_err());
         assert!(node_transition("requested", "ready").is_err());
         assert!(node_transition("bogus", "ready").is_err());
+        // 状态机本身仍不允许 X -> X；幂等由 set_node_state 承担
+        assert!(node_transition("provisioning", "provisioning").is_err());
+    }
+
+    #[test]
+    fn set_node_state_is_idempotent_for_same_state() {
+        let mut c = conn();
+        c.execute(
+            "INSERT INTO teams (id,name,state,invite_token,created_at,updated_at) VALUES ('t1','T','active','tok','now','now')",
+            [],
+        )
+        .unwrap();
+        let a = provision_for_member(
+            &mut c,
+            "t1",
+            "m1",
+            "u1",
+            &ProvisionOpts { region: Some("us-west-2".into()), ..Default::default() },
+        )
+        .unwrap();
+        let nid = a["node_id"].as_str().unwrap().to_string();
+        set_node_state(&mut c, &nid, "provisioning").unwrap();
+        set_node_state(&mut c, &nid, "provisioning").unwrap(); // 幂等
+        set_node_state(&mut c, &nid, "bootstrapping").unwrap();
+        set_node_state(&mut c, &nid, "ready").unwrap();
+        let st: String = c
+            .query_row("SELECT state FROM nodes WHERE id = ?1", [&nid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(st, "ready");
     }
 
     #[test]
