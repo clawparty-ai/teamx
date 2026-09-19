@@ -961,10 +961,24 @@ pub fn bootstrap_script(
 # --- 1) OS 用户（design/006 §3.1；幂等） ---
 id -u {os_user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {os_user}
 
-# --- 2) 基础软件（§5.1）：git / ttyd / bun ---
+# --- 2) 基础软件（§5.1）：git / unzip / ttyd / bun ---
+# unzip 是 bun 安装脚本的前置（缺了会 "error: unzip is required to install bun"）。
 command -v git >/dev/null || sudo apt-get update -qq && sudo apt-get install -y -qq git
-command -v ttyd >/dev/null 2>&1 || (sudo apt-get install -y -qq ttyd || true)
+command -v unzip >/dev/null 2>&1 || sudo apt-get install -y -qq unzip || true
 command -v bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash || true)
+# ttyd 不在 Ubuntu 仓库里 → 取官方静态发行版（best-effort）。
+if ! command -v ttyd >/dev/null 2>&1; then
+  case "$(uname -m)" in
+    aarch64|arm64) TTYD_ASSET=ttyd.aarch64 ;;
+    x86_64|amd64)  TTYD_ASSET=ttyd.x86_64 ;;
+    *)             TTYD_ASSET="" ;;
+  esac
+  if [ -n "$TTYD_ASSET" ]; then
+    sudo curl -fsSL -o /usr/local/bin/ttyd \
+      "https://github.com/tsl0922/ttyd/releases/latest/download/$TTYD_ASSET" \
+      && sudo chmod 0755 /usr/local/bin/ttyd || true
+  fi
+fi
 
 # --- 3) opencode（裁决 T：官方安装脚本；≥1.18.0） ---
 sudo -u {os_user} bash -lc 'command -v opencode >/dev/null || curl -fsSL https://opencode.ai/install | bash'
@@ -1518,6 +1532,9 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(ca.as_bytes());
         assert!(sc.contains(&b64), "ca base64 missing");
         assert!(sc.contains("useradd -m -s /bin/bash xiaods"), "{sc}");
+        // §5.1 基础软件：unzip（bun 前置）+ ttyd 静态发行版
+        assert!(sc.contains("apt-get install -y -qq unzip"), "{sc}");
+        assert!(sc.contains("ttyd/releases/latest/download"), "{sc}");
         assert!(sc.contains("export TEAMX_SERVER_URL=%s"), "{sc}");
         // letter/CA 必须在该用户自己的 shell 里展开 ~（否则落到 /home/ubuntu）
         assert!(!sc.contains("sudo -u xiaods tee ~"), "bare ~ expanded by outer shell");
