@@ -166,6 +166,35 @@ export TEAMX_MTLS_CA=~/.teamx/letters/<id>/ca.crt
 
 The server binds with a certificate that covers its hostname/IP (use `--san <hostname|ip>` or the plugin's auto-detected IP), and members verify it against the team CA bundled in their invitation letter. See [docs/03-design-network.cn.md](docs/03-design-network.cn.md) for the full design and [docs/16-manual-network.cn.md](docs/16-manual-network.cn.md) for the manual test runbook.
 
+## Cloud-host provisioning (design/006)
+
+The **teamx server** can provision a cloud host for a member on demand, using the
+team owner's AWS credentials (`aws` CLI on the server; IAM least-privilege,
+instance profile preferred). Off by default:
+
+```bash
+# At invite time (opt-in):
+teamx team invite "contributor: dev" --user-name alice \
+      --provision-node [--provider aws --region ap-east-1 --size t4g.small --ttl 30]
+
+# Or later, for an existing member without a host:
+teamx node provision --member <member_id> [--region ...]
+
+# Operate:
+teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
+teamx node run-jobs          # server-side runner: aws create -> ssh bootstrap -> ready
+teamx node auto-stop --idle <node_id,...> [--yes]   # two-level idle decision
+```
+
+Key properties (see `.teamx/docs/design/006-invite-provision-node.md`):
+one host per **user**, one **OS user per team instance** (`<team-slug><4 digits>`);
+reuse-first (a second team never spins up a second host); the invitation letter is
+pushed over SSH (never via cloud-init); services are registered but only started
+**after the owner approves** the member; `destroy` runs a verifiable checklist
+(instance/EIP/security-group/DNS/keypair/secrets/cert/OS user).
+
+E2E (zero AWS, zero SSH): `bash tests/node-provision-test.sh`.
+
 ## Project Structure
 
 ```
