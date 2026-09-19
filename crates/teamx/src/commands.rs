@@ -2664,8 +2664,13 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
                     let key_path = crate::db::teamx_home()
                         .join("nodes")
                         .join(format!("{key_name}.pem"));
+                    // 注意：`systemctl start 'teamx-<user>-*'` 对**未加载**的单元无效
+                    // （systemd 会警告 "unit globs expand to loaded units, so start
+                    // will usually have no effect"）。改为先枚举单元文件再逐个 start。
                     let script = format!(
-                        "sudo systemctl start 'teamx-{os_user}-*' || true; echo STARTED"
+                        "for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do \
+                           sudo systemctl start "$u" || true; \
+                         done; echo STARTED"
                     );
                     let _ = crate::provision::RemoteExec::run_as(
                         &crate::provision::SshExec,

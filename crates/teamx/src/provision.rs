@@ -950,6 +950,7 @@ pub fn bootstrap_script(
     ca_pem: &str,
     letter_b64: &str,
     team_repo_url: &str,
+    member_id: &str,
 ) -> String {
     // CA PEM 是多行的：直接插进脚本会把脚本截断，必须 base64 内联后远端解码。
     let ca_b64 = {
@@ -997,8 +998,10 @@ sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx'
 echo {ca_b64} | base64 -d | sudo -u {os_user} bash -lc 'cat > ~/.teamx/ca.pem' 
 sudo -u {os_user} bash -lc 'printf "export TEAMX_SERVER_URL=%s\n" "{server_url}" >> ~/.bashrc'
 
-# --- 6) import 邀请函（以该 member 身份入队） ---
-sudo -u {os_user} bash -lc 'cd ~ && teamx team import ~/.teamx/letters/invite/invitation.letter || true'
+# --- 6) import 邀请函（认领 seat）---
+# `--session net:<member_id>` 是 network 模式的会话键约定（与现网成员一致）；
+# 缺 --session 时 CLI 直接报错，而此前的 `|| true` 会把失败吞掉（真机踩到）。
+sudo -u {os_user} bash -lc 'cd ~ && teamx team import ~/.teamx/letters/invite/invitation.letter --session net:{member_id}'
 
 # --- 7) 拉团队 repo / workspace（§3 步骤 8） ---
 sudo -u {os_user} bash -lc 'mkdir -p ~/work && cd ~/work && (git clone {team_repo_url} team-repo || true)'
@@ -1095,7 +1098,7 @@ pub fn run_provision_job(
         )
         .map_err(|e| format!("job {job_id} not found: {e}"))?;
     let node_id = node_id.ok_or("job has no node_id")?;
-    let _ = (team_id, member_id, opts);
+    let _ = (team_id, &member_id, opts);
     let node = get_node(conn, &node_id)?.ok_or("node not found")?;
     let region = node["region"].as_str().unwrap_or("").to_string();
     let size = resolve_size(&ProvisionOpts { size: None, ..Default::default() });
@@ -1180,7 +1183,8 @@ pub fn run_provision_job(
             .to_string();
         let node_bin = node_binary_for(&node_arch)?;
         exec.upload(&ip, key_path, &node_bin, "/tmp/teamx")?;
-        let script = bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url);
+        let script =
+            bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url, &member_id);
         exec.run_as(&ip, key_path, "ubuntu", &script)?;
         Ok(())
     })();
@@ -1526,7 +1530,14 @@ mod tests {
     #[test]
     fn bootstrap_script_embeds_multiline_ca_as_base64() {
         let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
-        let sc = bootstrap_script("xiaods", "https://s:1", ca, "TGV0dGVy", "https://s/git/t/r");
+        let sc = bootstrap_script(
+            "xiaods",
+            "https://s:1",
+            ca,
+            "TGV0dGVy",
+            "https://s/git/t/r",
+            "mid-1",
+        );
         // 多行 PEM 不能原样出现在脚本里（否则 set -e 下脚本被截断）
         assert!(!sc.contains("BEGIN CERTIFICATE"), "raw PEM leaked into script");
         use base64::Engine as _;
@@ -1542,6 +1553,13 @@ mod tests {
         );
         assert!(sc.contains("ttyd/releases/latest/download"), "{sc}");
         assert!(sc.contains("export TEAMX_SERVER_URL=%s"), "{sc}");
+        // import 必须带 --session（network 约定 net:<member_id>），否则 CLI 报错
+        assert!(
+            sc.contains(
+                "teamx team import ~/.teamx/letters/invite/invitation.letter --session net:mid-1"
+            ),
+            "{sc}"
+        );
         // letter/CA 必须在该用户自己的 shell 里展开 ~（否则落到 /home/ubuntu）
         assert!(!sc.contains("sudo -u xiaods tee ~"), "bare ~ expanded by outer shell");
         assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'"), "{sc}");
@@ -1709,7 +1727,14 @@ mod tests {
 
     #[test]
     fn bootstrap_script_contains_key_steps() {
-        let s = bootstrap_script("abc1234", "https://s:5783", "CA-PEM", "bGV0dGVy", "https://repo/x.git");
+        let s = bootstrap_script(
+            "abc1234",
+            "https://s:5783",
+            "CA-PEM",
+            "bGV0dGVy",
+            "https://repo/x.git",
+            "mid-2",
+        );
         for needle in [
             "useradd -m -s /bin/bash abc1234",
             "opencode.ai/install",
