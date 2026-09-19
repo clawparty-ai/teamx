@@ -35,7 +35,20 @@
 2. **GitHub OAuth client secret 由 serve 持有** —— 批准 / 否决；若批准，须限定为「短期 code 兑换、不落盘、可轮换」并写入安全约束。
 3. **公网面边界** —— 开通页是否引入第二个公网入口（与 #8 结论对齐）。
 
+## owner 裁决（2026-09-19）
+
+| # | 待裁决项 | 裁决 |
+|---|---|---|
+| 1 | rqlite 新依赖 | **批准**（须补运维/备份口径，并说明与现有 SQLite/台账 events 的分工） |
+| 2 | GitHub OAuth client secret 由 serve 持有 | **批准**（限定：短期 code 兑换、不落盘、可轮换、最小权限；轮换流程与 App webhook secret 同文档） |
+| 3 | 开通页是否引入第二个公网入口 | **待澄清**：owner 先要求说明「开通页」的定位与承载位置（见下），再裁决 |
+
+**关于第 3 项的澄清要点（供 xiaods 补文档）**：开通页 = `t1-provider-external` §2 的 Console onboarding 5 步向导（`GET /onboard` + `POST /api/onboard/*`）。需明确：
+- 它部署在**哪个进程/主机**（本地 user-console 绑 `127.0.0.1`，外部 GitHub 用户无法直接到达；是否部署在 serve 侧或独立前端？）；
+- 暴露方式与鉴权（公网 HTTPS？token/session？与 #8「gh-intake 是唯一公网面」的关系）；
+- 与 GitHub App 安装回跳（`installation_id`）的衔接。
+
 ## 后续
 
-- 作者（xiaods）按 3 项必改修正；owner 对 3 项待裁决项给出结论后**复审**。
+- 作者（xiaods）按 3 项必改修正 + 补第 3 项澄清；owner 对第 3 项给出结论后**复审**。
 - 与被评审文档的关系：`design/004-t1-provider-external.meta.json` 的 `state` 由 `review` 退回 `draft`，并在 `history` 追加本评审结论。

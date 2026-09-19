@@ -4,7 +4,7 @@
   "state": "approved",
   "owner": "tech-lead",
   "created_at": "2026-09-19T02:13:23+00:00",
-  "updated_at": "2026-09-19T02:13:23+00:00",
+  "updated_at": "2026-09-19T04:43:50+00:00",
   "reviewed": {
     "target": "design/004-t1-provider-external",
     "verdict": "CHANGES-REQUESTED（3 必改 + 3 待裁决）",
@@ -23,6 +23,12 @@
       "by": "caishu",
       "at": "2026-09-19T02:13:23+00:00",
       "note": "评审完成：CHANGES-REQUESTED（3 必改 + 3 待裁决）"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-19T04:43:50+00:00",
+      "note": "owner 裁决：①rqlite 批准 ②OAuth client secret 由 serve 持有 批准 ③开通页公网面待澄清"
     }
   ]
 }
