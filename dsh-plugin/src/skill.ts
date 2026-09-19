@@ -54,6 +54,20 @@ Use the flat slash commands below or call the corresponding \`teamx_*\` tools di
 | \`/team-ask <member> <msg>\` | teamx_ask | Owner asks a question |
 | \`/team-respond <id> <answer>\` | teamx_respond | Answer a question |
 | \`/team-state <idle|active>\` | teamx_set_state | Set working state |
+
+### Cloud hosts (design/006)
+
+Provisioning is **owner/lead-only** and runs on the teamx server (which holds the
+team owner's AWS credentials). Off by default; reuse-first (a second team reuses
+the user's existing host instead of creating a new one):
+
+| tool | purpose |
+|---|---|
+| \`teamx_node_list\` | List the team's cloud hosts |
+| \`teamx_node_status\` | Inspect one host |
+| \`teamx_node_provision\` | Provision (or reuse) a host for a member (\`--member\`, optional \`--region/--size/--ttl\`) |
+| \`teamx_node_stop\` / \`teamx_node_start\` | Stop / start a host (disk kept) |
+| \`teamx_node_destroy\` | Destroy a host + verifiable cleanup checklist |
 | \`/team-help\` | - | List available commands |
 
 ## Core Tools
@@ -67,6 +81,7 @@ All operations go through \`teamx_*\` tools:
 - **Status**: \`teamx_list_teams\`, \`teamx_status\`, \`teamx_sync\`
 - **Communication**: \`teamx_publish\` (progress/decision/update/blocked/resumed/achieved/refine), \`teamx_ask\`, \`teamx_respond\`, \`teamx_discussion\` (discussion threads: list/open/create/say/reply/close/subscribe/unsubscribe)
 - **loopx progress**: \`teamx_loopx_report\` (publish loopx stage-progress snapshot to team)
+- **Cloud hosts (design/006)**: \`teamx_node_list\`, \`teamx_node_status\`, \`teamx_node_provision\` (owner/lead; reuse-first), \`teamx_node_stop\` / \`teamx_node_start\`, \`teamx_node_destroy\`
 
 ## Per-Turn Protocol (must follow)
 

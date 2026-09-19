@@ -45,6 +45,10 @@ permission:
 | `serve token <member>` | teamx_serve_token | 生成/轮换成员连接 token（owner） |
 | `console` / `console status` / `console stop` | teamx_console / teamx_console_status / teamx_console_stop | 打开/查询/停止成员 Web 控制台（teamx console，自动开浏览器） |
 | `inbox` | teamx_inbox | Show my unified inbox (open tasks / my questions / unread nudges) |
+| `node list` / `node status <id>` | teamx_node_list / teamx_node_status | 列出/查看团队云主机（design/006） |
+| `node provision --member <id> [--provider --region --size --ttl]` | teamx_node_provision | 为成员开通（或复用）云主机（owner/lead；默认关） |
+| `node stop <id>` / `node start <id>` | teamx_node_stop / teamx_node_start | 停止/启动云主机（保留磁盘） |
+| `node destroy <id>` | teamx_node_destroy | 销毁云主机 + 可验证清理清单 |
 | `help` | - | 列出子命令 |
 
 ## 核心工具

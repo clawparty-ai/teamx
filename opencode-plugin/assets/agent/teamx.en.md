@@ -45,6 +45,10 @@ When receiving `/team`, route to the corresponding tool per the table below. **I
 | `serve token <member>` | teamx_serve_token | Generate/rotate member connection token (owner) |
 | `console` / `console status` / `console stop` | teamx_console / teamx_console_status / teamx_console_stop | Open/query/stop the member web console (teamx console; opens the browser) |
 | `inbox` | teamx_inbox | Show my unified inbox (open tasks / my questions / unread nudges) |
+| `node list` / `node status <id>` | teamx_node_list / teamx_node_status | List / inspect the team's cloud hosts (design/006) |
+| `node provision --member <id> [--provider --region --size --ttl]` | teamx_node_provision | Provision (or reuse) a cloud host for a member (owner/lead; off by default) |
+| `node stop <id>` / `node start <id>` | teamx_node_stop / teamx_node_start | Stop / start a host (disk kept) |
+| `node destroy <id>` | teamx_node_destroy | Destroy a host + verifiable cleanup checklist |
 | `help` | - | List subcommands |
 
 ## Core Tools

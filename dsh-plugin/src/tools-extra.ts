@@ -826,3 +826,105 @@ export function registerMiscTools(ctx: Context): void {
     },
   }))
 }
+
+// ---------------------------------------------------------------------------
+// Cloud-host provisioning (design/006)
+// ---------------------------------------------------------------------------
+
+export function registerNodeTools(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_list',
+    description:
+      "List the team's cloud hosts (nodes) and their provisioning state (design/006). " +
+      'Owner/lead view; one host per user, one OS user per team instance.',
+    parameters: { team: { type: 'string', description: 'team id (optional when the session has one team)' } },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli(['node', 'list', '--session', getKey(exec), ...opt('--team', args.team)]))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_status',
+    description: 'Show one cloud host (node) of the team (design/006).',
+    parameters: {
+      node_id: { type: 'string', required: true, description: 'node id (from teamx_node_list)' },
+      team: { type: 'string', description: 'team id (optional when the session has one team)' },
+    },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli(['node', 'status', args.node_id, '--session', getKey(exec), ...opt('--team', args.team)]))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_provision',
+    description:
+      'Provision (or reuse) a cloud host for a member (owner/lead only; design/006). ' +
+      'Reuse-first: if the same user already has a live host, only the per-team OS user + services are added. ' +
+      "Runs on the teamx server, which holds the team owner's AWS credentials.",
+    parameters: {
+      member: { type: 'string', required: true, description: 'target member id' },
+      provider: { type: 'string', description: 'provider (first batch: aws)' },
+      region: { type: 'string', description: "region (default: the server's own region)" },
+      size: { type: 'string', description: 'instance size (default: cheapest, floor 1C2G)' },
+      ttl: { type: 'string', description: 'TTL in days (default 30)' },
+      team: { type: 'string', description: 'team id (optional when the session has one team)' },
+    },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli([
+        'node', 'provision', '--member', args.member, '--session', getKey(exec),
+        ...opt('--provider', args.provider), ...opt('--region', args.region),
+        ...opt('--size', args.size), ...opt('--ttl', args.ttl), ...opt('--team', args.team),
+      ]))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_stop',
+    description: 'Stop a cloud host (keeps the disk; design/006). Owner/lead only.',
+    parameters: {
+      node_id: { type: 'string', required: true, description: 'node id' },
+      team: { type: 'string', description: 'team id (optional when the session has one team)' },
+    },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli(['node', 'stop', args.node_id, '--session', getKey(exec), ...opt('--team', args.team)]))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_start',
+    description: 'Start a stopped cloud host (design/006). Owner/lead only.',
+    parameters: {
+      node_id: { type: 'string', required: true, description: 'node id' },
+      team: { type: 'string', description: 'team id (optional when the session has one team)' },
+    },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli(['node', 'start', args.node_id, '--session', getKey(exec), ...opt('--team', args.team)]))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'teamx_node_destroy',
+    description:
+      'Destroy a cloud host: terminate + verifiable cleanup checklist (instance/EIP/security-group/DNS/' +
+      'keypair/secrets/cert/OS user; design/006 §6). Owner/lead only.',
+    parameters: {
+      node_id: { type: 'string', required: true, description: 'node id' },
+      team: { type: 'string', description: 'team id (optional when the session has one team)' },
+    },
+    output: out(),
+    async execute(a, exec) {
+      const args = a as Record<string, string>
+      return JSON.stringify(await runCli(['node', 'destroy', args.node_id, '--session', getKey(exec), ...opt('--team', args.team)]))
+    },
+  }))
+}

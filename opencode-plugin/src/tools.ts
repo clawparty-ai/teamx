@@ -1068,4 +1068,92 @@ export const tools = {
       return tx(context.sessionID, context.directory, parts)
     },
   }),
+
+  // --- Cloud-host provisioning (design/006) ---------------------------------
+
+  teamx_node_list: tool({
+    description:
+      "List the team's cloud hosts (nodes) and their provisioning state (design/006). " +
+      "Owner/lead view; one host per user, one OS user per team instance.",
+    args: {
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, ["node", "list", ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_node_status: tool({
+    description: "Show one cloud host (node) of the team (design/006).",
+    args: {
+      node_id: tool.schema.string().describe("node id (from teamx_node_list)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, ["node", "status", args.node_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_node_provision: tool({
+    description:
+      "Provision (or reuse) a cloud host for a member (owner/lead only; design/006). " +
+      "Reuse-first: if the same user already has a live host, only the per-team OS user + services are added. " +
+      "Runs on the teamx server, which holds the team owner's AWS credentials.",
+    args: {
+      member: tool.schema.string().describe("target member id"),
+      provider: tool.schema.string().optional().describe("provider (first batch: aws)"),
+      region: tool.schema.string().optional().describe("region (default: the server's own region)"),
+      size: tool.schema.string().optional().describe("instance size (default: cheapest, floor 1C2G)"),
+      ttl: tool.schema.number().optional().describe("TTL in days (default 30)"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, [
+        "node",
+        "provision",
+        "--member",
+        args.member,
+        ...opt("--provider", args.provider),
+        ...opt("--region", args.region),
+        ...opt("--size", args.size),
+        ...(args.ttl ? ["--ttl", String(args.ttl)] : []),
+        ...opt("--team", args.team),
+      ])
+    },
+  }),
+
+  teamx_node_stop: tool({
+    description: "Stop a cloud host (keeps the disk; design/006). Owner/lead only.",
+    args: {
+      node_id: tool.schema.string().describe("node id"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, ["node", "stop", args.node_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_node_start: tool({
+    description: "Start a stopped cloud host (design/006). Owner/lead only.",
+    args: {
+      node_id: tool.schema.string().describe("node id"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, ["node", "start", args.node_id, ...opt("--team", args.team)])
+    },
+  }),
+
+  teamx_node_destroy: tool({
+    description:
+      "Destroy a cloud host: terminate + verifiable cleanup checklist (instance/EIP/security-group/DNS/" +
+      "keypair/secrets/cert/OS user; design/006 §6). Owner/lead only.",
+    args: {
+      node_id: tool.schema.string().describe("node id"),
+      team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, ["node", "destroy", args.node_id, ...opt("--team", args.team)])
+    },
+  }),
 }
