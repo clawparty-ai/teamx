@@ -35,6 +35,7 @@
 | M | **幂等** | `idem_key = (team_id, member_id)`；重复 invite 只出一台 |
 | N | **成本计量** | `cost_snapshot` 落台账；`budget.alert` 熔断前移 T3 |
 | O | **邀请函交付** | 本路径 = **server SSH 直推 + 节点 import**（**不进 cloud-init**） |
+| P | **auto-stop 粒度** | 两级：**实例级**（该 team 实例自身 idle → 停其 systemd 服务组）；**整机级**（仅当主机上**所有**实例都 idle 才 stop/terminate）——避免 team A 空闲误杀 team B 的活跃实例 |
 
 **沿用既有裁决**：默认 S 规格 + TTL 30d 可续 + 空闲 auto-stop（CPU<5% 30min）+ 每 user 常驻上限 1 台 + `destroy` 可验证清单（terminate + 清 key/secret + 吊销 member 证书）+ region 白名单（开通时校验）+ 凭据/私钥加密存储·可轮换·全审计 + `budget.alert` 熔断前移 T3 + 计量落台账。
 
@@ -48,12 +49,15 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
  2. 入队 provision job（异步；invite 立即返回）
  3. aws cli：RunInstances（per-node keypair / 安全组 / region / 规格 / TTL 标签）
  4. 等实例 ready
- 5. SSH 登录（server 持该节点私钥）
+ 5. SSH 登录（server 持该节点私钥；**校验 host-key 指纹**，防首登 MITM）
  6. 初始化节点：装 teamx（+ opencode / ttyd / bun / git 等，见 §5.1）
- 7. **按 team 创建独立 OS 用户 + 家目录**（见 §3.1），在该 OS 用户下 import 邀请函 → 以该 member 身份入队
- 8. 以该 OS 用户身份注册并启动 systemd 服务：worker / opencode-serve / ttyd / fs / tx-expose /（可选）im-gateway
- 9. 回写 nodes 表 + 台账；状态 ready
+ 7. **按 team 创建独立 OS 用户 + 家目录**（见 §3.1）；若该 user 已有主机 → **复用**，仅新增该 team 的 OS 用户
+ 8. 在该 OS 用户下：**import 邀请函 + 拉取团队 repo / 准备 workspace**（一并推送 `TEAMX_SERVER_URL` 与 `ca.crt`）
+ 9. 注册并启动 systemd 服务（worker / opencode-serve / ttyd / fs / tx-expose / 可选 im-gateway）
+10. 回写 nodes 表 + 台账；状态 ready
 ```
+
+**失败边**：步 4/5/6 均设**超时与重试上限**（job 表 `attempts/last_error`）；超限 → 迁移到失败态 + 通知 owner，不留无界等待。
 
 ### 3.1 节点实例隔离模型（owner 裁决）
 
@@ -63,6 +67,7 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
 - **收益**：team 之间 **OS 级隔离**（文件/进程互不可见）；单实例回收 = 停服务 + 删 OS 用户 + 吊销该 member 证书。
 - **OS 用户名规则**：`<team-slug><4位随机数字>`（如 team `abc` → `abc1234`），家目录 `/home/<osuser>`；用户名冲突时重生成 4 位数字重试。
 - **初始化账号**：`ubuntu` + `sudo`（AWS 默认），由 server 通过 SSH 使用。
+- **复用优先于新建**（评审必改）：provision job 入队前先按 `user_id` 查 `nodes` —— 已有 `ready/degraded/stopped` 节点 → **复用该主机**（仅新增该 team 的 OS 用户 + systemd 实例，job 直接进 bootstrapping）；无 → 新建；`terminated` 才允许新建。否则同一人被两个 team 各自 invite 会开出两台，违反「每 user 常驻上限 1 台」。
 - **回收**：停服务 → 删 OS 用户（含家目录）→ 吊销该 member 证书。
 
 > 参考：现网 caicai 主机已跑多 team/多 workspace，但**共用同一个 OS 用户**（`caicai`）；本设计在此基础上**升级为按 team 分 OS 用户**，以获得 team 间隔离。
@@ -71,11 +76,13 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
 
 ```text
 nodes(id, team_id, user_id, member_id, provider, region, instance_id,
-      ip, state, im_enabled, created_at, ready_at, terminated_at, cost_snapshot,
-      compliance_tags)
+      ip, state, im_enabled, os_user, keypair_ref, created_at, ready_at, terminated_at,
+      cost_snapshot, compliance_tags)
 provision_jobs(id, node_id, state, attempts, last_error, idem_key, created_at)
 node_secrets(node_id, kind, ref, created_at)     -- 只存引用，不存明文
 ```
+
+> `os_user`（§3.1 生成的 OS 用户名，destroy/重开依赖）、`keypair_ref`（per-node keypair 引用，吊销依赖）为 **必填落盘字段**。
 
 - 幂等键：`(team_id, member_id)`；`provision_jobs` 对该键建部分唯一索引 + `INSERT OR IGNORE` + 冲突回读（复用 C4 模式，覆盖并发双 invite）。
 - 状态机：`requested → provisioning → bootstrapping → ready → degraded → stopped → terminated`，每次迁移落台账。
@@ -125,7 +132,7 @@ teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
 
 - server 同时持有 **AWS 凭据** 与 **各节点 SSH 私钥** → 必须：加密存储、可轮换、读取全审计、IAM 最小权限。
 - **per-node keypair**：单台泄露/回收只影响该台，`destroy` 即吊销。
-- `destroy` 可验证清单：实例 terminated、keypair 删除、secret 清理、member 证书吊销、invitation revoke、快照按策略；负例：destroy 两次第二次为无操作成功、destroy 不存在报明确错。
+- `destroy` 可验证清单：实例 terminated、**EIP / 公网 IP 释放**、**安全组规则清理**（按节点建时）、**DNS 记录清除**（若有）、keypair 删除、secret 清理、member 证书吊销、invitation revoke、快照按策略、**OS 用户删除（含家目录）**；负例：destroy 两次第二次为无操作成功、destroy 不存在报明确错。
 
 ## 7. 与既有文档的关系
 

@@ -4,7 +4,7 @@
   "state": "review",
   "owner": "tech-lead",
   "created_at": "2026-09-19T05:06:55+00:00",
-  "updated_at": "2026-09-19T05:35:32+00:00",
+  "updated_at": "2026-09-19T05:55:24+00:00",
   "history": [
     {
       "state": "draft",
@@ -53,6 +53,12 @@
       "by": "caishu",
       "at": "2026-09-19T05:35:32+00:00",
       "note": "owner 裁决：I AMI=Ubuntu LTS arm64 不预装 / J 磁盘 gp3 20-30GiB / K Tag=team_id,member_id,user,ttl,created_by / L 凭据优先 instance profile 否则 KMS / M 幂等键 (team_id,member_id) / N cost_snapshot 落台账+熔断T3 / O 邀请函=server SSH 直推 import；新增功能点：teamx node provision --member <id> 对已有成员补开云主机"
+    },
+    {
+      "state": "review",
+      "by": "caishu",
+      "at": "2026-09-19T05:55:24+00:00",
+      "note": "并入 design/006 评审必改 5 项：①流程补 workspace/repo 拉取+CA/URL 分发 ②destroy 补 EIP/公网IP/安全组/DNS + nodes 补 os_user/keypair_ref ③超时重试上限 + host-key 指纹校验 ④复用优先于新建（同 user 多 team 复用同主机）⑤auto-stop 两级粒度（P）"
     }
   ]
 }
