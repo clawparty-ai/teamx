@@ -1007,19 +1007,22 @@ sudo -u {os_user} bash -lc 'cd ~ && teamx team import ~/.teamx/letters/invite/in
 sudo -u {os_user} bash -lc 'mkdir -p ~/work && cd ~/work && (git clone {team_repo_url} team-repo || true)'
 
 # --- 8) systemd 单元（§5.1；每实例一套，注册但**不启动**——等 approve，裁决 V） ---
+# 占位单元：真实服务定义（opencode-serve / worker / ttyd / fs / tx-expose）尚在
+# 设计中，此处只注册可被 approve 后启动的占位单元。
+# 注意 **Restart=no**：占位单元若配 Restart=always 会无限重启刷日志（真机踩到）。
 for u in opencode-serve teamx-worker ttyd; do
   sudo tee /etc/systemd/system/teamx-{os_user}-$u.service >/dev/null <<UNIT
 [Unit]
-Description=teamx $u for {os_user}
+Description=teamx $u for {os_user} (placeholder unit - real service definition pending)
 After=network-online.target
 Wants=network-online.target
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 User={os_user}
 WorkingDirectory=/home/{os_user}
-ExecStart=/bin/bash -lc 'echo noop'
-Restart=always
-RestartSec=5
+ExecStart=/bin/bash -lc 'echo "teamx {os_user} $u: placeholder (no real service yet)"'
+Restart=no
 [Install]
 WantedBy=multi-user.target
 UNIT
