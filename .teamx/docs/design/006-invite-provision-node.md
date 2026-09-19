@@ -36,6 +36,12 @@
 | N | **成本计量** | `cost_snapshot` 落台账；`budget.alert` 熔断前移 T3 |
 | O | **邀请函交付** | 本路径 = **server SSH 直推 + 节点 import**（**不进 cloud-init**） |
 | P | **auto-stop 粒度** | 两级：**实例级**（该 team 实例自身 idle → 停其 systemd 服务组）；**整机级**（仅当主机上**所有**实例都 idle 才 stop/terminate）——避免 team A 空闲误杀 team B 的活跃实例 |
+| Q | **规格默认** | 默认 **1C2G 够用**；不足时再扩容（`--size` 覆盖） |
+| R | **region 缺省** | 未指定且**非交互**时 → 用**与 server 同 region** 的主机 |
+| S | **网络** | **不使用 Elastic IP**；只需 **server 能 SSH 到节点**（安全组放行 server 出口 IP） |
+| T | **opencode 安装** | **官方安装脚本**（版本锁定 ≥1.18.0） |
+| U | **失败处理** | bootstrap 失败 → 状态 `failed` + **通知 owner**（**不自动 terminate**） |
+| V | **激活时机** | **须 owner approve（member `pending` → `active`）后才启动 worker / agent 服务**（pending 期间不启动） |
 
 **沿用既有裁决**：默认 S 规格 + TTL 30d 可续 + 空闲 auto-stop（CPU<5% 30min）+ 每 user 常驻上限 1 台 + `destroy` 可验证清单（terminate + 清 key/secret + 吊销 member 证书）+ region 白名单（开通时校验）+ 凭据/私钥加密存储·可轮换·全审计 + `budget.alert` 熔断前移 T3 + 计量落台账。
 
@@ -53,7 +59,7 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
  6. 初始化节点：装 teamx（+ opencode / ttyd / bun / git 等，见 §5.1）
  7. **按 team 创建独立 OS 用户 + 家目录**（见 §3.1）；若该 user 已有主机 → **复用**，仅新增该 team 的 OS 用户
  8. 在该 OS 用户下：**import 邀请函 + 拉取团队 repo / 准备 workspace**（一并推送 `TEAMX_SERVER_URL` 与 `ca.crt`）
- 9. 注册并启动 systemd 服务（worker / opencode-serve / ttyd / fs / tx-expose / 可选 im-gateway）
+ 9. 注册 systemd 服务（worker / opencode-serve / ttyd / fs / tx-expose / 可选 im-gateway）；**等 owner approve（member `pending`→`active`）后才启动**（见裁决 V）
 10. 回写 nodes 表 + 台账；状态 ready
 ```
 
@@ -112,7 +118,7 @@ teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
 |---|---|
 | OS | **Ubuntu LTS arm64**（配合 E：优先 ARM 机型） |
 | `teamx` | CLI；版本需与 serve **semver 兼容**（bootstrap 版本门 fail-fast 校验） |
-| `opencode` | **≥ 1.18.0**（muse free tier 要求）；headless `opencode serve` |
+| `opencode` | **≥ 1.18.0**（muse free tier 要求）；**官方安装脚本**安装；headless `opencode serve` |
 | `ttyd` | web 终端（1.7.x） |
 | `bun` / `node` | opencode 插件 / agent 运行时 |
 | `git` | 2.43+ |
