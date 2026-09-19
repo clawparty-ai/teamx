@@ -24,6 +24,10 @@
 | B | **IAM 最小权限** | 仅 `ec2:RunInstances` / `TerminateInstances` / `DescribeInstances` + keypair + 打标签；**不给通配** |
 | C | **SSH 私钥** | **per-node keypair**（单台可吊销）+ server 侧**加密存储** |
 | D | **云主机规格** | **默认选该 region 最便宜的机型**，规格下限 **1 vCPU / 2 GiB**（可 `--size` 覆盖） |
+| E | **架构** | **优先 ARM**（AWS `t4g` 系）；镜像/工具链不兼容时回退 x86（`t3`） |
+| F | **region** | 由 `invite` CLI 参数指定；未指定时**询问 owner/lead**，并**推荐若干便宜 region** 供选 |
+| G | **安全组** | SSH **只允许 teamx server 的出网 IP**（不开 `0.0.0.0/0`）；节点需出网（连 serve + opencode.ai），不需公网入站 |
+| H | **节点软件** | teamx + opencode(≥1.18.0) + ttyd + bun/node + git，按 systemd 常驻（清单见 §5.1，参考现网 caicai 主机） |
 
 **沿用既有裁决**：默认 S 规格 + TTL 30d 可续 + 空闲 auto-stop（CPU<5% 30min）+ 每 user 常驻上限 1 台 + `destroy` 可验证清单（terminate + 清 key/secret + 吊销 member 证书）+ region 白名单（开通时校验）+ 凭据/私钥加密存储·可轮换·全审计 + `budget.alert` 熔断前移 T3 + 计量落台账。
 
@@ -64,6 +68,30 @@ teamx team invite <role> --user-name <人> --provision-node \
       [--provider aws --region .. --size .. --ttl 30d]
 teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
 ```
+
+### 5.1 节点软件清单（标准，参考现网 caicai 主机）
+
+参考实现：caicai 云主机 = **Ubuntu 24.04.4 LTS `aarch64`**（AWS）。
+
+| 组件 | 版本 / 说明 |
+|---|---|
+| OS | **Ubuntu LTS arm64**（配合 E：优先 ARM 机型） |
+| `teamx` | CLI；版本需与 serve **semver 兼容**（bootstrap 版本门 fail-fast 校验） |
+| `opencode` | **≥ 1.18.0**（muse free tier 要求）；headless `opencode serve` |
+| `ttyd` | web 终端（1.7.x） |
+| `bun` / `node` | opencode 插件 / agent 运行时 |
+| `git` | 2.43+ |
+
+**systemd 常驻单元（模板）**：
+
+- `opencode-serve-<member>-<ws>.service` —— headless opencode server
+- `teamx-worker-<member>-<ws>.service` —— 自主 worker（轮询 inbox）
+- `teamx-fs-<member>.service` —— 成员文件服务（可选）
+- `ttyd-<member>.service` —— web 终端（可选）
+- `tx-expose-*.service` —— tunnel expose（opencode / ttyd / fs，可选）
+- （#6 可选）`im-gateway` 常驻（飞书通道层，依赖 T4）
+
+**配置与目录**：`~/.config/opencode/opencode.jsonc`、`~/.teamx/`（letter / instance / worker 状态）、workspace 目录。
 
 ## 6. 安全（server 是高价值目标）
 
