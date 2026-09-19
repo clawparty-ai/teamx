@@ -67,6 +67,12 @@
 
 > 在 server 机（HK `95.40.221.159`）含源团队 owner `.teamx` 的目录执行；网络模式请带 `--session <owner>`。
 
+> ⚠️ **务必显式指定 `TEAMX_HOME`**：server 上所有写操作（`clone` / `invite` / `cert issue`）都必须带
+> `TEAMX_HOME=/root/.teamx`（运行中 server 的 home，见 `systemctl cat teamx.service`）。
+> 否则会静默落到 `~/.teamx`（例如残留的 `/home/ubuntu/.teamx` 旧 home），用**旧 CA** 签发证书、
+> 把仓库建到错误目录 —— 团队邀请函全部连不上 server。
+> 事故复盘与排查/修复步骤见 `docs/59-incident-clone-wrong-teamx-home.cn.md`。
+
 ### A1 前置校验
 ```bash
 teamx team status --session <owner-session>
@@ -77,15 +83,16 @@ teamx git list   --session <owner-session>
 
 ### A2 dry-run（不落库）
 ```bash
-teamx team clone --name <clone-name> --team <SRC-ID> --session <owner-session>
+teamx team clone <clone-name> --team <SRC-ID> --session <owner-session>
 ```
 **预期**：返回预览摘要（源/目标/成员数/角色数/repo 数），**DB 无变化**。
 **判断点**：成员数 = 期望人数；名字唯一。
 
 ### A3 执行 clone
+> 在 server 机上执行时**必须带 `TEAMX_HOME=/root/.teamx`**（用正确 CA 签发证书、仓库落到正确 home）：
 ```bash
-teamx team clone --name <clone-name> --team <SRC-ID> --yes \
-  --session <owner-session> --server-url https://95.40.221.159
+sudo env TEAMX_HOME=/root/.teamx teamx team clone <clone-name> --team <SRC-ID> --yes \
+  --session <owner-session> --server-url https://95.40.221.159 --db /var/lib/teamx/teamx.db
 ```
 **预期**：
 ```
@@ -97,6 +104,10 @@ repos:[{source:<src>, name:<同名>}, …]
 - 新 `CLONE-TEAM-ID` 记下（后续全部 `--team` 用它）。
 - 每张 letter 原样保存分发；**缺一张少一个席位**。
 - 若 CLI 在 serve 机本地跑且未传 `--server-url`，letter 内可能写 127.0.0.1 → 节点连不上。
+- **CA 自检（新增）**：letter 内 `server.ca_fingerprint` 必须等于 server 的 CA 指纹
+  （`openssl x509 -in /root/.teamx/ca/ca.crt -noout -fingerprint -sha256`）。
+  不等 → 用错了 `TEAMX_HOME`，证书不被 server 信任，**整队都连不上**（见 `docs/59-incident-clone-wrong-teamx-home.cn.md`）。
+- **仓库落点自检（新增）**：`git_repos.path` 应在 `/root/.teamx/repos/<CLONE-TEAM-ID>/…`，而不是 `/home/<user>/.teamx/repos/…`。
 
 ### A4 owner 激活 clone（另开 workspace，不复用源团队 .teamx）
 ```bash
@@ -232,7 +243,31 @@ sudo -u <user> sh -c 'cd /home/<user>/work-<clone-name> && \
 
 ---
 
-## 7. 相关文档
+## 7. 常见故障：邀请函 CA 不匹配（`certificate signature failure`）
+
+**症状**：成员 import 后连不上 server —— 客户端 `certificate signature failure`，服务器 `TLS alert 51`；`teamx team status` 报 `not a member`。
+
+**原因**：clone 在 server 机上跑时 `TEAMX_HOME` 落到了旧 home（如残留的 `/home/ubuntu/.teamx`），
+邀请函 client cert 由**旧 CA** 签发；而运行中的 server（`TEAMX_HOME=/root/.teamx`）只信任自己的 CA。
+
+**快速判定**：
+```bash
+sudo openssl x509 -in /root/.teamx/ca/ca.crt -noout -fingerprint -sha256   # server CA
+openssl x509 -in <letter_dir>/ca.crt -noout -fingerprint -sha256           # letter CA
+# 不一致 → 命中本故障
+```
+
+**修复**：
+1. 用正确 home 补签：`sudo env TEAMX_HOME=/root/.teamx teamx cert issue <MEMBER_ID> <ROLE> --out /tmp/reissue`，再按 server CA 重建 letter（保留原 invitation_id）；或
+2. 更彻底：`sudo env TEAMX_HOME=/root/.teamx teamx team clone …` 重新 clone（team_id 会变）；或
+3. owner 激活后经 RPC 重发邀请函（`team.invite`，自带正确 CA 与 user 绑定），并 revoke 旧信。
+4. 仓库迁移：把 `/home/ubuntu/.teamx/repos/<TEAM-ID>/` 移到 `/root/.teamx/repos/<TEAM-ID>/` 并同步 `git_repos.path`。
+
+> 完整诊断/修复/预防见 **`docs/59-incident-clone-wrong-teamx-home.cn.md`**。
+
+---
+
+## 8. 相关文档
 
 - `docs/34-team-clone.cn.md`（clone Feature 实现/测试）
 - `docs/35-manual-member-cloud-node.cn.md`（member 云节点部署、systemd/隧道模板）

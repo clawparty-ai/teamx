@@ -185,6 +185,11 @@ clone 团队与源团队**共用同一 server（一个 ip:port、一个 DB）**�
 
 这解决了「server 端没有 letter、`discover_server_url` 返回 None → 错误兜底 127.0.0.1」的问题。
 
+> ⚠️ **在 server 机上执行 clone 时必须显式 `TEAMX_HOME=/root/.teamx`**（运行中 server 的 home）。
+> 否则 clone 会落到 `~/.teamx`（例如残留的 `/home/ubuntu/.teamx` 旧 home），用**旧 CA** 给所有邀请函签证书
+> —— server 只信任自己 home 的 CA，导致**整队邀请函 mTLS 握手失败**（`certificate signature failure` / TLS alert 51）。
+> 仓库也会建到错误 home。排查/修复见 `docs/59-incident-clone-wrong-teamx-home.cn.md` 与 `docs/38-clone-runtime-design.cn.md` §7。
+
 ### 9.2 仓库权限（#6）
 - clone 建空仓库时**不预授权限**（成员尚不存在，`git_repo_permissions.member_id` 有 FK 到 members）；`created_by` = `owner_holder`。
 - 成员导入（auto-approve）时授权：**owner → ADMIN，其余 → WRITE**（`cmd_team_import`）。owner 导入后即可管理仓库/授予他人权限。
@@ -292,3 +297,6 @@ clone 团队是独立身份，节点上要**另开一套 workspace + 进程组**
 - **无 user 绑定的成员**：letter 不带 `user`，返回里 `note="unbound-seat"`，导入后 owner 可后续补绑 user。
 - **销毁**：不满意可用 `teamx team destroy --team <clone-id>`（owner）。
 - **吊销邀请函**：在 clone 团队里 `invite-list` / `invite-revoke` 管理未使用的邀请函。
+- **邀请函连不上（CA 不匹配）**：若在 server 机上 clone 时忘了 `TEAMX_HOME=/root/.teamx`，证书会用旧 home 的 CA 签发，
+  成员 import 后报 `certificate signature failure` / TLS alert 51。先用 `ca_fingerprint` 比对 server CA，再按
+  `docs/59-incident-clone-wrong-teamx-home.cn.md` 补签 / 重 clone / 经 RPC 重发。

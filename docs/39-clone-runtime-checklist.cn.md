@@ -65,3 +65,5 @@
 | serve 反复 restart | 端口冲突 / 架构错 / letter 缺失 / TEAMX_HOME 错 | 看 journal；`ss` 查端口 |
 | 仓库 pull 空 / 无文件 | A5 未 seed 且无人 push（G1） | 先完成 A5 或首个成员 push |
 | 工作区无 repo 目录 | B4 未执行（G2） | 节点上 `teamx git clone` |
+| 成员 import 后连不上（`certificate signature failure` / TLS alert 51） | clone 时 `TEAMX_HOME` 用了旧 home，证书由旧 CA 签发 | 比对 `ca_fingerprint`；按 `docs/59-incident-clone-wrong-teamx-home.cn.md` 补签 / 重 clone / RPC 重发 |
+| `git_repos.path` 指向 `/home/<user>/.teamx/repos/…` | 同上，clone 落错 home | 移到 `/root/.teamx/repos/` 并同步 DB path |
