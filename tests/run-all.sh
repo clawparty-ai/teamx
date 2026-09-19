@@ -58,6 +58,7 @@ if command -v bun >/dev/null 2>&1; then
   TEAMX_AUTO_EXECUTE=1 bun "$ROOT/tests/plugin-unit/auto-execute.test.ts"
   bun "$ROOT/tests/plugin-unit/ws.test.ts"
   bun "$ROOT/tests/plugin-unit/argv-parse.test.ts"
+  bun "$ROOT/tests/plugin-unit/skill-commands-drift.test.ts"
 else
   echo "bun not found; skipping plugin checks"
 fi

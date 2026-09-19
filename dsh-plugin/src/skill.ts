@@ -39,7 +39,6 @@ Use the flat slash commands below or call the corresponding \`teamx_*\` tools di
 |---------|------|-------------|
 | \`/team-create <name>\` | teamx_create_team | Create a team (become owner), show invite_token |
 | \`/team-join <token> <name>\` | teamx_join | Join a team, requires owner approval |
-| \`/team-leave\` | teamx_leave | Leave a team (owner cannot leave; use destroy) |
 | \`/team-status\` | teamx_status | Show full team status |
 | \`/team-sync\` | teamx_sync | Pull latest team events |
 | \`/team-goal-set <title>\` | teamx_set_goal | Owner drafts a goal |
@@ -50,6 +49,10 @@ Use the flat slash commands below or call the corresponding \`teamx_*\` tools di
 | \`/team-invite <role_desc>\` | teamx_team_invite | Owner issues invitation letter (network mode) |
 | \`/team-import <letter>\` | teamx_team_import | Member imports invitation letter |
 | \`/team-role-set <role>\` | teamx_set_role | Choose a role |
+| \`/team-role-propose <key> <label>\` | teamx_role_propose | Propose a custom role |
+| \`/team-role-approve <key>\` | teamx_role_approve | Approve a custom role (owner) |
+| \`/team-role-deny <key>\` | teamx_role_deny | Deny a custom role (owner) |
+| \`/team-role-update <key>\` | teamx_role_update | Update a role label/description (owner) |
 | \`/team-publish <type>\` | teamx_publish | Report/broadcast (progress/decision/update/blocked/resumed/achieved/refine) |
 | \`/team-ask <member> <msg>\` | teamx_ask | Owner asks a question |
 | \`/team-respond <id> <answer>\` | teamx_respond | Answer a question |

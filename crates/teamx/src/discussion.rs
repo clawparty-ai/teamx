@@ -258,7 +258,7 @@ fn discussion_task_id(conn: &Connection, team_id: &str, discussion_id: &str) -> 
 pub fn wake_discussions(conn: &Connection, team_id: &str, member_id: &str, display_name: &str, cursor: i64) -> Result<Vec<Value>, String> {
     let evs = events::list(conn, team_id, None).map_err(|e| e.to_string())?;
     let mut out: Vec<Value> = Vec::new();
-    for e in evs {
+    for e in &evs {
         if e.r#type != EV_MESSAGE || e.seq <= cursor {
             continue;
         }
@@ -292,7 +292,15 @@ pub fn wake_discussions(conn: &Connection, team_id: &str, member_id: &str, displ
             }
             None => false,
         };
-        if !mentioned && !subbed && !linked_to_my_task {
+        // design/007 P1c 唤醒纪律：brainstorm 线程内**普通 idea 不唤醒**——
+        // 仅显式 @ 提及可唤醒（订阅/关联任务在该模式下被抑制），
+        // 防头脑风暴放大智能体回合数。
+        let brainstorm_thread = is_brainstorm(created_payload(&evs, did));
+        if brainstorm_thread {
+            if !mentioned {
+                continue;
+            }
+        } else if !mentioned && !subbed && !linked_to_my_task {
             continue;
         }
         let title = events::list(conn, team_id, None)

@@ -184,6 +184,9 @@ fn discussions(conn: &Connection, team_id: &str, limit: i64) -> Result<Value, St
                 "messages": t.get("messages").cloned().unwrap_or(json!(0)),
                 "closed": t.get("closed").cloned().unwrap_or(json!(false)),
                 "task_id": t.get("task_id").cloned().unwrap_or(json!("")),
+                // design/007：brainstorm 线程暴露 mode/phase（IM 只读查询面可见）
+                "mode": t.get("mode").cloned().unwrap_or(Value::Null),
+                "phase": t.get("phase").cloned().unwrap_or(Value::Null),
             })
         })
         .collect();

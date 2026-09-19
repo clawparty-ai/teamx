@@ -423,6 +423,7 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  @media (max-width:900px){ .split { grid-template-columns:1fr; } .split-detail { position:static; } .split-list { max-height:none; } }
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
+ .dsc-kind { padding:0 6px; border:1px solid var(--border); border-radius:8px; font-size:11px; color:var(--muted-fg); }
   .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
  .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
   .dsc-quote .q-who { font-weight:600; color:var(--fg); }
@@ -1793,6 +1794,7 @@ body { margin:0; padding:24px 28px; background:#fff; color:var(--fg); font-size:
 .floor-head { display:flex; align-items:baseline; gap:8px; font-size:11px; color:var(--muted-fg); margin-bottom:4px; }
 .floor-no { font-weight:700; color:var(--primary); }
 .floor-author { font-weight:600; color:var(--fg); }
+.floor-kind { border:1px solid var(--border); border-radius:8px; padding:0 6px; }
 .quote { border-left:3px solid var(--border); background:var(--muted); padding:5px 8px; margin:5px 0; font-size:11.5px; }
 .quote-who { font-weight:600; color:var(--muted-fg); font-size:10.5px; margin-bottom:2px; }
 .md-render h1,.md-render h2,.md-render h3,.md-render h4 { margin:.6em 0 .3em; line-height:1.3; }
@@ -1847,6 +1849,7 @@ function render(d){
     '<section class="floor">'
     + '<div class="floor-head"><span class="floor-no">#'+(i+1)+'</span>'
     + '<span class="floor-author">'+esc(m.author||"")+'</span>'
+    + (m.kind?'<span class="floor-kind">'+esc(String(m.kind))+'</span>':'')
     + '<span class="floor-time">'+esc(tf(m.created_at))+'</span></div>'
     + quoteHtml(m)
     + '<div class="md-render">'+mdRender(m.body||"")+'</div>'
@@ -2419,8 +2422,9 @@ function renderThread(d){
     // floor is #1 (rendered at the bottom) and the newest gets the highest #.
     const no = msgs.length - i;
     const author = m.author||"";
+    const kind = m.kind ? `<span class="dsc-kind dsc-kind-${esc(String(m.kind))}">${esc(String(m.kind))}</span>` : "";
     return `<div class="dsc-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">
-      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span><span>${esc(tf(m.created_at))}</span>
+      <div class="dsc-floor-head"><span class="dsc-floor-no">#${no}</span><span class="dsc-floor-author">${esc(author)}</span>${kind}<span>${esc(tf(m.created_at))}</span>
         <span class="dsc-floor-actions">${closed?"":`
           <button class="btn btn-mini dsc-join-floor" data-act="join-floor" data-mid="${esc(m.message_id)}" data-author="${esc(author)}" data-no="${no}">参与讨论</button>
           <button class="btn btn-mini" data-act="quote">引用</button>`}
