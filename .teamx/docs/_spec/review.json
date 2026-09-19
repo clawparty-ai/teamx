@@ -1,0 +1,43 @@
+{
+  "approvers": [
+    "owner",
+    "tech-lead"
+  ],
+  "creators": [
+    "reviewer",
+    "tech-lead",
+    "owner"
+  ],
+  "doc": "review",
+  "incomplete": false,
+  "owner": "被评审文档的 owner",
+  "purpose": "记录对某份文档的评审结论与意见（结论 | 评审点 | 问题 | 建议 | 风险 | 后续）",
+  "reactions": [
+    {
+      "action": "",
+      "on": "created",
+      "to_role": "被评审文档的作者"
+    },
+    {
+      "action": "",
+      "on": "approved",
+      "to_role": "作者按必改项修正，并将被评审文档推进/退回对应状态"
+    }
+  ],
+  "states": [
+    "draft",
+    "review",
+    "approved",
+    "done"
+  ],
+  "template": [
+    "被评审对象",
+    "结论",
+    "评审点",
+    "问题（必改）",
+    "建议（可采纳）",
+    "风险",
+    "后续"
+  ],
+  "title": "评审记录"
+}

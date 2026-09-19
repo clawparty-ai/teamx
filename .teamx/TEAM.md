@@ -125,3 +125,15 @@
 - 状态流: draft -> review -> released
 - 变更响应:
     - on released: 广播给全体成员
+
+### review
+- 标题: 评审记录
+- 用途: 记录对某份文档的评审结论与意见（结论 | 评审点 | 问题 | 建议 | 风险 | 后续）
+- 模板: 被评审对象 | 结论 | 评审点 | 问题（必改） | 建议（可采纳） | 风险 | 后续
+- 创建者: [reviewer, tech-lead, owner]
+- 所有者: 被评审文档的 owner
+- 审批者: [owner, tech-lead]
+- 状态流: draft -> review -> approved -> done
+- 变更响应:
+    - on created: 通知被评审文档的作者
+    - on approved: 通知作者按必改项修正，并将被评审文档推进/退回对应状态

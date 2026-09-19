@@ -1,0 +1,28 @@
+{
+  "doc": "review",
+  "id": "001-review-t1-im-client",
+  "state": "approved",
+  "owner": "tech-lead",
+  "created_at": "2026-09-19T02:13:23+00:00",
+  "updated_at": "2026-09-19T02:13:23+00:00",
+  "reviewed": {
+    "target": "design/003-t1-im-client",
+    "verdict": "PASS（含 2 项必改）",
+    "reviewer": "caishu",
+    "date": "2026-09-19"
+  },
+  "history": [
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-19T02:13:23+00:00",
+      "note": "评审记录创建"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-19T02:13:23+00:00",
+      "note": "评审完成：PASS（含 2 项必改）"
+    }
+  ]
+}

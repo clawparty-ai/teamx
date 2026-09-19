@@ -1,10 +1,10 @@
 {
   "doc": "design",
   "id": "003-t1-im-client",
-  "state": "review",
+  "state": "approved",
   "owner": "tech-lead",
   "created_at": "2026-09-19T02:09:13+00:00",
-  "updated_at": "2026-09-19T02:09:13+00:00",
+  "updated_at": "2026-09-19T02:13:23+00:00",
   "source": {
     "repo": "teamx-ent",
     "path": ".teamx/docs/design/t1-im-client.md",
@@ -22,6 +22,12 @@
       "by": "caishu",
       "at": "2026-09-19T02:09:13+00:00",
       "note": "登记进标准文档目录并启动评审（owner 替代 weiye）"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-19T02:13:23+00:00",
+      "note": "评审 PASS（含 2 项必改）→ review/001-review-t1-im-client"
     }
   ]
 }
