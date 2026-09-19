@@ -1078,7 +1078,19 @@ pub fn run_provision_job(
         .ok_or("no ip from provider")?;
     let boot = (|| -> Result<(), String> {
         wait_for_ssh(exec, &ip, key_path, 30, std::time::Duration::from_secs(5))?;
+        // 状态归一：从 requested（首次）或 failed（重试）进来都先到 provisioning，
+        // 否则 requested -> bootstrapping 非法（真机重试踩到）。
+        if node["state"].as_str() != Some("provisioning") {
+            set_node_state(conn, &node_id, "provisioning")?;
+        }
         set_node_state(conn, &node_id, "bootstrapping")?;
+        // 推 teamx 二进制到节点（bootstrap 脚本里 `install /tmp/teamx`）；
+        // 用 server 自身的可执行文件，保证节点与 server 同版本。
+        let self_bin = std::env::current_exe()
+            .map_err(|e| format!("resolve own binary: {e}"))?
+            .to_string_lossy()
+            .to_string();
+        exec.upload(&ip, key_path, &self_bin, "/tmp/teamx")?;
         let script = bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url);
         exec.run_as(&ip, key_path, "ubuntu", &script)?;
         Ok(())
