@@ -1,0 +1,28 @@
+{
+  "doc": "design",
+  "id": "007-t1-brainstorm-mode",
+  "state": "approved",
+  "owner": "tech-lead",
+  "created_at": "2026-09-19T07:39:47+00:00",
+  "updated_at": "2026-09-19T07:39:47+00:00",
+  "history": [
+    {
+      "state": "draft",
+      "by": "weiye-mini",
+      "at": "2026-09-19T07:39:47+00:00",
+      "note": "T1 设计初稿（task-62 verified）"
+    },
+    {
+      "state": "review",
+      "by": "caicai",
+      "at": "2026-09-19T07:39:47+00:00",
+      "note": "评审 PASS（task-64 verified）：对照 owner 收敛八条全过，无阻塞；6 条非阻塞建议"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-19T07:39:47+00:00",
+      "note": "登记进标准目录并规范命名 007-t1-brainstorm-mode；实现按 P0a→P0b→P1a/P1c→P1b 派发"
+    }
+  ]
+}

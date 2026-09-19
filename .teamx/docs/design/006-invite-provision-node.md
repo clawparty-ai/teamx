@@ -73,7 +73,7 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
 - **收益**：team 之间 **OS 级隔离**（文件/进程互不可见）；单实例回收 = 停服务 + 删 OS 用户 + 吊销该 member 证书。
 - **OS 用户名规则**：`<team-slug><4位随机数字>`（如 team `abc` → `abc1234`），家目录 `/home/<osuser>`；用户名冲突时重生成 4 位数字重试。
 - **初始化账号**：`ubuntu` + `sudo`（AWS 默认），由 server 通过 SSH 使用。
-- **复用优先于新建**（评审必改）：provision job 入队前先按 `user_id` 查 `nodes` —— 该 user 已有**任何存活节点**（`requested`/`provisioning`/`bootstrapping`/`ready`/`degraded`/`stopped`）→ **复用该主机**（仅新增该 team 的 OS 用户 + systemd 实例；主机已 ready 时 job 直接进 bootstrapping）；全部为 `terminated`/`failed` 时才新建。否则同一人被两个 team 各自 invite 会开出两台，违反「每 user 常驻上限 1 台」。
+- **复用优先于新建**（评审必改）：provision job 入队前先按 `user_id` 查 `nodes` —— 已有 `ready/degraded/stopped` 节点 → **复用该主机**（仅新增该 team 的 OS 用户 + systemd 实例，job 直接进 bootstrapping）；无 → 新建；`terminated` 才允许新建。否则同一人被两个 team 各自 invite 会开出两台，违反「每 user 常驻上限 1 台」。
 - **回收**：停服务 → 删 OS 用户（含家目录）→ 吊销该 member 证书。
 
 > 参考：现网 caicai 主机已跑多 team/多 workspace，但**共用同一个 OS 用户**（`caicai`）；本设计在此基础上**升级为按 team 分 OS 用户**，以获得 team 间隔离。
