@@ -965,7 +965,8 @@ id -u {os_user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {os_user}
 # unzip 是 bun 安装脚本的前置（缺了会 "error: unzip is required to install bun"）。
 command -v git >/dev/null || sudo apt-get update -qq && sudo apt-get install -y -qq git
 command -v unzip >/dev/null 2>&1 || sudo apt-get install -y -qq unzip || true
-command -v bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash || true)
+# bun 必须装在该实例 OS 用户下（否则落到 /home/ubuntu，实例用户用不到）。
+sudo -u {os_user} bash -lc 'command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash || true' 
 # ttyd 不在 Ubuntu 仓库里 → 取官方静态发行版（best-effort）。
 if ! command -v ttyd >/dev/null 2>&1; then
   case "$(uname -m)" in
@@ -1534,6 +1535,11 @@ mod tests {
         assert!(sc.contains("useradd -m -s /bin/bash xiaods"), "{sc}");
         // §5.1 基础软件：unzip（bun 前置）+ ttyd 静态发行版
         assert!(sc.contains("apt-get install -y -qq unzip"), "{sc}");
+        // bun 必须装在该 OS 用户下（真机踩到落到 /home/ubuntu）
+        assert!(
+            sc.contains("sudo -u xiaods bash -lc 'command -v bun"),
+            "bun install must run as the instance OS user"
+        );
         assert!(sc.contains("ttyd/releases/latest/download"), "{sc}");
         assert!(sc.contains("export TEAMX_SERVER_URL=%s"), "{sc}");
         // letter/CA 必须在该用户自己的 shell 里展开 ~（否则落到 /home/ubuntu）
