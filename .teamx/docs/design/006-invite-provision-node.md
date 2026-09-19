@@ -28,6 +28,13 @@
 | F | **region** | 由 `invite` CLI 参数指定；未指定时**询问 owner/lead**，并**推荐若干便宜 region** 供选 |
 | G | **安全组** | SSH **只允许 teamx server 的出网 IP**（不开 `0.0.0.0/0`）；节点需出网（连 serve + opencode.ai），不需公网入站 |
 | H | **节点软件** | teamx + opencode(≥1.18.0) + ttyd + bun/node + git，按 systemd 常驻（清单见 §5.1，参考现网 caicai 主机） |
+| I | **AMI** | **Ubuntu LTS（arm64）**，**不预装** teamx/opencode；SSH 后按 §5.1 安装 |
+| J | **磁盘** | `gp3`，默认 **20–30 GiB**（可调） |
+| K | **标签/命名** | EC2 Tag：`team_id / member_id / user / ttl / created_by` |
+| L | **凭据/密钥存储** | 优先 **instance profile**（不落 key）；否则 access key 用 **KMS 加密**存 server |
+| M | **幂等** | `idem_key = (team_id, member_id)`；重复 invite 只出一台 |
+| N | **成本计量** | `cost_snapshot` 落台账；`budget.alert` 熔断前移 T3 |
+| O | **邀请函交付** | 本路径 = **server SSH 直推 + 节点 import**（**不进 cloud-init**） |
 
 **沿用既有裁决**：默认 S 规格 + TTL 30d 可续 + 空闲 auto-stop（CPU<5% 30min）+ 每 user 常驻上限 1 台 + `destroy` 可验证清单（terminate + 清 key/secret + 吊销 member 证书）+ region 白名单（开通时校验）+ 凭据/私钥加密存储·可轮换·全审计 + `budget.alert` 熔断前移 T3 + 计量落台账。
 
@@ -78,8 +85,17 @@ node_secrets(node_id, kind, ref, created_at)     -- 只存引用，不存明文
 ```text
 teamx team invite <role> --user-name <人> --provision-node \
       [--provider aws --region .. --size .. --ttl 30d]
+teamx node provision --member <member_id> [--provider aws --region .. --size .. --ttl 30d]
 teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
 ```
+
+### 5.0 补开（对已有成员，owner 新增功能点）
+
+- **场景**：成员**已入队但还没有云主机**（当初 invite 未带 provision 参数，或节点已被回收/销毁）。
+- **命令**：`teamx node provision --member <member_id> [--provider aws --region .. --size .. --ttl ..]`
+- **与 invite 时开通共用同一条 provision job 路径**：同幂等键 `(team_id, member_id)`、同 OS 用户隔离（§3.1）、同 systemd 服务清单（§5.1）、同 destroy 清单。`invite --provision-node` 只是「邀请时顺带触发」的便利入口。
+- **幂等语义**：若该 `(team_id, member_id)` 已有 `ready` 节点 → 直接返回现有节点（不重复开）；若已 `terminated` → 允许重新开通。
+- 触发者同为 team owner/lead；执行者同为 teamx server。
 
 ### 5.1 节点软件清单（标准，参考现网 caicai 主机）
 
