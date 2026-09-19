@@ -5,11 +5,6 @@
   "owner": "tech-lead",
   "created_at": "2026-09-19T02:09:13+00:00",
   "updated_at": "2026-09-19T02:13:23+00:00",
-  "source": {
-    "repo": "teamx-ent",
-    "path": ".teamx/docs/design/t1-im-client.md",
-    "commit": "ad77556"
-  },
   "history": [
     {
       "state": "draft",

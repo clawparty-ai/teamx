@@ -12,12 +12,12 @@
 - **设计优先**：每个交付物先产出设计（需求/方案/接口/测试方案），设计评审通过前不得用于交付与执行
 - **必须评审**：评审至少 3 名评审人员（被评审文档的作者不参与），意见全部关闭后才定为「终稿」
 - **测试优先**：开发与功能必须先有测试方案与用例（经评审），然后才进入开发
-- **文档入库（标准目录，强制）**：所有团队文档（requirements / design / issue / pr / test-plan / release-note）**必须**写入标准文档目录
-  `<workspace>/.teamx/docs/<doc_key>/<NNN-slug>.md`（+ 同名 `<NNN-slug>.meta.json`），遵循本文档 `## 文档` 契约。
-  - **禁止**把文档散落在台账仓（如 `teamx-ent`）、临时目录、讨论帖或其它非标准路径；已散落的需迁入标准目录（可保留 `source` 指回原件）。
+- **文档入库（标准目录，强制）**：所有团队文档（requirements / design / issue / pr / test-plan / release-note / review）**必须**写入
+  **台账仓 `teamx-ent` 的 `.teamx/docs/<doc_key>/<NNN-slug>.md`**（+ 同名 `<NNN-slug>.meta.json`）——**这是唯一标准位置**（全体成员都克隆/可读该仓）。
+  - **禁止**把文档只放在本地 workspace 仓（成员读不到）、临时目录、讨论帖或其它非标准路径；已散落的需迁入台账仓。
   - 命名用 `<NNN>-<slug>` 顺序编号（每类型内递增）；`.meta.json` 必含 `doc / id / state / owner / created_at / updated_at / history`。
-  - 文档实例是 **git 跟踪的组织过程资产**，须提交到 workspace 仓；状态推进（draft → review → approved → done）通过 `.meta.json` 的 `state` + `history` 记录。
-  - user-console 的 **Documents 面板只读该目录**（`<console workspace>/.teamx/docs`），写到别处面板不可见。
+  - 文档实例是 **git 跟踪的组织过程资产**，提交到台账仓 `teamx-ent`；状态推进（draft → review → approved → done）通过 `.meta.json` 的 `state` + `history` 记录。
+  - 本地 workspace 的 `.teamx/docs/` 仅作**查看镜像**（从 `teamx-ent` 同步），**不作为提交源**；user-console 的 Documents 面板读该镜像。
 
 ## 成员
 ### caishu
