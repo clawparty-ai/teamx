@@ -1790,6 +1790,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             region: o("region"),
             size: o("size"),
             ttl: args.get("ttl").and_then(Value::as_u64).map(|n| n as u32),
+            os_user: o("os_user"),
         }),
         // Cloud-host provisioning (design/006).
         "node.provision" => Command::Node(NodeCmd::Provision {
@@ -1798,6 +1799,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             region: o("region"),
             size: o("size"),
             ttl: args.get("ttl").and_then(Value::as_u64).map(|n| n as u32),
+            os_user: o("os_user"),
             session: sess(args),
             team: o("team"),
         }),

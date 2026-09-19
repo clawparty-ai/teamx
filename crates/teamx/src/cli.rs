@@ -967,6 +967,10 @@ pub enum TeamCmd {
         /// TTL in days for --provision-node (default 30)
         #[arg(long)]
         ttl: Option<u32>,
+        /// OS user on the provisioned host (default: <team-slug><4 digits>).
+        /// The instance's home dir / services live under this account.
+        #[arg(long)]
+        os_user: Option<String>,
     },
     /// List issued (unused/revoked) invitation letters (owner only)
     InviteList {
@@ -2270,6 +2274,9 @@ pub enum NodeCmd {
         /// TTL in days (default 30)
         #[arg(long)]
         ttl: Option<u32>,
+        /// OS user on the provisioned host (default: <team-slug><4 digits>)
+        #[arg(long)]
+        os_user: Option<String>,
         #[arg(long)]
         session: String,
         #[arg(long)]

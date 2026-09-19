@@ -68,7 +68,7 @@ the user's existing host instead of creating a new one):
 |---|---|
 | \`teamx_node_list\` | List the team's cloud hosts |
 | \`teamx_node_status\` | Inspect one host |
-| \`teamx_node_provision\` | Provision (or reuse) a host for a member (\`--member\`, optional \`--region/--size/--ttl\`) |
+| \`teamx_node_provision\` | Provision (or reuse) a host for a member (\`--member\`, optional \`--region/--size/--ttl/--os-user\`) |
 | \`teamx_node_stop\` / \`teamx_node_start\` | Stop / start a host (disk kept) |
 | \`teamx_node_destroy\` | Destroy a host + verifiable cleanup checklist |
 | \`/team-help\` | - | List available commands |

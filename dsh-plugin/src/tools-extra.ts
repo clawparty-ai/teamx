@@ -871,6 +871,7 @@ export function registerNodeTools(ctx: Context): void {
       region: { type: 'string', description: "region (default: the server's own region)" },
       size: { type: 'string', description: 'instance size (default: cheapest, floor 1C2G)' },
       ttl: { type: 'string', description: 'TTL in days (default 30)' },
+      os_user: { type: 'string', description: "OS user on the host (default <team-slug><4 digits>; e.g. the person's name)" },
       team: { type: 'string', description: 'team id (optional when the session has one team)' },
     },
     output: out(),
@@ -879,7 +880,8 @@ export function registerNodeTools(ctx: Context): void {
       return JSON.stringify(await runCli([
         'node', 'provision', '--member', args.member, '--session', getKey(exec),
         ...opt('--provider', args.provider), ...opt('--region', args.region),
-        ...opt('--size', args.size), ...opt('--ttl', args.ttl), ...opt('--team', args.team),
+        ...opt('--size', args.size), ...opt('--ttl', args.ttl),
+        ...opt('--os-user', args.os_user), ...opt('--team', args.team),
       ]))
     },
   }))

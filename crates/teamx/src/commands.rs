@@ -459,7 +459,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
             TeamCmd::Destroy { session, team } => cmd_team_destroy(conn, session, team.as_deref())?,
             TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user, auto_approve, as_lead,
-                              provision_node, provider, region, size, ttl } => {
+                              provision_node, provider, region, size, ttl, os_user } => {
                 let mut out = cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref(), *auto_approve, *as_lead)?;
                 // design/006: --provision-node（默认关）→ 入队异步 provision job
                 if *provision_node {
@@ -469,6 +469,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     let (actor, _team) = resolve_actor(conn, session, team.as_deref())?;
                     let prov = cmd_provision_seat(conn, &actor.id, &team_id, &member_id, &user_id,
                                                   provider.as_deref(), region.as_deref(), size.as_deref(), *ttl,
+                                                  os_user.as_deref(),
                                                   out.get("letter").and_then(Value::as_str))?;
                     out["provision"] = prov;
                 }
@@ -482,8 +483,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Node(n) => match n {
-            NodeCmd::Provision { member, provider, region, size, ttl, session, team } => {
-                cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, session, team.as_deref())?
+            NodeCmd::Provision { member, provider, region, size, ttl, os_user, session, team } => {
+                cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, os_user.as_deref(), session, team.as_deref())?
             }
             NodeCmd::List { session, team } => cmd_node_list(conn, session, team.as_deref())?,
             NodeCmd::Status { node_id, session, team } => cmd_node_status(conn, node_id, session, team.as_deref())?,
@@ -6204,6 +6205,7 @@ fn provision_opts(
     region: Option<&str>,
     size: Option<&str>,
     ttl: Option<u32>,
+    os_user: Option<&str>,
 ) -> crate::provision::ProvisionOpts {
     crate::provision::ProvisionOpts {
         provider: provider.map(str::to_string),
@@ -6211,6 +6213,7 @@ fn provision_opts(
         size: size.map(str::to_string),
         ttl_days: ttl,
         server_region: server_region(),
+        os_user: os_user.map(str::to_string),
     }
 }
 
@@ -6227,9 +6230,10 @@ fn cmd_provision_seat(
     region: Option<&str>,
     size: Option<&str>,
     ttl: Option<u32>,
+    os_user: Option<&str>,
     letter: Option<&str>,
 ) -> Result<Value> {
-    let opts = provision_opts(provider, region, size, ttl);
+    let opts = provision_opts(provider, region, size, ttl, os_user);
     let out = crate::provision::provision_for_member(conn, team_id, member_id, user_id, &opts)
         .map_err(AppError)?;
     // letter 落 server 本地（0600）+ node_secrets 只存引用；由 runner 推送到节点。
@@ -6270,6 +6274,7 @@ fn cmd_node_provision(
     region: Option<&str>,
     size: Option<&str>,
     ttl: Option<u32>,
+    os_user: Option<&str>,
     session: &str,
     team_opt: Option<&str>,
 ) -> Result<Value> {
@@ -6287,7 +6292,7 @@ fn cmd_node_provision(
         )
         .unwrap_or_default();
     cmd_provision_seat(
-        conn, &actor.id, &team.id, &target.id, &user_id, provider, region, size, ttl, None,
+        conn, &actor.id, &team.id, &target.id, &user_id, provider, region, size, ttl, os_user, None,
     )
 }
 

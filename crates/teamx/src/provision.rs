@@ -290,6 +290,9 @@ pub struct ProvisionOpts {
     pub ttl_days: Option<u32>,
     /// server 自身 region（裁决 R：未指定且非交互时使用）
     pub server_region: Option<String>,
+    /// 显式 OS 用户名（`--os-user`）。默认按 §3.1 `<team-slug><4位数字>`；
+    /// 指定时该实例的 OS 用户/家目录即用此名（owner 指定场景，如 `xiaods`）。
+    pub os_user: Option<String>,
 }
 
 /// region 解析：显式 → 否则 server 同 region（裁决 R）。
@@ -558,6 +561,7 @@ pub fn provision_for_member(
         return Ok(json!({
             "ok": true, "reused": true, "node": node,
             "node_id": node["id"],
+            "os_user": node["os_user"],
             "job_id": job_id, "job_created": created,
             "note": "reuse existing host for this user (design/006 §3.1)",
         }));
@@ -566,7 +570,7 @@ pub fn provision_for_member(
     // 2) 新建：落 node（requested）+ job（requested）。
     let node_id = uuid::Uuid::new_v4().to_string();
     let now = db::now();
-    let os_user = os_user_for(team_id, &node_id);
+    let os_user = resolve_os_user(opts, team_id, &node_id)?;
     db::with_write(conn, |tx| {
         tx.execute(
             "INSERT INTO nodes (id,team_id,user_id,member_id,provider,region,state,os_user,created_at)
@@ -607,6 +611,56 @@ pub fn os_user_for(team_id: &str, node_id: &str) -> String {
         .collect();
     let digits = format!("{digits:0<4}");
     format!("{slug}{digits}")
+}
+
+/// 校验显式 `--os-user`（useradd 可安全接受的子集）。
+///
+/// 规则：1–32 字符，`[a-z0-9_-]`，首字符不能是数字或 `-`，且不得是系统/默认账号。
+pub fn validate_os_user(name: &str) -> Result<(), String> {
+    let n = name.trim();
+    if n.is_empty() || n.len() > 32 {
+        return Err(format!("invalid os_user `{name}`: must be 1–32 characters"));
+    }
+    let first = n.chars().next().unwrap_or('-');
+    if first.is_ascii_digit() || first == '-' || first == '_' {
+        return Err(format!("invalid os_user `{name}`: must start with a letter"));
+    }
+    if !n
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "invalid os_user `{name}`: only lowercase letters, digits, `_` and `-` are allowed"
+        ));
+    }
+    const RESERVED: [&str; 18] = [
+        "root", "ubuntu", "admin", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail",
+        "news", "uucp", "proxy", "backup", "list", "nobody", "systemd",
+    ];
+    if RESERVED.contains(&n) {
+        return Err(format!("invalid os_user `{name}`: reserved system account"));
+    }
+    Ok(())
+}
+
+/// OS 用户名解析：显式 `--os-user` > §3.1 默认 `<team-slug><4位数字>`。
+pub fn resolve_os_user(
+    opts: &ProvisionOpts,
+    team_id: &str,
+    node_id: &str,
+) -> Result<String, String> {
+    match opts
+        .os_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(u) => {
+            validate_os_user(u)?;
+            Ok(u.to_string())
+        }
+        None => Ok(os_user_for(team_id, node_id)),
+    }
 }
 
 /// 状态推进（落库 + 校验）。
@@ -1238,6 +1292,35 @@ mod tests {
         assert!(u.starts_with("abc"), "{u}");
         assert_eq!(u.len(), 7, "{u}"); // abc + 1111
         assert!(u.chars().skip(3).all(|c| c.is_ascii_digit()), "{u}");
+    }
+
+    #[test]
+    fn os_user_override_wins_and_is_validated() {
+        let base = ProvisionOpts {
+            provider: None,
+            region: Some("us-east-1".into()),
+            size: None,
+            ttl_days: None,
+            server_region: None,
+            os_user: None,
+        };
+        // 默认：<team-slug><4 位数字>
+        let d = resolve_os_user(&base, "abc", "1111aaaa-2222").unwrap();
+        assert!(d.starts_with("abc"), "{d}");
+        // 显式覆盖：owner 指定的人名（如 xiaods）
+        let mut o = base.clone();
+        o.os_user = Some("xiaods".into());
+        assert_eq!(resolve_os_user(&o, "abc", "1111aaaa-2222").unwrap(), "xiaods");
+        // 空白视为未指定 → 回落默认
+        let mut blank = base.clone();
+        blank.os_user = Some("   ".into());
+        assert!(resolve_os_user(&blank, "abc", "1111aaaa-2222").unwrap().starts_with("abc"));
+        // 非法名被拒（大写 / 数字开头 / 保留账号 / 非法字符 / 过长）
+        for bad in ["Xiaods", "1xiaods", "root", "ubuntu", "xi aods", "xi/aods", &"a".repeat(33)] {
+            let mut o = base.clone();
+            o.os_user = Some(bad.to_string());
+            assert!(resolve_os_user(&o, "abc", "1111aaaa-2222").is_err(), "should reject `{bad}`");
+        }
     }
 
     #[test]

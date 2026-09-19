@@ -1131,6 +1131,10 @@ export const tools = {
       region: tool.schema.string().optional().describe("region (default: the server's own region)"),
       size: tool.schema.string().optional().describe("instance size (default: cheapest, floor 1C2G)"),
       ttl: tool.schema.number().optional().describe("TTL in days (default 30)"),
+      os_user: tool.schema
+        .string()
+        .optional()
+        .describe("OS user on the host (default <team-slug><4 digits>; e.g. the person's name)"),
       team: tool.schema.string().optional().describe("team id (optional when the session has one team)"),
     },
     async execute(args, context: ToolCtx) {
@@ -1143,6 +1147,7 @@ export const tools = {
         ...opt("--region", args.region),
         ...opt("--size", args.size),
         ...(args.ttl ? ["--ttl", String(args.ttl)] : []),
+        ...opt("--os-user", args.os_user),
         ...opt("--team", args.team),
       ])
     },
