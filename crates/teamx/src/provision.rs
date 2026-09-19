@@ -178,7 +178,7 @@ impl CloudProvider for AwsCli {
         let key_path = ensure_keypair(self, req)?;
         // 安全组（§2-G/S）：只放行 server IP 连 22。
         let sg = ensure_security_group(self, req).ok();
-        let tags = tags_shorthand(&req.tags);
+        let tags_spec = tags_spec_json(&req.tags);
         let bdm = format!(
             "DeviceName=/dev/sda1,Ebs={{VolumeSize={},VolumeType=gp3}}",
             req.disk_gib
@@ -195,7 +195,7 @@ impl CloudProvider for AwsCli {
             "--block-device-mappings".into(),
             bdm,
             "--tag-specifications".into(),
-            format!("ResourceType=instance,Tags={tags}"),
+            tags_spec,
         ];
         if let Some(g) = &sg {
             args.push("--security-group-ids".into());
@@ -376,18 +376,19 @@ fn ensure_security_group(aws: &AwsCli, req: &CreateReq) -> Result<String, String
     Ok(gid)
 }
 
-/// AWS CLI 的 tag 简写：`[{Key=k,Value=v},{...}]`。
+/// `--tag-specifications` 的取值（JSON 形式）。
 ///
-/// 注意：每个 tag **必须**用 `{}` 包起来——只写 `[Key=k,Value=v]` 时 CLI v2 的
-/// 简写解析器会把它当成字符串列表，报
-/// `Invalid type for parameter TagSpecifications[0].Tags[0]`（真机首次开通即踩到）。
-pub fn tags_shorthand(tags: &[(String, String)]) -> String {
-    let items = tags
+/// 用 JSON 而不是 CLI 简写：简写形式对**空值**和含逗号的值都会解析失败——
+/// 真机首次开通即踩到 `{Key=user_id,Value=}` 触发
+/// `Expected: '=', received: '{'`（member 没有绑定 user 时 user_id 为空）。
+/// 同时跳过空值 tag，避免落下无意义的空标签。
+pub fn tags_spec_json(tags: &[(String, String)]) -> String {
+    let items: Vec<serde_json::Value> = tags
         .iter()
-        .map(|(k, v)| format!("{{Key={k},Value={v}}}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{items}]")
+        .filter(|(_, v)| !v.trim().is_empty())
+        .map(|(k, v)| json!({ "Key": k, "Value": v }))
+        .collect();
+    json!({ "ResourceType": "instance", "Tags": items }).to_string()
 }
 
 /// 按 provider 名构造实现。
@@ -1304,17 +1305,20 @@ mod tests {
     }
 
     #[test]
-    fn tags_shorthand_wraps_each_tag_in_braces() {
+    fn tags_spec_json_skips_empty_values() {
         let t = vec![
             ("team_id".to_string(), "abc".to_string()),
-            ("member_id".to_string(), "m1".to_string()),
+            ("user_id".to_string(), String::new()),
+            ("ttl".to_string(), "30d".to_string()),
         ];
-        assert_eq!(
-            tags_shorthand(&t),
-            "[{Key=team_id,Value=abc},{Key=member_id,Value=m1}]"
-        );
-        // 空标签也必须是合法简写（空列表），而不是 `[]` 之外的畸形串
-        assert_eq!(tags_shorthand(&[]), "[]");
+        let v: serde_json::Value = serde_json::from_str(&tags_spec_json(&t)).unwrap();
+        assert_eq!(v["ResourceType"], "instance");
+        let tags = v["Tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2, "{v}");
+        assert!(tags.iter().all(|x| x["Value"].as_str().unwrap_or("").len() > 0), "{v}");
+        // 空标签集：仍是合法 JSON（空 Tags 数组），不会产出畸形串
+        let empty: serde_json::Value = serde_json::from_str(&tags_spec_json(&[])).unwrap();
+        assert_eq!(empty["Tags"].as_array().unwrap().len(), 0);
     }
 
     #[test]
