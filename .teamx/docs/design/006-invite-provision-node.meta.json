@@ -4,7 +4,7 @@
   "state": "review",
   "owner": "tech-lead",
   "created_at": "2026-09-19T05:06:55+00:00",
-  "updated_at": "2026-09-19T05:06:55+00:00",
+  "updated_at": "2026-09-19T05:08:25+00:00",
   "history": [
     {
       "state": "draft",
@@ -17,6 +17,12 @@
       "by": "caishu",
       "at": "2026-09-19T05:06:55+00:00",
       "note": "待评审"
+    },
+    {
+      "state": "review",
+      "by": "caishu",
+      "at": "2026-09-19T05:08:25+00:00",
+      "note": "owner 裁决：provider 首批 AWS CLI 先行；k8e-sandbox 待 AWS CLI 完成后再讨论"
     }
   ]
 }

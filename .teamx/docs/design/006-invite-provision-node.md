@@ -73,10 +73,10 @@ teamx node list | status <id> | ssh <id> | stop <id> | start <id> | destroy <id>
 ## 7. 与既有文档的关系
 
 - **修正 `t1-provider-external` 的拓扑歧义**（评审必改项 3）：**serve 只在中心一台（teamx server）**；被开通的机器是 **member node（worker/agent）**，**不是 serve**。
-- provider 首批顺序：**待确认**（AWS CLI 与 k8e-sandbox 谁先；本文的 invite-provision 主路径是 AWS CLI 驱动）。
+- **provider 首批顺序（owner 裁决）**：**AWS CLI 先行**（本文的 invite-provision 主路径就是 AWS CLI 驱动）；**k8e-sandbox 等 AWS CLI 落地后再讨论**，不在首批。
 
 ## 8. 开放项
 
-1. provider 首批顺序（AWS CLI 先行 / k8e-sandbox 先行）。
+1. ~~provider 首批顺序~~ → **已定：AWS CLI 先行；k8e-sandbox 后续再议**。
 2. 一次性 token 路径的保留范围（「用户自带机器」路径）——归 #8 讨论。
 3. 云账号归属的对外表述（团队 owner 提供凭据 vs 用户自带云账号）——归 #8 讨论。
