@@ -445,6 +445,50 @@ pub fn tags_spec_json(tags: &[(String, String)]) -> String {
     json!({ "ResourceType": "instance", "Tags": items }).to_string()
 }
 
+/// 节点架构（`uname -m`）与本机 Rust 架构名是否一致。
+pub fn arch_matches(host_arch: &str, node_arch: &str) -> bool {
+    let norm = |a: &str| match a.trim() {
+        "x86_64" | "amd64" | "x86-64" => "x86_64".to_string(),
+        "aarch64" | "arm64" => "aarch64".to_string(),
+        other => other.to_string(),
+    };
+    norm(host_arch) == norm(node_arch)
+}
+
+/// 选推送到节点的 teamx 二进制：架构一致用 server 自身，否则找交叉产物。
+///
+/// 设计默认 ARM（t4g），而 server 多是 x86_64 —— 直接推 server 自身会得到
+/// `Exec format error`（真机踩到）。交叉产物查找顺序：
+/// `TEAMX_NODE_BIN_<ARCH>` 环境变量 → 与自身同目录的 `teamx-<arch>`。
+pub fn node_binary_for(node_arch: &str) -> Result<String, String> {
+    let self_bin = std::env::current_exe()
+        .map_err(|e| format!("resolve own binary: {e}"))?
+        .to_string_lossy()
+        .to_string();
+    if arch_matches(std::env::consts::ARCH, node_arch) {
+        return Ok(self_bin);
+    }
+    let arch = node_arch.trim();
+    let env_key = format!("TEAMX_NODE_BIN_{}", arch.to_uppercase().replace('-', "_"));
+    if let Ok(p) = std::env::var(&env_key) {
+        if !p.trim().is_empty() && std::path::Path::new(&p).is_file() {
+            return Ok(p);
+        }
+    }
+    let cand = std::path::Path::new(&self_bin)
+        .parent()
+        .map(|d| d.join(format!("teamx-{arch}")))
+        .ok_or("cannot resolve binary directory")?;
+    if cand.is_file() {
+        return Ok(cand.to_string_lossy().to_string());
+    }
+    Err(format!(
+        "no teamx binary for node arch `{arch}` (server is {}): cross-build it and place at {} or set {env_key}",
+        std::env::consts::ARCH,
+        cand.display()
+    ))
+}
+
 /// per-node 私钥路径：`<key_dir>/teamx-<node_id>.pem`。
 ///
 /// 必须与 [`run_provision_job`] 里 `CreateReq::key_name`（`teamx-<node_id>`）一致，
@@ -1112,13 +1156,15 @@ pub fn run_provision_job(
             set_node_state(conn, &node_id, "provisioning")?;
         }
         set_node_state(conn, &node_id, "bootstrapping")?;
-        // 推 teamx 二进制到节点（bootstrap 脚本里 `install /tmp/teamx`）；
-        // 用 server 自身的可执行文件，保证节点与 server 同版本。
-        let self_bin = std::env::current_exe()
-            .map_err(|e| format!("resolve own binary: {e}"))?
-            .to_string_lossy()
+        // 推 teamx 二进制到节点（bootstrap 脚本里 `install /tmp/teamx`）：
+        // 先探测节点架构，再选与架构匹配的那份（ARM 节点不能用 x86_64 二进制）。
+        let node_arch = exec
+            .run_as(&ip, key_path, "ubuntu", "uname -m")
+            .map_err(|e| format!("probe node arch: {e}"))?
+            .trim()
             .to_string();
-        exec.upload(&ip, key_path, &self_bin, "/tmp/teamx")?;
+        let node_bin = node_binary_for(&node_arch)?;
+        exec.upload(&ip, key_path, &node_bin, "/tmp/teamx")?;
         let script = bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url);
         exec.run_as(&ip, key_path, "ubuntu", &script)?;
         Ok(())
@@ -1298,6 +1344,9 @@ impl RemoteExec for FakeExec {
     fn run_as(&self, _ip: &str, _k: &str, _u: &str, script: &str) -> Result<String, String> {
         if script.contains("echo READY") {
             Ok("READY".into())
+        } else if script.trim() == "uname -m" {
+            // 架构探测：伪造为本机架构，使 happy-path 复用自身二进制
+            Ok(std::env::consts::ARCH.into())
         } else {
             Ok("BOOTSTRAP_OK".into())
         }
@@ -1475,6 +1524,27 @@ mod tests {
         assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'"), "{sc}");
         assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/ca.pem'"), "{sc}");
         assert!(sc.contains("\"https://s:1\""), "{sc}");
+    }
+
+    #[test]
+    fn arch_matching_and_binary_selection() {
+        assert!(arch_matches("x86_64", "x86_64"));
+        assert!(arch_matches("aarch64", "arm64"));
+        assert!(!arch_matches("x86_64", "aarch64"));
+        // 本机架构 → 用自身二进制
+        let own = node_binary_for(std::env::consts::ARCH).unwrap();
+        assert!(std::path::Path::new(&own).is_file(), "{own}");
+        // 异构架构且无交叉产物 → 明确报错（而不是推出错误架构的二进制）
+        let other = if std::env::consts::ARCH == "aarch64" { "x86_64" } else { "aarch64" };
+        if !std::path::Path::new(&format!(
+            "{}/teamx-{other}",
+            std::path::Path::new(&own).parent().unwrap().display()
+        ))
+        .is_file()
+        {
+            let err = node_binary_for(other).unwrap_err();
+            assert!(err.contains("cross-build"), "{err}");
+        }
     }
 
     #[test]
@@ -1675,6 +1745,8 @@ mod tests {
         fn run_as(&self, _ip: &str, _k: &str, _u: &str, script: &str) -> Result<String, String> {
             if script.contains("echo READY") {
                 Ok("READY".into())
+            } else if script.trim() == "uname -m" {
+                Ok(std::env::consts::ARCH.into())
             } else {
                 Ok("BOOTSTRAP_OK".into())
             }
