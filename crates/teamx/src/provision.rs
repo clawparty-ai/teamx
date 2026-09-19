@@ -178,12 +178,7 @@ impl CloudProvider for AwsCli {
         let key_path = ensure_keypair(self, req)?;
         // 安全组（§2-G/S）：只放行 server IP 连 22。
         let sg = ensure_security_group(self, req).ok();
-        let tags = req
-            .tags
-            .iter()
-            .map(|(k, v)| format!("Key={k},Value={v}"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let tags = tags_shorthand(&req.tags);
         let bdm = format!(
             "DeviceName=/dev/sda1,Ebs={{VolumeSize={},VolumeType=gp3}}",
             req.disk_gib
@@ -200,7 +195,7 @@ impl CloudProvider for AwsCli {
             "--block-device-mappings".into(),
             bdm,
             "--tag-specifications".into(),
-            format!("ResourceType=instance,Tags=[{tags}]"),
+            format!("ResourceType=instance,Tags={tags}"),
         ];
         if let Some(g) = &sg {
             args.push("--security-group-ids".into());
@@ -379,6 +374,20 @@ fn ensure_security_group(aws: &AwsCli, req: &CreateReq) -> Result<String, String
         &cidr,
     ]);
     Ok(gid)
+}
+
+/// AWS CLI 的 tag 简写：`[{Key=k,Value=v},{...}]`。
+///
+/// 注意：每个 tag **必须**用 `{}` 包起来——只写 `[Key=k,Value=v]` 时 CLI v2 的
+/// 简写解析器会把它当成字符串列表，报
+/// `Invalid type for parameter TagSpecifications[0].Tags[0]`（真机首次开通即踩到）。
+pub fn tags_shorthand(tags: &[(String, String)]) -> String {
+    let items = tags
+        .iter()
+        .map(|(k, v)| format!("{{Key={k},Value={v}}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{items}]")
 }
 
 /// 按 provider 名构造实现。
@@ -1292,6 +1301,20 @@ mod tests {
         assert!(u.starts_with("abc"), "{u}");
         assert_eq!(u.len(), 7, "{u}"); // abc + 1111
         assert!(u.chars().skip(3).all(|c| c.is_ascii_digit()), "{u}");
+    }
+
+    #[test]
+    fn tags_shorthand_wraps_each_tag_in_braces() {
+        let t = vec![
+            ("team_id".to_string(), "abc".to_string()),
+            ("member_id".to_string(), "m1".to_string()),
+        ];
+        assert_eq!(
+            tags_shorthand(&t),
+            "[{Key=team_id,Value=abc},{Key=member_id,Value=m1}]"
+        );
+        // 空标签也必须是合法简写（空列表），而不是 `[]` 之外的畸形串
+        assert_eq!(tags_shorthand(&[]), "[]");
     }
 
     #[test]
