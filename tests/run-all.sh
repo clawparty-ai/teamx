@@ -242,5 +242,8 @@ else
   echo "set TEAMX_RUN_UI_E2E=1 (needs Chrome + bun) to run UI e2e; skipping"
 fi
 
+echo "== 17/17 node provisioning E2E (design/006, fake provider, zero AWS) =="
+./tests/node-provision-test.sh
+
 echo
 echo "ALL TEST SUITES PASSED"

@@ -466,7 +466,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     let user_id = out.get("user_id").and_then(Value::as_str).unwrap_or("").to_string();
                     let (actor, _team) = resolve_actor(conn, session, team.as_deref())?;
                     let prov = cmd_provision_seat(conn, &actor.id, &team_id, &member_id, &user_id,
-                                                  provider.as_deref(), region.as_deref(), size.as_deref(), *ttl)?;
+                                                  provider.as_deref(), region.as_deref(), size.as_deref(), *ttl,
+                                                  out.get("letter").and_then(Value::as_str))?;
                     out["provision"] = prov;
                 }
                 out
@@ -488,6 +489,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             NodeCmd::Stop { node_id, session, team } => cmd_node_set_power(conn, node_id, false, session, team.as_deref())?,
             NodeCmd::Start { node_id, session, team } => cmd_node_set_power(conn, node_id, true, session, team.as_deref())?,
             NodeCmd::Destroy { node_id, session, team } => cmd_node_destroy(conn, node_id, session, team.as_deref())?,
+            NodeCmd::AutoStop { idle, yes } => cmd_node_auto_stop(conn, idle.as_deref(), *yes)?,
+            NodeCmd::RunJobs { key_dir, server_url, team_repo_url, ca_file } => {
+                cmd_node_run_jobs(conn, key_dir.as_deref(), server_url.as_deref(), team_repo_url.as_deref(), ca_file.as_deref())?
+            }
         },
         Command::Goal(g) => match g {
             GoalCmd::Set { title, body, session, team } => {
@@ -2644,6 +2649,32 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
         Ok(())
     })
     .map_err(|e| AppError(format!("decision failed: {e}")))?;
+
+    // 裁决 V：approve 后启动该成员节点的 systemd 服务（此前只注册不启动）。
+    if approve {
+        if let Ok(Some(node)) = crate::provision::find_node_for_member(conn, &team.id, &target.id) {
+            if node["state"].as_str() == Some("ready") {
+                let ip = node["ip"].as_str().unwrap_or("").to_string();
+                let os_user = node["os_user"].as_str().unwrap_or("").to_string();
+                let key_name = node["keypair_ref"].as_str().unwrap_or("").to_string();
+                if !ip.is_empty() && !os_user.is_empty() {
+                    let key_path = crate::db::teamx_home()
+                        .join("nodes")
+                        .join(format!("{key_name}.pem"));
+                    let script = format!(
+                        "sudo systemctl start 'teamx-{os_user}-*' || true; echo STARTED"
+                    );
+                    let _ = crate::provision::RemoteExec::run_as(
+                        &crate::provision::SshExec,
+                        &ip,
+                        &key_path.to_string_lossy(),
+                        "ubuntu",
+                        &script,
+                    );
+                }
+            }
+        }
+    }
 
     // Auto-grant write access to all team git repos on approval so the member
     // can `git clone` AND `git push` immediately (feature: import → approve).
@@ -6193,10 +6224,17 @@ fn cmd_provision_seat(
     region: Option<&str>,
     size: Option<&str>,
     ttl: Option<u32>,
+    letter: Option<&str>,
 ) -> Result<Value> {
     let opts = provision_opts(provider, region, size, ttl);
     let out = crate::provision::provision_for_member(conn, team_id, member_id, user_id, &opts)
         .map_err(AppError)?;
+    // letter 落 server 本地（0600）+ node_secrets 只存引用；由 runner 推送到节点。
+    if let (Some(l), Some(nid)) = (letter, out["node_id"].as_str()) {
+        if !l.is_empty() {
+            let _ = crate::provision::store_letter(conn, nid, l);
+        }
+    }
     let ev = if out["reused"].as_bool().unwrap_or(false) {
         "node.reused"
     } else {
@@ -6221,6 +6259,7 @@ fn cmd_provision_seat(
 }
 
 /// `teamx node provision --member <id>`（owner/lead）。复用优先于新建。
+#[allow(clippy::too_many_arguments)]
 fn cmd_node_provision(
     conn: &mut Connection,
     member_id: &str,
@@ -6245,8 +6284,114 @@ fn cmd_node_provision(
         )
         .unwrap_or_default();
     cmd_provision_seat(
-        conn, &actor.id, &team.id, &target.id, &user_id, provider, region, size, ttl,
+        conn, &actor.id, &team.id, &target.id, &user_id, provider, region, size, ttl, None,
     )
+}
+
+/// `teamx node auto-stop [--idle a,b] [--yes]`：两级 auto-stop 判定
+/// （design/006 §2-P：实例级停服务组 / 整机级仅当该主机所有实例都 idle）。
+fn cmd_node_auto_stop(conn: &mut Connection, idle: Option<&str>, yes: bool) -> Result<Value> {
+    let idle_ids: Vec<String> = idle
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let nodes: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, provider, instance_id FROM nodes WHERE state='ready'")
+            .map_err(|e| AppError(format!("db: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+            })
+            .map_err(|e| AppError(format!("db: {e}")))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AppError(format!("db: {e}")))?
+    };
+    // 按主机（instance_id）分组
+    let mut by_host: std::collections::BTreeMap<String, Vec<(String, bool)>> =
+        std::collections::BTreeMap::new();
+    for (id, _p, inst) in &nodes {
+        let host = inst.clone().unwrap_or_else(|| format!("host-{id}"));
+        by_host
+            .entry(host)
+            .or_default()
+            .push((id.clone(), idle_ids.contains(id)));
+    }
+    let mut decisions = Vec::new();
+    for (host, instances) in by_host {
+        let (inst_level, machine) = crate::provision::auto_stop_decision(&instances);
+        let mut applied = false;
+        if machine && yes {
+            if let Some((id, pname, inst)) = nodes
+                .iter()
+                .find(|(_, _, i)| i.as_deref() == Some(host.as_str()))
+            {
+                let region: Option<String> = conn
+                    .query_row("SELECT region FROM nodes WHERE id=?1", params![id], |r| r.get(0))
+                    .ok();
+                if let Ok(prov) =
+                    crate::provision::provider_for(pname, region.as_deref().unwrap_or(""))
+                {
+                    let _ = prov.stop(inst.as_deref().unwrap_or(""));
+                }
+                let _ = crate::provision::set_node_state(conn, id, "stopped");
+                applied = true;
+            }
+        }
+        decisions.push(json!({
+            "host": host, "instance_level": inst_level,
+            "machine_level": machine, "applied": applied,
+        }));
+    }
+    Ok(json!({ "ok": true, "dry_run": !yes, "decisions": decisions }))
+}
+
+/// `teamx node run-jobs`：server 侧 runner，执行所有待办 provision job。
+fn cmd_node_run_jobs(
+    conn: &mut Connection,
+    key_dir: Option<&std::path::Path>,
+    server_url: Option<&str>,
+    team_repo_url: Option<&str>,
+    ca_file: Option<&std::path::Path>,
+) -> Result<Value> {
+    let home = db::teamx_home();
+    let key_dir = key_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| home.join("nodes"));
+    let server_url = server_url
+        .map(str::to_string)
+        .or_else(|| std::env::var("TEAMX_SERVER_URL").ok())
+        .unwrap_or_default();
+    let team_repo_url = team_repo_url.map(str::to_string).unwrap_or_default();
+    let ca_pem = ca_file
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .or_else(|| std::env::var("TEAMX_CA_PEM").ok())
+        .unwrap_or_default();
+    let exec = crate::provision::SshExec;
+    let fake = std::env::var("TEAMX_PROVISION_FAKE").is_ok();
+    let out = if fake {
+        crate::provision::run_pending_jobs(
+            conn,
+            &crate::provision::FakeExec,
+            &key_dir.to_string_lossy(),
+            &server_url,
+            &ca_pem,
+            &team_repo_url,
+        )
+    } else {
+        crate::provision::run_pending_jobs(
+            conn,
+            &exec,
+            &key_dir.to_string_lossy(),
+            &server_url,
+            &ca_pem,
+            &team_repo_url,
+        )
+    };
+    out.map_err(AppError)
 }
 
 fn cmd_node_list(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
@@ -6300,6 +6445,16 @@ fn cmd_node_set_power(
         return err(format!("node is `{from}`; stop requires ready"));
     }
     let to = if start { "ready" } else { "stopped" };
+    let region = node["region"].as_str().unwrap_or("").to_string();
+    let pname = node["provider"].as_str().unwrap_or("aws");
+    let provider = crate::provision::provider_for(pname, &region).map_err(AppError)?;
+    if let Some(iid) = node["instance_id"].as_str().filter(|s| !s.is_empty()) {
+        if start {
+            provider.start(iid).map_err(AppError)?;
+        } else {
+            provider.stop(iid).map_err(AppError)?;
+        }
+    }
     crate::provision::set_node_state(conn, node_id, to).map_err(AppError)?;
     Ok(json!({ "ok": true, "node_id": node_id, "state": to }))
 }
@@ -6309,7 +6464,8 @@ fn cmd_node_destroy(conn: &mut Connection, node_id: &str, session: &str, team_op
     ensure_owner(conn, &actor, &team)?;
     let node = cmd_node_in_team(conn, node_id, &team)?;
     let region = node["region"].as_str().unwrap_or("").to_string();
-    let provider = crate::provision::provider_for("aws", &region).map_err(AppError)?;
+    let pname = node["provider"].as_str().unwrap_or("aws");
+    let provider = crate::provision::provider_for(pname, &region).map_err(AppError)?;
     let out = crate::provision::destroy_node(conn, node_id, provider.as_ref()).map_err(AppError)?;
     db::with_write(conn, |tx| {
         emit_json(

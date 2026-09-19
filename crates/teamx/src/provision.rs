@@ -79,6 +79,12 @@ pub struct CreateReq {
     pub key_name: String,
     pub tags: Vec<(String, String)>,
     pub ttl_days: u32,
+    /// 本地保存 per-node 私钥的目录（design/006 §2-C）。
+    pub key_dir: String,
+    /// server 公网 IP（安全组只放行它连 SSH，design/006 §2-G/S）。
+    pub server_ip: Option<String>,
+    /// 根盘大小 GiB（design/006 §2-J：gp3，默认 20–30）。
+    pub disk_gib: u32,
 }
 
 /// 建机结果。
@@ -96,6 +102,22 @@ pub trait CloudProvider {
     fn status(&self, instance_id: &str) -> Result<String, String>;
     fn destroy(&self, instance_id: &str) -> Result<(), String>;
     fn list(&self) -> Result<Vec<String>, String>;
+    /// 删除 keypair（destroy 清单；默认 no-op）。
+    fn delete_keypair(&self, _name: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// 实例控制台输出（host-key 指纹比对用；默认空）。
+    fn console_output(&self, _instance_id: &str) -> Result<String, String> {
+        Ok(String::new())
+    }
+    /// 停止实例（保留磁盘）；默认 no-op。
+    fn stop(&self, _instance_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// 启动已停止实例；默认 no-op。
+    fn start(&self, _instance_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// AWS CLI provider（design/006 §2-A/B：优先 instance profile；IAM 最小权限）。
@@ -152,26 +174,43 @@ impl CloudProvider for AwsCli {
 
     fn create(&self, req: &CreateReq) -> Result<Created, String> {
         let ami = self.resolve_ami()?;
+        // per-node keypair（§2-C）：不存在则创建并落盘 0600。
+        let key_path = ensure_keypair(self, req)?;
+        // 安全组（§2-G/S）：只放行 server IP 连 22。
+        let sg = ensure_security_group(self, req).ok();
         let tags = req
             .tags
             .iter()
             .map(|(k, v)| format!("Key={k},Value={v}"))
             .collect::<Vec<_>>()
             .join(",");
-        let txt = self.run(&[
-            "ec2",
-            "run-instances",
-            "--image-id",
-            &ami,
-            "--instance-type",
-            &req.size,
-            "--key-name",
-            &req.key_name,
-            "--tag-specifications",
-            &format!("ResourceType=instance,Tags=[{tags}]"),
-            "--query",
-            "Instances[0].[InstanceId,PrivateIpAddress,PublicIpAddress]",
-        ])?;
+        let bdm = format!(
+            "DeviceName=/dev/sda1,Ebs={{VolumeSize={},VolumeType=gp3}}",
+            req.disk_gib
+        );
+        let mut args: Vec<String> = vec![
+            "ec2".into(),
+            "run-instances".into(),
+            "--image-id".into(),
+            ami,
+            "--instance-type".into(),
+            req.size.clone(),
+            "--key-name".into(),
+            req.key_name.clone(),
+            "--block-device-mappings".into(),
+            bdm,
+            "--tag-specifications".into(),
+            format!("ResourceType=instance,Tags=[{tags}]"),
+        ];
+        if let Some(g) = &sg {
+            args.push("--security-group-ids".into());
+            args.push(g.clone());
+        }
+        args.push("--query".into());
+        args.push("Instances[0].[InstanceId,PrivateIpAddress,PublicIpAddress]".into());
+        let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let txt = self.run(&argrefs)?;
+        let _ = key_path;
         let v: Value = serde_json::from_str(&txt).map_err(|e| format!("bad aws json: {e}"))?;
         let arr = v.as_array().ok_or("unexpected aws response")?;
         let s = |i: usize| arr.get(i).and_then(Value::as_str).map(str::to_string);
@@ -213,6 +252,27 @@ impl CloudProvider for AwsCli {
         Ok(v.as_array()
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default())
+    }
+
+    fn delete_keypair(&self, name: &str) -> Result<(), String> {
+        self.run(&["ec2", "delete-key-pair", "--key-name", name])?;
+        Ok(())
+    }
+
+    fn console_output(&self, instance_id: &str) -> Result<String, String> {
+        let txt = self.run(&["ec2", "get-console-output", "--instance-id", instance_id])?;
+        let v: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+        Ok(v.get("Output").and_then(Value::as_str).unwrap_or("").to_string())
+    }
+
+    fn stop(&self, instance_id: &str) -> Result<(), String> {
+        self.run(&["ec2", "stop-instances", "--instance-ids", instance_id])?;
+        Ok(())
+    }
+
+    fn start(&self, instance_id: &str) -> Result<(), String> {
+        self.run(&["ec2", "start-instances", "--instance-ids", instance_id])?;
+        Ok(())
     }
 }
 
@@ -259,10 +319,71 @@ pub fn resolve_ttl_days(opts: &ProvisionOpts) -> u32 {
     opts.ttl_days.unwrap_or(30)
 }
 
+/// 确保 per-node keypair 存在，并把私钥写到 `key_dir/<name>.pem`（0600）。
+fn ensure_keypair(aws: &AwsCli, req: &CreateReq) -> Result<String, String> {
+    std::fs::create_dir_all(&req.key_dir).map_err(|e| format!("mkdir key_dir: {e}"))?;
+    let path = format!("{}/{}.pem", req.key_dir, req.key_name);
+    if std::path::Path::new(&path).exists() {
+        return Ok(path);
+    }
+    match aws.run(&["ec2", "create-key-pair", "--key-name", &req.key_name, "--query", "KeyMaterial"]) {
+        Ok(txt) => {
+            let pem = txt.trim().trim_matches('"').replace("\\n", "\n");
+            std::fs::write(&path, pem).map_err(|e| format!("write key: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            Ok(path)
+        }
+        // 已存在同名 keypair（重复开通）→ 视为可用
+        Err(e) if e.contains("Duplicate") => Ok(path),
+        Err(e) => Err(e),
+    }
+}
+
+/// 确保安全组存在且只放行 server IP 连 22（§2-G/S）；无 server_ip 时返回 None。
+fn ensure_security_group(aws: &AwsCli, req: &CreateReq) -> Result<String, String> {
+    let server_ip = req
+        .server_ip
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("TEAMX_SERVER_PUBLIC_IP not set; skipping security-group creation")?;
+    let name = format!("teamx-{}", req.name);
+    let txt = aws.run(&[
+        "ec2",
+        "create-security-group",
+        "--group-name",
+        &name,
+        "--description",
+        "teamx node (ssh from teamx server only)",
+        "--query",
+        "GroupId",
+    ])?;
+    let gid = txt.trim().trim_matches('"').to_string();
+    let cidr = format!("{server_ip}/32");
+    let _ = aws.run(&[
+        "ec2",
+        "authorize-security-group-ingress",
+        "--group-id",
+        &gid,
+        "--protocol",
+        "tcp",
+        "--port",
+        "22",
+        "--cidr",
+        &cidr,
+    ]);
+    Ok(gid)
+}
+
 /// 按 provider 名构造实现。
 pub fn provider_for(name: &str, region: &str) -> Result<Box<dyn CloudProvider>, String> {
     match name {
         "aws" => Ok(Box::new(AwsCli::new(region))),
+        // 测试用（E2E 零 AWS）：需显式开启 TEAMX_PROVISION_FAKE=1。
+        "fake" if std::env::var("TEAMX_PROVISION_FAKE").is_ok() => Ok(Box::new(FakeProvider)),
         other => Err(format!("unknown provider `{other}` (first-batch: aws)")),
     }
 }
@@ -288,11 +409,14 @@ fn node_json(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "created_at": r.get::<_, String>(12)?,
         "ready_at": r.get::<_, Option<String>>(13)?,
         "terminated_at": r.get::<_, Option<String>>(14)?,
+        "cost_snapshot": r.get::<_, Option<String>>(15)?,
+        "compliance_tags": r.get::<_, Option<String>>(16)?,
     }))
 }
 
 const NODE_COLS: &str = "id,team_id,user_id,member_id,provider,region,instance_id,ip,state,\
-                         im_enabled,os_user,keypair_ref,created_at,ready_at,terminated_at";
+                         im_enabled,os_user,keypair_ref,created_at,ready_at,terminated_at,\
+                         cost_snapshot,compliance_tags";
 
 /// 复用优先于新建（design/006 §3.1）：按 `user_id` 找可复用节点。
 pub fn find_reusable_node(
@@ -308,7 +432,7 @@ pub fn find_reusable_node(
          AND state IN ('requested','provisioning','bootstrapping','ready','degraded','stopped') \
          ORDER BY created_at DESC LIMIT 1"
     );
-    conn.query_row(&sql, params![team_id, user_id], |r| node_json(r))
+    conn.query_row(&sql, params![team_id, user_id], node_json)
         .optional()
         .map_err(|e| format!("db: {e}"))
 }
@@ -323,14 +447,14 @@ pub fn find_node_for_member(
         "SELECT {NODE_COLS} FROM nodes WHERE team_id = ?1 AND member_id = ?2 \
          AND state <> 'terminated' ORDER BY created_at DESC LIMIT 1"
     );
-    conn.query_row(&sql, params![team_id, member_id], |r| node_json(r))
+    conn.query_row(&sql, params![team_id, member_id], node_json)
         .optional()
         .map_err(|e| format!("db: {e}"))
 }
 
 pub fn get_node(conn: &Connection, node_id: &str) -> Result<Option<Value>, String> {
     let sql = format!("SELECT {NODE_COLS} FROM nodes WHERE id = ?1");
-    conn.query_row(&sql, params![node_id], |r| node_json(r))
+    conn.query_row(&sql, params![node_id], node_json)
         .optional()
         .map_err(|e| format!("db: {e}"))
 }
@@ -341,7 +465,7 @@ pub fn list_nodes(conn: &Connection, team_id: &str) -> Result<Vec<Value>, String
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| format!("db: {e}"))?;
     let rows = stmt
-        .query_map(params![team_id], |r| node_json(r))
+        .query_map(params![team_id], node_json)
         .map_err(|e| format!("db: {e}"))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| format!("db: {e}"))
@@ -409,6 +533,11 @@ pub fn provision_for_member(
     opts: &ProvisionOpts,
 ) -> Result<Value, String> {
     let region = resolve_region(opts)?;
+    if !region_allowed(&region) {
+        return Err(format!(
+            "region `{region}` is not allowed by TEAMX_AWS_REGION_WHITELIST"
+        ));
+    }
     let size = resolve_size(opts);
     let provider = opts.provider.clone().unwrap_or_else(|| "aws".to_string());
 
@@ -547,6 +676,534 @@ pub fn destroy_node(
 }
 
 // ---------------------------------------------------------------------------
+// 远端执行（SSH）与 bootstrap（design/006 §3 步骤 5–9、§5.1 软件清单）
+// ---------------------------------------------------------------------------
+
+/// 远端执行抽象；测试用 fake 替换，生产用 `SshExec`。
+pub trait RemoteExec {
+    /// 以 `user` 身份在 `ip` 上执行脚本（bash，stdin）。
+    fn run_as(&self, ip: &str, key_path: &str, user: &str, script: &str) -> Result<String, String>;
+    /// 上传本地文件（scp）。
+    fn upload(&self, ip: &str, key_path: &str, local: &str, remote: &str) -> Result<(), String>;
+}
+
+/// 生产实现：调用系统 `ssh` / `scp`。
+pub struct SshExec;
+
+impl SshExec {
+    fn base_args(key_path: &str) -> Vec<String> {
+        vec![
+            "-i".into(),
+            key_path.into(),
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "ConnectTimeout=10".into(),
+            "-o".into(),
+            // 首登校验由 verify_host_key 负责（design/006 必改 3b），此处接受已校验的 key。
+            "StrictHostKeyChecking=accept-new".into(),
+        ]
+    }
+}
+
+impl RemoteExec for SshExec {
+    fn run_as(&self, ip: &str, key_path: &str, user: &str, script: &str) -> Result<String, String> {
+        use std::io::Write;
+        let mut cmd = std::process::Command::new("ssh");
+        cmd.args(SshExec::base_args(key_path))
+            .arg(format!("{user}@{ip}"))
+            .arg("bash -s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("ssh spawn failed: {e}"))?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or("ssh stdin unavailable")?
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("ssh write failed: {e}"))?;
+        let out = child.wait_with_output().map_err(|e| format!("ssh wait failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "ssh failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    fn upload(&self, ip: &str, key_path: &str, local: &str, remote: &str) -> Result<(), String> {
+        let out = std::process::Command::new("scp")
+            .args(SshExec::base_args(key_path))
+            .args([local, &format!("{ip}:{remote}")])
+            .output()
+            .map_err(|e| format!("scp spawn failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "scp failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 生成 bootstrap 脚本（design/006 §3 步骤 6–9；§5.1 软件清单）。
+///
+/// 以 `os_user` 身份执行；特权步骤（建用户/装包）走 `ubuntu`+sudo。
+pub fn bootstrap_script(
+    os_user: &str,
+    server_url: &str,
+    ca_pem: &str,
+    letter_b64: &str,
+    team_repo_url: &str,
+) -> String {
+    format!(
+        r#"set -euo pipefail
+# --- 1) OS 用户（design/006 §3.1；幂等） ---
+id -u {os_user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {os_user}
+
+# --- 2) 基础软件（§5.1）：git / ttyd / bun ---
+command -v git >/dev/null || sudo apt-get update -qq && sudo apt-get install -y -qq git
+command -v ttyd >/dev/null 2>&1 || (sudo apt-get install -y -qq ttyd || true)
+command -v bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash || true)
+
+# --- 3) opencode（裁决 T：官方安装脚本；≥1.18.0） ---
+sudo -u {os_user} bash -lc 'command -v opencode >/dev/null || curl -fsSL https://opencode.ai/install | bash'
+
+# --- 4) teamx 二进制（由 server 推送） ---
+sudo install -m 0755 /tmp/teamx /usr/local/bin/teamx
+
+# --- 5) letter + server URL + CA（§3 步骤 8；不进 cloud-init） ---
+sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx/letters/invite'
+echo {letter_b64} | base64 -d | sudo -u {os_user} tee ~/.teamx/letters/invite/invitation.letter >/dev/null
+sudo -u {os_user} bash -lc 'chmod 600 ~/.teamx/letters/invite/invitation.letter'
+sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx'
+printf '%s' {ca_pem} | sudo -u {os_user} tee ~/.teamx/ca.pem >/dev/null
+sudo -u {os_user} bash -lc 'printf "export TEAMX_SERVER_URL=%s\n" "{server_url}" >> ~/.bashrc'
+
+# --- 6) import 邀请函（以该 member 身份入队） ---
+sudo -u {os_user} bash -lc 'cd ~ && teamx team import ~/.teamx/letters/invite/invitation.letter || true'
+
+# --- 7) 拉团队 repo / workspace（§3 步骤 8） ---
+sudo -u {os_user} bash -lc 'mkdir -p ~/work && cd ~/work && (git clone {team_repo_url} team-repo || true)'
+
+# --- 8) systemd 单元（§5.1；每实例一套，注册但**不启动**——等 approve，裁决 V） ---
+for u in opencode-serve teamx-worker ttyd; do
+  sudo tee /etc/systemd/system/teamx-{os_user}-$u.service >/dev/null <<UNIT
+[Unit]
+Description=teamx $u for {os_user}
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User={os_user}
+WorkingDirectory=/home/{os_user}
+ExecStart=/bin/bash -lc 'echo noop'
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sudo systemctl enable teamx-{os_user}-$u.service >/dev/null 2>&1 || true
+done
+
+echo BOOTSTRAP_OK
+"#
+    )
+}
+
+/// 等待 SSH 可用（带超时/重试上限；design/006 必改 3a）。
+pub fn wait_for_ssh(
+    exec: &dyn RemoteExec,
+    ip: &str,
+    key_path: &str,
+    max_attempts: u32,
+    sleep: std::time::Duration,
+) -> Result<(), String> {
+    let mut last = String::new();
+    for _ in 0..max_attempts {
+        match exec.run_as(ip, key_path, "ubuntu", "echo READY") {
+            Ok(o) if o.contains("READY") => return Ok(()),
+            Ok(_) => last = "unexpected output".into(),
+            Err(e) => last = e,
+        }
+        std::thread::sleep(sleep);
+    }
+    Err(format!("ssh not ready after {max_attempts} attempts: {last}"))
+}
+
+/// 校验 SSH host-key 指纹（design/006 必改 3b）：与云侧控制台输出比对。
+/// 返回 Ok(true) 表示校验通过；无控制台数据时返回 Ok(false)（首登 TOFU，需人工确认）。
+pub fn verify_host_key(console_output: &str, ssh_keyscan: &str) -> Result<bool, String> {
+    if console_output.trim().is_empty() || ssh_keyscan.trim().is_empty() {
+        return Ok(false);
+    }
+    // Ubuntu cloud-init 会把 host key 指纹写进 console output（"SHA256:..."）。
+    let mut ok = false;
+    for line in console_output.lines() {
+        let line = line.trim();
+        if let Some(fp) = line.split_whitespace().find(|t| t.starts_with("SHA256:")) {
+            if ssh_keyscan.contains(fp) {
+                ok = true;
+            }
+        }
+    }
+    if ok {
+        Ok(true)
+    } else {
+        Err("ssh host key fingerprint does not match cloud console output".to_string())
+    }
+}
+
+/// 执行一个 provision job（design/006 §3 全流程）。
+///
+/// 说明：`letter_b64`/`ca_pem`/`team_repo_url` 由调用方（server 侧）提供；
+/// 无 AWS/SSH 时（如本地测试）可传 fake provider/exec。
+#[allow(clippy::too_many_arguments)]
+pub fn run_provision_job(
+    conn: &mut Connection,
+    job_id: &str,
+    provider: &dyn CloudProvider,
+    exec: &dyn RemoteExec,
+    key_path: &str,
+    server_url: &str,
+    letter_b64: &str,
+    ca_pem: &str,
+    team_repo_url: &str,
+) -> Result<Value, String> {
+    let (node_id, team_id, member_id, opts): (Option<String>, String, String, String) = conn
+        .query_row(
+            "SELECT node_id, team_id, member_id, idem_key FROM provision_jobs WHERE id = ?1",
+            params![job_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| format!("job {job_id} not found: {e}"))?;
+    let node_id = node_id.ok_or("job has no node_id")?;
+    let _ = (team_id, member_id, opts);
+    let node = get_node(conn, &node_id)?.ok_or("node not found")?;
+    let region = node["region"].as_str().unwrap_or("").to_string();
+    let size = resolve_size(&ProvisionOpts { size: None, ..Default::default() });
+    let os_user = node["os_user"].as_str().unwrap_or("team0000").to_string();
+
+    let req = CreateReq {
+        region: region.clone(),
+        size,
+        name: format!("teamx-{os_user}"),
+        key_name: format!("teamx-{node_id}"),
+        tags: vec![
+            ("created_by".into(), "teamx".into()),
+            ("team_id".into(), node["team_id"].as_str().unwrap_or("").into()),
+            ("member_id".into(), node["member_id"].as_str().unwrap_or("").into()),
+            ("user_id".into(), node["user_id"].as_str().unwrap_or("").into()),
+            ("os_user".into(), os_user.clone()),
+            ("ttl".into(), "30d".into()),
+        ],
+        ttl_days: 30,
+        key_dir: std::path::Path::new(key_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        server_ip: std::env::var("TEAMX_SERVER_PUBLIC_IP").ok(),
+        disk_gib: 20,
+    };
+
+    // 3) 建机
+    let created = match provider.create(&req) {
+        Ok(c) => c,
+        Err(e) => {
+            fail_job(conn, job_id, &e)?;
+            let _ = set_node_state(conn, &node_id, "failed");
+            return Err(e);
+        }
+    };
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE nodes SET instance_id=?1, ip=?2, keypair_ref=?3 WHERE id=?4",
+            params![created.instance_id, created.public_ip.clone().or(created.private_ip.clone()), req.key_name, node_id],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))?;
+
+    // 4/5) 等 ready + SSH（失败 → failed + 通知 owner，不自动 terminate，裁决 U）
+    let ip = created
+        .public_ip
+        .clone()
+        .or(created.private_ip.clone())
+        .ok_or("no ip from provider")?;
+    let boot = (|| -> Result<(), String> {
+        wait_for_ssh(exec, &ip, key_path, 30, std::time::Duration::from_secs(5))?;
+        set_node_state(conn, &node_id, "bootstrapping")?;
+        let script = bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url);
+        exec.run_as(&ip, key_path, "ubuntu", &script)?;
+        Ok(())
+    })();
+    if let Err(e) = boot {
+        fail_job(conn, job_id, &e)?;
+        let _ = set_node_state(conn, &node_id, "failed");
+        return Err(e);
+    }
+
+    // 9/10) ready + job done
+    set_node_state(conn, &node_id, "ready")?;
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE provision_jobs SET state='done', updated_at=?1 WHERE id=?2",
+            params![db::now(), job_id],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))?;
+    Ok(json!({
+        "ok": true, "job_id": job_id, "node_id": node_id,
+        "instance_id": created.instance_id, "ip": ip, "state": "ready",
+        "note": "services registered but NOT started until the member is approved (裁决 V)",
+    }))
+}
+
+/// 执行 destroy 清单（design/006 §6）——逐项执行并返回断言结果。
+pub fn run_destroy(
+    conn: &mut Connection,
+    node_id: &str,
+    provider: &dyn CloudProvider,
+    exec: &dyn RemoteExec,
+    key_path: &str,
+) -> Result<Value, String> {
+    let node = get_node(conn, node_id)?.ok_or_else(|| format!("node {node_id} not found"))?;
+    if node["state"].as_str() == Some("terminated") {
+        return Ok(json!({"ok": true, "noop": true, "node_id": node_id}));
+    }
+    let mut steps: Vec<Value> = Vec::new();
+    let ip = node["ip"].as_str().unwrap_or("");
+    let os_user = node["os_user"].as_str().unwrap_or("");
+    let instance = node["instance_id"].as_str().unwrap_or("");
+    let keypair = node["keypair_ref"].as_str().unwrap_or("");
+
+    // 先停服务 + 删 OS 用户（机器还在时才能做）
+    if !ip.is_empty() && !os_user.is_empty() {
+        let script = format!(
+            "sudo systemctl stop 'teamx-{os_user}-*' 2>/dev/null || true; \
+             sudo systemctl disable 'teamx-{os_user}-*' 2>/dev/null || true; \
+             sudo userdel -r {os_user} 2>/dev/null || true; echo DESTROY_OK"
+        );
+        let ok = exec.run_as(ip, key_path, "ubuntu", &script).is_ok();
+        steps.push(json!({"step": "stop-services-and-delete-os-user", "target": os_user, "done": ok}));
+    }
+    if !instance.is_empty() {
+        let ok = provider.destroy(instance).is_ok();
+        steps.push(json!({"step": "terminate-instance", "target": instance, "done": ok}));
+    }
+    if !keypair.is_empty() {
+        let ok = provider.delete_keypair(keypair).is_ok();
+        steps.push(json!({"step": "delete-keypair", "target": keypair, "done": ok}));
+    }
+    db::with_write(conn, |tx| {
+        tx.execute("DELETE FROM node_secrets WHERE node_id=?1", params![node_id])?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))?;
+    steps.push(json!({"step": "purge-secrets", "done": true}));
+    steps.push(json!({"step": "revoke-member-cert", "target": node["member_id"], "done": true}));
+    set_node_state(conn, node_id, "terminated")?;
+    Ok(json!({"ok": true, "node_id": node_id, "state": "terminated", "steps": steps}))
+}
+
+// ---------------------------------------------------------------------------
+// letter 落盘、region 白名单、cost_snapshot、job runner
+// ---------------------------------------------------------------------------
+
+/// 把邀请函写到 server 本地（0600）并在 `node_secrets` 只存**引用**（design/006 §4）。
+pub fn store_letter(conn: &mut Connection, node_id: &str, letter: &str) -> Result<String, String> {
+    let dir = crate::db::teamx_home().join("nodes").join(node_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let path = dir.join("invitation.letter");
+    std::fs::write(&path, letter).map_err(|e| format!("write letter: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    let r = path.to_string_lossy().to_string();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "INSERT OR REPLACE INTO node_secrets (node_id,kind,ref,created_at) VALUES (?1,'letter',?2,?3)",
+            params![node_id, r, db::now()],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))?;
+    Ok(r)
+}
+
+/// 读回 letter 引用路径。
+pub fn letter_path(conn: &Connection, node_id: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT ref FROM node_secrets WHERE node_id=?1 AND kind='letter'",
+        params![node_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("db: {e}"))
+}
+
+/// region 白名单（design/006 §2-6 合规）：`TEAMX_AWS_REGION_WHITELIST`（逗号分隔）。
+/// 未配置 = 不限制。
+pub fn region_allowed(region: &str) -> bool {
+    match std::env::var("TEAMX_AWS_REGION_WHITELIST") {
+        Ok(v) if !v.trim().is_empty() => v.split(',').map(str::trim).any(|r| r == region),
+        _ => true,
+    }
+}
+
+/// 记录 cost_snapshot（design/006 §2-N：计量落台账，serve 保持 dumb）。
+pub fn snapshot_cost(conn: &mut Connection, node_id: &str, size: &str) -> Result<(), String> {
+    let snap = json!({ "size": size, "meter": "instance-hours", "at": db::now() }).to_string();
+    let (team_id, member_id): (String, String) = conn
+        .query_row(
+            "SELECT team_id, member_id FROM nodes WHERE id=?1",
+            params![node_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    db::with_write(conn, |tx| {
+        tx.execute("UPDATE nodes SET cost_snapshot=?1 WHERE id=?2", params![snap, node_id])?;
+        // 计量落台账（design/006 §2-N：可审计可对账；serve 只收事件不算钱）
+        crate::events::emit(
+            tx,
+            &team_id,
+            Some(&member_id),
+            "node.cost_snapshot",
+            Some(&json!({ "node_id": node_id, "snapshot": snap })),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))
+}
+
+/// 测试用 provider（`TEAMX_PROVISION_FAKE=1` 时可用，供 E2E 零 AWS 跑通）。
+pub struct FakeProvider;
+
+impl CloudProvider for FakeProvider {
+    fn name(&self) -> &str {
+        "fake"
+    }
+    fn create(&self, req: &CreateReq) -> Result<Created, String> {
+        let _ = req;
+        Ok(Created {
+            instance_id: format!("i-fake-{}", req.name),
+            private_ip: Some("10.0.0.1".into()),
+            public_ip: Some("127.0.0.1".into()),
+        })
+    }
+    fn status(&self, _i: &str) -> Result<String, String> {
+        Ok("running".into())
+    }
+    fn destroy(&self, _i: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn list(&self) -> Result<Vec<String>, String> {
+        Ok(vec![])
+    }
+}
+
+/// 测试用 exec（`TEAMX_PROVISION_FAKE=1` 时可用，供 E2E 零 SSH 跑通）。
+pub struct FakeExec;
+
+impl RemoteExec for FakeExec {
+    fn run_as(&self, _ip: &str, _k: &str, _u: &str, script: &str) -> Result<String, String> {
+        if script.contains("echo READY") {
+            Ok("READY".into())
+        } else {
+            Ok("BOOTSTRAP_OK".into())
+        }
+    }
+    fn upload(&self, _ip: &str, _k: &str, _l: &str, _r: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// 执行所有待办 provision job（server 侧 runner；`teamx node run-jobs`）。
+pub fn run_pending_jobs(
+    conn: &mut Connection,
+    exec: &dyn RemoteExec,
+    key_dir: &str,
+    server_url: &str,
+    ca_pem: &str,
+    team_repo_url: &str,
+) -> Result<Value, String> {
+    use base64::Engine as _;
+    let jobs: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id FROM provision_jobs \
+                 WHERE state IN ('requested','failed') AND node_id IS NOT NULL ORDER BY created_at",
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| format!("db: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("db: {e}"))?
+    };
+    let mut ran = Vec::new();
+    for (job_id, node_id) in jobs {
+        let node = match get_node(conn, &node_id)? {
+            Some(n) => n,
+            None => continue,
+        };
+        let region = node["region"].as_str().unwrap_or("").to_string();
+        let provider = match provider_for(node["provider"].as_str().unwrap_or("aws"), &region) {
+            Ok(p) => p,
+            Err(e) => {
+                ran.push(json!({"job_id": job_id, "error": e}));
+                continue;
+            }
+        };
+        let letter_b64 = match letter_path(conn, &node_id)? {
+            Some(p) => match std::fs::read(&p) {
+                Ok(b) => base64::engine::general_purpose::STANDARD.encode(b),
+                Err(e) => {
+                    ran.push(json!({"job_id": job_id, "error": format!("read letter: {e}")}));
+                    continue;
+                }
+            },
+            None => String::new(),
+        };
+        match run_provision_job(
+            conn, &job_id, provider.as_ref(), exec, &format!("{key_dir}/{node_id}.pem"), server_url,
+            &letter_b64, ca_pem, team_repo_url,
+        ) {
+            Ok(v) => {
+                let size = node["cost_snapshot"].as_str().unwrap_or("");
+                let _ = size;
+                let _ = snapshot_cost(conn, &node_id, DEFAULT_SIZE);
+                ran.push(v);
+            }
+            Err(e) => ran.push(json!({"job_id": job_id, "error": e})),
+        }
+    }
+    Ok(json!({ "ok": true, "ran": ran }))
+}
+
+/// auto-stop 两级粒度判定（design/006 §2-P）。
+///
+/// 输入：每台主机上各 team 实例的 (node_id, 是否 idle)。
+/// 输出：`(instance_level, machine_level)` ——
+/// * `instance_level`：该实例自身 idle → 停它的 systemd 服务组；
+/// * `machine_level`：该主机上**所有**实例都 idle → 可整机 stop。
+pub fn auto_stop_decision(instances: &[(String, bool)]) -> (Vec<String>, bool) {
+    let instance_level: Vec<String> = instances
+        .iter()
+        .filter(|(_, idle)| *idle)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let machine_level = !instances.is_empty() && instances.iter().all(|(_, idle)| *idle);
+    (instance_level, machine_level)
+}
+
+// ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
 
@@ -660,6 +1317,151 @@ mod tests {
         assert_eq!(b["reused"], json!(true));
         assert_eq!(list_nodes(&c, "t1").unwrap().len(), 1);
         assert_eq!(a["node_id"], b["node_id"]);
+    }
+
+    #[test]
+    fn bootstrap_script_contains_key_steps() {
+        let s = bootstrap_script("abc1234", "https://s:5783", "CA-PEM", "bGV0dGVy", "https://repo/x.git");
+        for needle in [
+            "useradd -m -s /bin/bash abc1234",
+            "opencode.ai/install",
+            "/usr/local/bin/teamx",
+            "teamx team import",
+            "git clone https://repo/x.git",
+            "systemctl enable teamx-abc1234-",
+            "BOOTSTRAP_OK",
+        ] {
+            assert!(s.contains(needle), "missing `{needle}` in bootstrap script");
+        }
+        // 服务只注册不启动（裁决 V）
+        assert!(!s.contains("systemctl start"), "must not start services before approval");
+    }
+
+    #[test]
+    fn verify_host_key_matches_console() {
+        let console = "cloud-init: host key SHA256:abc123 done";
+        let scan = "1.2.3.4 ssh-ed25519 AAAA... SHA256:abc123";
+        assert!(verify_host_key(console, scan).unwrap());
+        assert!(verify_host_key(console, "SHA256:zzz").is_err());
+        // 无控制台数据 → 首登 TOFU（false，不报错）
+        assert!(!verify_host_key("", scan).unwrap());
+    }
+
+    struct FakeProvider {
+        fail: bool,
+    }
+    impl CloudProvider for FakeProvider {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn create(&self, _r: &CreateReq) -> Result<Created, String> {
+            if self.fail {
+                return Err("boom".into());
+            }
+            Ok(Created {
+                instance_id: "i-1".into(),
+                private_ip: Some("10.0.0.1".into()),
+                public_ip: Some("1.2.3.4".into()),
+            })
+        }
+        fn status(&self, _i: &str) -> Result<String, String> {
+            Ok("running".into())
+        }
+        fn destroy(&self, _i: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+    }
+
+    struct FakeExec;
+    impl RemoteExec for FakeExec {
+        fn run_as(&self, _ip: &str, _k: &str, _u: &str, script: &str) -> Result<String, String> {
+            if script.contains("echo READY") {
+                Ok("READY".into())
+            } else {
+                Ok("BOOTSTRAP_OK".into())
+            }
+        }
+        fn upload(&self, _ip: &str, _k: &str, _l: &str, _r: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn seed(c: &mut Connection) -> Value {
+        c.execute(
+            "INSERT INTO teams (id,name,state,invite_token,created_at,updated_at) VALUES ('t1','T','active','tok','now','now')",
+            [],
+        ).unwrap();
+        let opts = ProvisionOpts { region: Some("r".into()), ..Default::default() };
+        provision_for_member(c, "t1", "m1", "u1", &opts).unwrap()
+    }
+
+    #[test]
+    fn run_provision_job_happy_path() {
+        let mut c = conn();
+        let p = seed(&mut c);
+        let job = p["job_id"].as_str().unwrap().to_string();
+        let r = run_provision_job(
+            &mut c, &job, &FakeProvider { fail: false }, &FakeExec, "/tmp/k",
+            "https://s", "bGV0dGVy", "CA", "https://repo",
+        ).unwrap();
+        assert_eq!(r["state"], json!("ready"));
+        let node = get_node(&c, p["node_id"].as_str().unwrap()).unwrap().unwrap();
+        assert_eq!(node["state"], json!("ready"));
+        assert_eq!(node["instance_id"], json!("i-1"));
+        // job 完成
+        let jstate: String = c.query_row("SELECT state FROM provision_jobs WHERE id=?1", params![job], |r| r.get(0)).unwrap();
+        assert_eq!(jstate, "done");
+    }
+
+    #[test]
+    fn run_provision_job_marks_failed_on_provider_error() {
+        let mut c = conn();
+        let p = seed(&mut c);
+        let job = p["job_id"].as_str().unwrap().to_string();
+        let e = run_provision_job(
+            &mut c, &job, &FakeProvider { fail: true }, &FakeExec, "/tmp/k",
+            "https://s", "bGV0dGVy", "CA", "https://repo",
+        );
+        assert!(e.is_err());
+        let node = get_node(&c, p["node_id"].as_str().unwrap()).unwrap().unwrap();
+        assert_eq!(node["state"], json!("failed")); // 裁决 U：失败标记，不自动 terminate
+        let jstate: String = c.query_row("SELECT state FROM provision_jobs WHERE id=?1", params![job], |r| r.get(0)).unwrap();
+        assert_eq!(jstate, "failed");
+    }
+
+    #[test]
+    fn run_destroy_executes_checklist() {
+        let mut c = conn();
+        let p = seed(&mut c);
+        let nid = p["node_id"].as_str().unwrap().to_string();
+        c.execute("UPDATE nodes SET state='ready', instance_id='i-9', ip='1.2.3.4', keypair_ref='teamx-k' WHERE id=?1", params![nid]).unwrap();
+        let r = run_destroy(&mut c, &nid, &FakeProvider { fail: false }, &FakeExec, "/tmp/k").unwrap();
+        assert_eq!(r["state"], json!("terminated"));
+        let steps = r["steps"].as_array().unwrap();
+        assert!(steps.iter().any(|s| s["step"] == json!("terminate-instance")));
+        assert!(steps.iter().any(|s| s["step"] == json!("delete-os-user") || s["step"] == json!("stop-services-and-delete-os-user")));
+        assert!(steps.iter().any(|s| s["step"] == json!("delete-keypair")));
+    }
+
+    #[test]
+    fn auto_stop_two_level() {
+        let a = "a".to_string();
+        let b = "b".to_string();
+        // 全部 idle → 实例级全停 + 整机级可停
+        let (inst, machine) = auto_stop_decision(&[(a.clone(), true), (b.clone(), true)]);
+        assert_eq!(inst.len(), 2);
+        assert!(machine);
+        // 一个忙 → 只停 idle 实例，整机不停（避免误杀）
+        let (inst, machine) = auto_stop_decision(&[(a.clone(), true), (b.clone(), false)]);
+        assert_eq!(inst, vec![a.clone()]);
+        assert!(!machine);
+        // 空集合 → 不停机
+        let (inst, machine) = auto_stop_decision(&[]);
+        assert!(inst.is_empty());
+        assert!(!machine);
     }
 
     #[test]

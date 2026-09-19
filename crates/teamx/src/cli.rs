@@ -2289,4 +2289,29 @@ pub enum NodeCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Apply the two-level auto-stop decision (design/006 §2-P).
+    /// `--idle` lists node ids currently idle (caller supplies metrics).
+    AutoStop {
+        /// comma-separated node ids that are idle (instance level)
+        #[arg(long)]
+        idle: Option<String>,
+        /// actually stop instances (default: dry-run report)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Run pending provision jobs (server-side runner; design/006 §3)
+    RunJobs {
+        /// directory holding per-node ssh keys (`<key_dir>/<node_id>.pem`)
+        #[arg(long)]
+        key_dir: Option<PathBuf>,
+        /// server URL pushed to nodes (default: TEAMX_SERVER_URL)
+        #[arg(long)]
+        server_url: Option<String>,
+        /// team repo URL cloned on nodes
+        #[arg(long)]
+        team_repo_url: Option<String>,
+        /// CA file pushed to nodes
+        #[arg(long)]
+        ca_file: Option<PathBuf>,
+    },
 }
