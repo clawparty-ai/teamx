@@ -1,0 +1,22 @@
+{
+  "doc": "design",
+  "id": "006-invite-provision-node",
+  "state": "review",
+  "owner": "tech-lead",
+  "created_at": "2026-09-19T05:06:55+00:00",
+  "updated_at": "2026-09-19T05:06:55+00:00",
+  "history": [
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-19T05:06:55+00:00",
+      "note": "#6 单件：invite 时开通云主机（server 侧 AWS CLI）——owner 定稿"
+    },
+    {
+      "state": "review",
+      "by": "caishu",
+      "at": "2026-09-19T05:06:55+00:00",
+      "note": "待评审"
+    }
+  ]
+}
