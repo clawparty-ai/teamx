@@ -2406,12 +2406,13 @@ async function renderMembers() {
   $("#mliveMemberList").innerHTML = members.map((m) => {
     const node = m.activity?.node_name ? ` · ${esc(m.activity.node_name)}` : ""
     const cost = m.activity?.cost != null ? ` · <span class="cost">${fmtCost(m.activity.cost)}</span>` : ""
+    const ws = m.workspace ? ` · <span class="mono" title="${esc(m.workspace)}">${esc(m.workspace)}</span>` : ""
     return `
     <div class="member-item" data-mlive="${esc(m.id)}">
       <div class="mi-avatar">${esc((m.display_name || "?").slice(0,1).toUpperCase())}</div>
       <div class="mi-main">
         <div class="mi-name">${esc(m.display_name)} ${m.role ? badge(m.role) : ""}</div>
-        <div class="mi-sub"><span class="status-dot ${m.state === "active" ? "online" : m.state === "idle" ? "busy" : "offline"}"></span>${esc(m.state)} · ${fmtMs(m.activity?.duration_ms)}${node}${cost}</div>
+        <div class="mi-sub"><span class="status-dot ${m.state === "active" ? "online" : m.state === "idle" ? "busy" : "offline"}"></span>${esc(m.state)} · ${fmtMs(m.activity?.duration_ms)}${node}${cost}${ws}</div>
       </div>
       ${m.state === "active" ? '<div class="mi-live"><span class="live-badge">LIVE</span></div>' : ""}
     </div>`
@@ -3800,13 +3801,13 @@ async fn api_members(State(state): State<S>, Query(params): Query<HashMap0>, hea
     let c = lock(&state);
     let (sql, team_param): (&str, Vec<&str>) = match team {
         Some(t) if !t.is_empty() => (
-            "SELECT m.id, m.display_name, m.role, m.state, m.joined_at, m.last_seen_at
+            "SELECT m.id, m.display_name, m.role, m.state, m.joined_at, m.last_seen_at, m.workspace
              FROM members m WHERE m.team_id = ?1 AND m.state NOT IN ('left','denied')
              ORDER BY m.joined_at ASC",
             vec![t],
         ),
         _ => (
-            "SELECT m.id, m.display_name, m.role, m.state, m.joined_at, m.last_seen_at
+            "SELECT m.id, m.display_name, m.role, m.state, m.joined_at, m.last_seen_at, m.workspace
              FROM members m WHERE m.state NOT IN ('left','denied')
              ORDER BY m.joined_at ASC",
             vec![],
@@ -3824,6 +3825,8 @@ async fn api_members(State(state): State<S>, Query(params): Query<HashMap0>, hea
             "state": r.get::<_, String>(3)?,
             "joined_at": r.get::<_, String>(4)?,
             "last_seen_at": r.get::<_, Option<String>>(5)?,
+            // 成员上报的工作区目录（插件/CLI 随 RPC 附带）。
+            "workspace": r.get::<_, Option<String>>(6)?,
         }))
     }) {
         Ok(rows) => match rows.collect::<Result<Vec<_>, _>>() {

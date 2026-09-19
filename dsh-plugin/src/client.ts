@@ -506,7 +506,9 @@ async function runRpc(args: string[], serverUrl: string): Promise<any> {
   const mtls = await mtlsFor()
   const body = JSON.stringify({
     method,
-    args: params,
+    // 附带工作区目录：服务端记录到成员上（members.workspace），
+    // `team status` / console 可展示「每个成员在哪工作」。
+    args: { ...params, workspace: process.cwd() },
   })
 
   const url = new URL('/rpc', serverUrl)

@@ -517,7 +517,8 @@ async function runRpcRaw(argv: string[], cwd: string): Promise<CliResult> {
     const init: RequestInit & { tls?: Record<string, unknown> } = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method, args }),
+      // 附带工作区目录：服务端记录到成员上，`team status` / console 可展示。
+      body: JSON.stringify({ method, args: { ...args, workspace: cwd } }),
       signal: AbortSignal.timeout(30_000),
     }
     if (mtls) {

@@ -541,6 +541,8 @@ export const Teamx: Plugin = async ({ client }) => {
       active_sessions: workSegments.size,
       running_tools: runningTools.size,
       open_terminals: openTerminals.size,
+      // 上报本会话的工作区目录，供 team status / console 展示每个成员在哪工作。
+      workspace: dirOfSession(undefined),
     }
   }
   async function pushPresence(): Promise<void> {

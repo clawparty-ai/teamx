@@ -348,10 +348,16 @@ fn print_team_block(t: &serde_json::Value) {
                 m.get("display_name").and_then(|n| n.as_str()).unwrap_or("-"),
                 m.get("role").and_then(|n| n.as_str()).unwrap_or("-"),
                 m.get("state").and_then(|n| n.as_str()).unwrap_or("-"),
-                m.get("loopx_project")
-                    .and_then(|n| n.as_str())
-                    .map(|p| format!(" [loopx: {p}]"))
-                    .unwrap_or_default(),
+                {
+                    let mut extra = String::new();
+                    if let Some(p) = m.get("loopx_project").and_then(|n| n.as_str()) {
+                        extra.push_str(&format!(" [loopx: {p}]"));
+                    }
+                    if let Some(w) = m.get("workspace").and_then(|n| n.as_str()) {
+                        extra.push_str(&format!(" [workspace: {w}]"));
+                    }
+                    extra
+                },
             );
         }
     }

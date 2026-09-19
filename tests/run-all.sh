@@ -249,5 +249,12 @@ echo "== 17/17 node provisioning E2E (design/006, fake provider, zero AWS) =="
 echo "== 18/18 brainstorm discussion mode E2E (design/007, local) =="
 ./tests/brainstorm-test.sh
 
+echo "== 18b/18 member workspace reporting E2E (network) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/member-workspace-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping member-workspace test"
+fi
+
 echo
 echo "ALL TEST SUITES PASSED"

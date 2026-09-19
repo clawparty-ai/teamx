@@ -58,6 +58,7 @@ struct MemberRow {
     joined_at: String,
     left_at: Option<String>,
     is_lead: bool,
+    workspace: Option<String>,
 }
 
 #[derive(Clone)]
@@ -128,6 +129,7 @@ fn member_row(r: &rusqlite::Row) -> rusqlite::Result<MemberRow> {
         joined_at: r.get(7)?,
         left_at: r.get(8)?,
         is_lead: r.get(9)?,
+        workspace: r.get(10)?,
     })
 }
 
@@ -240,7 +242,7 @@ fn display_goal(conn: &Connection, team_id: &str) -> Result<Option<GoalRow>> {
 
 fn members_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead
+        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead, workspace
          FROM members WHERE team_id = ?1 ORDER BY joined_at ASC",
     )?;
     let rows = stmt.query_map([team_id], member_row)?;
@@ -249,7 +251,7 @@ fn members_for_team(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<Me
 
 fn member_by_id(conn: &Connection, member_id: &str) -> Result<MemberRow> {
     conn.query_row(
-        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead
+        "SELECT id, team_id, session_key, display_name, role, state, loopx_project, joined_at, left_at, is_lead, workspace
          FROM members WHERE id = ?1",
         [member_id],
         member_row,
@@ -264,7 +266,7 @@ fn memberships_for_session(
     session_key: &str,
 ) -> rusqlite::Result<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.team_id, m.session_key, m.display_name, m.role, m.state, m.loopx_project, m.joined_at, m.left_at, m.is_lead
+        "SELECT m.id, m.team_id, m.session_key, m.display_name, m.role, m.state, m.loopx_project, m.joined_at, m.left_at, m.is_lead, m.workspace
          FROM members m
          JOIN teams t ON t.id = m.team_id
          WHERE m.session_key = ?1 AND m.state NOT IN ('left','denied') AND t.state != 'destroyed'
@@ -5929,6 +5931,7 @@ fn member_json(conn: &Connection, m: &MemberRow, team_id: &str) -> Value {
         "role": m.role,
         "state": m.state,
         "loopx_project": m.loopx_project,
+        "workspace": m.workspace,
         "joined_at": m.joined_at,
         "is_lead": m.is_lead,
         "ip": ip,
@@ -6534,6 +6537,33 @@ mod tests {
         let status = team_status_json(&conn, &team).unwrap();
         assert_eq!(status["goal"]["title"], json!("Ship v1"));
         assert_eq!(status["goal"]["state"], json!("closed"));
+    }
+
+    #[test]
+    fn team_status_exposes_member_workspace() {
+        let conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        conn.execute(
+            "UPDATE members SET workspace = '/home/alice/work/proj' WHERE id = 'm-owner'",
+            [],
+        )
+        .unwrap();
+        let team = team_by_id(&conn, "t1").unwrap();
+        let status = team_status_json(&conn, &team).unwrap();
+        let members = status["members"].as_array().unwrap();
+        assert_eq!(members[0]["workspace"], json!("/home/alice/work/proj"));
+        // 未上报的成员该字段为 null（前端/CLI 显示占位符）。
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-bob','t1','sb','Bob','contributor','active','now')",
+            [],
+        )
+        .unwrap();
+        let team = team_by_id(&conn, "t1").unwrap();
+        let status = team_status_json(&conn, &team).unwrap();
+        let members = status["members"].as_array().unwrap();
+        let bob = members.iter().find(|m| m["id"] == json!("m-bob")).unwrap();
+        assert!(bob["workspace"].is_null());
     }
 
     #[test]

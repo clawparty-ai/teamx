@@ -2141,6 +2141,7 @@ async function loadTeams(){
           <td>${badge(m.state)}</td>
           <td>${m.online?"<span class='badge running'>● online</span>":"<span class='badge idle'>○ offline</span>"}</td>
           <td class="mono" style="font-size:11px">${esc(m.ip||"—")}</td>
+          <td class="mono" style="font-size:11px" title="${esc(m.workspace||"")}">${esc(m.workspace||"—")}</td>
           <td class="mono" style="font-size:11px">${fmtN(act.tokens)} tok · ${fmt$(act.cost)}</td>
           <td>${mtVisible.length?mtVisible.map(x=>`<span class="tun-chip"><span class="dot"></span>${esc(kindOf(x.name))} · ${esc(x.name)}</span>`).join(""):'<span class="muted">—</span>'}</td>
           <td><button class="btn btn-mini fs-btn" data-mid="${esc(m.id)}" title="文件浏览器">📁</button> ${mtOpen.length?mtOpen.map(x=>{const oi=openLabel(kindOf(x.name),x.name); return `<button class="btn btn-mini" data-member="${esc(m.display_name)}" data-name="${esc(x.name)}" data-kind="${esc(kindOf(x.name))}">${oi.icon} ${esc(oi.label)}</button>`;}).join(" "):''}</td>
@@ -2151,8 +2152,8 @@ async function loadTeams(){
     return `<section class="panel">
       <h2>${esc(t.name||(t.team&&t.team.name)||"(team)")} ${badge(t.state||(t.team&&t.team.state))} ${g.title?`<span class="muted" style="font-weight:400">— ${esc(g.title)}</span>`:""}</h2>
       ${g.title?`<div style="margin-bottom:10px">${badge(g.state)} <span class="muted">goal</span></div>`:""}
-      <table><thead><tr><th>User</th><th>Member</th><th>Role</th><th>State</th><th>Online</th><th>IP</th><th>Cost</th><th>Tunnels</th><th>Open</th></tr></thead><tbody>
-        ${table||`<tr><td colspan=9 class="muted">no members</td></tr>`}
+      <table><thead><tr><th>User</th><th>Member</th><th>Role</th><th>State</th><th>Online</th><th>IP</th><th>Workspace</th><th>Cost</th><th>Tunnels</th><th>Open</th></tr></thead><tbody>
+        ${table||`<tr><td colspan=10 class="muted">no members</td></tr>`}
       </tbody></table></section>`;
   }).join("") || `<section class="panel"><div class="muted">你尚未加入任何团队。</div></section>`;
 

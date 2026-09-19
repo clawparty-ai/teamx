@@ -471,6 +471,9 @@ pub struct Presence {
     pub running_tools: i64,
     #[serde(default)]
     pub open_terminals: i64,
+    /// 成员上报的工作区目录（插件/CLI/console）。
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 /// Upsert a member's presence snapshot (latest only).
@@ -492,6 +495,10 @@ pub fn upsert_presence(conn: &Connection, member_id: &str, p: &Presence) -> rusq
             now
         ],
     )?;
+    // 工作区目录持久化到 members（供 `team status` 展示；离线也保留）。
+    if let Some(ws) = p.workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        conn.execute("UPDATE members SET workspace = ?1 WHERE id = ?2", params![ws, member_id])?;
+    }
     Ok(())
 }
 
@@ -524,6 +531,7 @@ pub fn presence_for_members(conn: &Connection) -> rusqlite::Result<HashMap<Strin
                     active_sessions: a,
                     running_tools: t,
                     open_terminals: o,
+                    workspace: None,
                 },
             );
         }
@@ -1381,6 +1389,7 @@ mod tests {
             active_sessions: 2,
             running_tools: 1,
             open_terminals: 1,
+            workspace: None,
         };
         upsert_presence(&conn, "m1", &p).unwrap();
         let map = presence_for_members(&conn).unwrap();
@@ -1396,6 +1405,35 @@ mod tests {
         .unwrap();
         let map = presence_for_members(&conn).unwrap();
         assert!(!map.contains_key("m1"), "stale presence should be dropped");
+    }
+
+    #[test]
+    fn presence_workspace_persists_on_member() {
+        let conn = test_conn();
+        seed_team(&conn, "t1", "m1");
+        let p = Presence {
+            active_sessions: 1,
+            running_tools: 0,
+            open_terminals: 0,
+            workspace: Some("/home/alice/work/proj".to_string()),
+        };
+        upsert_presence(&conn, "m1", &p).unwrap();
+        let ws: Option<String> = conn
+            .query_row("SELECT workspace FROM members WHERE id = 'm1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ws.as_deref(), Some("/home/alice/work/proj"));
+        // 空白值不覆盖已记录的工作区。
+        let blank = Presence {
+            active_sessions: 0,
+            running_tools: 0,
+            open_terminals: 0,
+            workspace: Some("   ".to_string()),
+        };
+        upsert_presence(&conn, "m1", &blank).unwrap();
+        let ws2: Option<String> = conn
+            .query_row("SELECT workspace FROM members WHERE id = 'm1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ws2.as_deref(), Some("/home/alice/work/proj"));
     }
 
     #[test]

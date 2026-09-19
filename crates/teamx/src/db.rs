@@ -20,6 +20,36 @@ pub fn teamx_home() -> PathBuf {
         .join(".teamx")
 }
 
+/// The caller's workspace root (the directory holding `.teamx/`), when the
+/// process actually runs inside a teamx workspace. `None` otherwise, so a
+/// one-off command run from `/tmp` never pollutes the member's recorded path.
+pub fn current_workspace() -> Option<String> {
+    let home = teamx_home();
+    if !home.is_dir() {
+        return None;
+    }
+    let root = home.parent()?;
+    let s = root.to_string_lossy().trim().to_string();
+    if s.is_empty() || s.len() > 512 {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Attach the caller's workspace to an RPC args object. The server persists it
+/// on the member (`members.workspace`) so `team status` / the console can show
+/// where each member actually works. No-op outside a workspace, and never
+/// overwrites a caller-provided value.
+pub fn attach_workspace(mut args: Value) -> Value {
+    if let Some(ws) = current_workspace() {
+        if let Value::Object(map) = &mut args {
+            map.entry("workspace".to_string()).or_insert(Value::String(ws));
+        }
+    }
+    args
+}
+
 /// Resolve the local database path:
 /// 1. `--db <path>` (handled by CLI, stored in `Cli.db`)
 /// 2. `TEAMX_DB` env var
@@ -1061,6 +1091,8 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     // v7 (enterprise): multi-goal support + connection audit.
     ensure_column(conn, "goals", "closed_at", "TEXT")?;
     ensure_column(conn, "members", "last_ip", "TEXT")?;
+    // workspace 目录：客户端（插件/CLI/console）上报，用于 `team status` 展示。
+    ensure_column(conn, "members", "workspace", "TEXT")?;
     // The pre-multi-goal UNIQUE(team_id) index (created by the public line's
     // v3) rejects a team's second goal; dropping a missing index is a no-op.
     conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;

@@ -1045,6 +1045,7 @@ pub fn run_rpc_with_timeout(server_url: &str, method: &str, args: serde_json::Va
     rt.block_on(async {
         let mtls = mtls_for(server_url).ok_or_else(|| "no mTLS material for RPC".to_string())?;
         let config = client_config(&mtls)?;
+        let args = crate::db::attach_workspace(args);
         let body = serde_json::json!({ "method": method, "args": args }).to_string();
         let resp = https_post(server_url, "/rpc", &body, &config, timeout_secs).await?;
         serde_json::from_str(&resp).map_err(|e| format!("bad rpc response: {e}"))

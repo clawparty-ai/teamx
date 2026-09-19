@@ -30,8 +30,8 @@ cd "$WORK"
 "$BIN" team create UIAPITeam --session owner >/dev/null 2>&1 || { echo "team create failed"; exit 1; }
 # second member (owner can't join; insert directly so map has 2 members)
 sqlite3 "$WORK/.teamx/teamx.db" \
-  "INSERT OR IGNORE INTO members (id, team_id, session_key, display_name, role, state, joined_at)
-   VALUES ('m-extra','$(sqlite3 "$WORK/.teamx/teamx.db" "SELECT id FROM teams LIMIT 1")','s2','bob','contributor','active',datetime('now'));" \
+  "INSERT OR IGNORE INTO members (id, team_id, session_key, display_name, role, state, joined_at, workspace)
+   VALUES ('m-extra','$(sqlite3 "$WORK/.teamx/teamx.db" "SELECT id FROM teams LIMIT 1")','s2','bob','contributor','active',datetime('now'),'/home/bob/work/proj');" \
   || bad "seed second member"
 # fresh presence -> busy/online
 sqlite3 "$WORK/.teamx/teamx.db" \
@@ -60,7 +60,8 @@ for _ in $(seq 1 30); do
   grep -q "open:" "$LOG" 2>/dev/null && break
   sleep 0.3
 done
-TOKEN="$(sed -n 's/.*token=\([0-9a-f]*\).*/\1/p' "$LOG" | head -1)"
+# token 是 62 进制字母数字（util::gen_access_token），不能只匹配 hex。
+TOKEN="$(sed -n 's/.*token=\([A-Za-z0-9]*\).*/\1/p' "$LOG" | head -1)"
 [ -n "$TOKEN" ] || { echo "ui token not found:"; cat "$LOG"; exit 1; }
 CURL="curl -sk --max-time 6"
 # login (set cookie)
@@ -104,6 +105,21 @@ bob=[c for c in cols if c['display_name']=='bob'][0]
 assert bob['tasks']==[] and bob['events']==[], ('bob empty', bob['tasks'], bob['events'])
 print('kanban columns:', len(cols), '| owner tasks:', len(owner['tasks']), 'events:', len(owner['events']))
 " && ok "kanban: active-first / empty-sunk / events carry tool_call" || bad "kanban sort/aggregation"
+
+echo "== members: workspace reporting =="
+MEM="$($CURL -b /tmp/teamx-ui-api-cookie "$BASE/api/members")"
+echo "$MEM" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+rows=d['members']
+bob=[m for m in rows if m['display_name']=='bob']
+assert bob, rows
+assert bob[0].get('workspace')=='/home/bob/work/proj', bob[0]
+# 未上报工作区的成员为 null（前端显示占位符）。
+owner=[m for m in rows if m['display_name']=='UIAPITeam'][0]
+assert owner.get('workspace') is None, owner
+print('member workspace:', bob[0]['workspace'])
+" && ok "members: workspace exposed (unreported -> null)" || bad "members workspace"
 
 echo "== params =="
 code=$($CURL -b /tmp/teamx-ui-api-cookie -o /dev/null -w '%{http_code}' "$BASE/api/map?team=does-not-exist"); check "map unknown team -> 403 owner-scoped" 403 "$code"

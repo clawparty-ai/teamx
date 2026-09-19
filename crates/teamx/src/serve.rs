@@ -1284,6 +1284,16 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         }
     };
 
+    // 成员工作区目录上报：客户端（插件 / CLI）随任意 RPC 附带 `workspace`，
+    // 落库到 members.workspace，供 `team status` / console 展示「每个成员在哪工作」。
+    // 只在值变化时写，避免每个 RPC 都产生一次无谓 UPDATE。
+    if let Some(ws) = s("workspace").map(|w| w.trim().to_string()).filter(|w| !w.is_empty() && w.len() <= 512) {
+        let _ = conn.execute(
+            "UPDATE members SET workspace = ?1 WHERE id = ?2 AND COALESCE(workspace, '') != ?1",
+            rusqlite::params![ws, member_id],
+        );
+    }
+
     // taskx (server-backed tasks for network teams). The task's team is the
     // caller's single team unless `team` is given.
     if method.starts_with("task.") {
