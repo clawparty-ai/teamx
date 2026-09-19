@@ -401,6 +401,58 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            value TEXT NOT NULL
          );",
     )?;
+    // Cloud-host provisioning (design/006: invite 时开通云主机，server 侧 AWS CLI 执行).
+    // Converge-style: brand-new tables, no user_version bump needed.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS nodes (
+           id              TEXT PRIMARY KEY,
+           team_id         TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+           user_id         TEXT NOT NULL DEFAULT '',
+           member_id       TEXT NOT NULL,
+           provider        TEXT NOT NULL DEFAULT 'aws',
+           region          TEXT,
+           instance_id     TEXT,
+           ip              TEXT,
+           state           TEXT NOT NULL DEFAULT 'requested',
+           im_enabled      INTEGER NOT NULL DEFAULT 0,
+           os_user         TEXT,
+           keypair_ref     TEXT,
+           created_at      TEXT NOT NULL,
+           ready_at        TEXT,
+           terminated_at   TEXT,
+           cost_snapshot   TEXT,
+           compliance_tags TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_nodes_team   ON nodes(team_id);
+         CREATE INDEX IF NOT EXISTS idx_nodes_user   ON nodes(user_id);
+         CREATE INDEX IF NOT EXISTS idx_nodes_member ON nodes(member_id);
+         CREATE INDEX IF NOT EXISTS idx_nodes_state  ON nodes(state);
+
+         CREATE TABLE IF NOT EXISTS provision_jobs (
+           id          TEXT PRIMARY KEY,
+           node_id     TEXT,
+           team_id     TEXT NOT NULL,
+           member_id   TEXT NOT NULL,
+           state       TEXT NOT NULL DEFAULT 'requested',
+           attempts    INTEGER NOT NULL DEFAULT 0,
+           last_error  TEXT,
+           idem_key    TEXT NOT NULL,
+           created_at  TEXT NOT NULL,
+           updated_at  TEXT NOT NULL
+         );
+         -- 幂等：同 (team_id, member_id) 只允许一个未终结的 job（C4 模式）。
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_provision_jobs_idem
+           ON provision_jobs(idem_key) WHERE state <> 'terminated';
+         CREATE INDEX IF NOT EXISTS idx_provision_jobs_state ON provision_jobs(state);
+
+         CREATE TABLE IF NOT EXISTS node_secrets (
+           node_id    TEXT NOT NULL,
+           kind       TEXT NOT NULL,
+           ref        TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           PRIMARY KEY (node_id, kind)
+         );",
+    )?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     // v2-era rebuild only applies to legacy DBs that still have the `sessions`

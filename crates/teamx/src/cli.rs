@@ -59,6 +59,10 @@ pub enum Command {
     #[command(subcommand)]
     Im(ImCmd),
 
+    /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
+    #[command(subcommand)]
+    Node(NodeCmd),
+
     /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
     Publish {
         /// event type
@@ -947,6 +951,22 @@ pub enum TeamCmd {
         /// grant team-lead (co-lead) status on import (primary owner only)
         #[arg(long)]
         as_lead: bool,
+        /// provision a cloud host for the invitee (default OFF; design/006).
+        /// Requires the teamx server to hold the team owner's AWS credentials + `aws` CLI.
+        #[arg(long)]
+        provision_node: bool,
+        /// provider for --provision-node (first batch: aws)
+        #[arg(long)]
+        provider: Option<String>,
+        /// region for --provision-node (default: the server's own region)
+        #[arg(long)]
+        region: Option<String>,
+        /// instance size for --provision-node (default: cheapest, floor 1C2G)
+        #[arg(long)]
+        size: Option<String>,
+        /// TTL in days for --provision-node (default 30)
+        #[arg(long)]
+        ttl: Option<u32>,
     },
     /// List issued (unused/revoked) invitation letters (owner only)
     InviteList {
@@ -2182,6 +2202,88 @@ pub enum GitCmd {
         /// server URL (default: TEAMX_SERVER_URL or https://127.0.0.1:5781)
         #[arg(long)]
         server: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+/// Cloud-host provisioning (design/006). Executor = teamx server
+/// (holds the team owner's AWS credentials + `aws` CLI).
+#[derive(Subcommand, Debug)]
+pub enum NodeCmd {
+    /// Provision (or reuse) a cloud host for a member (owner/lead).
+    /// Reuse-first: if the same user already has a reusable host, only the
+    /// per-team OS user + services are added (design/006 §3.1).
+    Provision {
+        /// target member id
+        #[arg(long)]
+        member: String,
+        /// provider (first batch: aws)
+        #[arg(long)]
+        provider: Option<String>,
+        /// region (default: the server's own region)
+        #[arg(long)]
+        region: Option<String>,
+        /// instance size (default: cheapest, floor 1C2G)
+        #[arg(long)]
+        size: Option<String>,
+        /// TTL in days (default 30)
+        #[arg(long)]
+        ttl: Option<u32>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// List cloud hosts of the team
+    List {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Show one cloud host
+    Status {
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Print the ssh command hint for a host (server-side key)
+    Ssh {
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Stop a host (keep disk)
+    Stop {
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Start a stopped host
+    Start {
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Destroy a host (terminate + cleanup checklist; design/006 §6)
+    Destroy {
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
         #[arg(long)]
         session: String,
         #[arg(long)]

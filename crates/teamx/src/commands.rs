@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -456,8 +456,20 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Leave { session, team } => cmd_team_leave(conn, session, team.as_deref())?,
             TeamCmd::Archive { session, team } => cmd_team_archive(conn, session, team.as_deref())?,
             TeamCmd::Destroy { session, team } => cmd_team_destroy(conn, session, team.as_deref())?,
-            TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user, auto_approve, as_lead } => {
-                cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref(), *auto_approve, *as_lead)?
+            TeamCmd::Invite { role_desc, name_hint, server_url, session, team, user_name, user, auto_approve, as_lead,
+                              provision_node, provider, region, size, ttl } => {
+                let mut out = cmd_team_invite(conn, role_desc, name_hint.as_deref(), server_url.as_deref(), session, team.as_deref(), user_name.as_deref(), user.as_deref(), *auto_approve, *as_lead)?;
+                // design/006: --provision-node（默认关）→ 入队异步 provision job
+                if *provision_node {
+                    let member_id = out.get("member_id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let team_id = out.get("team_id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let user_id = out.get("user_id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let (actor, _team) = resolve_actor(conn, session, team.as_deref())?;
+                    let prov = cmd_provision_seat(conn, &actor.id, &team_id, &member_id, &user_id,
+                                                  provider.as_deref(), region.as_deref(), size.as_deref(), *ttl)?;
+                    out["provision"] = prov;
+                }
+                out
             }
             TeamCmd::InviteList { session, team } => cmd_team_invite_list(conn, session, team.as_deref())?,
             TeamCmd::InviteRevoke { id, session, team } => cmd_team_invite_revoke(conn, id, session, team.as_deref())?,
@@ -465,6 +477,17 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Clone { name, team, server_url, yes, session } => {
                 cmd_team_clone(conn, name, team.as_deref(), server_url.as_deref(), *yes, session, None)?
             }
+        },
+        Command::Node(n) => match n {
+            NodeCmd::Provision { member, provider, region, size, ttl, session, team } => {
+                cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, session, team.as_deref())?
+            }
+            NodeCmd::List { session, team } => cmd_node_list(conn, session, team.as_deref())?,
+            NodeCmd::Status { node_id, session, team } => cmd_node_status(conn, node_id, session, team.as_deref())?,
+            NodeCmd::Ssh { node_id, session, team } => cmd_node_ssh(conn, node_id, session, team.as_deref())?,
+            NodeCmd::Stop { node_id, session, team } => cmd_node_set_power(conn, node_id, false, session, team.as_deref())?,
+            NodeCmd::Start { node_id, session, team } => cmd_node_set_power(conn, node_id, true, session, team.as_deref())?,
+            NodeCmd::Destroy { node_id, session, team } => cmd_node_destroy(conn, node_id, session, team.as_deref())?,
         },
         Command::Goal(g) => match g {
             GoalCmd::Set { title, body, session, team } => {
@@ -3121,6 +3144,8 @@ fn cmd_team_invite(
         "ok": true,
         "invitation_id": invitation_id,
         "member_id": member_id,
+        "team_id": team.id,
+        "user_id": user.as_ref().map(|(id, _)| id.clone()).unwrap_or_default(),
         "role": { "key": role_key, "label": label, "description": desc },
         "letter": letter,
         "note": "share this letter with the member; they import it with `teamx team import <letter>`",
@@ -6125,6 +6150,179 @@ fn server_url_arg(cmd: &crate::cli::GitCmd) -> Option<&str> {
         GitCmd::Setup { server, .. } => server.as_deref(),
         GitCmd::Commit { .. } => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cloud-host provisioning (design/006): `teamx node ...`
+// ---------------------------------------------------------------------------
+
+/// Server region for the region fallback (design/006 裁决 R).
+fn server_region() -> Option<String> {
+    std::env::var("TEAMX_AWS_REGION")
+        .ok()
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn provision_opts(
+    provider: Option<&str>,
+    region: Option<&str>,
+    size: Option<&str>,
+    ttl: Option<u32>,
+) -> crate::provision::ProvisionOpts {
+    crate::provision::ProvisionOpts {
+        provider: provider.map(str::to_string),
+        region: region.map(str::to_string),
+        size: size.map(str::to_string),
+        ttl_days: ttl,
+        server_region: server_region(),
+    }
+}
+
+/// 为某个 seat（member_id 可能尚未 import）开通/复用云主机。
+/// 同时落 `node.provision_requested` / `node.reused` 台账事件。
+#[allow(clippy::too_many_arguments)]
+fn cmd_provision_seat(
+    conn: &mut Connection,
+    actor_id: &str,
+    team_id: &str,
+    member_id: &str,
+    user_id: &str,
+    provider: Option<&str>,
+    region: Option<&str>,
+    size: Option<&str>,
+    ttl: Option<u32>,
+) -> Result<Value> {
+    let opts = provision_opts(provider, region, size, ttl);
+    let out = crate::provision::provision_for_member(conn, team_id, member_id, user_id, &opts)
+        .map_err(AppError)?;
+    let ev = if out["reused"].as_bool().unwrap_or(false) {
+        "node.reused"
+    } else {
+        "node.provision_requested"
+    };
+    db::with_write(conn, |tx| {
+        emit_json(
+            tx,
+            team_id,
+            Some(actor_id),
+            ev,
+            json!({
+                "node_id": out["node_id"], "job_id": out["job_id"],
+                "reused": out["reused"], "provider": out["provider"],
+                "region": out["region"], "size": out["size"],
+            }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("emit failed: {e}")))?;
+    Ok(out)
+}
+
+/// `teamx node provision --member <id>`（owner/lead）。复用优先于新建。
+fn cmd_node_provision(
+    conn: &mut Connection,
+    member_id: &str,
+    provider: Option<&str>,
+    region: Option<&str>,
+    size: Option<&str>,
+    ttl: Option<u32>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let target = member_by_id(conn, member_id)?;
+    if target.team_id != team.id {
+        return err(format!("member {member_id} is not in team {}", team.id));
+    }
+    let user_id: String = conn
+        .query_row(
+            "SELECT user_id FROM members WHERE id = ?1",
+            params![target.id],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    cmd_provision_seat(
+        conn, &actor.id, &team.id, &target.id, &user_id, provider, region, size, ttl,
+    )
+}
+
+fn cmd_node_list(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (_actor, team) = resolve_actor(conn, session, team_opt)?;
+    let nodes = crate::provision::list_nodes(conn, &team.id).map_err(AppError)?;
+    Ok(json!({ "ok": true, "team_id": team.id, "nodes": nodes }))
+}
+
+fn cmd_node_in_team(conn: &Connection, node_id: &str, team: &TeamRow) -> Result<Value> {
+    let node = crate::provision::get_node(conn, node_id)
+        .map_err(AppError)?
+        .ok_or_else(|| AppError(format!("node {node_id} not found")))?;
+    if node["team_id"].as_str() != Some(team.id.as_str()) {
+        return err(format!("node {node_id} is not in team {}", team.id));
+    }
+    Ok(node)
+}
+
+fn cmd_node_status(conn: &Connection, node_id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (_actor, team) = resolve_actor(conn, session, team_opt)?;
+    let node = cmd_node_in_team(conn, node_id, &team)?;
+    Ok(json!({ "ok": true, "node": node }))
+}
+
+fn cmd_node_ssh(conn: &Connection, node_id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (_actor, team) = resolve_actor(conn, session, team_opt)?;
+    let node = cmd_node_in_team(conn, node_id, &team)?;
+    let ip = node["ip"].as_str().unwrap_or("");
+    let key = node["keypair_ref"].as_str().unwrap_or("<key>");
+    Ok(json!({
+        "ok": true, "node_id": node_id, "ip": ip,
+        "ssh": format!("ssh -i {key} ubuntu@{ip}"),
+    }))
+}
+
+fn cmd_node_set_power(
+    conn: &mut Connection,
+    node_id: &str,
+    start: bool,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let node = cmd_node_in_team(conn, node_id, &team)?;
+    let from = node["state"].as_str().unwrap_or("");
+    if start && !matches!(from, "stopped" | "degraded") {
+        return err(format!("node is `{from}`; start requires stopped/degraded"));
+    }
+    if !start && from != "ready" {
+        return err(format!("node is `{from}`; stop requires ready"));
+    }
+    let to = if start { "ready" } else { "stopped" };
+    crate::provision::set_node_state(conn, node_id, to).map_err(AppError)?;
+    Ok(json!({ "ok": true, "node_id": node_id, "state": to }))
+}
+
+fn cmd_node_destroy(conn: &mut Connection, node_id: &str, session: &str, team_opt: Option<&str>) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let node = cmd_node_in_team(conn, node_id, &team)?;
+    let region = node["region"].as_str().unwrap_or("").to_string();
+    let provider = crate::provision::provider_for("aws", &region).map_err(AppError)?;
+    let out = crate::provision::destroy_node(conn, node_id, provider.as_ref()).map_err(AppError)?;
+    db::with_write(conn, |tx| {
+        emit_json(
+            tx,
+            &team.id,
+            Some(&actor.id),
+            "node.destroyed",
+            json!({ "node_id": node_id }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("emit failed: {e}")))?;
+    Ok(out)
 }
 
 #[cfg(test)]

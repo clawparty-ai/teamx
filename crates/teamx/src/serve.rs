@@ -40,7 +40,7 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use crate::broadcast::Hub;
-use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
+use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, NodeCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
 use crate::commands;
 use crate::pki;
 
@@ -1775,6 +1775,47 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             user: o("user"),
             auto_approve: b("auto_approve"),
             as_lead: b("as_lead"),
+            provision_node: b("provision_node"),
+            provider: o("provider"),
+            region: o("region"),
+            size: o("size"),
+            ttl: args.get("ttl").and_then(Value::as_u64).map(|n| n as u32),
+        }),
+        // Cloud-host provisioning (design/006).
+        "node.provision" => Command::Node(NodeCmd::Provision {
+            member: s("member").ok_or_else(|| "node.provision requires `member`".to_string())?,
+            provider: o("provider"),
+            region: o("region"),
+            size: o("size"),
+            ttl: args.get("ttl").and_then(Value::as_u64).map(|n| n as u32),
+            session: sess(args),
+            team: o("team"),
+        }),
+        "node.list" => Command::Node(NodeCmd::List { session: sess(args), team: o("team") }),
+        "node.status" => Command::Node(NodeCmd::Status {
+            node_id: s("node_id").ok_or_else(|| "node.status requires `node_id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "node.ssh" => Command::Node(NodeCmd::Ssh {
+            node_id: s("node_id").ok_or_else(|| "node.ssh requires `node_id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "node.stop" => Command::Node(NodeCmd::Stop {
+            node_id: s("node_id").ok_or_else(|| "node.stop requires `node_id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "node.start" => Command::Node(NodeCmd::Start {
+            node_id: s("node_id").ok_or_else(|| "node.start requires `node_id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
+        "node.destroy" => Command::Node(NodeCmd::Destroy {
+            node_id: s("node_id").ok_or_else(|| "node.destroy requires `node_id`".to_string())?,
+            session: sess(args),
+            team: o("team"),
         }),
         "team.invite_list" => Command::Team(TeamCmd::InviteList { session: sess(args), team: o("team") }),
         "team.invite_revoke" => Command::Team(TeamCmd::InviteRevoke {
