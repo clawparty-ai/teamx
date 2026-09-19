@@ -96,6 +96,9 @@ pub struct Created {
 }
 
 /// 云 provider 抽象（design/006 §1：接口按多后端设计，AWS CLI 先行）。
+/// 实例的 `(public_ip, private_ip)`。
+pub type InstanceIps = (Option<String>, Option<String>);
+
 pub trait CloudProvider {
     fn name(&self) -> &str;
     fn create(&self, req: &CreateReq) -> Result<Created, String>;
@@ -117,6 +120,10 @@ pub trait CloudProvider {
     /// 启动已停止实例；默认 no-op。
     fn start(&self, _instance_id: &str) -> Result<(), String> {
         Ok(())
+    }
+    /// 实例的 `(public_ip, private_ip)`（等公网 IP / 重试复用；默认 None）。
+    fn ip_of(&self, _instance_id: &str) -> Result<Option<InstanceIps>, String> {
+        Ok(None)
     }
 }
 
@@ -210,11 +217,44 @@ impl CloudProvider for AwsCli {
         let arr = v.as_array().ok_or("unexpected aws response")?;
         let s = |i: usize| arr.get(i).and_then(Value::as_str).map(str::to_string);
         let instance_id = s(0).ok_or("aws: missing InstanceId")?;
+        let (mut private_ip, mut public_ip) = (s(1), s(2));
+        // RunInstances 返回时公网 IP 往往还没分配（PublicIpAddress=null）。节点必须
+        // 有公网 IP，否则 server 只能拿到私网地址、SSH 必然超时（真机踩到）。
+        if public_ip.is_none() {
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if let Ok(Some((pub_ip, priv_ip))) = self.ip_of(&instance_id) {
+                    public_ip = pub_ip.or(public_ip);
+                    private_ip = private_ip.or(priv_ip);
+                    if public_ip.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
         Ok(Created {
             instance_id,
-            private_ip: s(1),
-            public_ip: s(2),
+            private_ip,
+            public_ip,
         })
+    }
+
+    fn ip_of(&self, instance_id: &str) -> Result<Option<InstanceIps>, String> {
+        let txt = self.run(&[
+            "ec2",
+            "describe-instances",
+            "--instance-ids",
+            instance_id,
+            "--query",
+            "Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]",
+        ])?;
+        let v: Value = serde_json::from_str(&txt).map_err(|e| format!("bad aws json: {e}"))?;
+        let arr = match v.as_array() {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+        let s = |i: usize| arr.get(i).and_then(Value::as_str).map(str::to_string);
+        Ok(Some((s(0), s(1))))
     }
 
     fn status(&self, instance_id: &str) -> Result<String, String> {
@@ -349,7 +389,8 @@ fn ensure_security_group(aws: &AwsCli, req: &CreateReq) -> Result<String, String
         .filter(|s| !s.trim().is_empty())
         .ok_or("TEAMX_SERVER_PUBLIC_IP not set; skipping security-group creation")?;
     let name = format!("teamx-{}", req.name);
-    let txt = aws.run(&[
+    // 已存在同名 SG（重复开通 / 重试）→ 回查它的 id，而不是静默退回 default SG。
+    let gid = match aws.run(&[
         "ec2",
         "create-security-group",
         "--group-name",
@@ -358,8 +399,21 @@ fn ensure_security_group(aws: &AwsCli, req: &CreateReq) -> Result<String, String
         "teamx node (ssh from teamx server only)",
         "--query",
         "GroupId",
-    ])?;
-    let gid = txt.trim().trim_matches('"').to_string();
+    ]) {
+        Ok(txt) => txt.trim().trim_matches('"').to_string(),
+        Err(e) if e.contains("InvalidGroup.Duplicate") => {
+            let txt = aws.run(&[
+                "ec2",
+                "describe-security-groups",
+                "--filters",
+                &format!("Name=group-name,Values={name}"),
+                "--query",
+                "SecurityGroups[0].GroupId",
+            ])?;
+            txt.trim().trim_matches('"').to_string()
+        }
+        Err(e) => return Err(e),
+    };
     let cidr = format!("{server_ip}/32");
     let _ = aws.run(&[
         "ec2",
@@ -389,6 +443,15 @@ pub fn tags_spec_json(tags: &[(String, String)]) -> String {
         .map(|(k, v)| json!({ "Key": k, "Value": v }))
         .collect();
     json!({ "ResourceType": "instance", "Tags": items }).to_string()
+}
+
+/// per-node 私钥路径：`<key_dir>/teamx-<node_id>.pem`。
+///
+/// 必须与 [`run_provision_job`] 里 `CreateReq::key_name`（`teamx-<node_id>`）一致，
+/// 否则 runner 传的路径与 `ensure_keypair` 实际落盘的路径不同，SSH 报
+/// `Identity file ... not accessible`（真机踩到）。
+pub fn key_path_for(key_dir: &str, node_id: &str) -> String {
+    format!("{key_dir}/teamx-{node_id}.pem")
 }
 
 /// 按 provider 名构造实现。
@@ -973,14 +1036,30 @@ pub fn run_provision_job(
         disk_gib: 20,
     };
 
-    // 3) 建机
-    let created = match provider.create(&req) {
-        Ok(c) => c,
-        Err(e) => {
-            fail_job(conn, job_id, &e)?;
-            let _ = set_node_state(conn, &node_id, "failed");
-            return Err(e);
+    // 3) 建机（重试安全：节点已有 instance_id → 复用，不重复 RunInstances 造成漏计费资源）
+    let existing_instance = node["instance_id"].as_str().filter(|s| !s.is_empty());
+    let created = match existing_instance {
+        Some(instance_id) => {
+            let ip = provider.ip_of(instance_id).ok().flatten().unwrap_or((None, None));
+            let _ = set_node_state(conn, &node_id, "provisioning");
+            Created {
+                instance_id: instance_id.to_string(),
+                private_ip: node["ip"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or(ip.1),
+                public_ip: ip.0,
+            }
         }
+        None => match provider.create(&req) {
+            Ok(c) => c,
+            Err(e) => {
+                fail_job(conn, job_id, &e)?;
+                let _ = set_node_state(conn, &node_id, "failed");
+                return Err(e);
+            }
+        },
     };
     db::with_write(conn, |tx| {
         tx.execute(
@@ -1236,8 +1315,15 @@ pub fn run_pending_jobs(
             None => String::new(),
         };
         match run_provision_job(
-            conn, &job_id, provider.as_ref(), exec, &format!("{key_dir}/{node_id}.pem"), server_url,
-            &letter_b64, ca_pem, team_repo_url,
+            conn,
+            &job_id,
+            provider.as_ref(),
+            exec,
+            &key_path_for(key_dir, &node_id),
+            server_url,
+            &letter_b64,
+            ca_pem,
+            team_repo_url,
         ) {
             Ok(v) => {
                 let size = node["cost_snapshot"].as_str().unwrap_or("");
@@ -1305,6 +1391,15 @@ mod tests {
     }
 
     #[test]
+    fn key_path_matches_keypair_name() {
+        // runner 传的私钥路径必须与 ensure_keypair 落盘的 `<key_name>.pem` 一致
+        let p = key_path_for("/root/teamx-ent/nodes", "fd4ae79f-f965");
+        assert_eq!(p, "/root/teamx-ent/nodes/teamx-fd4ae79f-f965.pem");
+        let req_name = format!("teamx-{}", "fd4ae79f-f965");
+        assert!(p.ends_with(&format!("/{req_name}.pem")), "{p}");
+    }
+
+    #[test]
     fn tags_spec_json_skips_empty_values() {
         let t = vec![
             ("team_id".to_string(), "abc".to_string()),
@@ -1315,7 +1410,10 @@ mod tests {
         assert_eq!(v["ResourceType"], "instance");
         let tags = v["Tags"].as_array().unwrap();
         assert_eq!(tags.len(), 2, "{v}");
-        assert!(tags.iter().all(|x| x["Value"].as_str().unwrap_or("").len() > 0), "{v}");
+        assert!(
+            tags.iter().all(|x| !x["Value"].as_str().unwrap_or("").is_empty()),
+            "{v}"
+        );
         // 空标签集：仍是合法 JSON（空 Tags 数组），不会产出畸形串
         let empty: serde_json::Value = serde_json::from_str(&tags_spec_json(&[])).unwrap();
         assert_eq!(empty["Tags"].as_array().unwrap().len(), 0);
