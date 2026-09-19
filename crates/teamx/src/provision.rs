@@ -930,10 +930,12 @@ sudo install -m 0755 /tmp/teamx /usr/local/bin/teamx
 
 # --- 5) letter + server URL + CA（§3 步骤 8；不进 cloud-init） ---
 sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx/letters/invite'
-echo {letter_b64} | base64 -d | sudo -u {os_user} tee ~/.teamx/letters/invite/invitation.letter >/dev/null
+# 注意：`~` 必须在该用户自己的 shell 里展开——若把 tee 直接交给 sudo -u 执行，
+# `~` 会由外层（ubuntu）展开成 /home/ubuntu，落错家目录并因目录不存在而失败（真机踩到）。
+echo {letter_b64} | base64 -d | sudo -u {os_user} bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'
 sudo -u {os_user} bash -lc 'chmod 600 ~/.teamx/letters/invite/invitation.letter'
 sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx'
-echo {ca_b64} | base64 -d | sudo -u {os_user} tee ~/.teamx/ca.pem >/dev/null
+echo {ca_b64} | base64 -d | sudo -u {os_user} bash -lc 'cat > ~/.teamx/ca.pem' 
 sudo -u {os_user} bash -lc 'printf "export TEAMX_SERVER_URL=%s\n" "{server_url}" >> ~/.bashrc'
 
 # --- 6) import 邀请函（以该 member 身份入队） ---
@@ -1468,6 +1470,10 @@ mod tests {
         assert!(sc.contains(&b64), "ca base64 missing");
         assert!(sc.contains("useradd -m -s /bin/bash xiaods"), "{sc}");
         assert!(sc.contains("export TEAMX_SERVER_URL=%s"), "{sc}");
+        // letter/CA 必须在该用户自己的 shell 里展开 ~（否则落到 /home/ubuntu）
+        assert!(!sc.contains("sudo -u xiaods tee ~"), "bare ~ expanded by outer shell");
+        assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'"), "{sc}");
+        assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/ca.pem'"), "{sc}");
         assert!(sc.contains("\"https://s:1\""), "{sc}");
     }
 
