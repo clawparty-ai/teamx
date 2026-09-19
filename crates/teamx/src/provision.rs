@@ -864,15 +864,32 @@ impl RemoteExec for SshExec {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
+    /// 上传 = `ssh 'cat > <remote>'` + stdin 写字节。
+    ///
+    /// 不用 `scp`：远端 shell 在非交互会话里输出任何东西都会污染 scp 协议，
+    /// 报 `scp: Received message too long ... Ensure the remote shell produces
+    /// no output for non-interactive sessions`（真机踩到）。`cat >` 无此问题。
     fn upload(&self, ip: &str, key_path: &str, local: &str, remote: &str) -> Result<(), String> {
-        let out = std::process::Command::new("scp")
-            .args(SshExec::base_args(key_path))
-            .args([local, &format!("{ip}:{remote}")])
-            .output()
-            .map_err(|e| format!("scp spawn failed: {e}"))?;
+        use std::io::Write;
+        let data = std::fs::read(local).map_err(|e| format!("read {local}: {e}"))?;
+        let mut cmd = std::process::Command::new("ssh");
+        cmd.args(SshExec::base_args(key_path))
+            .arg(format!("ubuntu@{ip}"))
+            .arg(format!("cat > {remote}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("ssh spawn failed: {e}"))?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or("ssh stdin unavailable")?
+            .write_all(&data)
+            .map_err(|e| format!("ssh write failed: {e}"))?;
+        let out = child.wait_with_output().map_err(|e| format!("ssh wait failed: {e}"))?;
         if !out.status.success() {
             return Err(format!(
-                "scp failed: {}",
+                "upload failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
@@ -890,6 +907,11 @@ pub fn bootstrap_script(
     letter_b64: &str,
     team_repo_url: &str,
 ) -> String {
+    // CA PEM 是多行的：直接插进脚本会把脚本截断，必须 base64 内联后远端解码。
+    let ca_b64 = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(ca_pem.as_bytes())
+    };
     format!(
         r#"set -euo pipefail
 # --- 1) OS 用户（design/006 §3.1；幂等） ---
@@ -911,7 +933,7 @@ sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx/letters/invite'
 echo {letter_b64} | base64 -d | sudo -u {os_user} tee ~/.teamx/letters/invite/invitation.letter >/dev/null
 sudo -u {os_user} bash -lc 'chmod 600 ~/.teamx/letters/invite/invitation.letter'
 sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx'
-printf '%s' {ca_pem} | sudo -u {os_user} tee ~/.teamx/ca.pem >/dev/null
+echo {ca_b64} | base64 -d | sudo -u {os_user} tee ~/.teamx/ca.pem >/dev/null
 sudo -u {os_user} bash -lc 'printf "export TEAMX_SERVER_URL=%s\n" "{server_url}" >> ~/.bashrc'
 
 # --- 6) import 邀请函（以该 member 身份入队） ---
@@ -1433,6 +1455,20 @@ mod tests {
         assert!(u.starts_with("abc"), "{u}");
         assert_eq!(u.len(), 7, "{u}"); // abc + 1111
         assert!(u.chars().skip(3).all(|c| c.is_ascii_digit()), "{u}");
+    }
+
+    #[test]
+    fn bootstrap_script_embeds_multiline_ca_as_base64() {
+        let ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+        let sc = bootstrap_script("xiaods", "https://s:1", ca, "TGV0dGVy", "https://s/git/t/r");
+        // 多行 PEM 不能原样出现在脚本里（否则 set -e 下脚本被截断）
+        assert!(!sc.contains("BEGIN CERTIFICATE"), "raw PEM leaked into script");
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(ca.as_bytes());
+        assert!(sc.contains(&b64), "ca base64 missing");
+        assert!(sc.contains("useradd -m -s /bin/bash xiaods"), "{sc}");
+        assert!(sc.contains("export TEAMX_SERVER_URL=%s"), "{sc}");
+        assert!(sc.contains("\"https://s:1\""), "{sc}");
     }
 
     #[test]
