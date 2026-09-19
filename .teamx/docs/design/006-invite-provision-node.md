@@ -54,7 +54,9 @@ owner/lead: teamx invite <role> --provision-node [--provider aws --region .. --s
 - **每个 team 实例 = 一个独立 OS 用户**：例如 team `abc` → OS 用户 `abc` + 家目录 `/home/abc`；该实例的**目录、证书/letter、systemd 服务**都归属该 OS 用户。
 - **所有组件都以 systemd service 注册**（每实例一套）：`opencode-serve` / `teamx-worker` / `teamx-fs` / `ttyd` / `tx-expose` / `im-gateway`（可选）。
 - **收益**：team 之间 **OS 级隔离**（文件/进程互不可见）；单实例回收 = 停服务 + 删 OS 用户 + 吊销该 member 证书。
-- **待定**：OS 用户名映射规则（team name slug vs team_id）、用户名冲突/长度约束、初始化用的特权账号（server 侧）。
+- **OS 用户名规则**：`<team-slug><4位随机数字>`（如 team `abc` → `abc1234`），家目录 `/home/<osuser>`；用户名冲突时重生成 4 位数字重试。
+- **初始化账号**：`ubuntu` + `sudo`（AWS 默认），由 server 通过 SSH 使用。
+- **回收**：停服务 → 删 OS 用户（含家目录）→ 吊销该 member 证书。
 
 > 参考：现网 caicai 主机已跑多 team/多 workspace，但**共用同一个 OS 用户**（`caicai`）；本设计在此基础上**升级为按 team 分 OS 用户**，以获得 team 间隔离。
 
