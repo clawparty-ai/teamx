@@ -10,7 +10,11 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
+    // NOTE: deliberately no `cargo:rerun-if-changed=build.rs` here — emitting
+    // any rerun-if-changed disables cargo's default "rerun when a package file
+    // changes", which would freeze the commit/time stamp at whatever it was the
+    // last time build.rs itself was touched (deployed binaries then report a
+    // stale commit and cannot be verified with `teamx version`).
     println!("cargo:rerun-if-env-changed=TEAMX_BUILD_COMMIT");
 
     // 1. Commit: explicit env override > enclosing git repo > "unknown".
