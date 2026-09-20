@@ -1039,16 +1039,20 @@ sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
 # --- 6b) 认领 seat（network 模式：server 侧把预分配的 seat 绑定到证书 CN 的 member）---
 # `team import` 只把材料落到本地；真正的绑定要走 team.import RPC。此前这步靠人工
 # 发 RPC（或等插件自动认领），这里由脚本自己完成，使整条链路无人工步骤。
-# letter 文件是 `teamx-inv:v1:<base64(json)>` 形式（不是裸 JSON）：先去前缀再解一层。
-LETTER_JSON="$(echo {letter_b64} | base64 -d | sed -n 's/^teamx-inv:v1://p' | base64 -d 2>/dev/null)"
-if [ -z "$LETTER_JSON" ]; then LETTER_JSON="$(echo {letter_b64} | base64 -d)"; fi
+# letter_b64 是「letter 文件内容」的 base64，而文件内容本身是
+# `teamx-inv:v1:<base64(json)>`：RPC 载荷要用**解一层**后的原文
+# （直接送 letter_b64 会变成双层编码，服务端 decode 失败）。
+LETTER_TXT="$(echo {letter_b64} | base64 -d)"
+LETTER_JSON="$(printf '%s' "$LETTER_TXT" | sed -n 's/^teamx-inv:v1://p' | base64 -d 2>/dev/null)"
+if [ -z "$LETTER_JSON" ]; then LETTER_JSON="$LETTER_TXT"; fi
 INV_ID="$(printf '%s' "$LETTER_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["teamx_invitation"]["invitation_id"])')"
 L_DIR="$WS/.teamx/letters/$INV_ID"
 if [ -d "$L_DIR" ]; then
   curl -sS --max-time 30 --cacert "$L_DIR/ca.crt" --cert "$L_DIR/client.crt" --key "$L_DIR/client.key" \
     -H 'Content-Type: application/json' \
-    -d "{{\"method\":\"team.import\",\"args\":{{\"letter\":\"{letter_b64}\",\"name\":\"{os_user}\"}}}}" \
-    "{server_url}/rpc" >/dev/null || true
+    -d "{{\"method\":\"team.import\",\"args\":{{\"letter\":\"$LETTER_TXT\",\"name\":\"{os_user}\"}}}}" \
+    "{server_url}/rpc" | sudo -u {os_user} bash -lc "cat > $WS/.teamx/claim.json" || true
+  echo "claim: $(head -c 160 $WS/.teamx/claim.json 2>/dev/null)"
 fi
 
 # --- 7) stock git 的 mTLS 配置（approve 后 clone 团队 repo 用） ---
@@ -1794,7 +1798,7 @@ mod tests {
         assert!(sc.contains(r#"--cert "$L_DIR/client.crt""#), "{sc}");
         // RPC 载荷必须是解一层后的 letter 原文（letter_b64 是文件内容的 base64，
         // 直接送会变成双层编码，服务端 decode 失败）
-        assert!(sc.contains(r#""letter":"$LETTER_TXT""#), "{sc}");
+        assert!(sc.contains(r#"\"letter\":\"$LETTER_TXT\""#), "{sc}");
         // 真实 systemd 单元（不再是 echo noop 占位）
         for unit in ["opencode-serve", "teamx-worker", "ttyd", "fs"] {
             assert!(
