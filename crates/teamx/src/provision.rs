@@ -1165,17 +1165,22 @@ pub fn post_approve_script(os_user: &str) -> String {
     format!(
         r#"set -uo pipefail
 WS={ws}
-# /home/<user> 是 0750 → 读 URL 必须走 sudo（真机踩到：条件恒为假，clone 静默跳过）
-URL="$(sudo cat $WS/.teamx/team-repo.url 2>/dev/null || true)"
-if [ -n "$URL" ] && [ ! -d "$WS/.git" ]; then
-  # clone 到临时目录后**并入** $WS（不能 rm -rf $WS —— 那会删掉 .teamx 里的证书/letter）
-  sudo -u {os_user} bash -lc "rm -rf /tmp/wsclone && git clone '$URL' /tmp/wsclone" \
-    && sudo -u {os_user} bash -lc "cp -a /tmp/wsclone/. '$WS'/ && rm -rf /tmp/wsclone" \
-    || true
-fi
+
+# 1) 先起服务（裁决 V）：clone 可能很慢甚至卡住，不能让它挡住实例可用。
 for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do
   sudo systemctl start "$u" || true
 done
+echo "units started"
+
+# 2) 再补 clone（best-effort，后台）：/home/<user> 是 0750 → 读 URL 必须走 sudo；
+#    clone 到临时目录后**并入** $WS（不能整目录删 —— 那会删掉 .teamx 里的证书/letter）。
+URL="$(sudo cat $WS/.teamx/team-repo.url 2>/dev/null || true)"
+if [ -n "$URL" ] && [ ! -d "$WS/.git" ]; then
+  ( sudo -u {os_user} bash -lc "rm -rf /tmp/wsclone && git clone '$URL' /tmp/wsclone" \
+      && sudo -u {os_user} bash -lc "cp -a /tmp/wsclone/. '$WS'/ && rm -rf /tmp/wsclone" ) \
+    >/tmp/teamx-wsclone.log 2>&1 &
+  echo "workspace clone started in background"
+fi
 echo POST_APPROVE_OK
 "#
     )
@@ -1699,6 +1704,11 @@ mod tests {
         // 必须枚举单元（systemctl 通配对未加载单元无效）
         assert!(sc.contains("systemctl list-unit-files"), "{sc}");
         assert!(sc.contains("systemctl start \"$u\""), "{sc}");
+        // 先起服务再 clone：clone 可能很慢/卡住，不能挡住实例可用
+        assert!(
+            sc.find("units started").unwrap() < sc.find("workspace clone started").unwrap(),
+            "units must start before the workspace clone"
+        );
         // URL 读取走 sudo（/home/<user> 0750）；clone 必须并入 $WS，不能删掉 .teamx
         assert!(sc.contains("sudo cat $WS/.teamx/team-repo.url"), "{sc}");
         assert!(!sc.contains("rm -rf '$WS'"), "must not wipe the workspace (.teamx holds certs)");
