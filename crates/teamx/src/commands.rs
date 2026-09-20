@@ -2666,14 +2666,23 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
                         .join(format!("{key_name}.pem"));
                     // 见 provision::post_approve_script：补 clone 团队 repo + 枚举单元启动
                     // （`systemctl start 'teamx-<user>-*'` 对未加载单元无效）。
+                    //
+                    // **必须异步**：clone 团队 repo 可能耗时数分钟，同步执行会让
+                    // approve RPC 超时（真机踩到：客户端 40s 超时、响应丢失，虽然
+                    // 服务端最终仍会跑完）。
                     let script = crate::provision::post_approve_script(&os_user);
-                    let _ = crate::provision::RemoteExec::run_as(
-                        &crate::provision::SshExec,
-                        &ip,
-                        &key_path.to_string_lossy(),
-                        "ubuntu",
-                        &script,
-                    );
+                    let key_str = key_path.to_string_lossy().to_string();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::provision::RemoteExec::run_as(
+                            &crate::provision::SshExec,
+                            &ip,
+                            &key_str,
+                            "ubuntu",
+                            &script,
+                        ) {
+                            eprintln!("teamx: post-approve remote step failed: {e}");
+                        }
+                    });
                 }
             }
         }
