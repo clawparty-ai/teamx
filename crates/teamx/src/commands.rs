@@ -511,6 +511,16 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             MemberCmd::Rename { name, member, session, team } => {
                 cmd_member_rename(conn, member.as_deref(), name, session, team.as_deref())?
             }
+            MemberCmd::SetUser { user_name, user, member, session, team } => {
+                cmd_member_set_user(
+                    conn,
+                    member,
+                    user_name.as_deref(),
+                    user.as_deref(),
+                    session,
+                    team.as_deref(),
+                )?
+            }
             MemberCmd::DiscussionQuota { action, value, member, session, team } => {
                 cmd_member_discussion_quota(conn, action, *value, member.as_deref(), session, team.as_deref())?
             }
@@ -4214,6 +4224,58 @@ fn is_uuid(s: &str) -> bool {
         })
 }
 
+/// `teamx member set-user --member <id> (--user-name <name> | --user <id>)`：
+/// 把座位绑定到「人」。同一人的多台设备（xiaods-mac / xiaods-ec2）绑定到同一个
+/// user 后，console 会按「用户」把它们归到一组。
+fn cmd_member_set_user(
+    conn: &mut Connection,
+    member_id: &str,
+    user_name: Option<&str>,
+    user_id: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    ensure_owner(conn, &actor, &team)?;
+    let target = member_by_id(conn, member_id)?;
+    if target.team_id != team.id {
+        return err(format!("member {member_id} is not in team {}", team.id));
+    }
+    let user = resolve_user(conn, user_id, user_name, &actor.id)?
+        .ok_or_else(|| AppError("member set-user requires --user-name or --user".into()))?;
+    let (uid, uname) = user;
+    let old_uid: String = conn
+        .query_row(
+            "SELECT user_id FROM members WHERE id = ?1",
+            params![target.id],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let tid = team.id.clone();
+    let actor_id = actor.id.clone();
+    let target_id = target.id.clone();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE members SET user_id = ?1 WHERE id = ?2",
+            params![uid, target_id],
+        )?;
+        emit_json(
+            tx,
+            &tid,
+            Some(&actor_id),
+            "member.user_bound",
+            json!({ "member_id": target_id, "user_id": uid, "user_name": uname, "previous_user_id": old_uid }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("member set-user failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({
+        "ok": true, "member_id": target.id, "display_name": target.display_name,
+        "user": { "id": uid, "name": uname },
+    }))
+}
+
 /// `teamx member rename --name <new> [--member <id>]`（design：一个用户多设备，
 /// 每设备一个 member，用名字区分设备，如 `xiaods-mac` / `xiaods-ec2`）。
 fn cmd_member_rename(
@@ -6640,6 +6702,48 @@ mod tests {
         let status = team_status_json(&conn, &team).unwrap();
         assert_eq!(status["goal"]["title"], json!("Ship v1"));
         assert_eq!(status["goal"]["state"], json!("closed"));
+    }
+
+    #[test]
+    fn member_set_user_binds_devices_to_one_person() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        for (mid, name) in [("m-mac", "xiaods-mac"), ("m-ec2", "xiaods-ec2")] {
+            conn.execute(
+                "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+                 VALUES (?1,'t1',?1,?2,'contributor','active','now')",
+                params![mid, name],
+            )
+            .unwrap();
+        }
+        // 两台设备绑定到同一个人
+        let a = cmd_member_set_user(&mut conn, "m-mac", Some("xiaods"), None, "s", Some("t1")).unwrap();
+        let b = cmd_member_set_user(&mut conn, "m-ec2", Some("xiaods"), None, "s", Some("t1")).unwrap();
+        assert_eq!(a["user"]["id"], b["user"]["id"], "same person → same user id");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE display_name='xiaods'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "user row created once and reused");
+        // 绑定后再取 team.status：两个座位都应带 user
+        let team = team_by_id(&conn, "t1").unwrap();
+        let st = team_status_json(&conn, &team).unwrap();
+        let with_user = st["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["user"]["display_name"] == json!("xiaods"))
+            .count();
+        assert_eq!(with_user, 2);
+        // 非 owner 不能替别人绑定
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-x','t1','s-x','X','contributor','active','now')",
+            [],
+        )
+        .unwrap();
+        assert!(cmd_member_set_user(&mut conn, "m-mac", Some("other"), None, "s-x", Some("t1")).is_err());
+        // 缺参数报错
+        assert!(cmd_member_set_user(&mut conn, "m-mac", None, None, "s", Some("t1")).is_err());
     }
 
     #[test]

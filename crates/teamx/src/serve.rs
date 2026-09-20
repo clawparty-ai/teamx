@@ -1899,6 +1899,13 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             session: sess(args),
             team: o("team"),
         }),
+        "member.set_user" => Command::Member(MemberCmd::SetUser {
+            user_name: o("user_name"),
+            user: o("user"),
+            member: s("member").ok_or_else(|| "member.set_user requires `member`".to_string())?,
+            session: sess(args),
+            team: o("team"),
+        }),
         "member.set_state" => Command::Member(MemberCmd::SetState {
             state: s("state").ok_or_else(|| "member.set_state requires `state`".to_string())?,
             member: o("member"),

@@ -1076,6 +1076,24 @@ pub enum MemberCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Bind a member seat to the person ("user") behind it. One person may own
+    /// several seats (one per device); binding them to the same user groups the
+    /// devices together in the console. Owner/co-lead only.
+    SetUser {
+        /// person name; created if it does not exist yet
+        #[arg(long)]
+        user_name: Option<String>,
+        /// existing user id (alternative to --user-name)
+        #[arg(long)]
+        user: Option<String>,
+        /// target member id (required)
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// Get/set a member's per-topic discussion participation quota.
     DiscussionQuota {
         /// action: get or set

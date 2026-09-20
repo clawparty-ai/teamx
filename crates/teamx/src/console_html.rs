@@ -2109,7 +2109,9 @@ async function loadTeams(){
     // member seats (personal + workers). Groups are sorted by user name.
     const groups=new Map();
     for(const m of members){
-      const ukey = (m.user&&m.user.display_name) || "(no user)";
+      // 未绑定 user 的座位**自成一組**（按 member id 分）：否则所有无主座位会挤在
+      // 一个以「第一个成员名」命名的组里（真机踩到：组头显示成 teamx-ent）。
+      const ukey = (m.user&&m.user.display_name) || ("seat:"+m.id);
       if(!groups.has(ukey)) groups.set(ukey,{ name: (m.user&&m.user.display_name)||m.display_name, members: [] });
       groups.get(ukey).members.push(m);
     }
