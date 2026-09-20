@@ -1382,7 +1382,20 @@ pub fn run_destroy(
         let ok = exec.run_as(ip, key_path, "ubuntu", &script).is_ok();
         steps.push(json!({"step": "stop-services-and-delete-os-user", "target": os_user, "done": ok}));
     }
-    if !instance.is_empty() {
+    // 同一主机上还有别的 team 实例 → 只回收本实例（不 terminate 整机，§2-P）。
+    let others: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE instance_id = ?1 AND id <> ?2 AND state <> 'terminated'",
+            params![instance, node_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if !instance.is_empty() && others > 0 {
+        steps.push(json!({
+            "step": "terminate-instance", "target": instance, "done": false,
+            "skipped": format!("{others} other team instance(s) still on this host"),
+        }));
+    } else if !instance.is_empty() {
         let ok = provider.destroy(instance).is_ok();
         steps.push(json!({"step": "terminate-instance", "target": instance, "done": ok}));
     }
@@ -1672,6 +1685,45 @@ mod tests {
         assert!(sc.contains("systemctl list-unit-files"), "{sc}");
         assert!(sc.contains("systemctl start \"$u\""), "{sc}");
         assert!(sc.contains("/home/xiaods/work/team-repo"), "{sc}");
+    }
+
+    #[test]
+    fn destroy_keeps_shared_host_alive() {
+        let mut c = conn();
+        c.execute(
+            "INSERT INTO teams (id,name,state,invite_token,created_at,updated_at) VALUES ('t1','T','active','tok','now','now')",
+            [],
+        )
+        .unwrap();
+        let a = provision_for_member(
+            &mut c,
+            "t1",
+            "m1",
+            "u1",
+            &ProvisionOpts { region: Some("us-west-2".into()), ..Default::default() },
+        )
+        .unwrap();
+        let nid = a["node_id"].as_str().unwrap().to_string();
+        c.execute(
+            "UPDATE nodes SET state='ready', instance_id='i-shared', ip='1.2.3.4', keypair_ref='teamx-k' WHERE id=?1",
+            params![nid],
+        )
+        .unwrap();
+        // 同主机上另一个 team 的实例仍在运行
+        c.execute(
+            "INSERT INTO nodes (id,team_id,user_id,member_id,provider,region,state,os_user,created_at,instance_id)
+             VALUES ('n-other','t1','u1','m2','aws','us-west-2','ready','other1234','now','i-shared')",
+            [],
+        )
+        .unwrap();
+        let r = run_destroy(&mut c, &nid, &FakeProvider { fail: false }, &FakeExec, "/tmp/k").unwrap();
+        let steps = r["steps"].as_array().unwrap();
+        let term = steps.iter().find(|s| s["step"] == "terminate-instance").unwrap();
+        assert_eq!(term["done"], json!(false), "must not terminate a shared host");
+        assert!(term["skipped"].as_str().unwrap().contains("other team instance"), "{term}");
+        // 本实例仍被回收（状态 terminated）
+        let st: String = c.query_row("SELECT state FROM nodes WHERE id=?1", params![nid], |r| r.get(0)).unwrap();
+        assert_eq!(st, "terminated");
     }
 
     #[test]

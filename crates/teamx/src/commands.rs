@@ -6474,7 +6474,22 @@ fn cmd_node_destroy(conn: &mut Connection, node_id: &str, session: &str, team_op
     let region = node["region"].as_str().unwrap_or("").to_string();
     let pname = node["provider"].as_str().unwrap_or("aws");
     let provider = crate::provision::provider_for(pname, &region).map_err(AppError)?;
-    let out = crate::provision::destroy_node(conn, node_id, provider.as_ref()).map_err(AppError)?;
+    // 走完整回收清单（run_destroy）：停服务 → 删 OS 用户 → terminate → 删 keypair
+    // → 清密文。此前误用 destroy_node（只 terminate + 状态推进，密钥/密文都不清）。
+    let key_path = crate::db::teamx_home()
+        .join("nodes")
+        .join(format!(
+            "{}.pem",
+            node["keypair_ref"].as_str().unwrap_or("")
+        ));
+    let out = crate::provision::run_destroy(
+        conn,
+        node_id,
+        provider.as_ref(),
+        &crate::provision::SshExec,
+        &key_path.to_string_lossy(),
+    )
+    .map_err(AppError)?;
     db::with_write(conn, |tx| {
         emit_json(
             tx,
