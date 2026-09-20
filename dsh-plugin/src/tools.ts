@@ -529,6 +529,32 @@ export function registerMemberTools(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'teamx_member_rename',
+    description:
+      'Rename a member (device). One person may run several devices; each device is a separate member, ' +
+      'so name them per device (e.g. xiaods-mac / xiaods-ec2). Self-service for your own seat; ' +
+      'the team lead may rename any member.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'New display name (1..=64 chars, unique among live members)' },
+      member: { type: 'string', description: 'Target member id (team lead: owner or co-lead)' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }]
+      },
+    },
+    async execute(a, exec) {
+      const res = await runCli([
+        'member', 'rename', '--name', (a as any).name,
+        '--session', getKey(exec),
+        ...opt('--member', (a as any).member),
+      ])
+      return JSON.stringify(res)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'teamx_set_state',
     description:
       "Set a member's working state: idle (finished the current slice, no pending work) or active (resumed).",

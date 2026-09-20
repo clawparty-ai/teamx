@@ -322,6 +322,26 @@ export const tools = {
     },
   }),
 
+  teamx_member_rename: tool({
+    description:
+      "Rename a member (device). One person may run several devices; each device is a separate member, " +
+      "so name them per device (e.g. `xiaods-mac` / `xiaods-ec2`). Self-service for your own seat; " +
+      "the team lead may rename any member.",
+    args: {
+      name: tool.schema.string().describe("new display name (1..=64 chars, unique among live members)"),
+      member: tool.schema.string().optional().describe("target member id (team lead: owner or co-lead)"),
+    },
+    async execute(args, context: ToolCtx) {
+      return tx(context.sessionID, context.directory, [
+        "member",
+        "rename",
+        "--name",
+        args.name,
+        ...opt("--member", args.member),
+      ])
+    },
+  }),
+
   teamx_join: tool({
     description:
       "Join a team via its invite_token. Creates a PENDING membership that the team lead must approve.",

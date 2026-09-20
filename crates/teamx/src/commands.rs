@@ -508,6 +508,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             MemberCmd::SetState { state, member, session, team } => {
                 cmd_member_set_state(conn, state, member.as_deref(), session, team.as_deref())?
             }
+            MemberCmd::Rename { name, member, session, team } => {
+                cmd_member_rename(conn, member.as_deref(), name, session, team.as_deref())?
+            }
             MemberCmd::DiscussionQuota { action, value, member, session, team } => {
                 cmd_member_discussion_quota(conn, action, *value, member.as_deref(), session, team.as_deref())?
             }
@@ -4211,6 +4214,77 @@ fn is_uuid(s: &str) -> bool {
         })
 }
 
+/// `teamx member rename --name <new> [--member <id>]`（design：一个用户多设备，
+/// 每设备一个 member，用名字区分设备，如 `xiaods-mac` / `xiaods-ec2`）。
+fn cmd_member_rename(
+    conn: &mut Connection,
+    member_opt: Option<&str>,
+    name: &str,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value> {
+    let (actor, team) = resolve_actor(conn, session, team_opt)?;
+    let target = match member_opt {
+        Some(mid) => {
+            ensure_owner(conn, &actor, &team)?;
+            member_by_id(conn, mid)?
+        }
+        None => actor.clone(),
+    };
+    if target.team_id != team.id {
+        return err(format!("member {} is not in team {}", target.id, team.id));
+    }
+    let new_name = name.trim();
+    let chars = new_name.chars().count();
+    if new_name.is_empty() || chars > 64 {
+        return err(format!(
+            "invalid member name ({} chars): must be 1..=64 characters",
+            chars
+        ));
+    }
+    if new_name == target.display_name {
+        return Ok(json!({ "ok": true, "unchanged": true, "member_id": target.id, "display_name": new_name }));
+    }
+    // 同名守卫：live 成员重名会让台账/讨论里的 @ 指向不明。
+    let dup: Option<String> = conn
+        .query_row(
+            "SELECT id FROM members WHERE team_id = ?1 AND display_name = ?2
+               AND id <> ?3 AND state NOT IN ('left','denied')",
+            params![team.id, new_name, target.id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| AppError(format!("db error: {e}")))?;
+    if let Some(other) = dup {
+        return err(format!(
+            "another live member ({other}) already uses the name `{new_name}` in this team"
+        ));
+    }
+    let old_name = target.display_name.clone();
+    let tid = team.id.clone();
+    let actor_id = actor.id.clone();
+    let target_id = target.id.clone();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE members SET display_name = ?1 WHERE id = ?2",
+            params![new_name, target_id],
+        )?;
+        emit_json(
+            tx,
+            &tid,
+            Some(&actor_id),
+            "member.renamed",
+            json!({ "member_id": target_id, "from": old_name, "to": new_name }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| AppError(format!("member rename failed: {e}")))?;
+    touch(conn, &actor.id).ok();
+    Ok(json!({
+        "ok": true, "member_id": target.id, "display_name": new_name, "previous_name": old_name,
+    }))
+}
+
 fn cmd_member_set_state(
     conn: &mut Connection,
     state: &str,
@@ -6566,6 +6640,42 @@ mod tests {
         let status = team_status_json(&conn, &team).unwrap();
         assert_eq!(status["goal"]["title"], json!("Ship v1"));
         assert_eq!(status["goal"]["state"], json!("closed"));
+    }
+
+    #[test]
+    fn member_rename_self_and_by_lead() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-dev','t1','s-dev','xiaods','contributor','active','now')",
+            [],
+        )
+        .unwrap();
+        // 本人给自己改名（设备名）
+        let r = cmd_member_rename(&mut conn, None, "xiaods-mac", "s-dev", Some("t1")).unwrap();
+        assert_eq!(r["display_name"], json!("xiaods-mac"));
+        assert_eq!(r["previous_name"], json!("xiaods"));
+        // owner 代改另一台设备
+        let r = cmd_member_rename(&mut conn, Some("m-dev"), "xiaods-ec2", "s", Some("t1")).unwrap();
+        assert_eq!(r["display_name"], json!("xiaods-ec2"));
+        // 幂等：改成同名 → unchanged
+        let r = cmd_member_rename(&mut conn, Some("m-dev"), "xiaods-ec2", "s", Some("t1")).unwrap();
+        assert_eq!(r["unchanged"], json!(true));
+        // 非法名
+        assert!(cmd_member_rename(&mut conn, Some("m-dev"), "   ", "s", Some("t1")).is_err());
+        assert!(cmd_member_rename(&mut conn, Some("m-dev"), &"x".repeat(65), "s", Some("t1")).is_err());
+        // 重名守卫：撞上另一个 live 成员的名字
+        assert!(cmd_member_rename(&mut conn, Some("m-dev"), "owner", "s", Some("t1")).is_err());
+        // 台账有 member.renamed
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'member.renamed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "each effective rename emits one event");
     }
 
     #[test]

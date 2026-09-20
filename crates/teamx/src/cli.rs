@@ -1062,6 +1062,20 @@ pub enum MemberCmd {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Rename a member (device) — e.g. `xiaods-mac` / `xiaods-ec2`.
+    /// Self-service for your own seat; owner/co-lead may rename any member.
+    Rename {
+        /// new display name (1..=64 chars, unique among live members of the team)
+        #[arg(long)]
+        name: String,
+        /// target member id (owner/co-lead only); defaults to the acting session
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// Get/set a member's per-topic discussion participation quota.
     DiscussionQuota {
         /// action: get or set

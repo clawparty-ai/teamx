@@ -1893,6 +1893,12 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "goal.share" => Command::Goal(GoalCmd::Share { session: sess(args), team: o("team") }),
         "goal.close" => Command::Goal(GoalCmd::Close { session: sess(args), team: o("team") }),
 
+        "member.rename" => Command::Member(MemberCmd::Rename {
+            name: s("name").ok_or_else(|| "member.rename requires `name`".to_string())?,
+            member: o("member"),
+            session: sess(args),
+            team: o("team"),
+        }),
         "member.set_state" => Command::Member(MemberCmd::SetState {
             state: s("state").ok_or_else(|| "member.set_state requires `state`".to_string())?,
             member: o("member"),
