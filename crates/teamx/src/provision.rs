@@ -1429,7 +1429,12 @@ pub fn run_destroy(
     })
     .map_err(|e| format!("db: {e}"))?;
     steps.push(json!({"step": "purge-secrets", "done": true}));
-    steps.push(json!({"step": "revoke-member-cert", "target": node["member_id"], "done": true}));
+    // 诚实标注：目前**没有** CRL/吊销机制（pki 无 revoke API），
+    // 证书在有效期内仍可认证——不能谎报 done。见 design/006 待补项。
+    steps.push(json!({
+        "step": "revoke-member-cert", "target": node["member_id"], "done": false,
+        "skipped": "no CRL/revocation mechanism yet (cert stays valid until expiry)",
+    }));
     set_node_state(conn, node_id, "terminated")?;
     Ok(json!({"ok": true, "node_id": node_id, "state": "terminated", "steps": steps}))
 }
