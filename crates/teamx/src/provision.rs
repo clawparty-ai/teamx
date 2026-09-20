@@ -944,6 +944,24 @@ impl RemoteExec for SshExec {
 /// 生成 bootstrap 脚本（design/006 §3 步骤 6–9；§5.1 软件清单）。
 ///
 /// 以 `os_user` 身份执行；特权步骤（建用户/装包）走 `ubuntu`+sudo。
+/// 端口基数：一台主机可跑多个 team 实例（design/006 §3.1），端口必须错开。
+/// 由 node_id 稳定派生到 4200–4599；opencode/ttyd/fs 分别 +0/+400/+800。
+pub fn port_base(node_id: &str) -> u16 {
+    let h: u32 = node_id
+        .bytes()
+        .fold(2_166_136_261u32, |a, b| (a ^ b as u32).wrapping_mul(16_777_619));
+    4200 + (h % 400) as u16
+}
+
+/// 实例 workspace（团队 repo 的克隆目录）；也是 TEAMX_HOME 的父目录。
+pub fn workspace_dir(os_user: &str) -> String {
+    format!("/home/{os_user}/work/team-repo")
+}
+
+/// bootstrap 脚本（design/006 §3 步骤 6–9、§5.1 软件清单 + 真实 systemd 单元）。
+///
+/// 以 `os_user` 身份执行；特权步骤（建用户/装包）走 `ubuntu`+sudo。
+#[allow(clippy::too_many_arguments)]
 pub fn bootstrap_script(
     os_user: &str,
     server_url: &str,
@@ -951,23 +969,35 @@ pub fn bootstrap_script(
     letter_b64: &str,
     team_repo_url: &str,
     member_id: &str,
+    node_id: &str,
 ) -> String {
     // CA PEM 是多行的：直接插进脚本会把脚本截断，必须 base64 内联后远端解码。
     let ca_b64 = {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(ca_pem.as_bytes())
     };
+    let ws = workspace_dir(os_user);
+    let base = port_base(node_id);
+    let oc_port = base;
+    let ttyd_port = base + 400;
+    let fs_port = base + 800;
     format!(
         r#"set -euo pipefail
+OS_USER={os_user}
+WS={ws}
+OC_PORT={oc_port}
+TTYD_PORT={ttyd_port}
+FS_PORT={fs_port}
+
 # --- 1) OS 用户（design/006 §3.1；幂等） ---
-id -u {os_user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {os_user}
+id -u $OS_USER >/dev/null 2>&1 || sudo useradd -m -s /bin/bash $OS_USER
 
 # --- 2) 基础软件（§5.1）：git / unzip / ttyd / bun ---
 # unzip 是 bun 安装脚本的前置（缺了会 "error: unzip is required to install bun"）。
 command -v git >/dev/null || sudo apt-get update -qq && sudo apt-get install -y -qq git
 command -v unzip >/dev/null 2>&1 || sudo apt-get install -y -qq unzip || true
 # bun 必须装在该实例 OS 用户下（否则落到 /home/ubuntu，实例用户用不到）。
-sudo -u {os_user} bash -lc 'command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash || true' 
+sudo -u $OS_USER bash -lc 'command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash || true'
 # ttyd 不在 Ubuntu 仓库里 → 取官方静态发行版（best-effort）。
 if ! command -v ttyd >/dev/null 2>&1; then
   case "$(uname -m)" in
@@ -983,53 +1013,143 @@ if ! command -v ttyd >/dev/null 2>&1; then
 fi
 
 # --- 3) opencode（裁决 T：官方安装脚本；≥1.18.0） ---
-sudo -u {os_user} bash -lc 'command -v opencode >/dev/null || curl -fsSL https://opencode.ai/install | bash'
+sudo -u $OS_USER bash -lc 'command -v opencode >/dev/null || curl -fsSL https://opencode.ai/install | bash'
+OC_BIN="$(sudo -u $OS_USER bash -lc 'command -v opencode || echo /home/'"$OS_USER"'/.opencode/bin/opencode')"
 
 # --- 4) teamx 二进制（由 server 推送） ---
 sudo install -m 0755 /tmp/teamx /usr/local/bin/teamx
 
-# --- 5) letter + server URL + CA（§3 步骤 8；不进 cloud-init） ---
-sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx/letters/invite'
-# 注意：`~` 必须在该用户自己的 shell 里展开——若把 tee 直接交给 sudo -u 执行，
-# `~` 会由外层（ubuntu）展开成 /home/ubuntu，落错家目录并因目录不存在而失败（真机踩到）。
-echo {letter_b64} | base64 -d | sudo -u {os_user} bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'
-sudo -u {os_user} bash -lc 'chmod 600 ~/.teamx/letters/invite/invitation.letter'
-sudo -u {os_user} bash -lc 'mkdir -p ~/.teamx'
-echo {ca_b64} | base64 -d | sudo -u {os_user} bash -lc 'cat > ~/.teamx/ca.pem' 
-sudo -u {os_user} bash -lc 'printf "export TEAMX_SERVER_URL=%s\n" "{server_url}" >> ~/.bashrc'
+# --- 5) workspace + letter/CA（§3 步骤 8）---
+# TEAMX_HOME = <workspace>/.teamx，与现网主机一致（letters/ 与证书都在这里）。
+sudo -u $OS_USER bash -lc "mkdir -p $WS/.teamx/letters/invite"
+echo {letter_b64} | base64 -d | sudo -u $OS_USER bash -lc "cat > $WS/.teamx/letters/invite/invitation.letter"
+sudo -u $OS_USER bash -lc "chmod 600 $WS/.teamx/letters/invite/invitation.letter"
+echo {ca_b64} | base64 -d | sudo -u $OS_USER bash -lc "cat > $WS/.teamx/ca.pem"
+# 团队 repo URL 落盘：approve 后补 clone 用（bootstrap 时成员还是 pending，拿不到仓库权限）。
+printf '%s' '{team_repo_url}' | sudo -u $OS_USER bash -lc "cat > $WS/.teamx/team-repo.url"
+sudo -u $OS_USER bash -lc "printf 'export TEAMX_SERVER_URL=%s\n' '{server_url}' >> ~/.bashrc"
+sudo -u $OS_USER bash -lc "printf 'export TEAMX_HOME=%s\n' '$WS/.teamx' >> ~/.bashrc"
 
 # --- 6) import 邀请函（认领 seat）---
 # `--session net:<member_id>` 是 network 模式的会话键约定（与现网成员一致）；
 # 缺 --session 时 CLI 直接报错，而此前的 `|| true` 会把失败吞掉（真机踩到）。
-sudo -u {os_user} bash -lc 'cd ~ && teamx team import ~/.teamx/letters/invite/invitation.letter --session net:{member_id}'
+sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
+  bash -lc "cd $WS && teamx team import $WS/.teamx/letters/invite/invitation.letter --session net:{member_id}"
 
-# --- 7) 拉团队 repo / workspace（§3 步骤 8） ---
-sudo -u {os_user} bash -lc 'mkdir -p ~/work && cd ~/work && (git clone {team_repo_url} team-repo || true)'
+# --- 7) stock git 的 mTLS 配置（approve 后 clone 团队 repo 用） ---
+sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
+  bash -lc "teamx git setup --server {server_url}" || true
 
 # --- 8) systemd 单元（§5.1；每实例一套，注册但**不启动**——等 approve，裁决 V） ---
-# 占位单元：真实服务定义（opencode-serve / worker / ttyd / fs / tx-expose）尚在
-# 设计中，此处只注册可被 approve 后启动的占位单元。
-# 注意 **Restart=no**：占位单元若配 Restart=always 会无限重启刷日志（真机踩到）。
-for u in opencode-serve teamx-worker ttyd; do
-  sudo tee /etc/systemd/system/teamx-{os_user}-$u.service >/dev/null <<UNIT
+# 真实服务定义：opencode-serve / teamx-worker / ttyd / fs。
+# 端口由 node_id 派生（同一主机多实例不撞端口）。
+sudo tee /etc/systemd/system/teamx-$OS_USER-opencode-serve.service >/dev/null <<UNIT
 [Unit]
-Description=teamx $u for {os_user} (placeholder unit - real service definition pending)
+Description=teamx opencode-serve for $OS_USER ($WS)
 After=network-online.target
 Wants=network-online.target
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-User={os_user}
-WorkingDirectory=/home/{os_user}
-ExecStart=/bin/bash -lc 'echo "teamx {os_user} $u: placeholder (no real service yet)"'
-Restart=no
+Type=simple
+User=$OS_USER
+WorkingDirectory=$WS
+Environment=HOME=/home/$OS_USER
+Environment=PATH=/home/$OS_USER/.opencode/bin:/home/$OS_USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$OC_BIN serve --hostname 127.0.0.1 --port $OC_PORT
+Restart=always
+RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
-  sudo systemctl enable teamx-{os_user}-$u.service >/dev/null 2>&1 || true
+
+sudo tee /etc/systemd/system/teamx-$OS_USER-teamx-worker.service >/dev/null <<UNIT
+[Unit]
+Description=teamx autonomous worker for $OS_USER ($WS)
+After=network-online.target teamx-$OS_USER-opencode-serve.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=$OS_USER
+WorkingDirectory=$WS
+Environment=HOME=/home/$OS_USER
+Environment=PATH=/home/$OS_USER/.opencode/bin:/home/$OS_USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TEAMX_SERVER_URL={server_url}
+Environment=TEAMX_HOME=$WS/.teamx
+Environment=TEAMX_WORKER_ENABLED=1
+ExecStart=/usr/local/bin/teamx worker --interval 60 --cooldown 600 --opencode $OC_BIN --opencode-url http://127.0.0.1:$OC_PORT
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo tee /etc/systemd/system/teamx-$OS_USER-ttyd.service >/dev/null <<UNIT
+[Unit]
+Description=ttyd web terminal for $OS_USER ($WS)
+After=network-online.target teamx-$OS_USER-opencode-serve.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=$OS_USER
+WorkingDirectory=$WS
+Environment=HOME=/home/$OS_USER
+Environment=PATH=/home/$OS_USER/.opencode/bin:/home/$OS_USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/ttyd -p $TTYD_PORT -W -T xterm-256color -t disableReconnect=true /bin/bash -lc "cd $WS && exec $OC_BIN attach http://127.0.0.1:$OC_PORT -c"
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo tee /etc/systemd/system/teamx-$OS_USER-fs.service >/dev/null <<UNIT
+[Unit]
+Description=teamx fs file service for $OS_USER ($WS)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=$OS_USER
+WorkingDirectory=$WS
+Environment=HOME=/home/$OS_USER
+Environment=PATH=/home/$OS_USER/.opencode/bin:/home/$OS_USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TEAMX_SERVER_URL={server_url}
+Environment=TEAMX_HOME=$WS/.teamx
+ExecStart=/usr/local/bin/teamx fs --addr 127.0.0.1 --port $FS_PORT
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+for u in opencode-serve teamx-worker ttyd fs; do
+  sudo systemctl enable teamx-$OS_USER-$u.service >/dev/null 2>&1 || true
 done
+sudo systemctl daemon-reload
 
 echo BOOTSTRAP_OK
+"#
+    )
+}
+
+/// approve 后脚本（裁决 V）：
+/// 1. 补 clone 团队 repo —— bootstrap 时成员还是 pending，没有仓库权限（真机踩到
+///    `~/work` 空）；approve 后 `git setup` 已配好 mTLS，可正常 clone。
+/// 2. 启动本实例的 systemd 单元 —— `systemctl start 'teamx-<user>-*'` 对**未加载**
+///    单元无效（systemd 明确警告），必须先枚举单元文件。
+pub fn post_approve_script(os_user: &str) -> String {
+    let ws = workspace_dir(os_user);
+    format!(
+        r#"set -uo pipefail
+WS={ws}
+if [ ! -d "$WS/.git" ] && [ -s "$WS/.teamx/team-repo.url" ]; then
+  URL="$(cat $WS/.teamx/team-repo.url)"
+  if [ -n "$URL" ]; then
+    sudo -u {os_user} bash -lc "rm -rf /tmp/wsclone && git clone '$URL' /tmp/wsclone && rm -rf '$WS' && mv /tmp/wsclone '$WS'" || true
+  fi
+fi
+for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do
+  sudo systemctl start "$u" || true
+done
+echo POST_APPROVE_OK
 "#
     )
 }
@@ -1187,7 +1307,15 @@ pub fn run_provision_job(
         let node_bin = node_binary_for(&node_arch)?;
         exec.upload(&ip, key_path, &node_bin, "/tmp/teamx")?;
         let script =
-            bootstrap_script(&os_user, server_url, ca_pem, letter_b64, team_repo_url, &member_id);
+            bootstrap_script(
+                &os_user,
+                server_url,
+                ca_pem,
+                letter_b64,
+                team_repo_url,
+                &member_id,
+                &node_id,
+            );
         exec.run_as(&ip, key_path, "ubuntu", &script)?;
         Ok(())
     })();
@@ -1523,6 +1651,27 @@ mod tests {
     }
 
     #[test]
+    fn post_approve_script_clones_then_starts_units() {
+        let sc = post_approve_script("xiaods");
+        // 补 clone（bootstrap 时成员 pending 拿不到仓库权限）
+        assert!(sc.contains("git clone '$URL'"), "{sc}");
+        assert!(sc.contains("team-repo.url"), "{sc}");
+        // 必须枚举单元（systemctl 通配对未加载单元无效）
+        assert!(sc.contains("systemctl list-unit-files"), "{sc}");
+        assert!(sc.contains("systemctl start \"$u\""), "{sc}");
+        assert!(sc.contains("/home/xiaods/work/team-repo"), "{sc}");
+    }
+
+    #[test]
+    fn port_base_is_stable_and_bounded() {
+        let a = port_base("fd4ae79f-f965-499f-9a9c-13fccb90eb9d");
+        assert_eq!(a, port_base("fd4ae79f-f965-499f-9a9c-13fccb90eb9d"));
+        assert!((4200..4600).contains(&a), "{a}");
+        assert_ne!(port_base("node-a"), 0);
+        assert!((4200..4600).contains(&port_base("node-b")));
+    }
+
+    #[test]
     fn os_user_is_slug_plus_4_digits() {
         let u = os_user_for("abc", "1111aaaa-2222-bbbb-cccc-ddddeeeeffff");
         assert!(u.starts_with("abc"), "{u}");
@@ -1540,18 +1689,21 @@ mod tests {
             "TGV0dGVy",
             "https://s/git/t/r",
             "mid-1",
+            "node-1",
         );
         // 多行 PEM 不能原样出现在脚本里（否则 set -e 下脚本被截断）
         assert!(!sc.contains("BEGIN CERTIFICATE"), "raw PEM leaked into script");
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(ca.as_bytes());
         assert!(sc.contains(&b64), "ca base64 missing");
-        assert!(sc.contains("useradd -m -s /bin/bash xiaods"), "{sc}");
+        assert!(sc.contains("OS_USER=xiaods"), "{sc}");
+        assert!(sc.contains("id -u $OS_USER >/dev/null 2>&1 || sudo useradd -m -s /bin/bash $OS_USER"), "{sc}");
+        assert!(sc.contains("WS=/home/xiaods/work/team-repo"), "{sc}");
         // §5.1 基础软件：unzip（bun 前置）+ ttyd 静态发行版
         assert!(sc.contains("apt-get install -y -qq unzip"), "{sc}");
         // bun 必须装在该 OS 用户下（真机踩到落到 /home/ubuntu）
         assert!(
-            sc.contains("sudo -u xiaods bash -lc 'command -v bun"),
+            sc.contains("sudo -u $OS_USER bash -lc 'command -v bun"),
             "bun install must run as the instance OS user"
         );
         assert!(sc.contains("ttyd/releases/latest/download"), "{sc}");
@@ -1559,15 +1711,34 @@ mod tests {
         // import 必须带 --session（network 约定 net:<member_id>），否则 CLI 报错
         assert!(
             sc.contains(
-                "teamx team import ~/.teamx/letters/invite/invitation.letter --session net:mid-1"
+                "teamx team import $WS/.teamx/letters/invite/invitation.letter --session net:mid-1"
             ),
             "{sc}"
         );
         // letter/CA 必须在该用户自己的 shell 里展开 ~（否则落到 /home/ubuntu）
-        assert!(!sc.contains("sudo -u xiaods tee ~"), "bare ~ expanded by outer shell");
-        assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/letters/invite/invitation.letter'"), "{sc}");
-        assert!(sc.contains("sudo -u xiaods bash -lc 'cat > ~/.teamx/ca.pem'"), "{sc}");
-        assert!(sc.contains("\"https://s:1\""), "{sc}");
+        // letter/CA 落在 workspace 的 .teamx 下（TEAMX_HOME=$WS/.teamx，与现网主机一致）
+        assert!(
+            sc.contains(r#"cat > $WS/.teamx/letters/invite/invitation.letter"#),
+            "{sc}"
+        );
+        assert!(sc.contains(r#"cat > $WS/.teamx/ca.pem"#), "{sc}");
+        // 真实 systemd 单元（不再是 echo noop 占位）
+        for unit in ["opencode-serve", "teamx-worker", "ttyd", "fs"] {
+            assert!(
+                sc.contains(&format!("teamx-$OS_USER-{unit}.service")),
+                "missing real unit {unit}"
+            );
+        }
+        assert!(!sc.contains("echo noop"), "placeholder unit leaked");
+        assert!(sc.contains("$OC_BIN serve --hostname 127.0.0.1 --port $OC_PORT"), "{sc}");
+        assert!(sc.contains("teamx worker --interval 60 --cooldown 600"), "{sc}");
+        assert!(sc.contains("/usr/local/bin/ttyd -p $TTYD_PORT"), "{sc}");
+        assert!(sc.contains("teamx fs --addr 127.0.0.1 --port $FS_PORT"), "{sc}");
+        // 端口按 node_id 派生，同主机多实例不撞端口
+        assert!(sc.contains(&format!("OC_PORT={}", port_base("node-1"))), "{sc}");
+        // 注册但**不启动**（裁决 V：approve 后才启动）
+        assert!(!sc.contains("systemctl start"), "must not start services before approval");
+        assert!(sc.contains("'https://s:1'"), "{sc}");
     }
 
     #[test]
@@ -1737,14 +1908,16 @@ mod tests {
             "bGV0dGVy",
             "https://repo/x.git",
             "mid-2",
+            "node-2",
         );
         for needle in [
-            "useradd -m -s /bin/bash abc1234",
+            "OS_USER=abc1234",
+            "useradd -m -s /bin/bash $OS_USER",
             "opencode.ai/install",
             "/usr/local/bin/teamx",
             "teamx team import",
-            "git clone https://repo/x.git",
-            "systemctl enable teamx-abc1234-",
+            "teamx-$OS_USER-opencode-serve.service",
+            "systemctl enable teamx-$OS_USER-",
             "BOOTSTRAP_OK",
         ] {
             assert!(s.contains(needle), "missing `{needle}` in bootstrap script");
