@@ -978,6 +978,7 @@ pub fn bootstrap_script(
     };
     let ws = workspace_dir(os_user);
     let base = port_base(node_id);
+    let node_short: String = node_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
     let oc_port = base;
     let ttyd_port = base + 400;
     let fs_port = base + 800;
@@ -1145,6 +1146,34 @@ RestartSec=3
 WantedBy=multi-user.target
 UNIT
 
+# tx-expose：把本实例的 ttyd / fs 端口经 teamx 反向隧道暴露给团队
+# （design/006 §5.1；名字含 node 短 id，保证同主机多实例不撞名）。
+NODE8="{node_short}"
+for pair in "ttyd:$TTYD_PORT" "fs:$FS_PORT"; do
+  kind="${{pair%%:*}}"
+  port="${{pair##*:}}"
+  sudo tee /etc/systemd/system/tx-expose-$OS_USER-$kind.service >/dev/null <<UNIT
+[Unit]
+Description=teamx tunnel expose: $kind-$OS_USER-$NODE8
+After=network-online.target teamx-$OS_USER-$kind.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=$OS_USER
+WorkingDirectory=$WS
+Environment=HOME=/home/$OS_USER
+Environment=PATH=/home/$OS_USER/.opencode/bin:/home/$OS_USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TEAMX_SERVER_URL={server_url}
+Environment=TEAMX_HOME=$WS/.teamx
+ExecStart=/usr/local/bin/teamx tunnel expose $kind-$OS_USER-$NODE8 --port $port --mode local --server {server_url} --session net:{member_id}
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sudo systemctl enable tx-expose-$OS_USER-$kind.service >/dev/null 2>&1 || true
+done
+
 for u in opencode-serve teamx-worker ttyd fs; do
   sudo systemctl enable teamx-$OS_USER-$u.service >/dev/null 2>&1 || true
 done
@@ -1167,7 +1196,7 @@ pub fn post_approve_script(os_user: &str) -> String {
 WS={ws}
 
 # 1) 先起服务（裁决 V）：clone 可能很慢甚至卡住，不能让它挡住实例可用。
-for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do
+for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' 'tx-expose-{os_user}-*.service' | awk '{{print $1}}'); do
   sudo systemctl start "$u" || true
 done
 echo "units started"
@@ -1429,12 +1458,37 @@ pub fn run_destroy(
     })
     .map_err(|e| format!("db: {e}"))?;
     steps.push(json!({"step": "purge-secrets", "done": true}));
-    // 诚实标注：目前**没有** CRL/吊销机制（pki 无 revoke API），
-    // 证书在有效期内仍可认证——不能谎报 done。见 design/006 待补项。
-    steps.push(json!({
-        "step": "revoke-member-cert", "target": node["member_id"], "done": false,
-        "skipped": "no CRL/revocation mechanism yet (cert stays valid until expiry)",
-    }));
+
+    // 吊销 member 证书（design/006 §2）：pki 没有 CRL，改由 **seat 状态** 实现——
+    // 该成员已无存活节点 → 置 left，serve 的 dispatch 随即拒绝其证书发来的 RPC。
+    let member_id = node["member_id"].as_str().unwrap_or("");
+    if !member_id.is_empty() {
+        let alive: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE member_id = ?1 AND id <> ?2 AND state <> 'terminated'",
+                params![member_id, node_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if alive == 0 {
+            let changed = conn
+                .execute(
+                    "UPDATE members SET state = 'left', left_at = ?1
+                     WHERE id = ?2 AND state NOT IN ('left','denied')",
+                    params![db::now(), member_id],
+                )
+                .unwrap_or(0);
+            steps.push(json!({
+                "step": "revoke-member-cert", "target": member_id, "done": changed > 0,
+                "note": "seat marked left; serve rejects RPCs signed by this cert",
+            }));
+        } else {
+            steps.push(json!({
+                "step": "revoke-member-cert", "target": member_id, "done": false,
+                "skipped": format!("{alive} other live node(s) still use this seat"),
+            }));
+        }
+    }
     set_node_state(conn, node_id, "terminated")?;
     Ok(json!({"ok": true, "node_id": node_id, "state": "terminated", "steps": steps}))
 }
@@ -1838,6 +1892,12 @@ mod tests {
             );
         }
         assert!(!sc.contains("echo noop"), "placeholder unit leaked");
+        // tx-expose 单元（ttyd / fs 端口经反向隧道暴露给团队；名字带 node 短 id）
+        assert!(sc.contains("tx-expose-$OS_USER-$kind.service"), "{sc}");
+        for pair in ["ttyd:$TTYD_PORT", "fs:$FS_PORT"] {
+            assert!(sc.contains(&format!("\"{pair}\"")), "missing tx-expose target {pair}");
+        }
+        assert!(sc.contains("teamx tunnel expose $kind-$OS_USER-$NODE8"), "{sc}");
         assert!(sc.contains("$OC_BIN serve --hostname 127.0.0.1 --port $OC_PORT"), "{sc}");
         assert!(sc.contains("teamx worker --interval 60 --cooldown 600"), "{sc}");
         assert!(sc.contains("/usr/local/bin/ttyd -p $TTYD_PORT"), "{sc}");
@@ -2093,6 +2153,12 @@ mod tests {
             "INSERT INTO teams (id,name,state,invite_token,created_at,updated_at) VALUES ('t1','T','active','tok','now','now')",
             [],
         ).unwrap();
+        // 座位（destroy 的吊销步骤要读/写它）
+        c.execute(
+            "INSERT OR IGNORE INTO members (id,team_id,session_key,display_name,role,state,joined_at)
+             VALUES ('m1','t1','net:m1','M','contributor','active','now')",
+            [],
+        ).unwrap();
         let opts = ProvisionOpts { region: Some("r".into()), ..Default::default() };
         provision_for_member(c, "t1", "m1", "u1", &opts).unwrap()
     }
@@ -2143,6 +2209,33 @@ mod tests {
         assert!(steps.iter().any(|s| s["step"] == json!("terminate-instance")));
         assert!(steps.iter().any(|s| s["step"] == json!("delete-os-user") || s["step"] == json!("stop-services-and-delete-os-user")));
         assert!(steps.iter().any(|s| s["step"] == json!("delete-keypair")));
+        // 吊销：该成员已无存活节点 → seat 置 left（serve 随即拒绝其证书）
+        let seat: String = c
+            .query_row("SELECT state FROM members WHERE id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seat, "left", "destroyed seat must be revoked (left)");
+        let rev = steps.iter().find(|s| s["step"] == json!("revoke-member-cert")).unwrap();
+        assert_eq!(rev["done"], json!(true), "{rev}");
+    }
+
+    #[test]
+    fn destroy_keeps_seat_when_other_nodes_alive() {
+        let mut c = conn();
+        let p = seed(&mut c);
+        let nid = p["node_id"].as_str().unwrap().to_string();
+        c.execute("UPDATE nodes SET state='ready', instance_id='i-a', ip='1.2.3.4', keypair_ref='teamx-k' WHERE id=?1", params![nid]).unwrap();
+        // 同一 member 的第二台节点仍在运行 → 不能吊销 seat
+        c.execute(
+            "INSERT INTO nodes (id,team_id,user_id,member_id,provider,region,state,os_user,created_at,instance_id)
+             VALUES ('n-2','t1','u1','m1','aws','us-west-2','ready','x1234','now','i-b')",
+            [],
+        )
+        .unwrap();
+        let r = run_destroy(&mut c, &nid, &FakeProvider { fail: false }, &FakeExec, "/tmp/k").unwrap();
+        let rev = r["steps"].as_array().unwrap().iter().find(|s| s["step"] == json!("revoke-member-cert")).unwrap().clone();
+        assert_eq!(rev["done"], json!(false), "{rev}");
+        let seat: String = c.query_row("SELECT state FROM members WHERE id='m1'", [], |r| r.get(0)).unwrap();
+        assert_ne!(seat, "left", "seat must stay alive while another node uses it");
     }
 
     #[test]

@@ -1266,6 +1266,32 @@ fn dispatch_service(
 }
 
 /// verified client certificate CN (`actor_cn`), not the self-reported `session`.
+/// 吊销判定（design/006 §2「吊销 member 证书」）：pki 无 CRL，改按 **seat 状态** 判定。
+///
+/// `left` / `denied` → 已吊销；座位不存在（尚未认领）→ 视同吊销（只放行 team.import）。
+pub fn member_revoked_for_rpc(state: Option<&str>) -> bool {
+    match state {
+        Some("left") | Some("denied") => true,
+        Some(_) => false,
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod revoke_tests {
+    use super::member_revoked_for_rpc;
+
+    #[test]
+    fn revoked_seats_are_rejected_but_active_ones_are_not() {
+        assert!(member_revoked_for_rpc(Some("left")));
+        assert!(member_revoked_for_rpc(Some("denied")));
+        assert!(member_revoked_for_rpc(None), "unknown seat: only team.import allowed");
+        for ok in ["pending", "active", "idle", "waiting"] {
+            assert!(!member_revoked_for_rpc(Some(ok)), "{ok} must not be treated as revoked");
+        }
+    }
+}
+
 fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_cn: &str, tunnels: &crate::tunnel::TunnelRegistry, peer: Option<SocketAddr>, host: Option<&str>) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let o = |k: &str| s(k);
@@ -1283,6 +1309,26 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             return Err(format!("no member identity in client certificate CN `{actor_cn}`"));
         }
     };
+
+    // 吊销校验（design/006 §2：「吊销 member 证书」）。节点销毁后该 seat 被置为
+    // left，其证书在 TLS 层仍有效（pki 无 CRL），因此在**派发前**按 seat 状态拦截：
+    // 只允许尚未认领的座位走 team.import（认领本身需要它），其余一律拒绝。
+    // 未知 member（尚未认领）同理只放行 team.import。
+    {
+        let state: Option<String> = conn
+            .query_row(
+                "SELECT state FROM members WHERE id = ?1",
+                rusqlite::params![member_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if member_revoked_for_rpc(state.as_deref()) && method != "team.import" {
+            return Err(format!(
+                "member {member_id} is revoked (seat state: {}); certificate no longer accepted",
+                state.as_deref().unwrap_or("unknown")
+            ));
+        }
+    }
 
     // 成员工作区目录上报：客户端（插件 / CLI）随任意 RPC 附带 `workspace`，
     // 落库到 members.workspace，供 `team status` / console 展示「每个成员在哪工作」。
