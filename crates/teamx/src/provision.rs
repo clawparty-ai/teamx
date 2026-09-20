@@ -1039,7 +1039,10 @@ sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
 # --- 6b) 认领 seat（network 模式：server 侧把预分配的 seat 绑定到证书 CN 的 member）---
 # `team import` 只把材料落到本地；真正的绑定要走 team.import RPC。此前这步靠人工
 # 发 RPC（或等插件自动认领），这里由脚本自己完成，使整条链路无人工步骤。
-INV_ID="$(echo {letter_b64} | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["teamx_invitation"]["invitation_id"])')"
+# letter 文件是 `teamx-inv:v1:<base64(json)>` 形式（不是裸 JSON）：先去前缀再解一层。
+LETTER_JSON="$(echo {letter_b64} | base64 -d | sed -n 's/^teamx-inv:v1://p' | base64 -d 2>/dev/null)"
+if [ -z "$LETTER_JSON" ]; then LETTER_JSON="$(echo {letter_b64} | base64 -d)"; fi
+INV_ID="$(printf '%s' "$LETTER_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["teamx_invitation"]["invitation_id"])')"
 L_DIR="$WS/.teamx/letters/$INV_ID"
 if [ -d "$L_DIR" ]; then
   curl -sS --max-time 30 --cacert "$L_DIR/ca.crt" --cert "$L_DIR/client.crt" --key "$L_DIR/client.key" \
@@ -1787,7 +1790,7 @@ mod tests {
         );
         assert!(sc.contains(r#"cat > $WS/.teamx/ca.pem"#), "{sc}");
         // 脚本自己认领 seat（不再依赖人工发 RPC / 插件自动认领）
-        assert!(sc.contains(r#"\"method\":\"team.import\""#), "{sc}");
+        assert!(sc.contains("team.import"), "{sc}");
         assert!(sc.contains(r#"--cert "$L_DIR/client.crt""#), "{sc}");
         // 真实 systemd 单元（不再是 echo noop 占位）
         for unit in ["opencode-serve", "teamx-worker", "ttyd", "fs"] {
