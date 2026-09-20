@@ -232,6 +232,10 @@ pub fn member_transition(from: MemberState, action: &Action) -> Result<MemberSta
         (MemberState::Pending, Deny) => MemberState::Denied,
         (MemberState::Active, Ask) => MemberState::Waiting,
         (MemberState::Idle, Ask) => MemberState::Waiting,
+        // 已在 waiting 的成员可以**再次被提问**（幂等：仍 waiting）。
+        // 此前缺这条 → 成员之间无法互相唤醒（真机踩到：xiaods-mac 无法 ask
+        // 处于 waiting 的 xiaods-ec2）。
+        (MemberState::Waiting, Ask) => MemberState::Waiting,
         (MemberState::Waiting, Respond) => MemberState::Active,
         (MemberState::Active, MemberIdle) => MemberState::Idle,
         (MemberState::Idle, MemberActive) => MemberState::Active,
@@ -348,6 +352,8 @@ mod tests {
         assert_eq!(member_transition(MemberState::Pending, &Action::Approve).unwrap(), MemberState::Active);
         assert_eq!(member_transition(MemberState::Pending, &Action::Deny).unwrap(), MemberState::Denied);
         assert_eq!(member_transition(MemberState::Active, &Action::Ask).unwrap(), MemberState::Waiting);
+        // 已在 waiting 的成员可再次被提问（幂等）——否则成员之间无法互相唤醒
+        assert_eq!(member_transition(MemberState::Waiting, &Action::Ask).unwrap(), MemberState::Waiting);
         assert_eq!(member_transition(MemberState::Idle, &Action::Ask).unwrap(), MemberState::Waiting);
         assert_eq!(member_transition(MemberState::Waiting, &Action::Respond).unwrap(), MemberState::Active);
         assert_eq!(member_transition(MemberState::Active, &Action::MemberIdle).unwrap(), MemberState::Idle);

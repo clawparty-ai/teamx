@@ -5473,7 +5473,16 @@ fn cmd_respond(conn: &mut Connection, ask_id: &str, answer: &str, session: &str)
             "UPDATE questions SET answer = ?1, state = 'answered', answered_at = ?2 WHERE id = ?3",
             params![answer, now, q.id],
         )?;
-        tx.execute("UPDATE members SET state = 'active' WHERE id = ?1", params![q.target_member_id])?;
+        // 只有该成员**没有其它未答问题**时才解锁为 active（否则保持 waiting，
+        // 避免答完一条就"复活"而遗漏其它提问）。
+        let still_open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM questions WHERE target_member_id = ?1 AND state = 'open'",
+            params![q.target_member_id],
+            |r| r.get(0),
+        )?;
+        if still_open == 0 {
+            tx.execute("UPDATE members SET state = 'active' WHERE id = ?1", params![q.target_member_id])?;
+        }
         emit_json(
             tx,
             &q.team_id,
@@ -6835,6 +6844,32 @@ mod tests {
         assert_eq!(st2, "active");
         let qs: String = conn.query_row("SELECT state FROM questions WHERE id=?1", [&qid], |r| r.get(0)).unwrap();
         assert_eq!(qs, "cancelled");
+    }
+
+    #[test]
+    fn ask_waiting_member_and_respond_keeps_waiting_until_last() {
+        let mut conn = test_conn();
+        seed_team(&conn, "t1", "m-owner");
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-w','t1','sw','W','contributor','active','now')",
+            [],
+        )
+        .unwrap();
+        // 第一问：active -> waiting
+        let a1 = cmd_ask(&mut conn, "m-w", "Q1?", "s", Some("t1")).unwrap();
+        // 第二问：**waiting 成员仍可被提问**（此前是 illegal transition）
+        let a2 = cmd_ask(&mut conn, "m-w", "Q2?", "s", Some("t1")).unwrap();
+        let st: String = conn.query_row("SELECT state FROM members WHERE id='m-w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st, "waiting");
+        // 答第一条：仍有未答问题 → 保持 waiting
+        cmd_respond(&mut conn, a1["question_id"].as_str().unwrap(), "A1", "sw").unwrap();
+        let st2: String = conn.query_row("SELECT state FROM members WHERE id='m-w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st2, "waiting", "still has an open question");
+        // 答完最后一条 → active
+        cmd_respond(&mut conn, a2["question_id"].as_str().unwrap(), "A2", "sw").unwrap();
+        let st3: String = conn.query_row("SELECT state FROM members WHERE id='m-w'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st3, "active");
     }
 
     #[test]

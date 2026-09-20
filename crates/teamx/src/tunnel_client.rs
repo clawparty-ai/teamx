@@ -493,9 +493,21 @@ async fn expose_once(server_url: &str, name: &str, port: u16, mode: &str, lan_ip
     let writers: Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
+    // 空闲超时：server 每 30s 发一次 ping，因此长时间收不到任何帧说明连接已半开
+    // （NAT/中间设备静默丢弃）——此时 ws.next() 永不返回，进程卡死且**不会重连**
+    // （真机踩到：隧道 4.5 小时无任何日志、注册表里也已被 server 摘掉）。
+    // 超时后返回 Err，交给外层 run_expose 的退避重连。
+    let idle = Duration::from_secs(
+        std::env::var("TEAMX_TUNNEL_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(90),
+    );
     loop {
         tokio::select! {
-            m = ws.next() => match m {
+            m = tokio::time::timeout(idle, ws.next()) => match m {
+                Err(_) => return Err(format!("no frames from server for {}s (half-open ws?)", idle.as_secs())),
+                Ok(m) => match m {
                 Some(Ok(Message::Text(t))) => {
                     let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap_or_else(|_| serde_json::json!({}));
                     match v["type"].as_str() {
@@ -604,6 +616,7 @@ async fn expose_once(server_url: &str, name: &str, port: u16, mode: &str, lan_ip
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(format!("ws error: {e}")),
                 None => return Err("server closed the connection".to_string()),
+                },
             },
             m = to_server_rx.recv() => {
                 match m {

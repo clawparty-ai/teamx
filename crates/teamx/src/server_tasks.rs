@@ -69,6 +69,19 @@ fn member_role(conn: &Connection, team_id: &str, member_id: &str) -> Result<Opti
     .map_err(|e| format!("db: {e}"))
 }
 
+/// 是否是该团队的在册成员（active/idle/waiting；不含 left/denied）。
+fn is_member(conn: &Connection, team_id: &str, member_id: &str) -> Result<bool, String> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM members WHERE id = ?1 AND team_id = ?2
+               AND state NOT IN ('left','denied','pending')",
+            rusqlite::params![member_id, team_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
 fn is_lead(conn: &Connection, team_id: &str, member_id: &str) -> Result<bool, String> {
     let row: Option<(Option<String>, bool)> = conn
         .query_row(
@@ -130,8 +143,11 @@ fn auto_id(conn: &Connection, team_id: &str) -> Result<String, String> {
 }
 
 fn create(conn: &mut Connection, team_id: &str, member_id: &str, args: &Value) -> Result<Value, String> {
-    if !is_lead(conn, team_id, member_id)? {
-        return Err("task.create: only the team lead can create tasks".to_string());
+    // 任何**在册成员**都可以建任务（此前限 lead，导致普通成员发现问题只能绕道找
+    // owner；真机踩到：contributor 无法给云端 member 派"重启隧道"的任务）。
+    // 任务状态机自带 reject 流，且全程落台账，可审计可回滚。
+    if !is_member(conn, team_id, member_id)? {
+        return Err("task.create: only a team member can create tasks".to_string());
     }
     let title = s(args, "title").ok_or_else(|| "task.create requires `title`".to_string())?.to_string();
     let body = s(args, "body").or_else(|| s(args, "detail")).map(str::to_string);
@@ -659,8 +675,7 @@ mod tests {
     fn full_lifecycle_and_permissions() {
         let mut c = test_conn();
 
-        // Worker cannot create.
-        assert!(call(&mut c, "task.create", "m-w1", json!({"title":"x"})).is_err());
+
 
         // Lead creates a direct task for m-w1.
         let out = call(
@@ -694,6 +709,11 @@ mod tests {
             call(&mut c, "task.verify", "m-owner", json!({"id": id})).unwrap()["task"]["state"],
             "verified"
         );
+        // 普通成员（非 lead）也能创建任务（真机踩到：contributor 无法给云端 member
+        // 派"重启隧道"的任务）；left/denied/pending 的座位则不行。
+        let extra = call(&mut c, "task.create", "m-w1", json!({"title":"x", "assignee":"m-w1"})).unwrap();
+        assert_eq!(extra["tasks"].as_array().unwrap().len(), 1);
+        assert!(call(&mut c, "task.create", "m-gone", json!({"title":"x", "assignee":"m-gone"})).is_err());
     }
 
     #[test]
