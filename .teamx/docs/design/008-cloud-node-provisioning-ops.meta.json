@@ -1,0 +1,16 @@
+{
+  "doc": "design",
+  "id": "008-cloud-node-provisioning-ops",
+  "state": "draft",
+  "owner": "caishu",
+  "created_at": "2026-09-20T10:18:50+00:00",
+  "updated_at": "2026-09-20T10:18:50+00:00",
+  "history": [
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-20T10:18:50+00:00",
+      "note": "design/006 的实施与使用手册：能力清单、端到端流程、CLI/RPC 用法、节点布局、真机踩坑 20 条、现状与待办"
+    }
+  ]
+}
