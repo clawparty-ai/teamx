@@ -1792,6 +1792,9 @@ mod tests {
         // 脚本自己认领 seat（不再依赖人工发 RPC / 插件自动认领）
         assert!(sc.contains("team.import"), "{sc}");
         assert!(sc.contains(r#"--cert "$L_DIR/client.crt""#), "{sc}");
+        // RPC 载荷必须是解一层后的 letter 原文（letter_b64 是文件内容的 base64，
+        // 直接送会变成双层编码，服务端 decode 失败）
+        assert!(sc.contains(r#""letter":"$LETTER_TXT""#), "{sc}");
         // 真实 systemd 单元（不再是 echo noop 占位）
         for unit in ["opencode-serve", "teamx-worker", "ttyd", "fs"] {
             assert!(
