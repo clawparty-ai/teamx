@@ -28,9 +28,9 @@ for (const invariant of [
 }
 
 let protocolVersion = null
-for (const name of ["team-grill.md", "team-grill.en.md"]) {
+for (const [name, agent] of [["team-grill.md", "teamx"], ["team-grill.en.md", "teamx.en"]]) {
   const asset = read("opencode-plugin", "assets", "command", name)
-  assert.match(asset, /^---\ndescription: .+\nagent: teamx\n---/)
+  assert.match(asset, new RegExp(`^---\\ndescription: .+\\nagent: ${agent.replace(".", "\\.")}\\n---`))
   assert.ok(asset.includes("User arguments: $ARGUMENTS") || asset.includes("用户参数: $ARGUMENTS"))
   // The generator stamps `protocol v<N>; sha256 <hash>`. Assert the hash is
   // current and that both assets agree on the version — without pinning a

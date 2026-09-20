@@ -1,6 +1,6 @@
 ---
 description: teamx join team (via invite_token, requires owner/co-lead approval)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to join a teamx team. Parameters: $ARGUMENTS (should be invite_token and --name display_name).

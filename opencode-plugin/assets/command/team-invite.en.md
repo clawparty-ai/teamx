@@ -1,6 +1,6 @@
 ---
 description: teamx invite member (owner/co-lead issues mTLS client certificate + invitation letter)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to invite a member as owner (network mode). Parameters: $ARGUMENTS (format: `"<role>: <description>"`, optional `--name-hint <name>` `--server-url <url>`). Call teamx_team_invite (role_desc, name_hint, server_url).

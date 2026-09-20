@@ -1,6 +1,6 @@
 ---
 description: teamx draft/update team goal (owner/co-lead)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to set a teamx team goal. Goal title: $1, goal description (optional): $2 (omit if none).

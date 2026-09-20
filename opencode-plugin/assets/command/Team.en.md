@@ -1,6 +1,6 @@
 ---
 description: teamx team collaboration (subcommands: create/join/status/sync/goal/approve/deny/role/ask/publish/invite/import etc.; type /team help to see all)
-agent: teamx
+agent: teamx.en
 ---
 
 teamx team collaboration command. Route and execute based on the following subcommands (agent parses $ARGUMENTS and calls the corresponding teamx_* tool):

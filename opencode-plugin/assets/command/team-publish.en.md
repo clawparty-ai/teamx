@@ -1,6 +1,6 @@
 ---
 description: teamx publish/broadcast (progress/decision/update/blocked/resumed/achieved/refine; optional --assignee for targeted dispatch)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to publish a teamx event. Event type: $1, optional data: $2. Call teamx_publish (type=$1, data=$2 or {"message":...}). Valid types: progress / decision / update / blocked / resumed / achieved / refine / start / activity.

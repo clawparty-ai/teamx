@@ -1,6 +1,6 @@
 ---
 description: teamx import invitation letter (member unpacks mTLS certificate + claims pending seat)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to import an invitation letter. Parameters: $ARGUMENTS (letter single line `teamx-inv:v1:...` or .json file path, optional `--name <display_name>`). Call teamx_team_import (letter, name).

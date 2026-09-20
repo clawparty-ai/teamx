@@ -1,6 +1,6 @@
 ---
 description: teamx create team (become owner)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to create a team via teamx. Team name: $ARGUMENTS.

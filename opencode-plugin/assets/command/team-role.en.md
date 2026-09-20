@@ -1,6 +1,6 @@
 ---
 description: teamx choose role (built-in or approved custom role)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to choose a teamx role for the current session. Role: $ARGUMENTS. Call teamx_set_role (role=$ARGUMENTS). If the role is not in the catalog, list available roles for the user to choose from (including custom roles). Note: unapproved custom roles are not available; the owner must first `role approve` them.

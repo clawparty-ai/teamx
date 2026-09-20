@@ -1,6 +1,6 @@
 ---
 description: Step-by-step wizard: interactively define your team and produce a buildable .teamx/TEAM.md
-agent: teamx
+agent: teamx.en
 ---
 
 Run the protocol below for $ARGUMENTS. Use the user's current language throughout.

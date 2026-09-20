@@ -24,14 +24,15 @@ const protocolBody = match[2].trimEnd() + "\n"
 const sourceHash = createHash("sha256").update(source).digest("hex")
 const generatedMarker = `Generated from protocols/grill-with-docs.md; protocol v${protocolVersion}; sha256 ${sourceHash}`
 
-function commandAsset({ description, invocation }) {
-  return `---\ndescription: ${description}\nagent: teamx\n---\n\n<!-- ${generatedMarker}; do not edit. -->\n\n${invocation}\n\n${protocolBody}`
+function commandAsset({ description, invocation, agent }) {
+  return `---\ndescription: ${description}\nagent: ${agent}\n---\n\n<!-- ${generatedMarker}; do not edit. -->\n\n${invocation}\n\n${protocolBody}`
 }
 
 const outputs = new Map([
   [
     join(root, "opencode-plugin", "assets", "command", "team-grill.en.md"),
     commandAsset({
+      agent: "teamx.en",
       description: "Run a Teamx design interview (any team member can lead) and preserve decisions in repository docs",
       invocation: "Run the Teamx grill-with-docs protocol for the explicit arguments below. Treat them as the topic and options for Start or Resume.\n\nUser arguments: $ARGUMENTS",
     }),
@@ -39,6 +40,7 @@ const outputs = new Map([
   [
     join(root, "opencode-plugin", "assets", "command", "team-grill.md"),
     commandAsset({
+      agent: "teamx",
       description: "运行 Teamx 设计访谈（任意团队成员均可发起），并把决策沉淀到仓库文档",
       invocation: "按下方 Teamx grill-with-docs 协议处理明确参数，将其作为新建设计主题或恢复选项。全程使用用户当前语言。\n\n用户参数: $ARGUMENTS",
     }),

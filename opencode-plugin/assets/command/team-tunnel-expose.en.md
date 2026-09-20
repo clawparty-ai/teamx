@@ -1,6 +1,6 @@
 ---
 description: teamx reverse tunnel - expose a local service to teammates (provider)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to expose a local service to team members (reverse tunnel). Parameters: $ARGUMENTS (format: `--name <tunnel-name> --port <local-port> [--mode local|frp] [--lan-ip <lan-ip>]`). Call teamx_tunnel_expose (name, port, mode, lan_ip).

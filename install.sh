@@ -140,17 +140,18 @@ step "installing opencode plugin pieces"
 mkdir -p "$CONFIG_DIR/plugins" "$CONFIG_DIR/agent" "$CONFIG_DIR/commands"
 # Primary location: the standard plural `commands/` directory (same as loopx).
 cp "$PLUGIN_DIR/dist/teamx.js" "$CONFIG_DIR/plugins/teamx.js"
-# Install agent file based on system language (detect from $LANG / $LC_ALL).
+# Install BOTH agent files so `teamx` (zh) and `teamx.en` (en) always exist,
+# whichever language the command files reference (see `agent:` frontmatter).
+# Install command files for the detected language only.
 LANG_CODE="${LANG:-${LC_ALL:-en_US}}"
 if [[ "$LANG_CODE" == zh* ]]; then
-  AGENT_SRC="teamx.md"       # Chinese agent
   CMD_SUFFIX=""               # Chinese command files (*.md)
 else
-  AGENT_SRC="teamx.en.md"    # English agent
   CMD_SUFFIX=".en"            # English command files (*.en.md)
 fi
-cp "$PLUGIN_DIR/assets/agent/$AGENT_SRC" "$CONFIG_DIR/agent/$AGENT_SRC"
-echo "detected lang=$LANG_CODE → installed agent: $AGENT_SRC"
+cp "$PLUGIN_DIR/assets/agent/teamx.md" "$CONFIG_DIR/agent/teamx.md"
+cp "$PLUGIN_DIR/assets/agent/teamx.en.md" "$CONFIG_DIR/agent/teamx.en.md"
+echo "detected lang=$LANG_CODE → installed agents: teamx.md teamx.en.md; commands: suffix '${CMD_SUFFIX:-<zh>}'"
 # Install /team command files for the detected language only.
 for cmd in Team team-create team-join team-status team-sync \
            team-goal-set team-goal-share team-goal-close \

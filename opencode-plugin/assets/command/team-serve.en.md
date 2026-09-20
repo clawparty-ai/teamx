@@ -1,6 +1,6 @@
 ---
 description: teamx network mode serve (start/status/stop/token)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to manage the teamx network mode embedded server. Route based on $ARGUMENTS:

@@ -1,6 +1,6 @@
 ---
 description: teamx reverse tunnels (expose/list/status/close - expose a local service to teammates)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to manage a teamx reverse tunnel (expose a local service to team members, network mode). Route by $ARGUMENTS:

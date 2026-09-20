@@ -1,6 +1,6 @@
 ---
 description: teamx open the member web console (teamx console, opens the browser)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to open the Teamx Console (member local read-only web console). Call teamx_console (port defaults to 9528; if already running it just re-opens the existing URL).

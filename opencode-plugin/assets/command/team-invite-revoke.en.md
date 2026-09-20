@@ -1,6 +1,6 @@
 ---
 description: teamx revoke invitation (owner/co-lead)
-agent: teamx
+agent: teamx.en
 ---
 
 User (owner/co-lead) wants to revoke an invitation. Parameters: $ARGUMENTS (invitation id). Call teamx_team_invite_revoke (id).

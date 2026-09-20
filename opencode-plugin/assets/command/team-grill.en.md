@@ -1,6 +1,6 @@
 ---
 description: Run a Teamx design interview (any team member can lead) and preserve decisions in repository docs
-agent: teamx
+agent: teamx.en
 ---
 
 <!-- Generated from protocols/grill-with-docs.md; protocol v2; sha256 c8a7bf5159cc0ae3d04f86d2bec0a403d8e8a701750526b2883cf7bfdf1eeeaa; do not edit. -->

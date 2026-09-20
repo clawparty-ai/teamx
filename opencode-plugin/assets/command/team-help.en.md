@@ -1,6 +1,6 @@
 ---
 description: teamx help (list all subcommands and flat aliases)
-agent: teamx
+agent: teamx.en
 ---
 
 List all teamx subcommands and flat alias commands with brief descriptions. Additional parameters: $ARGUMENTS

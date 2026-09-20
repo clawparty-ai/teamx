@@ -1,6 +1,6 @@
 ---
 description: teamx show my unified inbox (tasks + questions + unread nudges)
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to see their unified inbox. Call teamx_inbox (ack defaults to true, i.e. mark nudges as read).

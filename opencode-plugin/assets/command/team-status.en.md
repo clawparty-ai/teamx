@@ -1,6 +1,6 @@
 ---
 description: teamx view current team status
-agent: teamx
+agent: teamx.en
 ---
 
 User wants to view teamx team status. Call teamx_sync first to pull latest events, then call teamx_status to display full status (team/goal/members/roles/pending questions). If the current session belongs to multiple teams, use --team to specify the target team. Additional parameters: $ARGUMENTS
