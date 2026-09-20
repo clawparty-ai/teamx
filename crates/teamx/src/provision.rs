@@ -1037,23 +1037,29 @@ sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
   bash -lc "cd $WS && teamx team import $WS/.teamx/letters/invite/invitation.letter --session net:{member_id}"
 
 # --- 6b) 认领 seat（network 模式：server 侧把预分配的 seat 绑定到证书 CN 的 member）---
-# `team import` 只把材料落到本地；真正的绑定要走 team.import RPC。此前这步靠人工
-# 发 RPC（或等插件自动认领），这里由脚本自己完成，使整条链路无人工步骤。
+# 整个步骤以**实例用户身份**执行：/home/<user> 默认 0750，ubuntu 读不到里面的证书
+# 与 letter（真机踩到：条件判断恒为假，认领静默跳过）。
+sudo -u $OS_USER env TEAMX_WS="$WS" TEAMX_LETTER_B64="{letter_b64}" TEAMX_SRV="{server_url}" TEAMX_OS_USER="$OS_USER" \
+  bash -s <<'TEAMX_CLAIM_EOF'
+set -uo pipefail
 # letter_b64 是「letter 文件内容」的 base64，而文件内容本身是
 # `teamx-inv:v1:<base64(json)>`：RPC 载荷要用**解一层**后的原文
 # （直接送 letter_b64 会变成双层编码，服务端 decode 失败）。
-LETTER_TXT="$(echo {letter_b64} | base64 -d)"
+LETTER_TXT="$(printf '%s' "$TEAMX_LETTER_B64" | base64 -d)"
 LETTER_JSON="$(printf '%s' "$LETTER_TXT" | sed -n 's/^teamx-inv:v1://p' | base64 -d 2>/dev/null)"
-if [ -z "$LETTER_JSON" ]; then LETTER_JSON="$LETTER_TXT"; fi
+[ -n "$LETTER_JSON" ] || LETTER_JSON="$LETTER_TXT"
 INV_ID="$(printf '%s' "$LETTER_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["teamx_invitation"]["invitation_id"])')"
-L_DIR="$WS/.teamx/letters/$INV_ID"
+L_DIR="$TEAMX_WS/.teamx/letters/$INV_ID"
 if [ -d "$L_DIR" ]; then
   curl -sS --max-time 30 --cacert "$L_DIR/ca.crt" --cert "$L_DIR/client.crt" --key "$L_DIR/client.key" \
     -H 'Content-Type: application/json' \
-    -d "{{\"method\":\"team.import\",\"args\":{{\"letter\":\"$LETTER_TXT\",\"name\":\"{os_user}\"}}}}" \
-    "{server_url}/rpc" | sudo -u {os_user} bash -lc "cat > $WS/.teamx/claim.json" || true
-  echo "claim: $(head -c 160 $WS/.teamx/claim.json 2>/dev/null)"
+    -d "{{\"method\":\"team.import\",\"args\":{{\"letter\":\"$LETTER_TXT\",\"name\":\"$TEAMX_OS_USER\"}}}}" \
+    "$TEAMX_SRV/rpc" > "$TEAMX_WS/.teamx/claim.json" 2>/dev/null || true
+  echo "claim: $(head -c 160 "$TEAMX_WS/.teamx/claim.json" 2>/dev/null)"
+else
+  echo "claim: skipped (no cert store at $L_DIR)"
 fi
+TEAMX_CLAIM_EOF
 
 # --- 7) stock git 的 mTLS 配置（approve 后 clone 团队 repo 用） ---
 sudo -u $OS_USER env TEAMX_HOME=$WS/.teamx TEAMX_SERVER_URL={server_url} \
@@ -1159,11 +1165,13 @@ pub fn post_approve_script(os_user: &str) -> String {
     format!(
         r#"set -uo pipefail
 WS={ws}
-if [ ! -d "$WS/.git" ] && [ -s "$WS/.teamx/team-repo.url" ]; then
-  URL="$(cat $WS/.teamx/team-repo.url)"
-  if [ -n "$URL" ]; then
-    sudo -u {os_user} bash -lc "rm -rf /tmp/wsclone && git clone '$URL' /tmp/wsclone && rm -rf '$WS' && mv /tmp/wsclone '$WS'" || true
-  fi
+# /home/<user> 是 0750 → 读 URL 必须走 sudo（真机踩到：条件恒为假，clone 静默跳过）
+URL="$(sudo cat $WS/.teamx/team-repo.url 2>/dev/null || true)"
+if [ -n "$URL" ] && [ ! -d "$WS/.git" ]; then
+  # clone 到临时目录后**并入** $WS（不能 rm -rf $WS —— 那会删掉 .teamx 里的证书/letter）
+  sudo -u {os_user} bash -lc "rm -rf /tmp/wsclone && git clone '$URL' /tmp/wsclone" \
+    && sudo -u {os_user} bash -lc "cp -a /tmp/wsclone/. '$WS'/ && rm -rf /tmp/wsclone" \
+    || true
 fi
 for u in $(systemctl list-unit-files --no-legend 'teamx-{os_user}-*.service' | awk '{{print $1}}'); do
   sudo systemctl start "$u" || true
@@ -1691,6 +1699,9 @@ mod tests {
         // 必须枚举单元（systemctl 通配对未加载单元无效）
         assert!(sc.contains("systemctl list-unit-files"), "{sc}");
         assert!(sc.contains("systemctl start \"$u\""), "{sc}");
+        // URL 读取走 sudo（/home/<user> 0750）；clone 必须并入 $WS，不能删掉 .teamx
+        assert!(sc.contains("sudo cat $WS/.teamx/team-repo.url"), "{sc}");
+        assert!(!sc.contains("rm -rf '$WS'"), "must not wipe the workspace (.teamx holds certs)");
         assert!(sc.contains("/home/xiaods/work/team-repo"), "{sc}");
     }
 
@@ -1799,6 +1810,11 @@ mod tests {
         // RPC 载荷必须是解一层后的 letter 原文（letter_b64 是文件内容的 base64，
         // 直接送会变成双层编码，服务端 decode 失败）
         assert!(sc.contains(r#"\"letter\":\"$LETTER_TXT\""#), "{sc}");
+        // 认领必须整段以实例用户身份跑（/home/<user> 0750，ubuntu 读不到证书）
+        assert!(
+            sc.contains(r#"sudo -u $OS_USER env TEAMX_WS="$WS""#),
+            "claim must run as the instance OS user"
+        );
         // 真实 systemd 单元（不再是 echo noop 占位）
         for unit in ["opencode-serve", "teamx-worker", "ttyd", "fs"] {
             assert!(
