@@ -1276,6 +1276,12 @@ pub enum DiscussionCmd {
         /// optional closing summary (markdown) shown under the topic; auto-generated digest if omitted
         #[arg(long)]
         summary: Option<String>,
+        /// brainstorm only: bypass the ">= N kind=idea per participant" harvest
+        /// gate (owner/co-lead). Use when the discussion has converged but some
+        /// participants contributed fewer ideas; the close event records
+        /// `forced: true` for audit.
+        #[arg(long)]
+        force: bool,
         /// brainstorm only: JSON array of directions, e.g.
         /// [{"direction_id":"d1","title":"...","source_message_ids":["dsc_x#12"],"next_step":"..."}]
         #[arg(long)]

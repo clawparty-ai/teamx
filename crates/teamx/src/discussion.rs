@@ -928,7 +928,15 @@ fn digest_summary(msgs: &[Value]) -> String {
     out.trim_end().to_string()
 }
 
-fn close(conn: &mut Connection, id: &str, summary: Option<&str>, directions: Option<&str>, session: &str, team_opt: Option<&str>) -> Result<Value, String> {
+fn close(
+    conn: &mut Connection,
+    id: &str,
+    summary: Option<&str>,
+    force: bool,
+    directions: Option<&str>,
+    session: &str,
+    team_opt: Option<&str>,
+) -> Result<Value, String> {
     let (member_id, display_name, team_id) = member_id_for_session(conn, session, team_opt)?;
     // Only team owner/lead may close a discussion (they hold team authority).
     let is_lead: bool = conn
@@ -951,6 +959,8 @@ fn close(conn: &mut Connection, id: &str, summary: Option<&str>, directions: Opt
     if !exists {
         return Err(format!("discussion `{id}` not found"));
     }
+    // owner `--force` 时记录被跳过的参与者（审计用）
+    let mut forced_short: Option<String> = None;
     // design/007 P1a/P0b：brainstorm 收窗需要 directions[]，并校验每成员 idea 下限
     // （owner 可豁免）；且**恒不生成** auto digest。
     let created_p = created_payload(&evs, id);
@@ -984,11 +994,15 @@ fn close(conn: &mut Connection, id: &str, summary: Option<&str>, directions: Opt
                 .filter(|a| ideas.get(*a).copied().unwrap_or(0) < min)
                 .cloned()
                 .collect();
-            if !short.is_empty() {
+            if !short.is_empty() && !force {
                 return Err(format!(
-                    "brainstorm close requires >= {min} `kind=idea` per participant; below: {}",
+                    "brainstorm close requires >= {min} `kind=idea` per participant; below: {} \
+                     (owner/co-lead may pass `--force` to harvest anyway; the close event records it)",
                     short.join(", ")
                 ));
+            }
+            if !short.is_empty() && force {
+                forced_short = Some(short.join(", "));
             }
         }
         let raw = directions
@@ -1019,6 +1033,11 @@ fn close(conn: &mut Connection, id: &str, summary: Option<&str>, directions: Opt
     });
     if let Some(d) = &directions_val {
         payload["directions"] = json!(d);
+    }
+    // 审计：owner 用 --force 跳过 idea 下限时记录被跳过的参与者。
+    if let Some(short) = &forced_short {
+        payload["forced"] = json!(true);
+        payload["forced_below_min_ideas"] = json!(short);
     }
     let seq = db::with_write(conn, |tx| events::emit(tx, &team_id, Some(&member_id), EV_CLOSED, Some(&payload)))
         .map_err(|e| e.to_string())?;
@@ -1153,8 +1172,8 @@ pub fn run(conn: &mut Connection, cmd: &DiscussionCmd) -> Result<Value, String> 
         DiscussionCmd::Reply { id, message_id, body, kind, session, team } => {
             say_or_reply(conn, id, body, None, Some(message_id), session, team.as_deref(), kind.as_deref())
         }
-        DiscussionCmd::Close { id, summary, directions, session, team } => {
-            close(conn, id, summary.as_deref(), directions.as_deref(), session, team.as_deref())
+        DiscussionCmd::Close { id, summary, force, directions, session, team } => {
+            close(conn, id, summary.as_deref(), *force, directions.as_deref(), session, team.as_deref())
         }
         DiscussionCmd::Handoff { id, direction_id, target_kind, target_id, session, team } => {
             handoff(conn, id, direction_id, target_kind, target_id, session, team.as_deref())
@@ -1241,9 +1260,9 @@ mod tests {
         assert!(reply["reply_to"].is_object());
 
         // non-lead worker cannot close
-        assert!(close(&mut conn, &did, None, None, "s-worker", Some("t1")).is_err());
+        assert!(close(&mut conn, &did, None, false, None, "s-worker", Some("t1")).is_err());
         // owner closes without a summary -> deterministic digest is stored
-        let c = close(&mut conn, &did, None, None, "s-owner", Some("t1")).unwrap();
+        let c = close(&mut conn, &did, None, false, None, "s-owner", Some("t1")).unwrap();
         assert!(c["ok"] == json!(true));
         assert_eq!(c["summary_auto"], json!(true));
         assert!(c["summary"].as_str().unwrap().contains("参与者"));
@@ -1271,7 +1290,7 @@ mod tests {
             .unwrap()
             .to_string();
         say_or_reply(&mut conn, &did, "hi", None, None, "s-worker", Some("t1"), None).unwrap();
-        let c = close(&mut conn, &did, Some("## 结论\n采用方案 A"), None, "s-owner", Some("t1")).unwrap();
+        let c = close(&mut conn, &did, Some("## 结论\n采用方案 A"), false, None, "s-owner", Some("t1")).unwrap();
         assert_eq!(c["summary_auto"], json!(false));
         assert_eq!(c["summary"], json!("## 结论\n采用方案 A"));
         // open returns the closer-supplied summary verbatim (not the digest)
@@ -1635,6 +1654,35 @@ mod tests {
         assert!(create(&mut conn, "X", None, None, "s-owner", Some("t1"), None, None, None, Some("bogus")).is_err());
     }
 
+    #[test]
+    fn brainstorm_close_force_bypasses_min_ideas_with_audit() {
+        let mut conn = test_conn();
+        seed(&conn);
+        // co-lead（非 primary owner）才能走到 idea 下限门槛：owner 本身豁免
+        conn.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, is_lead, joined_at)
+             VALUES ('m-colead','t1','s-colead','CoLead','co-lead','active',1,'now')",
+            [],
+        )
+        .unwrap();
+        let did = bs_create(&mut conn, Some(0), Some(3)); // 窗口 0 秒 + 每人 3 idea
+        // 只发 1 条 idea（低于下限）
+        say_or_reply(&mut conn, &did, "one idea", None, None, "s-owner", Some("t1"), Some("idea")).unwrap();
+        // 不带 force → 拒
+        let e = close(&mut conn, &did, None, false, Some(&dirs_json()), "s-colead", Some("t1")).unwrap_err();
+        assert!(e.contains("per participant"), "{e}");
+        // 带 force（co-lead）→ 允许收窗，并在事件里留审计
+        close(&mut conn, &did, None, true, Some(&dirs_json()), "s-colead", Some("t1")).unwrap();
+        let evs = events::list(&conn, "t1", None).unwrap();
+        let closed = evs.iter().rev().find(|e| e.r#type == EV_CLOSED).unwrap();
+        let p = closed.payload.clone().unwrap();
+        assert_eq!(p["forced"], json!(true), "{p}");
+        assert!(
+            p["forced_below_min_ideas"].as_str().unwrap_or("").contains("Owner"),
+            "audit must list the participant below the floor: {p}"
+        );
+    }
+
     fn bs_create(conn: &mut Connection, window_secs: Option<i64>, min_ideas: Option<i64>) -> String {
         create(conn, "BS", None, None, "s-owner", Some("t1"), Some("brainstorm"), window_secs, min_ideas, None)
             .unwrap()["discussion_id"]
@@ -1655,7 +1703,7 @@ mod tests {
         assert_eq!(brainstorm_phase(&evs, &did, "2999-01-01T00:00:00+00:00"), "clusterable");
         // 收窗 → harvested
         say_or_reply(&mut conn, &did, "i1", None, None, "s-worker", Some("t1"), Some("idea")).unwrap();
-        close(&mut conn, &did, None, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
+        close(&mut conn, &did, None, false, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
         let evs2 = events::list(&conn, "t1", None).unwrap();
         assert_eq!(brainstorm_phase(&evs2, &did, &now), "harvested");
         // open() 暴露 mode/phase/directions
@@ -1695,9 +1743,9 @@ mod tests {
         let did = bs_create(&mut conn, None, Some(2));
         say_or_reply(&mut conn, &did, "i1", None, None, "s-worker", Some("t1"), Some("idea")).unwrap();
         // lead 收窗：参与者 idea 数 1 < 2 → 拒
-        assert!(close(&mut conn, &did, None, Some(&dirs_json()), "s-worker", Some("t1")).is_err());
+        assert!(close(&mut conn, &did, None, false, Some(&dirs_json()), "s-worker", Some("t1")).is_err());
         // owner 豁免 → 过
-        assert!(close(&mut conn, &did, None, Some(&dirs_json()), "s-owner", Some("t1")).is_ok());
+        assert!(close(&mut conn, &did, None, false, Some(&dirs_json()), "s-owner", Some("t1")).is_ok());
     }
 
     #[test]
@@ -1711,12 +1759,12 @@ mod tests {
             .unwrap()
             .to_string();
         say_or_reply(&mut conn, &d, "hi", None, None, "s-worker", Some("t1"), None).unwrap();
-        let c = close(&mut conn, &d, None, None, "s-owner", Some("t1")).unwrap();
+        let c = close(&mut conn, &d, None, false, None, "s-owner", Some("t1")).unwrap();
         assert_eq!(c["summary_auto"], json!(true));
         // brainstorm：恒不生成
         let b = bs_create(&mut conn, None, None);
         say_or_reply(&mut conn, &b, "i", None, None, "s-worker", Some("t1"), Some("idea")).unwrap();
-        let cb = close(&mut conn, &b, None, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
+        let cb = close(&mut conn, &b, None, false, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
         assert_eq!(cb["summary_auto"], json!(false));
         assert_eq!(cb["summary"], json!(""));
     }
@@ -1745,7 +1793,7 @@ mod tests {
         // 未收窗 → 拒
         assert!(handoff(&mut conn, &did, "d1", "discussion", "dsc_nope", "s-owner", Some("t1")).is_err());
         say_or_reply(&mut conn, &did, "i", None, None, "s-worker", Some("t1"), Some("idea")).unwrap();
-        close(&mut conn, &did, None, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
+        close(&mut conn, &did, None, false, Some(&dirs_json()), "s-owner", Some("t1")).unwrap();
         // 目标不存在 → 拒
         assert!(handoff(&mut conn, &did, "d1", "discussion", "dsc_nope", "s-owner", Some("t1")).is_err());
         // 方向不存在 → 拒
@@ -1797,8 +1845,8 @@ mod tests {
         let did = bs_create(&mut conn, None, Some(1));
         say_or_reply(&mut conn, &did, "i", None, None, "s-worker", Some("t1"), Some("idea")).unwrap();
         // 缺 directions → 拒
-        assert!(close(&mut conn, &did, None, None, "s-owner", Some("t1")).is_err());
+        assert!(close(&mut conn, &did, None, false, None, "s-owner", Some("t1")).is_err());
         // 带 directions → 过
-        assert!(close(&mut conn, &did, None, Some(&dirs_json()), "s-owner", Some("t1")).is_ok());
+        assert!(close(&mut conn, &did, None, false, Some(&dirs_json()), "s-owner", Some("t1")).is_ok());
     }
 }

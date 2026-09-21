@@ -1998,6 +1998,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "discussion.close" => Command::Discussion(DiscussionCmd::Close {
             id: s("id").ok_or_else(|| "discussion.close requires `id`".to_string())?,
             summary: o("summary"),
+            force: b("force"),
             directions: o("directions"),
             session: sess(args),
             team: o("team"),
