@@ -1093,6 +1093,8 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "members", "last_ip", "TEXT")?;
     // workspace 目录：客户端（插件/CLI/console）上报，用于 `team status` 展示。
     ensure_column(conn, "members", "workspace", "TEXT")?;
+    // k8e 路径需要知道成员该连哪个 server（Pod 的 env / 隧道 / git clone）。
+    ensure_column(conn, "nodes", "server_url", "TEXT")?;
     // The pre-multi-goal UNIQUE(team_id) index (created by the public line's
     // v3) rejects a team's second goal; dropping a missing index is a no-op.
     conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;

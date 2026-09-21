@@ -39,6 +39,7 @@ pub mod metrics;
 pub mod nudge_tpl;
 pub mod pki;
 pub mod procwatch;
+pub mod k8s;
 pub mod provision;
 pub mod routes;
 pub mod serve;

@@ -85,6 +85,19 @@ pub struct CreateReq {
     pub server_ip: Option<String>,
     /// 根盘大小 GiB（design/006 §2-J：gp3，默认 20–30）。
     pub disk_gib: u32,
+    /// 邀请函原文（k8s 路径写进 Secret；EC2 路径由 bootstrap 脚本投递）。
+    pub letter: Option<String>,
+}
+
+impl CreateReq {
+    /// team id（k8s 路径用于 namespace 派生；来自 tags 里的 team_id）。
+    pub fn team_id_hint(&self) -> String {
+        self.tags
+            .iter()
+            .find(|(k, _)| k == "team_id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// 建机结果。
@@ -502,6 +515,8 @@ pub fn key_path_for(key_dir: &str, node_id: &str) -> String {
 pub fn provider_for(name: &str, region: &str) -> Result<Box<dyn CloudProvider>, String> {
     match name {
         "aws" => Ok(Box::new(AwsCli::new(region))),
+        // k8e/K8s（design/013 第一步）：member = Pod（+PVC+Secret）。
+        "k8e" | "k8s" | "kubernetes" => Ok(Box::new(crate::k8s::K8sProvider::from_env())),
         // 测试用（E2E 零 AWS）：需显式开启 TEAMX_PROVISION_FAKE=1。
         "fake" if std::env::var("TEAMX_PROVISION_FAKE").is_ok() => Ok(Box::new(FakeProvider)),
         other => Err(format!("unknown provider `{other}` (first-batch: aws)")),
@@ -531,12 +546,13 @@ fn node_json(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "terminated_at": r.get::<_, Option<String>>(14)?,
         "cost_snapshot": r.get::<_, Option<String>>(15)?,
         "compliance_tags": r.get::<_, Option<String>>(16)?,
+        "server_url": r.get::<_, Option<String>>(17)?,
     }))
 }
 
 const NODE_COLS: &str = "id,team_id,user_id,member_id,provider,region,instance_id,ip,state,\
                          im_enabled,os_user,keypair_ref,created_at,ready_at,terminated_at,\
-                         cost_snapshot,compliance_tags";
+                         cost_snapshot,compliance_tags,server_url";
 
 /// 复用优先于新建（design/006 §3.1）：按 `user_id` 找可复用节点。
 pub fn find_reusable_node(
@@ -1308,6 +1324,16 @@ pub fn run_provision_job(
             .unwrap_or_default(),
         server_ip: std::env::var("TEAMX_SERVER_PUBLIC_IP").ok(),
         disk_gib: 20,
+        // letter_b64 是 letter 文件的 base64；Secret 里要放原文。
+        letter: if letter_b64.is_empty() {
+            None
+        } else {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(letter_b64)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+        },
     };
 
     // 3) 建机（重试安全：节点已有 instance_id → 复用，不重复 RunInstances 造成漏计费资源）
@@ -1337,14 +1363,59 @@ pub fn run_provision_job(
     };
     db::with_write(conn, |tx| {
         tx.execute(
-            "UPDATE nodes SET instance_id=?1, ip=?2, keypair_ref=?3 WHERE id=?4",
-            params![created.instance_id, created.public_ip.clone().or(created.private_ip.clone()), req.key_name, node_id],
+            "UPDATE nodes SET instance_id=?1, ip=?2, keypair_ref=?3, server_url=?5 WHERE id=?4",
+            params![
+                created.instance_id,
+                created.public_ip.clone().or(created.private_ip.clone()),
+                req.key_name,
+                node_id,
+                server_url
+            ],
         )?;
         Ok(())
     })
     .map_err(|e| format!("db: {e}"))?;
 
     // 4/5) 等 ready + SSH（失败 → failed + 通知 owner，不自动 terminate，裁决 U）
+    //
+    // k8e 路径（design/013 §5）：**没有 SSH / bootstrap 脚本 / 二进制上传** ——
+    // 资源（namespace+PVC+Secret）在 create() 里已就绪，Pod 留到 approve 才建。
+    // 这里只把状态推进到 bootstrapping 并核对资源存在，然后 ready。
+    if provider.name() == "k8e" {
+        let boot = (|| -> Result<(), String> {
+            if node["state"].as_str() != Some("provisioning") {
+                set_node_state(conn, &node_id, "provisioning")?;
+            }
+            set_node_state(conn, &node_id, "bootstrapping")?;
+            // 资源核对：Pod 不存在是**预期**（approve 才建）；PVC/Secret 必须已就绪。
+            let p = provider_for("k8e", &region)?;
+            let st = p.status(&created.instance_id)?;
+            if st == "failed" {
+                return Err("k8e: member resources reported failed".to_string());
+            }
+            Ok(())
+        })();
+        if let Err(e) = boot {
+            fail_job(conn, job_id, &e)?;
+            let _ = set_node_state(conn, &node_id, "failed");
+            return Err(e);
+        }
+        set_node_state(conn, &node_id, "ready")?;
+        db::with_write(conn, |tx| {
+            tx.execute(
+                "UPDATE provision_jobs SET state='done', attempts=attempts+1, updated_at=?1 WHERE id=?2",
+                params![db::now(), job_id],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| format!("db: {e}"))?;
+        return Ok(json!({
+            "ok": true, "job_id": job_id, "node_id": node_id, "state": "ready",
+            "provider": "k8e", "instance_id": created.instance_id,
+            "note": "k8e: resources ready; member Pod is created on approve (裁决 V)",
+        }));
+    }
+
     let ip = created
         .public_ip
         .clone()

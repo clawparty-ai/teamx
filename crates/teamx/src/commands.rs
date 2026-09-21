@@ -2666,10 +2666,34 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
     })
     .map_err(|e| AppError(format!("decision failed: {e}")))?;
 
-    // 裁决 V：approve 后启动该成员节点的 systemd 服务（此前只注册不启动）。
+    // 裁决 V：approve 后启动该成员的服务（k8e → 建 member Pod；EC2 → 启动 systemd 服务组）。
     if approve {
         if let Ok(Some(node)) = crate::provision::find_node_for_member(conn, &team.id, &target.id) {
-            if node["state"].as_str() == Some("ready") {
+            // k8e 路径（design/013 §5）：provision 只建 PVC/Secret，**approve 才建 Pod**。
+            let provider_name = node["provider"].as_str().unwrap_or("aws");
+            if matches!(provider_name, "k8e" | "k8s" | "kubernetes") {
+                let team_id = team.id.clone();
+                let member_id = target.id.clone();
+                let server_url = node["server_url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                let repo_url = crate::git_service::list_repos(conn, &team.id)
+                    .ok()
+                    .and_then(|repos| repos.first().map(|r| r.name.clone()))
+                    .map(|name| format!("{server_url}/git/{team_id}/{name}"))
+                    .unwrap_or_default();
+                let session = format!("net:{member_id}");
+                // 建 Pod 可能拉镜像（慢）→ 异步，避免 approve RPC 超时（同 EC2 路径的教训）。
+                std::thread::spawn(move || {
+                    let p = crate::k8s::K8sProvider::from_env();
+                    if let Err(e) =
+                        p.start_member(&team_id, &member_id, &server_url, &repo_url, &session)
+                    {
+                        eprintln!("teamx: k8e start_member failed: {e}");
+                    }
+                });
+            } else if node["state"].as_str() == Some("ready") {
                 let ip = node["ip"].as_str().unwrap_or("").to_string();
                 let os_user = node["os_user"].as_str().unwrap_or("").to_string();
                 let key_name = node["keypair_ref"].as_str().unwrap_or("").to_string();
