@@ -61,7 +61,7 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 | FR-2 | 每租户一个 teamx server 实例（容器，SQLite + PVC，独立 CA） | A2、A3、D2 |
 | FR-3 | 租户内可创建 project/team；复用现有 team/成员/角色状态机 | A2 |
 | FR-4 | 邀请与审批流程复用 006（邀请函 → import → approve → 服务启动） | C4、C5 |
-| FR-5 | 创建成员时**异步** provision 云端 member；member 先可用、provision 后台进行 | C10、D16 |
+| FR-5 | 创建成员时**异步** provision 云端 member；member 先可用、provision 后台进行；UI 显示"准备中"，三段进度可见（调度+拉镜像 / workspace 恢复 / agent 热身） | C10、D16、C9 |
 | FR-6 | member 运行于 k8e Pod（一 team-member 一 Pod），镜像含 teamx + opencode + 工具链 | D1、C5 |
 | FR-7 | member workspace 持久化（PVC per member），容器内固定挂载 `/workspace` | C3、D3 |
 | FR-8 | 证书/邀请函经 Secret 注入 → 容器内 import；不进镜像、不进 cloud-init | C4 |
@@ -88,7 +88,7 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 | NFR-4 持久化 | member workspace 网络附着存储或显式快照策略；**CA 私钥进灾备清单** | 灾难恢复后证书仍有效 |
 | NFR-5 可观测 | 重连日志 / 断线计数 / 存活探针接入 presence；在线状态**不撒谎** | 隧道断连后状态在阈值内变为异常 |
 | NFR-6 冷启动 | 分段耗时可见；provision 不阻塞交互路径 | 埋点数据可查 |
-| NFR-7 成本 | 平台固定开销可知（控制面 24/7）；存储/镜像单列长尾 | 成本快照可导出（v1 不收费，但口径要有） |
+| NFR-7 成本 | **N/A（v1）**：不做计费/计量/配额（owner 裁决 D14/D15 —— k8s 宿主机数量由 owner 控制，容量风险在资源层已限制） | — |
 | NFR-8 安全声明 | 文档**如实声明**默认档隔离强度与适用前提（同信任域内团队），不夸大 | 设计文档含声明段落 |
 | NFR-9 审计 | 平台侧审计独立于租户可控台账；break-glass 全程留痕 | 审计不可被租户删改 |
 | NFR-10 存储快照 | member workspace 走网络附着存储或**显式快照策略**；频率/保留期可配 | 节点死亡后工作区可恢复（拔节点演练） |
@@ -118,7 +118,8 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 **第三段（身份与安全，进行中）**：D8 GitHub 身份面 · D10 平台可见边界细节 · D4 forward 锚点 · D17 隔离分档
 **第四段（成本·体验·过程）**：D14 固定开销兜底 · D15 计量口径 · D16 冷启动交互 · D18 收窗节奏
 
-> 已裁决并并入本稿：D1/D2/D3/D5（`design/010`）· D13/D7/D11/D6（`design/011`）
+> 已裁决并并入本稿：D1/D2/D3/D5（`design/010`）· D13/D7/D11/D6（`design/011`）· D14/D15/D16/D18（`design/012`）
+> 团队已收敛、待 owner 确认：D8/D10/D4/D17（`design/012` §A）
 
 ## 10. 术语
 

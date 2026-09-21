@@ -4,7 +4,7 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T07:37:47+00:00",
-  "updated_at": "2026-09-21T07:53:01+00:00",
+  "updated_at": "2026-09-21T08:44:17+00:00",
   "history": [
     {
       "state": "draft",
@@ -17,6 +17,12 @@
       "by": "caishu",
       "at": "2026-09-21T07:53:01+00:00",
       "note": "并入第二段裁决：FR-18 两步里程碑 / FR-19 BYO join token / FR-20 迁移工具；NFR-10 存储快照 / NFR-11 BYO 出站 / NFR-12 token 安全；验收补 3 项。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-21T08:44:17+00:00",
+      "note": "并入第三、四段：NFR-7 降级 N/A(v1)（不做计费/计量/配额）；FR-5 补异步交互与三段进度；第三段约束待 owner 确认后生效。"
     }
   ]
 }
