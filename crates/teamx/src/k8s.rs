@@ -295,6 +295,14 @@ spec:
           mkdir -p /workspace/.teamx/letters/invite
           cp /etc/teamx/letter/invitation.letter /workspace/.teamx/letters/invite/invitation.letter
           chmod 600 /workspace/.teamx/letters/invite/invitation.letter
+          # 幂等加锁：Pod 重试/并发时避免半途状态（评审必改 9）
+          LOCK=/workspace/.teamx/setup.lock
+          mkdir -p /workspace/.teamx
+          if ! mkdir "$LOCK" 2>/dev/null; then
+            echo "setup already running/done; skipping"
+            exit 0
+          fi
+          trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
           # 幂等：已认领则跳过
           teamx team import /workspace/.teamx/letters/invite/invitation.letter --session {session} || true
           # 幂等：已 clone 则只做 fetch
@@ -393,6 +401,38 @@ spec:
     )
 }
 
+/// namespace 级 ResourceQuota + LimitRange（design/012 D14：v1 不做计费，但"兜底"放在 K8s 层）。
+pub fn quota_manifests(team_id: &str) -> String {
+    let ns = namespace_for(team_id);
+    format!(
+        r#"apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: teamx-quota
+  namespace: {ns}
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    persistentvolumeclaims: "8"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: teamx-limits
+  namespace: {ns}
+spec:
+  limits:
+    - type: Container
+      default: {{ cpu: "1", memory: "2Gi" }}
+      defaultRequest: {{ cpu: "250m", memory: "512Mi" }}
+      max: {{ cpu: "4", memory: "8Gi" }}
+"#
+    )
+}
+
 /// 默认拒绝出网 + 显式白名单（NFR-1）。
 ///
 /// **注意语义**：NetworkPolicy 是 **allow-list**（不列即拒绝），因此"封 IMDS"的
@@ -461,8 +501,10 @@ impl K8sProvider {
     /// provision 阶段：namespace + PVC + Secret（**不建 Pod**，裁决 V）。
     pub fn provision(&self, req: &CreateReq) -> Result<(), String> {
         let letter = req.letter.clone().unwrap_or_default();
-        let yaml = provision_manifests(&req.team_id_hint(), &req.name, &letter, self.workspace_gib, None);
-        self.kubectl.apply(&yaml).map(|_| ())
+        let team_id = req.team_id_hint();
+        let yaml = provision_manifests(&team_id, &req.name, &letter, self.workspace_gib, None);
+        let quota = quota_manifests(&team_id);
+        self.kubectl.apply(&format!("{yaml}---\n{quota}")).map(|_| ())
     }
 
     /// approve 阶段：建 member Pod（= 启动服务，裁决 V）+ NetworkPolicy。
@@ -531,8 +573,9 @@ impl CloudProvider for K8sProvider {
             None => Ok("ready".to_string()),
             Some(v) => Ok(match v["status"]["phase"].as_str().unwrap_or("Pending") {
                 "Running" => "running",
-                "Succeeded" => "running",
-                "Failed" => "failed",
+                // 成员是常驻服务：容器"正常退出"对成员语义就是**异常**（不应自己结束），
+                // 映射为 failed 交给上层告警/重建（评审必改：Succeeded ≠ running）。
+                "Succeeded" | "Failed" => "failed",
                 _ => "provisioning",
             }
             .to_string()),
@@ -643,6 +686,23 @@ mod tests {
         // 幂等 setup
         assert!(y.contains("if [ -d /workspace/.git ]"));
         assert!(y.contains("teamx team import"));
+    }
+
+    #[test]
+    fn quota_manifests_land_in_k8s_layer() {
+        let y = quota_manifests("t1");
+        assert!(y.contains("kind: ResourceQuota"));
+        assert!(y.contains("kind: LimitRange"));
+        assert!(y.contains("persistentvolumeclaims"), "PVC 上限要有");
+        assert!(y.contains("namespace: tenant-"), "必须落在租户 namespace");
+    }
+
+    #[test]
+    fn setup_initcontainer_is_idempotent_locked() {
+        let y = member_pod_manifest("t1", "m1", "https://s:5783", "https://s/git/t/r", "net:m1");
+        assert!(y.contains("setup.lock"), "需要幂等锁");
+        assert!(y.contains("mkdir \"$LOCK\""), "锁必须是原子 mkdir");
+        assert!(y.contains("trap"), "退出要释放锁");
     }
 
     #[test]

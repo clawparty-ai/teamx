@@ -256,5 +256,12 @@ else
   echo "debug binary/curl/python3 missing; skipping member-workspace test"
 fi
 
+echo "== 18c/18 k8e provider E2E (design/013, stub kubectl, 零集群) =="
+if [ -x target/debug/teamx ] && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/k8e-provision-test.sh
+else
+  echo "debug binary/python3 missing; skipping k8e provision test"
+fi
+
 echo
 echo "ALL TEST SUITES PASSED"

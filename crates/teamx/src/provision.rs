@@ -1487,6 +1487,47 @@ pub fn run_destroy(
         return Ok(json!({"ok": true, "noop": true, "node_id": node_id}));
     }
     let mut steps: Vec<Value> = Vec::new();
+
+    // k8e 路径（design/013 §3）：回收清单 = Pod → PVC → Secret → NetworkPolicy。
+    // 没有 OS 用户/SSH 密钥，故不走 EC2 的"停服务+userdel"与 keypair 步骤。
+    if matches!(node["provider"].as_str().unwrap_or("aws"), "k8e" | "k8s" | "kubernetes") {
+        let team_id = node["team_id"].as_str().unwrap_or("").to_string();
+        let member_id = node["member_id"].as_str().unwrap_or("").to_string();
+        let p = crate::k8s::K8sProvider::from_env();
+        steps.extend(p.destroy_member(&team_id, &member_id));
+        steps.push(json!({"step": "purge-secrets", "done": true}));
+        let mid = node["member_id"].as_str().unwrap_or("");
+        if !mid.is_empty() {
+            let alive: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nodes WHERE member_id = ?1 AND id <> ?2 AND state <> 'terminated'",
+                    params![mid, node_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if alive == 0 {
+                let changed = conn
+                    .execute(
+                        "UPDATE members SET state = 'left', left_at = ?1 WHERE id = ?2 AND state NOT IN ('left','denied')",
+                        params![db::now(), mid],
+                    )
+                    .unwrap_or(0);
+                steps.push(json!({
+                    "step": "revoke-member-cert", "target": mid, "done": changed > 0,
+                    "note": "seat marked left; serve rejects RPCs signed by this cert",
+                }));
+            } else {
+                steps.push(json!({
+                    "step": "revoke-member-cert", "target": mid, "done": false,
+                    "skipped": format!("{alive} other live node(s) still use this seat"),
+                }));
+            }
+        }
+        set_node_state(conn, node_id, "terminated")?;
+        return Ok(json!({
+            "ok": true, "node_id": node_id, "state": "terminated", "steps": steps,
+        }));
+    }
     let ip = node["ip"].as_str().unwrap_or("");
     let os_user = node["os_user"].as_str().unwrap_or("");
     let instance = node["instance_id"].as_str().unwrap_or("");
