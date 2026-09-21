@@ -336,7 +336,7 @@ spec:
         - name: TEAMX_WORKER_ENABLED
           value: "1"
       resources:
-        requests: {{ cpu: "{cpu_req}", memory: "512Mi" }}
+        requests: {{ cpu: "{cpu_req}", memory: "256Mi" }}
         limits: {{ cpu: "{cpu_lim}", memory: "4Gi" }}
       volumeMounts:
         - {{ name: workspace, mountPath: /workspace }}
@@ -353,6 +353,9 @@ spec:
       volumeMounts:
         - {{ name: workspace, mountPath: /workspace }}
         - {{ name: tmp, mountPath: /tmp }}
+      resources:
+        requests: {{ cpu: "50m", memory: "64Mi" }}
+        limits: {{ cpu: "500m", memory: "512Mi" }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
@@ -365,6 +368,9 @@ spec:
       volumeMounts:
         - {{ name: workspace, mountPath: /workspace }}
         - {{ name: tmp, mountPath: /tmp }}
+      resources:
+        requests: {{ cpu: "50m", memory: "64Mi" }}
+        limits: {{ cpu: "500m", memory: "512Mi" }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
@@ -386,6 +392,9 @@ spec:
         initialDelaySeconds: 20
         periodSeconds: 30
         failureThreshold: 3
+      resources:
+        requests: {{ cpu: "50m", memory: "64Mi" }}
+        limits: {{ cpu: "500m", memory: "512Mi" }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
@@ -442,12 +451,19 @@ spec:
 pub fn network_policy_manifest(team_id: &str, member_id: &str, allow_hosts: &[String]) -> String {
     let ns = namespace_for(team_id);
     let pod = pod_name(member_id);
+    // 空白名单必须写成 `egress: []`（显式空列表 = 全部拒绝）；写成空值 `egress:`
+    // 会被 API 当成 null 而拒（真集群踩到：NetworkPolicy 创建失败、静默缺失）。
     let mut egress = String::new();
     for h in allow_hosts {
         egress.push_str(&format!(
             "    - to:\n        - ipBlock:\n            cidr: {h}\n"
         ));
     }
+    let egress_block = if egress.is_empty() {
+        "  egress: []\n".to_string()
+    } else {
+        format!("  egress:\n{egress}")
+    };
     format!(
         r#"apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -461,8 +477,7 @@ spec:
   policyTypes: ["Egress"]
   # allow-list：仅放行显式列出的目标；其余（含 IMDS 169.254.169.254、租户间东西向）
   # 一律拒绝。IMDS 绝不能出现在下面的白名单里。
-  egress:
-{egress}"#
+{egress_block}"#
     )
 }
 
@@ -502,7 +517,10 @@ impl K8sProvider {
     pub fn provision(&self, req: &CreateReq) -> Result<(), String> {
         let letter = req.letter.clone().unwrap_or_default();
         let team_id = req.team_id_hint();
-        let yaml = provision_manifests(&team_id, &req.name, &letter, self.workspace_gib, None);
+        // 命名必须用 **member_id**（与 approve 阶段建 Pod 时一致），
+        // 不能用 req.name（= teamx-<os_user>）—— 否则 Pod 引用的 PVC 不存在。
+        let member_id = req.member_id_hint();
+        let yaml = provision_manifests(&team_id, &member_id, &letter, self.workspace_gib, None);
         let quota = quota_manifests(&team_id);
         self.kubectl.apply(&format!("{yaml}---\n{quota}")).map(|_| ())
     }
@@ -518,7 +536,8 @@ impl K8sProvider {
     ) -> Result<(), String> {
         let pod = member_pod_manifest(team_id, member_id, server_url, team_repo_url, session);
         let np = network_policy_manifest(team_id, member_id, &self.egress_allow);
-        self.kubectl.apply(&format!("{pod}---\n{np}")).map(|_| ())
+        let combined = format!("{pod}---\n{np}");
+        self.kubectl.apply(&combined).map(|_| ())
     }
 
     /// 停：删 Pod 保 PVC（对应 006 的 stop）。
@@ -703,6 +722,14 @@ mod tests {
         assert!(y.contains("setup.lock"), "需要幂等锁");
         assert!(y.contains("mkdir \"$LOCK\""), "锁必须是原子 mkdir");
         assert!(y.contains("trap"), "退出要释放锁");
+    }
+
+    #[test]
+    fn empty_allowlist_emits_explicit_empty_egress() {
+        // 空白名单必须是 `egress: []`（不是空值，否则 API 拒绝）
+        let y = network_policy_manifest("t1", "m1", &[]);
+        assert!(y.contains("egress: []"), "empty allowlist must be an explicit empty list: {y}");
+        assert!(!y.contains("egress:\n"), "must not emit a bare `egress:` key");
     }
 
     #[test]

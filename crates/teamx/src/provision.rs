@@ -90,6 +90,17 @@ pub struct CreateReq {
 }
 
 impl CreateReq {
+    /// member id（k8s 路径用于 Pod/PVC/Secret 命名；来自 tags 里的 member_id）。
+    /// **必须与 approve 阶段用的 member_id 一致**，否则 Pod 引用的 PVC 不存在
+    /// （真集群踩到：scheduler 报 `persistentvolumeclaim ... not found`）。
+    pub fn member_id_hint(&self) -> String {
+        self.tags
+            .iter()
+            .find(|(k, _)| k == "member_id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
     /// team id（k8s 路径用于 namespace 派生；来自 tags 里的 team_id）。
     pub fn team_id_hint(&self) -> String {
         self.tags

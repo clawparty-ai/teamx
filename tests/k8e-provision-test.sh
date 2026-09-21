@@ -154,6 +154,12 @@ pass "T-K3 approve -> member Pod（5 容器 + 加固 + 探针）"
 grep -q "setup.lock" "$YAML2" || fail "T-K4: initContainer 缺幂等锁"
 pass "T-K4 initContainer 幂等锁就位"
 
+# 回归守卫：provision 建的 PVC 名必须与 Pod 引用的 claimName 一致
+# （真集群曾踩到：provision 用 req.name、approve 用 member_id → PVC not found）
+PVC_PROV="$(grep -A2 "^kind: PersistentVolumeClaim" "$YAML" | grep "name: teamx-ws-" | awk '{print $2}' | head -1)"
+PVC_POD="$(grep "claimName:" "$YAML2" | awk '{print $2}' | head -1)"
+[ -n "$PVC_PROV" ] && [ "$PVC_PROV" = "$PVC_POD" ] \
+  || fail "T-K9: PVC 命名不一致（provision=$PVC_PROV pod=$PVC_POD）"
 grep -q "kind: NetworkPolicy" "$YAML2" || fail "T-K5: 缺 NetworkPolicy"
 if grep -q "cidr: 169.254.169.254" "$YAML2"; then fail "T-K5: IMDS 被错误地 allow-list"; fi
 grep -q 'policyTypes: \["Egress"\]' "$YAML2" || fail "T-K5: 缺默认拒绝出网"

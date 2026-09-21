@@ -2684,15 +2684,15 @@ fn cmd_team_decide(conn: &mut Connection, member_id: &str, session: &str, team_o
                     .map(|name| format!("{server_url}/git/{team_id}/{name}"))
                     .unwrap_or_default();
                 let session = format!("net:{member_id}");
-                // 建 Pod 可能拉镜像（慢）→ 异步，避免 approve RPC 超时（同 EC2 路径的教训）。
-                std::thread::spawn(move || {
-                    let p = crate::k8s::K8sProvider::from_env();
-                    if let Err(e) =
-                        p.start_member(&team_id, &member_id, &server_url, &repo_url, &session)
-                    {
-                        eprintln!("teamx: k8e start_member failed: {e}");
-                    }
-                });
+                // **同步**执行：kubectl apply 本身很快（拉镜像是 kubelet 的事，不阻塞），
+                // 而异步线程会随 CLI 进程退出被杀 —— 真集群踩到：apply 只完成了第一个
+                // 文档（Pod），NetworkPolicy 没写完就随进程消失。
+                let p = crate::k8s::K8sProvider::from_env();
+                if let Err(e) =
+                    p.start_member(&team_id, &member_id, &server_url, &repo_url, &session)
+                {
+                    eprintln!("teamx: k8e start_member failed: {e}");
+                }
             } else if node["state"].as_str() == Some("ready") {
                 let ip = node["ip"].as_str().unwrap_or("").to_string();
                 let os_user = node["os_user"].as_str().unwrap_or("").to_string();

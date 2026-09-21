@@ -9,15 +9,23 @@
 # 说明：teamx 二进制由构建上下文注入（不在镜像里编译 Rust，保持构建快且可复现）。
 
 # syntax=docker/dockerfile:1
-FROM --platform=$TARGETPLATFORM ubuntu:24.04 AS member
+# 基础镜像可覆盖（受限网络下用镜像源，如 docker.m.daocloud.io/library/ubuntu:24.04）
+ARG BASE_IMAGE=ubuntu:24.04
+FROM --platform=$TARGETPLATFORM ${BASE_IMAGE} AS member
 
 ARG DEBIAN_FRONTEND=noninteractive
+# 可选 APT 镜像源（受限网络用，如 mirrors.aliyun.com）
+ARG APT_MIRROR=
 ARG TARGETARCH
 # teamx 预编译二进制（按目标架构构建后注入）
 ARG TEAMX_BIN=target/release/teamx
 
 # ---- 基础工具层（变的最少，放最前，利于缓存与拉取）----
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|http://archive.ubuntu.com|https://$APT_MIRROR|g; s|http://security.ubuntu.com|https://$APT_MIRROR|g" \
+        /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true; \
+    fi \
+ && apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git unzip xz-utils jq procps less bash \
       python3 ripgrep \
     && rm -rf /var/lib/apt/lists/*
@@ -47,7 +55,8 @@ COPY ${TEAMX_BIN} /usr/local/bin/teamx
 RUN chmod 0755 /usr/local/bin/teamx && /usr/local/bin/teamx version | head -2
 
 # ---- 非 root 运行（与 Pod 的 runAsUser/fsGroup 1000 对齐）----
-RUN useradd -m -u 1000 -s /bin/bash teamx \
+# uid 1000 可能已被基础镜像占用（如 ubuntu 云镜像的 ubuntu 用户）→ 容忍并复用
+RUN (useradd -m -u 1000 -s /bin/bash teamx || useradd -m -s /bin/bash teamx || true) \
  && mkdir -p /workspace && chown -R 1000:1000 /workspace
 USER 1000
 ENV HOME=/home/teamx
