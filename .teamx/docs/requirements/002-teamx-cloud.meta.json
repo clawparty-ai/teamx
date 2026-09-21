@@ -4,7 +4,7 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T07:37:47+00:00",
-  "updated_at": "2026-09-21T10:16:36+00:00",
+  "updated_at": "2026-09-21T11:21:12+00:00",
   "history": [
     {
       "state": "draft",
@@ -29,6 +29,12 @@
       "by": "caishu",
       "at": "2026-09-21T10:16:36+00:00",
       "note": "v2：按首轮评审（caicai task-74 4必改 / xiaods-mac task-76 6必改 / weiye-mini task-78 4必改 + 共同建议 + 4 缺失）逐条修订：FR-2 里程碑归属、FR-5/11/19/20 修订、NFR-1 默认拒绝+allowlist、NFR-3 两类 Pod、NFR-5/6 量化、NFR-7 触发条件、新增 NFR-13/14（可见边界/token 分离）、§7 验收 +5 项（隧道三件套/故障注入/命名唯一性/唤醒路径）、§8/§9 同步裁决、术语补 admin-console/user-console。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-21T11:21:12+00:00",
+      "note": "v2.1：按 caicai 复核意见重排 NFR 编号（13/14 移到 10/11/12 之后）；caicai 复核 verdict=PASS（4/4 必改闭环，可定稿）。"
     }
   ]
 }

@@ -93,11 +93,11 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 | NFR-7 成本 | **N/A（v1）**：不做计费/计量/配额（owner 裁决 D14/D15 —— k8s 宿主机数量由 owner 控制，容量风险在资源层已限制）。**触发条件备注**：出现多租户共享同一集群且非 owner 控制容量时，本条重开 | — |
 | NFR-8 安全声明 | 文档**如实声明**默认档隔离强度与适用前提（同信任域内团队），不夸大 | 设计文档含声明段落 |
 | NFR-9 审计 | 平台侧审计独立于租户可控台账；break-glass 全程留痕 | 审计不可被租户删改 |
-| NFR-13 平台可见边界 | 平台管理员**默认仅可见元数据**（成员/状态/成本/资源用量）；**字段清单为封闭枚举（fail-closed，不在清单即不可见）**；访问正文需**租户显式授权**（短 TTL + 单次 + 落审计 + 告警通知租户全部 lead） | 负例：平台无授权读任务/讨论正文 → 拒 + 审计；授权过期后不可再读 |
-| NFR-14 凭据分离 | GitHub 身份面合一但**凭据用途分离**：user token 只读身份/仓库列表，**绝不执行 agent 动作**（agent 动作一律 installation token 且归因 device member）；**App private key 不落 node** | 负例：user token 调 agent 动作 → 拒 + 审计；伪造他 installation 事件 → 拒 |
 | NFR-10 存储快照 | member workspace 走网络附着存储或**显式快照策略**；频率/保留期可配 | 节点死亡后工作区可恢复（拔节点演练） |
 | NFR-11 BYO 出站 | BYO 接入流程**只走「主机 → server」出站**（不假设平台可直连用户主机，NAT 后仍可用） | 在 NAT 环境完成注册并上报 workspace |
 | NFR-12 token 安全 | join token 一次性 + 短 TTL + 可吊销 + 绑定 member_id；**吊销留审计**（谁/何时/为何） | 重放旧 token 被拒；吊销记录可查 |
+| NFR-13 平台可见边界 | 平台管理员**默认仅可见元数据**（成员/状态/成本/资源用量）；**字段清单为封闭枚举（fail-closed，不在清单即不可见）**；访问正文需**租户显式授权**（短 TTL + 单次 + 落审计 + 告警通知租户全部 lead） | 负例：平台无授权读任务/讨论正文 → 拒 + 审计；授权过期后不可再读 |
+| NFR-14 凭据分离 | GitHub 身份面合一但**凭据用途分离**：user token 只读身份/仓库列表，**绝不执行 agent 动作**（agent 动作一律 installation token 且归因 device member）；**App private key 不落 node** | 负例：user token 调 agent 动作 → 拒 + 审计；伪造他 installation 事件 → 拒 |
 
 ## 7. 验收
 
