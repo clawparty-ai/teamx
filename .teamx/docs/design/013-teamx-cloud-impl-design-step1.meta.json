@@ -1,0 +1,11 @@
+{
+  "doc": "design",
+  "id": "013-teamx-cloud-impl-design-step1",
+  "state": "draft",
+  "owner": "caishu",
+  "created_at": "2026-09-21T10:15:32+00:00",
+  "updated_at": "2026-09-21T10:15:32+00:00",
+  "history": [
+    { "state": "draft", "by": "caishu", "at": "2026-09-21T10:15:32+00:00", "note": "第一步里程碑（只容器化 member）实现级设计：K8sProvider/KubectlExec 映射 006 抽象、一 team-member 一 Pod（initContainer+main+ttyd+fs+expose）、approve 后建 Pod 实现裁决 V、固定 /workspace + 上报唯一事实源、PSA+NetworkPolicy+封 IMDS、7 项验收、需求映射与 5 项开放项。" }
+  ]
+}

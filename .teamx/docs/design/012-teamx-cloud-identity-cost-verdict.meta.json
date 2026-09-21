@@ -1,11 +1,22 @@
 {
   "doc": "design",
   "id": "012-teamx-cloud-identity-cost-verdict",
-  "state": "draft",
+  "state": "approved",
   "owner": "caishu",
   "created_at": "2026-09-21T08:44:17+00:00",
-  "updated_at": "2026-09-21T08:44:17+00:00",
+  "updated_at": "2026-09-21T09:02:54+00:00",
   "history": [
-    { "state": "draft", "by": "caishu", "at": "2026-09-21T08:44:17+00:00", "note": "第三段（D8/D10/D4/D17）团队已收敛待 owner 确认；第四段（D14/D15/D16/D18）已由 owner 裁决（v1 不做计费/计量、冷启动全异步、关第二轮）。含团队补充约束：token 用途分离、fail-closed 字段枚举、B 链路验收三件套、可证伪隔离声明。" }
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-21T08:44:17+00:00",
+      "note": "第三段（D8/D10/D4/D17）团队已收敛待 owner 确认；第四段（D14/D15/D16/D18）已由 owner 裁决（v1 不做计费/计量、冷启动全异步、关第二轮）。含团队补充约束：token 用途分离、fail-closed 字段枚举、B 链路验收三件套、可证伪隔离声明。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-21T09:02:54+00:00",
+      "note": "owner 确认第三段（D8/D10/D4/D17）按推荐执行并吸收团队补充约束；第四段此前已裁决。四段全部落档。"
+    }
   ]
 }
