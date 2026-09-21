@@ -424,6 +424,10 @@ pre.raw { background:var(--muted); border:1px solid var(--border); border-radius
  .dsc-floor-no { font-weight:700; color:var(--primary); min-width:28px; }
  .dsc-floor-author { font-weight:600; color:var(--fg); }
  .dsc-kind { padding:0 6px; border:1px solid var(--border); border-radius:8px; font-size:11px; color:var(--muted-fg); }
+ .dsc-type { padding:0 7px; border:1px solid var(--border); border-radius:8px; font-size:11px; white-space:nowrap; }
+ .dsc-type-brainstorm { border-color:#7c5cff55; color:#7c5cff; background:#7c5cff12; }
+ .dsc-type-grill { border-color:#ff6b3555; color:#ff6b35; background:#ff6b3512; }
+ .dsc-type-normal { color:var(--muted-fg); }
   .dsc-floor-body { font-size:14px; color:var(--fg); word-break:break-word; }
  .dsc-quote { background:var(--muted); border-left:3px solid var(--border); border-radius:4px; padding:5px 8px; margin:4px 0; font-size:12.5px; color:var(--muted-fg); }
   .dsc-quote .q-who { font-weight:600; color:var(--fg); }
@@ -2350,6 +2354,18 @@ async function dscAction(action, payload){
   return j;
 }
 
+// 讨论类型徽标：🧠 脑爆（带 phase）/ 🔥 grill / 💬 普通。
+// kind 由后端派生（mode=brainstorm 或显式 kind=grill），phase 仅脑爆有。
+function dscKindBadge(kind, phase){
+  const k = kind || "normal";
+  if(k === "brainstorm"){
+    const ph = phase==="diverging" ? "发散中" : (phase==="clusterable" ? "待收口" : (phase==="harvested" ? "已收口" : ""));
+    return `<span class="dsc-type dsc-type-brainstorm" title="脑爆（brainstorm）${ph?" · "+ph:""}">🧠 脑爆${ph?" · "+ph:""}</span>`;
+  }
+  if(k === "grill") return `<span class="dsc-type dsc-type-grill" title="team-grill（Consensus Mode 共识讨论）">🔥 grill</span>`;
+  return `<span class="dsc-type dsc-type-normal" title="普通讨论">💬 普通</span>`;
+}
+
 async function loadDiscussions(){
   dscReplyTo = null; stopDscPoll();
   const p = await panel("discussions"); setLast(p);
@@ -2362,7 +2378,7 @@ async function loadDiscussions(){
     const last = d.last_active || d.created_at || "";
     const joinBtn = closed ? "" : `<button class="btn btn-mini dsc-row-join" data-id="${esc(d.discussion_id)}" data-title="${esc(d.title||"(无标题)")}">参与讨论</button>`;
     return `<div class="dsc-row${closed?" closed":""}" data-id="${esc(d.discussion_id)}">
-      <span>${icon}</span><span class="dsc-row-no">#${esc(String(d.number||""))}</span><span class="dsc-row-title">${esc(d.title||"(无标题)")}</span>
+      <span>${icon}</span><span class="dsc-row-no">#${esc(String(d.number||""))}</span><span class="dsc-row-title">${dscKindBadge(d.kind,d.phase)} ${esc(d.title||"(无标题)")}</span>
       <span class="dsc-row-meta">${esc(d.author||"")} · ${esc(fmtN(d.messages||0))} 回复 · ${esc(tf(last))}</span>
       ${joinBtn}
     </div>`;
@@ -2440,7 +2456,7 @@ function renderThread(d){
   const replyBar = dscReplyTo
     ? `<div class="dsc-replybar">引用回复 ${esc(dscReplyTo.mid)} <button class="btn btn-mini" id="dscClearReply">✕</button></div>` : "";
   host.innerHTML = `
-    <div class="dsc-toolbar"><h3 style="margin:0">${d.number?`<span class="dsc-thread-no">#${esc(String(d.number))}</span> `:""}${esc(title)} ${closed?"🔒":""}</h3>
+    <div class="dsc-toolbar"><h3 style="margin:0">${d.number?`<span class="dsc-thread-no">#${esc(String(d.number))}</span> `:""}${dscKindBadge(d.kind,d.phase)} ${esc(title)} ${closed?"🔒":""}</h3>
       <div class="dsc-thread-actions">
         ${closed?`<span class="muted">已关闭</span>`:`
           <button class="btn btn-mini" id="dscJoinThread">💬 参与讨论</button>

@@ -1965,6 +1965,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             mode: o("mode"),
             window_secs: args.get("window_secs").and_then(Value::as_i64),
             min_ideas: args.get("min_ideas").and_then(Value::as_i64),
+            kind: o("kind"),
             session: sess(args),
             team: o("team"),
         }),

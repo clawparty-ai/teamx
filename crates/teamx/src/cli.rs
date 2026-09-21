@@ -1200,6 +1200,11 @@ pub enum DiscussionCmd {
         /// brainstorm minimum `kind=idea` per participant, checked at close (default 3)
         #[arg(long)]
         min_ideas: Option<i64>,
+        /// discussion type shown as a badge in the console: normal | brainstorm | grill.
+        /// `brainstorm` is shorthand for `--mode brainstorm`; `grill` marks a
+        /// teamx-grill-with-docs (Consensus Mode) session.
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long)]
         session: String,
         #[arg(long)]

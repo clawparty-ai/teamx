@@ -692,6 +692,7 @@ export function registerDiscussionTools(ctx: Context): void {
       mode: { type: 'string', description: 'Create: `brainstorm` for divergent ideation (design/007)' },
       window_secs: { type: 'string', description: 'Create: brainstorm window in seconds (default 86400)' },
       min_ideas: { type: 'string', description: 'Create: brainstorm minimum kind=idea per participant (default 3)' },
+      discussion_kind: { type: 'string', description: 'Create: discussion type badge — normal | brainstorm | grill (brainstorm implies --mode brainstorm; grill = teamx-grill-with-docs session)' },
       directions: { type: 'string', description: 'Close: brainstorm directions JSON array (no score/rank/priority; each needs source_message_ids[] + next_step)' },
       direction_id: { type: 'string', description: 'Handoff: direction id inside directions[]' },
       target_kind: { type: 'string', description: 'Handoff: discussion | task' },
@@ -727,6 +728,7 @@ export function registerDiscussionTools(ctx: Context): void {
       if (action === 'create' && args.mode) parts.push('--mode', args.mode)
       if (action === 'create' && args.window_secs) parts.push('--window-secs', String(args.window_secs))
       if (action === 'create' && args.min_ideas) parts.push('--min-ideas', String(args.min_ideas))
+      if (action === 'create' && args.discussion_kind) parts.push('--kind', String(args.discussion_kind))
       if ((action === 'say' || action === 'reply') && args.kind) parts.push('--kind', args.kind)
       if (action === 'close' && args.summary) parts.push('--summary', args.summary)
       if (action === 'close' && args.directions) parts.push('--directions', args.directions)

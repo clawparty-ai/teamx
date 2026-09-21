@@ -138,7 +138,51 @@ fn main() {
     }
 }
 
+/// 讨论类型徽标（终端版）：🧠 脑爆（带 phase）/ 🔥 grill / 💬 普通。
+fn dsc_kind_badge(kind: &str, phase: Option<&str>) -> String {
+    match kind {
+        "brainstorm" => match phase {
+            Some(p) => format!("🧠 脑爆·{}", match p {
+                "diverging" => "发散中",
+                "clusterable" => "待收口",
+                "harvested" => "已收口",
+                other => other,
+            }),
+            None => "🧠 脑爆".to_string(),
+        },
+        "grill" => "🔥 grill".to_string(),
+        _ => "💬 普通".to_string(),
+    }
+}
+
 fn print_human(v: &serde_json::Value) {
+    // Discussion list (`teamx discussion list`) — show the type badge so
+    // brainstorm / grill / normal are distinguishable without --json.
+    if let Some(ds) = v.get("discussions").and_then(|d| d.as_array()) {
+        if ds.is_empty() {
+            println!("[discussions] none");
+        } else {
+            println!("[discussions]");
+            for d in ds {
+                let no = d.get("number").and_then(|n| n.as_i64()).unwrap_or(0);
+                let title = d.get("title").and_then(|t| t.as_str()).unwrap_or("(untitled)");
+                let kind = d.get("kind").and_then(|k| k.as_str()).unwrap_or("normal");
+                let phase = d.get("phase").and_then(|p| p.as_str());
+                let msgs = d.get("messages").and_then(|m| m.as_i64()).unwrap_or(0);
+                let closed = d.get("closed").and_then(|c| c.as_bool()).unwrap_or(false);
+                println!(
+                    "  #{} {} {} ({} 回复){}",
+                    no,
+                    dsc_kind_badge(kind, phase),
+                    title,
+                    msgs,
+                    if closed { " [已关闭]" } else { "" }
+                );
+            }
+        }
+        return;
+    }
+
     // Git repository list (`teamx git list`) — render before the generic
     // `ok` action branch so the array of repos is readable.
     if let Some(repos) = v.get("repos").and_then(|r| r.as_array()) {

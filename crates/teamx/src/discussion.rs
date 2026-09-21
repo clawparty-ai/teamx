@@ -435,6 +435,7 @@ fn create(
     mode: Option<&str>,
     window_secs: Option<i64>,
     min_ideas: Option<i64>,
+    kind: Option<&str>,
 ) -> Result<Value, String> {
     let (member_id, display_name, team_id) = member_id_for_session(conn, session, team_opt)?;
     if title.trim().is_empty() {
@@ -457,6 +458,23 @@ fn create(
         payload["window_secs"] = json!(window_secs.unwrap_or(DEFAULT_WINDOW_SECS));
         payload["min_ideas_per_member"] = json!(min_ideas.unwrap_or(DEFAULT_MIN_IDEAS));
     }
+    // 讨论**类型**（kind）：normal（默认，不落字段）| brainstorm | grill。
+    // `--kind brainstorm` 等价于 `--mode brainstorm`（便捷）；grill 是
+    // dsh-plugin 的 teamx-grill-with-docs 协议（Consensus Mode）标记。
+    let mut kind_v = kind.map(str::trim).filter(|k| !k.is_empty()).unwrap_or("");
+    if kind_v == "brainstorm" && payload.get("mode").is_none() {
+        payload["mode"] = json!("brainstorm");
+        payload["window_secs"] = json!(window_secs.unwrap_or(DEFAULT_WINDOW_SECS));
+        payload["min_ideas_per_member"] = json!(min_ideas.unwrap_or(DEFAULT_MIN_IDEAS));
+    }
+    if payload.get("mode").is_some() && kind_v.is_empty() {
+        kind_v = "brainstorm"; // 老调用方只传 mode，类型自动补齐
+    }
+    match kind_v {
+        "" | "normal" => {}
+        "brainstorm" | "grill" => payload["kind"] = json!(kind_v),
+        other => return Err(format!("unknown discussion kind `{other}` (normal|brainstorm|grill)")),
+    }
     let seq = db::with_write(conn, |tx| events::emit(tx, &team_id, Some(&member_id), EV_CREATED, Some(&payload)))
         .map_err(|e| e.to_string())?;
     Ok(json!({
@@ -466,7 +484,24 @@ fn create(
         "team_id": team_id,
         "title": title.trim(),
         "mode": payload.get("mode"),
+        "kind": discussion_kind(payload.get("mode"), payload.get("kind")),
     }))
+}
+
+/// 讨论类型：显式 `kind` 优先，其次由 brainstorm mode 推导，否则 `normal`。
+pub fn discussion_kind(mode: Option<&Value>, kind: Option<&Value>) -> &'static str {
+    match kind.and_then(Value::as_str) {
+        Some("grill") => "grill",
+        Some("brainstorm") => "brainstorm",
+        Some("normal") => "normal",
+        _ => {
+            if mode.and_then(Value::as_str) == Some("brainstorm") {
+                "brainstorm"
+            } else {
+                "normal"
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -641,6 +676,8 @@ pub fn list_for_team(conn: &Connection, team_id: &str, all: bool) -> Result<Valu
                 if let Some(m) = payload.get("mode").and_then(|x| x.as_str()) {
                     entry["mode"] = json!(m);
                 }
+                // 讨论类型（normal/brainstorm/grill）——console/CLI 用它显示徽标。
+                entry["kind"] = json!(discussion_kind(payload.get("mode"), payload.get("kind")));
                 entry["created_at"] = json!(e.created_at.clone());
             }
             EV_MESSAGE => {
@@ -788,6 +825,10 @@ fn open(conn: &Connection, id: &str, session: &str, team_opt: Option<&str>) -> R
         "number": number,
         "title": title,
         "mode": created_p.and_then(|p| p.get("mode")).cloned().unwrap_or(Value::Null),
+        "kind": discussion_kind(
+            created_p.and_then(|p| p.get("mode")),
+            created_p.and_then(|p| p.get("kind")),
+        ),
         "phase": phase,
         "window_expired": window_exp,
         "window_secs": created_p.map(|p| window_secs_of(Some(p))),
@@ -1098,10 +1139,10 @@ fn uuid_slug() -> String {
 /// Dispatch for `teamx discussion`.
 pub fn run(conn: &mut Connection, cmd: &DiscussionCmd) -> Result<Value, String> {
     match cmd {
-        DiscussionCmd::Create { title, body, task, mode, window_secs, min_ideas, session, team } => {
+        DiscussionCmd::Create { title, body, task, mode, window_secs, min_ideas, kind, session, team } => {
             create(
                 conn, title, body.as_deref(), task.as_deref(), session, team.as_deref(),
-                mode.as_deref(), *window_secs, *min_ideas,
+                mode.as_deref(), *window_secs, *min_ideas, kind.as_deref(),
             )
         }
         DiscussionCmd::List { all, session, team } => list(conn, *all, session, team.as_deref()),
@@ -1168,7 +1209,7 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         // owner creates
-        let r = create(&mut conn, "Review round2", Some("open"), Some("search-r"), "s-owner", Some("t1"), None, None, None).unwrap();
+        let r = create(&mut conn, "Review round2", Some("open"), Some("search-r"), "s-owner", Some("t1"), None, None, None, None).unwrap();
         let did = r["discussion_id"].as_str().unwrap().to_string();
 
         // worker posts a message
@@ -1225,7 +1266,7 @@ mod tests {
     fn close_with_explicit_summary_is_stored_and_returned() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1245,7 +1286,7 @@ mod tests {
         // with the legacy payload (no `summary`).
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1264,7 +1305,7 @@ mod tests {
     fn discussion_reply_to_unknown_message_rejected() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "T", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1276,9 +1317,9 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         // Unknown session errors
-        assert!(create(&mut conn, "X", None, None, "nobody", Some("t1"), None, None, None).is_err());
+        assert!(create(&mut conn, "X", None, None, "nobody", Some("t1"), None, None, None, None).is_err());
         // Cross team: member is only in t1
-        assert!(create(&mut conn, "X", None, None, "s-worker", Some("other"), None, None, None).is_err());
+        assert!(create(&mut conn, "X", None, None, "s-worker", Some("other"), None, None, None, None).is_err());
     }
 
     /// D-06: quotes with a message ref get their snapshot re-generated by the
@@ -1287,7 +1328,7 @@ mod tests {
     fn discussion_quote_snapshot_regenerated_by_server() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "Q", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "Q", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1322,7 +1363,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let did2 = create(&mut conn, "InT2", None, None, "s-owner2", Some("t2"), None, None, None).unwrap()["discussion_id"]
+        let did2 = create(&mut conn, "InT2", None, None, "s-owner2", Some("t2"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1330,7 +1371,7 @@ mod tests {
         let m2id = m2["message_id"].as_str().unwrap().to_string();
 
         // From t1, replying to a t2 message must fail (snapshot_message scopes by team).
-        let did1 = create(&mut conn, "InT1", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did1 = create(&mut conn, "InT1", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1343,7 +1384,7 @@ mod tests {
     fn discussion_length_caps_enforced() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "Len", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "Len", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1397,7 +1438,7 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         set_quota(&conn, "m-worker", 2);
-        let did = create(&mut conn, "Q", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "Q", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1414,11 +1455,11 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         set_quota(&conn, "m-worker", 1);
-        let d1 = create(&mut conn, "T1", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let d1 = create(&mut conn, "T1", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
-        let d2 = create(&mut conn, "T2", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let d2 = create(&mut conn, "T2", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1434,7 +1475,7 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         set_quota(&conn, "m-worker", 1);
-        let did = create(&mut conn, "M", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "M", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1456,7 +1497,7 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         set_quota(&conn, "m-worker", 1);
-        let did = create(&mut conn, "R", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "R", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1472,7 +1513,7 @@ mod tests {
     fn wake_on_mention_of_self() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "W", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "W", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1488,7 +1529,7 @@ mod tests {
     fn no_wake_without_mention_sub_or_task() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "N", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "N", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1501,7 +1542,7 @@ mod tests {
     fn wake_when_subscribed() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "S", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "S", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1521,7 +1562,7 @@ mod tests {
     fn wake_skips_own_messages_and_respects_cursor() {
         let mut conn = test_conn();
         seed(&conn);
-        let did = create(&mut conn, "C", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let did = create(&mut conn, "C", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1542,9 +1583,9 @@ mod tests {
     fn discussions_have_sequential_numbers() {
         let mut conn = test_conn();
         seed(&conn);
-        let d1 = create(&mut conn, "A", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let d1 = create(&mut conn, "A", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str().unwrap().to_string();
-        let d2 = create(&mut conn, "B", None, None, "s-owner", Some("t1"), None, None, None).unwrap()["discussion_id"]
+        let d2 = create(&mut conn, "B", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap()["discussion_id"]
             .as_str().unwrap().to_string();
         let l = list(&conn, true, "s-owner", Some("t1")).unwrap();
         let arr = l["discussions"].as_array().unwrap();
@@ -1562,8 +1603,40 @@ mod tests {
         }]).to_string()
     }
 
+    #[test]
+    fn discussion_kind_derivation_and_validation() {
+        // 派生：mode=brainstorm → kind=brainstorm；显式 grill 优先；默认 normal
+        assert_eq!(discussion_kind(Some(&json!("brainstorm")), None), "brainstorm");
+        assert_eq!(discussion_kind(None, Some(&json!("grill"))), "grill");
+        assert_eq!(discussion_kind(Some(&json!("brainstorm")), Some(&json!("grill"))), "grill");
+        assert_eq!(discussion_kind(None, None), "normal");
+        assert_eq!(discussion_kind(None, Some(&json!("bogus"))), "normal");
+
+        let mut conn = test_conn();
+        seed(&conn);
+        // 显式 grill
+        let g = create(&mut conn, "G", None, None, "s-owner", Some("t1"), None, None, None, Some("grill")).unwrap();
+        assert_eq!(g["kind"], json!("grill"));
+        // --kind brainstorm 等价于 --mode brainstorm（自动补 mode）
+        let b = create(&mut conn, "B", None, None, "s-owner", Some("t1"), None, None, None, Some("brainstorm")).unwrap();
+        assert_eq!(b["kind"], json!("brainstorm"));
+        assert_eq!(b["mode"], json!("brainstorm"));
+        // 普通讨论（不传 kind）
+        let n = create(&mut conn, "N", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap();
+        assert_eq!(n["kind"], json!("normal"));
+        // 列表暴露 kind
+        let list = list(&conn, true, "s-owner", Some("t1")).unwrap();
+        let ks: Vec<String> = list["discussions"].as_array().unwrap().iter()
+            .filter_map(|d| d.get("kind").and_then(|k| k.as_str()).map(str::to_string)).collect();
+        assert!(ks.contains(&"grill".to_string()), "{ks:?}");
+        assert!(ks.contains(&"brainstorm".to_string()), "{ks:?}");
+        assert!(ks.contains(&"normal".to_string()), "{ks:?}");
+        // 未知 kind 报错
+        assert!(create(&mut conn, "X", None, None, "s-owner", Some("t1"), None, None, None, Some("bogus")).is_err());
+    }
+
     fn bs_create(conn: &mut Connection, window_secs: Option<i64>, min_ideas: Option<i64>) -> String {
-        create(conn, "BS", None, None, "s-owner", Some("t1"), Some("brainstorm"), window_secs, min_ideas)
+        create(conn, "BS", None, None, "s-owner", Some("t1"), Some("brainstorm"), window_secs, min_ideas, None)
             .unwrap()["discussion_id"]
             .as_str()
             .unwrap()
@@ -1632,7 +1705,7 @@ mod tests {
         let mut conn = test_conn();
         seed(&conn);
         // 普通讨论：无 summary 关闭 → auto digest（存量行为回归锚）
-        let d = create(&mut conn, "N", None, None, "s-owner", Some("t1"), None, None, None)
+        let d = create(&mut conn, "N", None, None, "s-owner", Some("t1"), None, None, None, None)
             .unwrap()["discussion_id"]
             .as_str()
             .unwrap()
@@ -1678,7 +1751,7 @@ mod tests {
         // 方向不存在 → 拒
         assert!(handoff(&mut conn, &did, "d404", "discussion", "dsc_nope", "s-owner", Some("t1")).is_err());
         // 非 lead → 拒
-        let target = create(&mut conn, "target", None, None, "s-owner", Some("t1"), None, None, None)
+        let target = create(&mut conn, "target", None, None, "s-owner", Some("t1"), None, None, None, None)
             .unwrap()["discussion_id"]
             .as_str()
             .unwrap()
@@ -1713,7 +1786,7 @@ mod tests {
         assert_eq!(need.len(), 1);
         assert_eq!(need[0]["discussion_id"], json!(did));
         // 普通讨论不出现在待收窗列表
-        create(&mut conn, "plain", None, None, "s-owner", Some("t1"), None, None, None).unwrap();
+        create(&mut conn, "plain", None, None, "s-owner", Some("t1"), None, None, None, None).unwrap();
         assert_eq!(brainstorm_needs_harvest(&conn, "t1").unwrap().len(), 1);
     }
 

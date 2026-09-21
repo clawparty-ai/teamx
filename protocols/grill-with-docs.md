@@ -52,7 +52,10 @@ Use this mode when the **team** should answer each question together and converg
 consensus, instead of a single owner answering. The session still has exactly one
 leader (the human who confirms Shared Understanding) and one Design Session Record.
 
-Structure: **one grill session = one discussion thread**.
+Structure: **one grill session = one discussion thread**. Create that thread with
+`teamx_discussion action=create discussion_kind=grill` (CLI: `teamx discussion create <title> --kind grill`)
+so the console shows a 🔥 grill badge and readers can tell it apart from an ordinary
+thread; a Consensus Mode thread stays open for the whole session.
 
 For each Design Question in the Frontier, in dependency order, **one question at a time**:
 

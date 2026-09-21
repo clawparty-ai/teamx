@@ -1069,6 +1069,10 @@ export const tools = {
         .optional()
         .describe("brainstorm: message kind idea|concern|question|reference (required in the diverging window; concern must reply to an idea)"),
       mode: tool.schema.string().optional().describe("create: `brainstorm` for divergent ideation (design/007)"),
+      discussion_kind: tool.schema
+        .string()
+        .optional()
+        .describe("create: discussion type badge — normal | brainstorm | grill (`brainstorm` implies --mode brainstorm; `grill` = teamx-grill-with-docs session)"),
       window_secs: tool.schema.number().optional().describe("create: brainstorm window in seconds (default 86400)"),
       min_ideas: tool.schema.number().optional().describe("create: brainstorm minimum kind=idea per participant (default 3)"),
       directions: tool.schema
@@ -1100,6 +1104,7 @@ export const tools = {
       if (a === "create" && args.body) parts.push("--body", args.body)
       if (a === "create" && args.task) parts.push("--task", args.task)
       if (a === "create" && args.mode) parts.push("--mode", args.mode)
+      if (a === "create" && args.discussion_kind) parts.push("--kind", args.discussion_kind)
       if (a === "create" && args.window_secs) parts.push("--window-secs", String(args.window_secs))
       if (a === "create" && args.min_ideas) parts.push("--min-ideas", String(args.min_ideas))
       if ((a === "say" || a === "reply") && args.kind) parts.push("--kind", args.kind)

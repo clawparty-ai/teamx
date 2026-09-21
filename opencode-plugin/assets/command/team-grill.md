@@ -3,7 +3,7 @@ description: 运行 Teamx 设计访谈（任意团队成员均可发起），并
 agent: teamx
 ---
 
-<!-- Generated from protocols/grill-with-docs.md; protocol v2; sha256 c8a7bf5159cc0ae3d04f86d2bec0a403d8e8a701750526b2883cf7bfdf1eeeaa; do not edit. -->
+<!-- Generated from protocols/grill-with-docs.md; protocol v2; sha256 32d80d1aa867530911e853109cbad840f9e92e8fe2b002a66df7b20155c4482e; do not edit. -->
 
 按下方 Teamx grill-with-docs 协议处理明确参数，将其作为新建设计主题或恢复选项。全程使用用户当前语言。
 
@@ -58,7 +58,10 @@ Use this mode when the **team** should answer each question together and converg
 consensus, instead of a single owner answering. The session still has exactly one
 leader (the human who confirms Shared Understanding) and one Design Session Record.
 
-Structure: **one grill session = one discussion thread**.
+Structure: **one grill session = one discussion thread**. Create that thread with
+`teamx_discussion action=create discussion_kind=grill` (CLI: `teamx discussion create <title> --kind grill`)
+so the console shows a 🔥 grill badge and readers can tell it apart from an ordinary
+thread; a Consensus Mode thread stays open for the whole session.
 
 For each Design Question in the Frontier, in dependency order, **one question at a time**:
 
