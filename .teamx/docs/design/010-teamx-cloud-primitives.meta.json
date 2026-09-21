@@ -1,0 +1,12 @@
+{
+  "doc": "design",
+  "id": "010-teamx-cloud-primitives",
+  "state": "approved",
+  "owner": "caishu",
+  "created_at": "2026-09-21T07:37:47+00:00",
+  "updated_at": "2026-09-21T07:37:47+00:00",
+  "history": [
+    { "state": "draft", "by": "caishu", "at": "2026-09-21T07:37:47+00:00", "note": "第二轮讨论（dsc_18d731ef572734c526ea4e）4 条架构原语裁决落档：D1=B(+C11 硬约束)/D2=每租户独立 CA/D3=固定 workspace+上报字段唯一事实源/D5=A+C 边车+自愈；含 6 条派生硬约束与待议清单。" },
+    { "state": "approved", "by": "caishu", "at": "2026-09-21T07:37:47+00:00", "note": "owner 在讨论 #6628 明确『按推荐执行』，四条原语生效。" }
+  ]
+}
