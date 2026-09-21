@@ -4,8 +4,19 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T07:37:47+00:00",
-  "updated_at": "2026-09-21T07:37:47+00:00",
+  "updated_at": "2026-09-21T07:53:01+00:00",
   "history": [
-    { "state": "draft", "by": "caishu", "at": "2026-09-21T07:37:47+00:00", "note": "Teamx Cloud v1 需求分析草稿：范围/角色/6 个端到端场景/17 条 FR/9 条 NFR/6 项验收/开放问题。输入 = design/009 + design/010。待评审（≥3 名评审人）。" }
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-21T07:37:47+00:00",
+      "note": "Teamx Cloud v1 需求分析草稿：范围/角色/6 个端到端场景/17 条 FR/9 条 NFR/6 项验收/开放问题。输入 = design/009 + design/010。待评审（≥3 名评审人）。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-21T07:53:01+00:00",
+      "note": "并入第二段裁决：FR-18 两步里程碑 / FR-19 BYO join token / FR-20 迁移工具；NFR-10 存储快照 / NFR-11 BYO 出站 / NFR-12 token 安全；验收补 3 项。"
+    }
   ]
 }

@@ -1,0 +1,12 @@
+{
+  "doc": "design",
+  "id": "011-teamx-cloud-delivery-verdict",
+  "state": "approved",
+  "owner": "caishu",
+  "created_at": "2026-09-21T07:53:01+00:00",
+  "updated_at": "2026-09-21T07:53:01+00:00",
+  "history": [
+    { "state": "draft", "by": "caishu", "at": "2026-09-21T07:53:01+00:00", "note": "第二轮第二段（交付与里程碑）裁决：D13 两步走 / D7 AIO+存储快照硬约束 / D11 不强制迁移+A 可选工具带一致性验收 / D6 join token+出站假设+key 留用户侧+命名含 id。" },
+    { "state": "approved", "by": "caishu", "at": "2026-09-21T07:53:01+00:00", "note": "owner 在讨论 #6655 全部拍板。" }
+  ]
+}
