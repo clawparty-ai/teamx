@@ -1,0 +1,11 @@
+{
+  "doc": "design",
+  "id": "014-teamx-cloud-impl-design-step2",
+  "state": "draft",
+  "owner": "caishu",
+  "created_at": "2026-09-22T02:09:01+00:00",
+  "updated_at": "2026-09-22T02:09:01+00:00",
+  "history": [
+    { "state": "draft", "by": "caishu", "at": "2026-09-22T02:09:01+00:00", "note": "第二步实现级设计：三元组 1:1:1（installation↔team↔namespace）、每租户 teamx server 容器化（Deployment 单副本+SQLite/PVC+CA 同生命周期+升级回滚 pin+灾备含 CA）、独立 CA（生成/存储/轮换双 CA 窗口/吊销=废 CA/灾备）、平台控制台（平台面 vs admin/user-console 分层 + GitHub OAuth + 平台 API）、平台 bootstrap 复用 006 一次性 token、平台可见边界（仅元数据+fail-closed+break-glass+审计独立）、迁移与兼容、8 项验收、需求映射与 5 开放项。" }
+  ]
+}
