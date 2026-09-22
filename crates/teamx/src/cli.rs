@@ -2346,6 +2346,31 @@ pub enum PlatformCmd {
         #[arg(long)]
         limit: Option<i64>,
     },
+    /// Start the platform-plane web console (tenants / tokens / admins / audit;
+    /// tenant member ops go through the platform-console service lane)
+    Console {
+        /// bind address (default 127.0.0.1 — operator only)
+        #[arg(long, default_value = "127.0.0.1")]
+        addr: String,
+        /// bind port
+        #[arg(long, default_value_t = 9530)]
+        port: u16,
+        /// kubeconfig for tenant operations (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context (default: TEAMX_K8S_CONTEXT)
+        #[arg(long)]
+        context: Option<String>,
+    },
+}
+
+/// 平台控制台参数（`teamx platform console`）。
+#[derive(clap::Args, Debug, Clone)]
+pub struct PlatformConsoleCmd {
+    pub addr: String,
+    pub port: u16,
+    pub kubeconfig: Option<PathBuf>,
+    pub context: Option<String>,
 }
 
 /// Multi-tenant platform (design/014): one tenant = one team + one namespace

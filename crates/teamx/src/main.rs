@@ -48,6 +48,22 @@ fn main() {
         }
         return;
     }
+    if let Command::Platform(teamx::cli::PlatformCmd::Console { addr, port, kubeconfig, context }) = &cli.command {
+        let pc = teamx::cli::PlatformConsoleCmd {
+            addr: addr.clone(),
+            port: *port,
+            kubeconfig: kubeconfig.clone(),
+            context: context.clone(),
+        };
+        match teamx::platform_console::run(&pc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Command::Console(cc) = &cli.command {
         match teamx::console::run(cc) {
             Ok(()) => {}

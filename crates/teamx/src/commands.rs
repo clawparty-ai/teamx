@@ -503,6 +503,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             PlatformCmd::AdminRevoke { user_id } => {
                 crate::platform::revoke_admin(conn, user_id).map_err(AppError)?
             }
+            PlatformCmd::Console { .. } => {
+                return err("`platform console` runs its own server; it must not reach the DB dispatcher")
+            }
             PlatformCmd::Audit { limit } => json!({
                 "ok": true,
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,

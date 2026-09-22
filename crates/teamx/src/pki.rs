@@ -301,6 +301,37 @@ pub fn issue_server_cert_with_ca(
     })
 }
 
+/// 用**指定 CA**（PEM 对）签发 **service 证书**（多租户 §6.5：平台以 service 身份调租户 server）。
+///
+/// CN 形如 `service:<service>:<instance>`，EKU = ClientAuth（service 是 mTLS 的客户端侧）。
+pub fn issue_service_cert_with_ca(
+    ca_cert_pem: &str,
+    ca_key_pem: &str,
+    service: &str,
+    instance: &str,
+) -> PkiResult<IssuedCert> {
+    let ca_key = KeyPair::from_pem(ca_key_pem).map_err(|e| format!("load ca key: {e}"))?;
+    let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem)
+        .map_err(|e| format!("parse ca cert: {e}"))?;
+    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("reconstruct ca: {e}"))?;
+    let cn = format!("service:{service}:{instance}");
+    let mut params = cert_params(&cn, &[], false)?;
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let serial_bytes: [u8; 16] = uuid::Uuid::new_v4().into_bytes();
+    params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
+    let key = KeyPair::generate().map_err(|e| format!("service keygen: {e}"))?;
+    let cert = params
+        .signed_by(&key, &ca_cert, &ca_key)
+        .map_err(|e| format!("service sign: {e}"))?;
+    let serial_hex = cert
+        .params()
+        .serial_number
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    Ok(IssuedCert { cert_pem: cert.pem(), key_pem: key.serialize_pem(), serial_hex, cn })
+}
+
 /// 从 CA 证书 PEM 算指纹（与 [`ca_fingerprint`] 同格式，供邀请函写入 `ca_fingerprint`）。
 pub fn ca_fingerprint_of(ca_cert_pem: &str) -> PkiResult<String> {
     // 与 `ca_fingerprint` 完全同算法同格式（rustls_pemfile 解析 + ring SHA-256 over DER），
