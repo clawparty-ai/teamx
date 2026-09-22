@@ -1845,6 +1845,11 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             kubeconfig: None,
             context: None,
         }),
+        "tenant.destroy" => Command::Tenant(TenantCmd::Destroy {
+            team: s("team").ok_or_else(|| "tenant.destroy requires `team`".to_string())?,
+            kubeconfig: None,
+            context: None,
+        }),
         "tenant.list" => Command::Tenant(TenantCmd::List),
         "tenant.show" => Command::Tenant(TenantCmd::Show {
             team: s("team").ok_or_else(|| "tenant.show requires `team`".to_string())?,

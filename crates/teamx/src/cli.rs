@@ -2368,6 +2368,18 @@ pub enum TenantCmd {
         #[arg(long)]
         context: Option<String>,
     },
+    /// Destroy a tenant: delete its namespace (cascades server/CA Secret/PVC/NetworkPolicy)
+    /// and the tenant row. Deleting the CA Secret = revoking the tenant in one action.
+    Destroy {
+        #[arg(long)]
+        team: String,
+        /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context (default: TEAMX_K8S_CONTEXT)
+        #[arg(long)]
+        context: Option<String>,
+    },
     /// List tenants
     List,
     /// Show one tenant

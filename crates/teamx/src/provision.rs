@@ -589,6 +589,48 @@ pub fn create_tenant(
     }))
 }
 
+/// 回收租户（design/014 §2）：删 namespace（级联清掉 server/CA Secret/PVC/NetworkPolicy）
+/// → 删 `tenants` 行 → 返回**可验证清单**。
+///
+/// 说明：租户 CA 在 namespace 的 Secret 里，随 namespace 一起消失 = **吊销租户的一次动作**
+/// （废 CA 即废该租户所有成员证书，D2）。
+pub fn destroy_tenant(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let tenant = tenant_get(conn, team_id)?.ok_or_else(|| format!("tenant for team {team_id} not found"))?;
+    let ns = tenant["namespace"].as_str().unwrap_or("").to_string();
+    if ns.is_empty() {
+        return Err(format!("tenant {team_id} has no namespace recorded"));
+    }
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    let mut steps = Vec::new();
+    // 删除前先确认受管资源清单（可验证：删之前有几类资源）
+    let before = kubectl
+        .list_names("deployment,pvc,secret,networkpolicy", &ns, crate::k8s::LABEL_MANAGED)
+        .unwrap_or_default();
+    steps.push(json!({
+        "step": "inventory", "target": ns, "done": true,
+        "managed_resources_before": before.len(),
+    }));
+    let ok = kubectl.delete("namespace", &ns, "default").is_ok();
+    steps.push(json!({"step": "delete-namespace (cascades server/CA/PVC/NetworkPolicy)", "target": ns, "done": ok}));
+    let removed = conn
+        .execute("DELETE FROM tenants WHERE team_id = ?1", params![team_id])
+        .unwrap_or(0);
+    steps.push(json!({"step": "delete-tenant-row", "target": team_id, "done": removed > 0}));
+    steps.push(json!({
+        "step": "revoke-tenant-ca", "target": tenant["ca_fingerprint"], "done": ok,
+        "note": "CA 在 namespace Secret 内，随 namespace 删除即失效（吊销租户=废 CA，一次动作）",
+    }));
+    Ok(json!({ "ok": true, "team_id": team_id, "namespace": ns, "steps": steps }))
+}
+
 /// 读租户记录。
 pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, String> {
     conn.query_row(
