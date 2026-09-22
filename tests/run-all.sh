@@ -270,5 +270,12 @@ else
   echo "debug binary/sqlite3 missing; skipping platform test"
 fi
 
+echo "== 18e/18 tenant full-chain E2E (design/014 第二步：租户 + 成员共存 / CA 独立 / destroy) =="
+if [ -x target/debug/teamx ] && command -v sqlite3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/tenant-e2e-test.sh
+else
+  echo "debug binary/sqlite3 missing; skipping tenant E2E"
+fi
+
 echo
 echo "ALL TEST SUITES PASSED"
