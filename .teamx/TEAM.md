@@ -18,6 +18,12 @@
   - 命名用 `<NNN>-<slug>` 顺序编号（每类型内递增）；`.meta.json` 必含 `doc / id / state / owner / created_at / updated_at / history`。
   - 文档实例是 **git 跟踪的组织过程资产**，提交到台账仓 `teamx-ent`；状态推进（draft → review → approved → done）通过 `.meta.json` 的 `state` + `history` 记录。
   - 本地 workspace 的 `.teamx/docs/` 仅作**查看镜像**（从 `teamx-ent` 同步），**不作为提交源**；user-console 的 Documents 面板读该镜像。
+  - **同步方向（硬约束）：台账仓 → 本地镜像，单向。**
+    1. 改文档**只在台账仓改**（克隆 → 编辑 → 提交 → push），再把结果**单向同步**到本地 `.teamx/docs/` 镜像；
+    2. **禁止**把本地镜像的副本覆盖回台账仓 —— 会盖掉他人已提交的改动；
+    3. **每次提交后必须 diff 校验**两侧一致：`diff <台账仓>/<path> <本地镜像>/<path>`（无输出=一致）；
+    4. 一旦发现分叉：**以台账仓为准合并**（保留双方改动，不取其一），再单向同步回本地，并记录到该文档的 `.meta.json` history；
+    5. 违反的典型症状：同一文档两侧各缺一半（2026-09-20 design/013 实际发生：台账仓缺 v2.1、本地缺他人 M4 裁决）。
 
 ## 成员
 ### caishu
