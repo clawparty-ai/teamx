@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -480,6 +480,29 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Import { letter, name, session } => cmd_team_import(conn, letter, name.as_deref(), session, None)?,
             TeamCmd::Clone { name, team, server_url, yes, session } => {
                 cmd_team_clone(conn, name, team.as_deref(), server_url.as_deref(), *yes, session, None)?
+            }
+        },
+        Command::Tenant(t) => match t {
+            TenantCmd::Create { team, server_image, kubeconfig, context } => {
+                crate::provision::create_tenant(
+                    conn,
+                    team,
+                    server_image.as_deref(),
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
+            TenantCmd::List => json!({
+                "ok": true,
+                "tenants": crate::provision::tenant_list(conn).map_err(AppError)?,
+            }),
+            TenantCmd::Show { team } => {
+                let t = crate::provision::tenant_get(conn, team).map_err(AppError)?;
+                match t {
+                    Some(v) => json!({ "ok": true, "tenant": v }),
+                    None => return err(format!("tenant for team {team} not found")),
+                }
             }
         },
         Command::Node(n) => match n {

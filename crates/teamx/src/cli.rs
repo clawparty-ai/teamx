@@ -59,6 +59,10 @@ pub enum Command {
     #[command(subcommand)]
     Im(ImCmd),
 
+    /// Multi-tenant platform (design/014): one tenant = one team + one namespace + one independent CA
+    #[command(subcommand)]
+    Tenant(TenantCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2291,6 +2295,35 @@ pub enum GitCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+}
+
+/// Multi-tenant platform (design/014): one tenant = one team + one namespace
+/// + one independent CA. Executor = the platform (kubectl + tenant CA).
+#[derive(Subcommand, Debug)]
+pub enum TenantCmd {
+    /// Create a tenant: generate its own CA, sign the server cert, apply
+    /// namespace + CA Secret + server PVC/Deployment (design/014 §2/§3/§4)
+    Create {
+        /// team id this tenant serves (the tenant key is installation_id ↔ team_id ↔ namespace)
+        #[arg(long)]
+        team: String,
+        /// server image (default: TEAMX_SERVER_IMAGE or teamx-server:latest)
+        #[arg(long)]
+        server_image: Option<String>,
+        /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context (default: TEAMX_K8S_CONTEXT)
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// List tenants
+    List,
+    /// Show one tenant
+    Show {
+        #[arg(value_name = "TEAM_ID")]
+        team: String,
     },
 }
 

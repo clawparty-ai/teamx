@@ -1,11 +1,22 @@
 {
   "doc": "design",
   "id": "014-teamx-cloud-impl-design-step2",
-  "state": "draft",
+  "state": "approved",
   "owner": "caishu",
   "created_at": "2026-09-22T02:09:01+00:00",
-  "updated_at": "2026-09-22T02:09:01+00:00",
+  "updated_at": "2026-09-22T02:53:31+00:00",
   "history": [
-    { "state": "draft", "by": "caishu", "at": "2026-09-22T02:09:01+00:00", "note": "第二步实现级设计：三元组 1:1:1（installation↔team↔namespace）、每租户 teamx server 容器化（Deployment 单副本+SQLite/PVC+CA 同生命周期+升级回滚 pin+灾备含 CA）、独立 CA（生成/存储/轮换双 CA 窗口/吊销=废 CA/灾备）、平台控制台（平台面 vs admin/user-console 分层 + GitHub OAuth + 平台 API）、平台 bootstrap 复用 006 一次性 token、平台可见边界（仅元数据+fail-closed+break-glass+审计独立）、迁移与兼容、8 项验收、需求映射与 5 开放项。" }
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-22T02:09:01+00:00",
+      "note": "第二步实现级设计：三元组 1:1:1（installation↔team↔namespace）、每租户 teamx server 容器化（Deployment 单副本+SQLite/PVC+CA 同生命周期+升级回滚 pin+灾备含 CA）、独立 CA（生成/存储/轮换双 CA 窗口/吊销=废 CA/灾备）、平台控制台（平台面 vs admin/user-console 分层 + GitHub OAuth + 平台 API）、平台 bootstrap 复用 006 一次性 token、平台可见边界（仅元数据+fail-closed+break-glass+审计独立）、迁移与兼容、8 项验收、需求映射与 5 开放项。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-22T02:53:31+00:00",
+      "note": "定稿（owner 指示不等最后一位评审）：weiye-mini 的 2 必改 + 1 重大缺口 + 5 建议全部落实 —— §2 命名改全长/≥16 hash（M5，代码 short_id 8→16 同步）、§8 补成员证书换发三步、新增 §6.5 平台 console 认证通道（service 车道 + 二维白名单 fail-closed）、Recreate 措辞、users 双层权威、双 CA trust bundle、平台 HA/灾备。"
+    }
   ]
 }

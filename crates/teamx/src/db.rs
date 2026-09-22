@@ -431,6 +431,16 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            value TEXT NOT NULL
          );",
     )?;
+    // 多租户平台（design/014 第二步）：一个租户 = 一个 team + 一个 namespace + 一个独立 CA。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tenants (
+           team_id        TEXT PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+           namespace      TEXT NOT NULL,
+           ca_fingerprint TEXT NOT NULL,
+           server_image   TEXT NOT NULL DEFAULT '',
+           created_at     TEXT NOT NULL
+         );",
+    )?;
     // Cloud-host provisioning (design/006: invite 时开通云主机，server 侧 AWS CLI 执行).
     // Converge-style: brand-new tables, no user_version bump needed.
     conn.execute_batch(

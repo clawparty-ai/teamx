@@ -40,7 +40,7 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use crate::broadcast::Hub;
-use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, NodeCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
+use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, NodeCmd, RoleCmd, ServeCmd, TeamCmd, TenantCmd, UserCmd};
 use crate::commands;
 use crate::pki;
 
@@ -1837,6 +1837,17 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             size: o("size"),
             ttl: args.get("ttl").and_then(Value::as_u64).map(|n| n as u32),
             os_user: o("os_user"),
+        }),
+        // Multi-tenant platform (design/014).
+        "tenant.create" => Command::Tenant(TenantCmd::Create {
+            team: s("team").ok_or_else(|| "tenant.create requires `team`".to_string())?,
+            server_image: o("server_image"),
+            kubeconfig: None,
+            context: None,
+        }),
+        "tenant.list" => Command::Tenant(TenantCmd::List),
+        "tenant.show" => Command::Tenant(TenantCmd::Show {
+            team: s("team").ok_or_else(|| "tenant.show requires `team`".to_string())?,
         }),
         // Cloud-host provisioning (design/006).
         "node.provision" => Command::Node(NodeCmd::Provision {

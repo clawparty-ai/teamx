@@ -522,6 +522,111 @@ pub fn key_path_for(key_dir: &str, node_id: &str) -> String {
     format!("{key_dir}/teamx-{node_id}.pem")
 }
 
+/// 建租户（design/014 §2/§3/§4）：生成**独立 CA** → 签 server 证书 → apply 租户基础设施
+/// （namespace + CA Secret + server PVC/Deployment）→ 落 `tenants` 表。
+///
+/// 幂等：同 team_id 已有租户 → 直接返回既有记录（不重建 CA，避免成员证书失效）。
+pub fn create_tenant(
+    conn: &mut Connection,
+    team_id: &str,
+    server_image: Option<&str>,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    // 幂等：已存在则直接返回（重复调用不得换 CA）
+    if let Ok(Some(existing)) = tenant_get(conn, team_id) {
+        return Ok(json!({ "ok": true, "reused": true, "tenant": existing }));
+    }
+    // 校验 team 存在（不依赖 commands 的私有函数）
+    let exists: i64 = conn
+        .query_row("SELECT COUNT(*) FROM teams WHERE id = ?1", params![team_id], |r| r.get(0))
+        .map_err(|e| format!("db: {e}"))?;
+    if exists == 0 {
+        return Err(format!("team {team_id} not found"));
+    }
+
+    // 1) 独立 CA（D2）
+    let (ca_cert_pem, ca_key_pem) = crate::pki::generate_ca()?;
+    let ca_fp = crate::pki::ca_fingerprint_of(&ca_cert_pem)?;
+
+    // 2) server 证书（租户 CA 签发；SAN = Service DNS + localhost）
+    let ns = crate::k8s::namespace_for(team_id);
+    let svc = format!("teamx-serve-{}.{}.svc", crate::k8s::short_id(team_id), ns);
+    let sans = vec![svc.clone(), "localhost".to_string(), "127.0.0.1".to_string()];
+    let srv = crate::pki::issue_server_cert_with_ca(&ca_cert_pem, &ca_key_pem, &sans)?;
+
+    // 3) apply 租户基础设施
+    let yaml = crate::k8s::tenant_manifests(
+        team_id,
+        &ca_cert_pem,
+        &ca_key_pem,
+        &srv.cert_pem,
+        &srv.key_pem,
+    );
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    kubectl.apply(&yaml)?;
+
+    // 4) 落库
+    let now = db::now();
+    let img = server_image.unwrap_or("").to_string();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "INSERT OR REPLACE INTO tenants (team_id, namespace, ca_fingerprint, server_image, created_at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![team_id, ns, ca_fp, img, now],
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("db: {e}"))?;
+    let tenant = tenant_get(conn, team_id)?.unwrap_or(Value::Null);
+    Ok(json!({
+        "ok": true, "reused": false, "tenant": tenant,
+        "server_sans": sans, "server_serial": srv.serial_hex,
+        "note": "tenant CA generated; infrastructure applied (namespace + CA Secret + server PVC/Deployment)",
+    }))
+}
+
+/// 读租户记录。
+pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, String> {
+    conn.query_row(
+        "SELECT team_id, namespace, ca_fingerprint, server_image, created_at FROM tenants WHERE team_id = ?1",
+        params![team_id],
+        |r| {
+            Ok(json!({
+                "team_id": r.get::<_, String>(0)?,
+                "namespace": r.get::<_, String>(1)?,
+                "ca_fingerprint": r.get::<_, String>(2)?,
+                "server_image": r.get::<_, String>(3)?,
+                "created_at": r.get::<_, String>(4)?,
+            }))
+        },
+    )
+    .optional()
+    .map_err(|e| format!("db: {e}"))
+}
+
+/// 列全部租户。
+pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
+    let mut stmt = conn
+        .prepare("SELECT team_id, namespace, ca_fingerprint, server_image, created_at FROM tenants ORDER BY created_at")
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(json!({
+                "team_id": r.get::<_, String>(0)?,
+                "namespace": r.get::<_, String>(1)?,
+                "ca_fingerprint": r.get::<_, String>(2)?,
+                "server_image": r.get::<_, String>(3)?,
+                "created_at": r.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("db: {e}"))
+}
+
 /// 按 provider 名构造实现。
 pub fn provider_for(name: &str, region: &str) -> Result<Box<dyn CloudProvider>, String> {
     match name {

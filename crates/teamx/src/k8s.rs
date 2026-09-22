@@ -146,10 +146,14 @@ impl Kubectl {
 // 命名规范（含成员短 id，防同集群多租户/多设备碰撞 —— design/011 D6 子约束 2）
 // ---------------------------------------------------------------------------
 
-/// 成员短 id：取 UUID 的字母数字，前 8 位。
-pub fn short_id(member_id: &str) -> String {
-    let s: String = member_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
-    if s.is_empty() { "unknown0".to_string() } else { s }
+/// 资源 id 短标识：取 id 的字母数字前 **16** 位。
+///
+/// **M5 裁决（013 v3）**：namespace 是**安全边界**，8 字符截断（32bit 熵）碰撞 =
+/// 跨租户混住，故要求**全长或 ≥16 字符 hash**。为防口径漂移，namespace 与
+/// namespace 内的 Pod/PVC/Secret 统一用 16 字符（UUIDv4 前 16 个 hex = 64bit 熵）。
+pub fn short_id(id: &str) -> String {
+    let s: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).take(16).collect();
+    if s.is_empty() { "unknown000000000".to_string() } else { s }
 }
 
 /// 租户 namespace：`tenant-<team 前 8>`（C11 三元组之一）。
@@ -813,11 +817,12 @@ mod tests {
     fn names_are_short_and_collision_free() {
         let a = "474a5a6b-2440-4c1c-b24c-4d2044589b65";
         let b = "71667b0d-7781-425f-aa83-dc80be84d429";
-        assert_eq!(short_id(a), "474a5a6b");
+        assert_eq!(short_id(a), "474a5a6b24404c1c");
+        assert!(short_id(a).len() >= 16, "M5: 命名需 ≥16 字符防碰撞");
         assert_ne!(pod_name(a), pod_name(b));
-        assert_eq!(namespace_for("5eebe88f-1f9c-490f-9707-c8f01347e92c"), "tenant-5eebe88f");
-        assert_eq!(pvc_name(a), "teamx-ws-474a5a6b");
-        assert_eq!(secret_name(a), "teamx-letter-474a5a6b");
+        assert_eq!(namespace_for("5eebe88f-1f9c-490f-9707-c8f01347e92c"), "tenant-5eebe88f1f9c490f");
+        assert_eq!(pvc_name(a), "teamx-ws-474a5a6b24404c1c");
+        assert_eq!(secret_name(a), "teamx-letter-474a5a6b24404c1c");
         // 空 id 不产生空名字（防撞成同一个空名）
         assert!(!pod_name("").is_empty());
     }

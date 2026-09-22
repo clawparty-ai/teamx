@@ -126,6 +126,7 @@ YAML="$KUBECTL_STATE/last-apply.yaml"
 grep -q "kind: PersistentVolumeClaim" "$YAML" || fail "T-K1: PVC 未 apply"
 grep -q "kind: Secret" "$YAML" || fail "T-K1: Secret 未 apply"
 grep -q "invitation.letter" "$YAML" || fail "T-K1: 邀请函未进 Secret"
+cp "$YAML" "$WORK/provision.yaml"   # approve 会覆盖 last-apply.yaml，这里留存快照
 if grep -q "^kind: Pod" "$YAML"; then fail "T-K1: provision 阶段不得建 Pod（裁决 V）"; fi
 pass "T-K1 provision -> PVC + Secret（无 Pod）"
 
@@ -156,10 +157,14 @@ pass "T-K4 initContainer 幂等锁就位"
 
 # 回归守卫：provision 建的 PVC 名必须与 Pod 引用的 claimName 一致
 # （真集群曾踩到：provision 用 req.name、approve 用 member_id → PVC not found）
-PVC_PROV="$(grep -A2 "^kind: PersistentVolumeClaim" "$YAML" | grep "name: teamx-ws-" | awk '{print $2}' | head -1)"
-PVC_POD="$(grep "claimName:" "$YAML2" | awk '{print $2}' | head -1)"
+# 注意：`head -1` 会提前关闭管道触发 SIGPIPE，配合 set -o pipefail 会让整条管道失败 →
+# 用 `grep -m1` 并容忍失败，避免断言前就退出。
+# 用 -oE 直接抽名字：Pod 清单里是内联 map（`persistentVolumeClaim: { claimName: xxx }`），
+# 按列取会拿到 `{`；Provision 清单里 PVC 名在 metadata.name。
+PVC_PROV="$(grep -oE 'name: teamx-ws-[a-z0-9]+' "$WORK/provision.yaml" | head -1 | awk '{print $2}' || true)"
+PVC_POD="$(grep -oE 'claimName: teamx-ws-[a-z0-9]+' "$YAML2" | head -1 | awk '{print $2}' || true)"
 [ -n "$PVC_PROV" ] && [ "$PVC_PROV" = "$PVC_POD" ] \
-  || fail "T-K9: PVC 命名不一致（provision=$PVC_PROV pod=$PVC_POD）"
+  || fail "T-K9: PVC 命名不一致（provision=$PVC_PROV pod=${PVC_POD}）"
 grep -q "kind: NetworkPolicy" "$YAML2" || fail "T-K5: 缺 NetworkPolicy"
 if grep -q "cidr: 169.254.169.254" "$YAML2"; then fail "T-K5: IMDS 被错误地 allow-list"; fi
 grep -q 'policyTypes: \["Egress"\]' "$YAML2" || fail "T-K5: 缺默认拒绝出网"
@@ -176,5 +181,35 @@ pass "T-K7 stop 删 Pod / 保留 PVC"
 grep -q "delete pvc " "$KUBECTL_LOG" || fail "T-K8: destroy 未删 PVC"
 grep -q "delete secret " "$KUBECTL_LOG" || fail "T-K8: destroy 未删 Secret"
 pass "T-K8 destroy 删除 Pod/PVC/Secret（可验证清单）"
+
+# ---------- T-K10..K13: 多租户（design/014 第二步）----------
+echo
+echo "== tenant (design/014) =="
+TEAM_ID="$(python3 -c "
+import sqlite3;c=sqlite3.connect('$TEAMX_DB')
+print(c.execute('SELECT id FROM teams LIMIT 1').fetchone()[0])")"
+: > "$KUBECTL_LOG"
+TOUT="$("$TEAMX" --json tenant create --team "$TEAM_ID" --server-image teamx-server:dev 2>&1)" || fail "T-K10: tenant create 失败: $TOUT"
+YAML3="$KUBECTL_STATE/last-apply.yaml"
+grep -q "kind: Deployment" "$YAML3" || fail "T-K10: 缺 server Deployment"
+grep -q "kind: PersistentVolumeClaim" "$YAML3" || fail "T-K10: 缺 server PVC"
+grep -q "teamx-ca-" "$YAML3" || fail "T-K10: 缺 CA Secret"
+grep -q "ca.key: |" "$YAML3" || fail "T-K10: CA key 未注入（invite 时要签发成员证书）"
+grep -q "server.crt: |" "$YAML3" || fail "T-K10: server 证书未注入"
+pass "T-K10 tenant create -> namespace + CA Secret + server PVC/Deployment"
+
+FP1="$(echo "$TOUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['tenant']['ca_fingerprint'])")"
+[ ${#FP1} -eq 64 ] || fail "T-K11: CA 指纹格式异常（${#FP1}）"
+pass "T-K11 租户 CA 指纹已记录（${FP1:0:12}…，64 hex）"
+
+TOUT2="$("$TEAMX" --json tenant create --team "$TEAM_ID" --server-image teamx-server:dev 2>&1)" || fail "T-K12: 重复 create 失败"
+FP2="$(echo "$TOUT2" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['tenant']['ca_fingerprint'])")"
+[ "$FP1" = "$FP2" ] || fail "T-K12: 重复 create 换了 CA（会作废成员证书）"
+[ "$(echo "$TOUT2" | python3 -c "import json,sys;print(json.load(sys.stdin).get('reused'))")" = "True" ] || fail "T-K12: 应标记 reused"
+pass "T-K12 tenant create 幂等（同 team 不换 CA）"
+
+NSNAME="$(echo "$TOUT" | python3 -c "import json,sys;print(json.load(sys.stdin)['tenant']['namespace'])")"
+echo "$NSNAME" | grep -Eq '^tenant-[a-z0-9]{16,}$' || fail "T-K13: namespace 命名不满足 M5（≥16）: $NSNAME"
+pass "T-K13 namespace 命名满足 M5（${NSNAME}）"
 
 printf '\nALL PASSED (k8e provider E2E)\n'
