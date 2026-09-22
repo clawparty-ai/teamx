@@ -31,14 +31,14 @@
 | 每实例 6 个 systemd 单元 | **Pod 内多容器（sidecar）** | 见 §4 |
 | OS 用户（隔离单元） | **Pod + namespace** | 见 §3 |
 | EBS 卷 + 快照 | **PVC + 快照策略**（D7 硬约束） | 见 §6 |
-| `nodes.ip` = 公网 IP | `nodes.ip` = **Service DNS 名**（集群内） | `ip_of` 返回它 |
+| `nodes.ip` = 公网 IP | `nodes.ip` = **Pod IP**（集群内；**M4 裁决：集群外不可路由，仅供诊断；隧道/转发经既有转发机制**） | `ip_of` 返回它 |
 
 **`nodes` 行在 k8e 下的字段语义（防 server 按 EC2 语义误读 —— 评审必改）**
 
 | 字段 | k8e 取值 | 说明 |
 |---|---|---|
 | `instance_id` | Pod 名（`teamx-m-<member8>`） | 与 EC2 的 `i-xxx` 同义 |
-| `ip` | **Pod IP（Running 后回填），未 Running 时为空** | 不引入 Service（§11.5 开放项）；**不保证公网可达** |
+| `ip` | **Pod IP（Running 后回填），未 Running 时为空** | **M4 裁决：不建 Service**；集群外不可路由，仅供诊断 |
 | `keypair_ref` | **空** | 无 SSH 密钥；`node ssh` 对 k8e 行应报错而非空指针 |
 | `os_user` | **空** | 无 OS 用户；destroy 不做 `userdel` |
 | `server_url` | 建节点时落库 | Pod env / 隧道 / git clone 用 |
@@ -52,14 +52,14 @@ pub struct K8sProvider { kubeconfig: Option<PathBuf>, namespace_for: fn(team_id)
 
 | trait 方法 | k8e 实现 |
 |---|---|
-| `create(req)` | **先确保 namespace 存在**（含 PSA 标签），再 apply **PVC + Secret + ResourceQuota + LimitRange**（**不含 Pod** —— Pod 在 approve 阶段建，见 §5）→ 返回 `Created { instance_id: <pod name>, private_ip: Some(<pod ip 或空>), public_ip: None }` |
+| `create(req)` | **先确保 namespace 存在**（含 PSA 标签），再 apply **PVC + Secret + ResourceQuota + LimitRange**（**不含 Pod** —— Pod 在 approve 阶段建，见 §5）→ 返回 `Created { instance_id: <pod name>, private_ip: Some(<Pod IP>), public_ip: None }`（**M4 裁决：不建 Service**） |
 | `status(id)` | 读 Pod `phase`（`Pending/Running/Succeeded/Failed`）→ 映射到 `provisioning/ready/failed` |
 | `destroy(id)` | 删 Pod → 删 PVC → 删 Secret（**可验证清单**逐项 `done`） |
 | `list()` | 按 label `teamx.io/managed=true` 列 Pod |
 | `stop/start` | Pod 删除/重建（保留 PVC）—— 对应 006 的 stop/start |
 | `delete_keypair` | no-op |
 | `console_output` | no-op（首登指纹校验在 k8e 无对应物） |
-| `ip_of` | 返回 Service DNS + Pod IP |
+| `ip_of` | 返回 **Pod IP**（M4：不建 Service；Pod 重建后 IP 变化，以最新 status() 为准，仅供诊断——隧道/转发经 expose 边车既有机制） |
 
 **命名规范（含成员短 id，防同主机多租户碰撞 —— D6 子约束 2）**
 ```
@@ -172,7 +172,7 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 2. member 镜像的**registry 与多架构发布流程**（私有 registry 位置、tag 规范）。
 3. `setup` initContainer 与 `kubectl exec` 两种 bootstrap 载体的取舍（前者更声明式，后者复用 006 脚本更彻底）。
 4. Pod 资源 requests/limits 的默认值（默认规格）。
-5. 第一步是否需要 **Service**（同集群内成员互访）还是只经隧道。
+5. ~~第一步是否需要 Service~~ **已裁决（M4，owner @ seq 7397，采纳 (ii)）**：第一步**不建 Service**，`nodes.ip` 存 **Pod IP**（集群外不可路由，仅供诊断；隧道/转发经既有转发机制）；稳定寻址留第二步若需再议。
 
 ---
 
