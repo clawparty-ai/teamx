@@ -1,0 +1,19 @@
+{
+  "doc": "review",
+  "id": "013-review-teamx-cloud-weiye",
+  "state": "approved",
+  "owner": "weiye",
+  "created_at": "2026-09-21T11:40:00+00:00",
+  "updated_at": "2026-09-21T11:40:00+00:00",
+  "reviewed": {
+    "target": "design/013-teamx-cloud-impl-design-step1",
+    "verdict": "CHANGES-REQUESTED（8 必改 + 3 可逆性/过渡 + 8 缺失项）",
+    "reviewer": "weiye",
+    "date": "2026-09-21",
+    "task": "task-85"
+  },
+  "history": [
+    { "state": "draft", "by": "weiye", "at": "2026-09-21T11:35:00+00:00", "note": "评审开始（task-85）：架构一致性 + 隔离/爆炸半径 + 可逆性与第二步过渡" },
+    { "state": "approved", "by": "weiye", "at": "2026-09-21T11:40:00+00:00", "note": "评审完成：CHANGES-REQUESTED——实现接缝（approve/destroy 清单/RemoteExec）、NFR 量化错位（三段埋点/白名单/ResourceQuota）、控制面跨租户信任域（kubeconfig）三条主线" }
+  ]
+}
