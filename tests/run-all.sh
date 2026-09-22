@@ -263,5 +263,12 @@ else
   echo "debug binary/python3 missing; skipping k8e provision test"
 fi
 
+echo "== 18d/18 platform plane E2E (design/014 §6/§7：bootstrap token / 管理员 / 审计) =="
+if [ -x target/debug/teamx ] && command -v sqlite3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/platform-test.sh
+else
+  echo "debug binary/sqlite3 missing; skipping platform test"
+fi
+
 echo
 echo "ALL TEST SUITES PASSED"

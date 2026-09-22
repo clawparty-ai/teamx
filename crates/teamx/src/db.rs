@@ -431,6 +431,32 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            value TEXT NOT NULL
          );",
     )?;
+    // 平台面（design/014 §6/§7）：一次性 bootstrap token + 平台管理员 + **独立审计**。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS platform_tokens (
+           id           TEXT PRIMARY KEY,
+           token_hash   TEXT NOT NULL UNIQUE,
+           purpose      TEXT NOT NULL DEFAULT 'bootstrap',
+           state        TEXT NOT NULL DEFAULT 'issued',
+           created_at   TEXT NOT NULL,
+           expires_at   TEXT,
+           redeemed_at  TEXT,
+           redeemed_by  TEXT
+         );
+         CREATE TABLE IF NOT EXISTS platform_admins (
+           user_id     TEXT PRIMARY KEY,
+           user_name   TEXT NOT NULL,
+           granted_at  TEXT NOT NULL,
+           granted_via TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS platform_audit (
+           id     INTEGER PRIMARY KEY AUTOINCREMENT,
+           at     TEXT NOT NULL,
+           actor  TEXT NOT NULL,
+           action TEXT NOT NULL,
+           detail TEXT
+         );",
+    )?;
     // 多租户平台（design/014 第二步）：一个租户 = 一个 team + 一个 namespace + 一个独立 CA。
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tenants (

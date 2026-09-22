@@ -59,6 +59,11 @@ pub enum Command {
     #[command(subcommand)]
     Im(ImCmd),
 
+    /// Platform plane (design/014 §6/§7): one-time bootstrap token, platform
+    /// admins, platform audit (independent of tenant ledgers)
+    #[command(subcommand)]
+    Platform(PlatformCmd),
+
     /// Multi-tenant platform (design/014): one tenant = one team + one namespace + one independent CA
     #[command(subcommand)]
     Tenant(TenantCmd),
@@ -2295,6 +2300,51 @@ pub enum GitCmd {
         session: String,
         #[arg(long)]
         team: Option<String>,
+    },
+}
+
+/// 平台面（design/014 §6/§7）。
+#[derive(Subcommand, Debug)]
+pub enum PlatformCmd {
+    /// Issue a one-time bootstrap token. The plaintext is printed **once**;
+    /// the DB stores only its SHA-256 hash. Redeem it to bind the first
+    /// platform admin (reuses design/006's one-time-token semantics).
+    BootstrapToken {
+        /// TTL in seconds (default: no expiry; min 60)
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
+    /// Redeem a bootstrap token and bind a platform admin (single-use)
+    Redeem {
+        /// the token shown when it was issued
+        #[arg(long)]
+        token: String,
+        /// platform admin's user id (the authoritative "person" key)
+        #[arg(long)]
+        user_id: String,
+        /// display name for the admin
+        #[arg(long)]
+        user_name: String,
+    },
+    /// Revoke an un-redeemed bootstrap token
+    Revoke {
+        #[arg(value_name = "TOKEN_ID")]
+        token_id: String,
+    },
+    /// List bootstrap tokens (states only; never the plaintext)
+    Tokens,
+    /// List platform admins
+    Admins,
+    /// Revoke a platform admin (cannot revoke the last one)
+    AdminRevoke {
+        #[arg(long)]
+        user_id: String,
+    },
+    /// Show the platform audit log (independent of tenant ledgers)
+    Audit {
+        /// max entries (default 50)
+        #[arg(long)]
+        limit: Option<i64>,
     },
 }
 

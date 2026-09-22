@@ -38,6 +38,7 @@ pub mod loopx;
 pub mod metrics;
 pub mod nudge_tpl;
 pub mod pki;
+pub mod platform;
 pub mod procwatch;
 pub mod k8s;
 pub mod provision;

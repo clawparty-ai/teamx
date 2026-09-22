@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -481,6 +481,32 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             TeamCmd::Clone { name, team, server_url, yes, session } => {
                 cmd_team_clone(conn, name, team.as_deref(), server_url.as_deref(), *yes, session, None)?
             }
+        },
+        Command::Platform(p) => match p {
+            PlatformCmd::BootstrapToken { ttl } => {
+                crate::platform::issue_bootstrap_token(conn, *ttl).map_err(AppError)?
+            }
+            PlatformCmd::Redeem { token, user_id, user_name } => {
+                crate::platform::redeem_bootstrap_token(conn, token, user_id, user_name).map_err(AppError)?
+            }
+            PlatformCmd::Revoke { token_id } => {
+                crate::platform::revoke_bootstrap_token(conn, token_id).map_err(AppError)?
+            }
+            PlatformCmd::Tokens => json!({
+                "ok": true,
+                "tokens": crate::platform::list_tokens(conn).map_err(AppError)?,
+            }),
+            PlatformCmd::Admins => json!({
+                "ok": true,
+                "admins": crate::platform::list_admins(conn).map_err(AppError)?,
+            }),
+            PlatformCmd::AdminRevoke { user_id } => {
+                crate::platform::revoke_admin(conn, user_id).map_err(AppError)?
+            }
+            PlatformCmd::Audit { limit } => json!({
+                "ok": true,
+                "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
+            }),
         },
         Command::Tenant(t) => match t {
             TenantCmd::Create { team, server_image, kubeconfig, context } => {
