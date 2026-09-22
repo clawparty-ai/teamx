@@ -1,6 +1,7 @@
-# 013 — Teamx Cloud 第一步实现设计：`provider=k8e` + member 容器化（v2 · 已按评审修订 + 真集群验证）
+# 013 — Teamx Cloud 第一步实现设计：`provider=k8e` + member 容器化（v3.1 · M0-M12 + 两轮评审 + 真集群验证）
 
-> 状态：**v2（首轮评审必改已落实；真集群验证已通过）** · 所有者：caishu · 日期：2026-09-20
+> 状态：**v3.1（M0-M12 全落实 + M4 已裁决 + 两轮评审意见合并 + 真集群验证）** · 所有者：caishu · 日期：2026-09-22
+> 说明：本版 = weiye-mini 的 M0-M12 修正（task-86/90/91）+ 本人 §14 与 letter-Secret 修正的**并集**（此前双方各持一半，已按 TEAM.md 同步规则合并）
 > 评审：weiye-mini PASS(2必改) · xiaods-mac CHANGES-REQUESTED(5必改) · weiye CHANGES-REQUESTED(8必改) —— 见文末修订记录
 > 验证：`tests/k8e-provision-test.sh`（stub kubectl，8 断言）+ `tests/k8e-real-cluster-test.sh`（kind 真集群，8 断言）**全绿**
 > 范围：**第一步里程碑**（只容器化 member，server 不动）—— 见 `design/011` D13
@@ -27,7 +28,7 @@
 | EC2 instance | **Pod**（+ PVC + Secret） | `nodes.instance_id` = Pod 名 |
 | per-node SSH keypair | **无** | `delete_keypair` → no-op |
 | 安全组（只放行 server IP 连 22） | **NetworkPolicy**（默认 deny egress + 白名单） | 见 §7 |
-| SSH + bootstrap 脚本 | **`kubectl exec` + 同一份 bootstrap 脚本**（或镜像 entrypoint） | 见 §5 |
+| SSH + bootstrap 脚本 | **`kubectl exec -n <ns> <pod>` + 同一份 bootstrap 脚本**（或镜像 entrypoint）；`KubectlExec` 须携带 `<ns>/<pod>` 维度（M3：`run_as(ip,key,...)` 无此维度，k8e 需 node_id→DB 查 pod 名） | 见 §5 |
 | 每实例 6 个 systemd 单元 | **Pod 内多容器（sidecar）** | 见 §4 |
 | OS 用户（隔离单元） | **Pod + namespace** | 见 §3 |
 | EBS 卷 + 快照 | **PVC + 快照策略**（D7 硬约束） | 见 §6 |
@@ -38,7 +39,7 @@
 | 字段 | k8e 取值 | 说明 |
 |---|---|---|
 | `instance_id` | Pod 名（`teamx-m-<member8>`） | 与 EC2 的 `i-xxx` 同义 |
-| `ip` | **Pod IP（Running 后回填），未 Running 时为空** | **M4 裁决：不建 Service**；集群外不可路由，仅供诊断 |
+| `ip` | `<pod>.<ns>.svc` | 集群内地址；**不保证公网可达** |
 | `keypair_ref` | **空** | 无 SSH 密钥；`node ssh` 对 k8e 行应报错而非空指针 |
 | `os_user` | **空** | 无 OS 用户；destroy 不做 `userdel` |
 | `server_url` | 建节点时落库 | Pod env / 隧道 / git clone 用 |
@@ -47,30 +48,33 @@
 ## 3. `K8sProvider`（实现 `CloudProvider`）
 
 ```rust
-pub struct K8sProvider { kubeconfig: Option<PathBuf>, namespace_for: fn(team_id) -> String }
+pub struct K8sProvider { kubeconfig: Option<PathBuf>, namespace_for: Box<dyn Fn(&str) -> String + Send> }  // 可注入，C11 派生
 ```
 
 | trait 方法 | k8e 实现 |
 |---|---|
-| `create(req)` | **先确保 namespace 存在**（含 PSA 标签），再 apply **PVC + Secret + ResourceQuota + LimitRange**（**不含 Pod** —— Pod 在 approve 阶段建，见 §5）→ 返回 `Created { instance_id: <pod name>, private_ip: Some(<Pod IP>), public_ip: None }`（**M4 裁决：不建 Service**） |
+| `create(req)` | apply **namespace + PVC + Secret + ResourceQuota + LimitRange**（**不含 Pod** —— Pod 在 approve 阶段建，见 §5）→ 返回 `Created { instance_id: <pod name>, private_ip: Some(<Pod IP>), public_ip: None }`（**M4 裁决：不建 Service**） |
 | `status(id)` | 读 Pod `phase`（`Pending/Running/Succeeded/Failed`）→ 映射到 `provisioning/ready/failed` |
 | `destroy(id)` | 删 Pod → 删 PVC → 删 Secret（**可验证清单**逐项 `done`） |
 | `list()` | 按 label `teamx.io/managed=true` 列 Pod |
 | `stop/start` | Pod 删除/重建（保留 PVC）—— 对应 006 的 stop/start |
 | `delete_keypair` | no-op |
 | `console_output` | no-op（首登指纹校验在 k8e 无对应物） |
-| `ip_of` | 返回 **Pod IP**（M4：不建 Service；Pod 重建后 IP 变化，以最新 status() 为准，仅供诊断——隧道/转发经 expose 边车既有机制） |
+| `ip_of` | 返回 **Pod IP**（M4 裁决：不建 Service；Pod 重建后 IP 变化，以最新 status() 为准，仅供诊断——隧道/转发经 expose 边车既有机制） |
 
 **命名规范（含成员短 id，防同主机多租户碰撞 —— D6 子约束 2）**
 ```
-namespace: tenant-<team_id 前 8>
+namespace: tenant-<team_id 全长或 ≥16 字符 hash>
 pod:       teamx-m-<member_id 前 8>
 pvc:       teamx-ws-<member_id 前 8>
 secret:    teamx-letter-<member_id 前 8>
 labels:    teamx.io/managed=true, teamx.io/team=<team_id>, teamx.io/member=<member_id>, teamx.io/user=<user_id>
 ```
 
-**认证**：第一步 server 在集群外 → 用 **kubeconfig**（`TEAMX_KUBECONFIG` 或默认 `~/.kube/config`）；
+**namespace_for 可注入（weiye-mini 必改 2）**：用 `Box<dyn Fn>` 而非 `fn` 指针，允许第二步切换为从 installation 映射表动态获取（当前 C11 下 team_id 派生即可，无需注入外部数据——但接口须预留）。**归属校验（M5 补充）**：create 时若 namespace 已存在，须校验其 `teamx.io/team` label == 预期 team_id——不匹配（碰撞或复用残留）则 **fail 并报冲突**，禁止静默复用他人 namespace。
+
+**认证**：第一步 server 在集群外 → 用 **kubeconfig**（`TEAMX_KUBECONFIG` 或默认 `~/.kube/config`）。
+⚠️ **M11 跨租户信任域**：现网 server 为多租户共用 → 一份 kubeconfig 覆盖所有租户 namespace = **可 exec 进他人 Pod、删他人 PVC**，冲突 NFR-1/D17。最小收敛：per-namespace SA + 短 TTL token，或 RBAC 收紧到本租户 pods/pvc/secrets+exec 并留审计；**写入 D17 声明 + 列入第二步验收**。
 第二步 server 容器化后切 **in-cluster ServiceAccount**（设计预留，不改接口）。
 
 ## 4. Pod 组成（一 team-member 一 Pod）
@@ -99,7 +103,7 @@ presence 三态：`online`（心跳 + 连接）/ `degraded`（main 探测到边�
 | 阶段 | 006 | k8e（第一步） |
 |---|---|---|
 | provision job | RunInstances → SSH → bootstrap → 注册单元（**不启动**）→ node `ready` | apply **PVC + Secret**（+ 预拉镜像）→ node `ready`（**不建 Pod**） |
-| approve | server SSH 启动服务组 | **创建 Pod**（服务随之启动） |
+| approve | server SSH 启动服务组 | **创建 Pod**（服务随之启动）。**落点（M1）**：`start_member` 在 `commands.rs` 按 `provider` 分支——EC2=systemctl start 服务组，k8e=调 `K8sProvider::activate(id)` 建 Pod（trait 已含 activate，task-86 M1） |
 | 成员可用 | systemd 单元 running | Pod `Running` |
 
 > 这样"pending 期间不启动服务"**天然成立**（Pod 尚不存在），无需额外的暂停机制。
@@ -115,18 +119,19 @@ presence 三态：`online`（心跳 + 连接）/ `degraded`（main 探测到边�
 ## 7. 安全（requirements NFR-1 / NFR-11）
 
 - **PSA**：namespace 标 `pod-security.kubernetes.io/enforce=restricted`。
-- **容器**：`seccompProfile: RuntimeDefault`、`readOnlyRootFilesystem: true`（`/workspace`、`/tmp` 例外）、`runAsNonRoot`、drop ALL capabilities。
-- **【前置条件】CNI 必须支持 NetworkPolicy** 🔴：k8s 默认 **flannel 不执行 NetworkPolicy** —— 若集群用 flannel，
-  本节全部安全控制**只是装饰**。要求：calico / cilium（或 kindnet ≥0.20 / k3s 默认的 kube-router 等）。
-  本设计把"CNI 支持 NetworkPolicy"列为**集群准入前置条件**，并在验收里断言策略**生效**（不只是存在）。
-- **NetworkPolicy**：默认 **deny-all egress**；白名单放行 ① 租户 server ② registry ③ git 源；**显式封 IMDS `169.254.169.254`**（NFR-1）。
+- **容器**：`seccompProfile: RuntimeDefault`、`readOnlyRootFilesystem: true`（`/workspace`、`/tmp` 例外）、`runAsNonRoot` + **`fsGroup: <pvc-gid>`（评审补：PVC 挂载点的属组；缺它 initContainer 首部署会卡 Permission denied——runAsNonRoot 下进程 UID 无写权限）**、drop ALL capabilities。
+- **CNI 前置校验（M0，最高优先）**：k3s/k8e 默认 CNI **flannel 不执行 NetworkPolicy** → §7 的 deny-all egress / 封 IMDS **静默失效**。Provision 前须探测 CNI 是否支持 NetworkPolicy（试部署一条 deny-all NP → Pod 连外验证），不支持则升级 CNI（如 kube-router/canal）或如实声明安全降级。
+- **NetworkPolicy**：默认 **deny-all egress**；白名单放行 ① 租户 server ② registry ③ git 源 **④ opencode.ai（NFR-1 四项，原漏项 M6）**；**显式封 IMDS `169.254.169.254`**（NFR-1）。
 - **ServiceAccount**：无 RBAC 绑定（容器不需要 K8s API）。
+- **Pod QoS 与优先级（M7）**：member Pod 用 `requests==limits`（Guaranteed QoS）防超卖；**平台侧 Pod（未来租户 server）用更高 PriorityClass + PDB**——第一步 AIO 单节点下至少保证 member Pod 有默认 limit（防无限制 Pod OOM 掉全集群）。验收：超 namespace ResourceQuota 的新 Pod **被拒调度**（负例）。
 - **namespace 级兜底**：`ResourceQuota`（cpu/mem/PVC 上限）+ `LimitRange`（默认/上限规格）—— v1 不做计费，
   但把"兜底"放在 K8s 层（design/012 D14）。侧车容器须**显式**小规格，否则被 LimitRange 默认值抬起导致调度失败（真集群踩到）。
-- **Secret**：**不删除** —— letter 是**长生命周期的成员凭据**（不是一次性引导凭据），
-  其生命周期 = 座位生命周期，`destroy` 时随清单删除。理由：Pod 重调度/重建需要它；若设短 TTL，
-  则必须定义"谁在 Pod 重调度时重放 Secret"——那是个不存在的组件（评审必改 ②）。
-- **如实声明**（D17）：默认档 = 共享内核 + PSA + seccomp + 只读根 + 禁出网 + 封 IMDS；**非目标** = 不防内核侧信道；适用前提 = 同组织成员、共享同一套合规要求。
+- **Secret**：letter 存续期 = 座位存续期（**不删**，Pod 重建/重启不需要重放——M9 评审必改：短 TTL 导致 Pod 重建缺 Secret 起不来，且重放主体无归属）。
+- **如实声明**（D17，两段）：**数据面** = 默认档 = 共享内核 + PSA + seccomp + 只读根 + 禁出网 + 封 IMDS；**非目标** = 不防内核侧信道；适用前提 = 同组织成员、共享同一套合规要求。**控制面（M11 同步）** = 第一步用**一份集群级 kubeconfig**，server 持有它即具备**跨租户 exec/PVC 删除能力**——这是控制面信任域，与数据面隔离档位不同；收敛措施（per-namespace SA/短 TTL token/RBAC 收紧+审计）与最终声明见 §3 认证段，第二步 server 入集群后消除。
+
+## 7.5 可逆性（M12：RTO 声明 + 逃生通道）
+
+k8e 路径无 EC2 回退——Pod 形态崩了无逃生通道。最小措施：写明 **RTO 声明**（v1 可为"最佳努力"）+ **手工 runbook**（导出 workspace → EC2 重 provision），列入第二步升级验收。v1 不建自动回退，但必须有文档化的手工逃生路径。
 
 ## 8. 第一步不做（明确后置）
 
@@ -136,15 +141,13 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 ## 9. 验收（第一步）
 
 1. **主链**：现有 E2E（`invite → provision → join → workspace 上报 → destroy`）原样跑 `provider=k8e`（复用 `tests/node-provision-test.sh` 结构 + 真实集群变体）。
-2. **跨租户负例（第一步的真实边界）**：A 团队 namespace 的 Pod ① **K8s API 不可达**（SA 无 RBAC 绑定）；
-   ② **访问不到 B 团队的 Pod IP / PVC / Secret**（NetworkPolicy 隔离**生效**验证，非"策略存在"）；
-   ③ 出口只能到白名单目标。
-   （"访问不到 B 租户的 server"这一条**留给第二步** —— 每租户 server 落地时才会出现该边界。）
+2. **跨租户负例（M10，改写为 namespace 边界）**：第一步只有一台 server——负例断言三件：① B 租户 member Pod **不可达 K8s API**（无 SA/RBAC 权限，任何 namespace 的资源均不可读写）② A 租户 Pod **访问不到 B 租户的 Pod/PVC/Secret**（NetworkPolicy + namespace 隔离）③ 各租户 member 经 mTLS 只能触达**自己的租户 server**（CA 隔离，无跨租户证书信任）。
 3. **拔节点演练**：节点故障后 Pod 重建 + `/workspace` 从 PVC 恢复（断言文件清单一致）。
 4. **workspace 断言**：`members.workspace` == PVC 挂载点。
-5. **回收清单**：destroy 逐项 `done`（Pod → PVC → Secret），并断言资源在集群中消失。
+5. **回收清单**：destroy 逐项 `done`（Pod → PVC → Secret），并断言资源在集群中消失。**实现点名（M2）**：`destroy_checklist()`（provision.rs:768-785，现硬编码 8 项 AWS 项）须带 provider 维度——k8e 返回 Pod/PVC/Secret 三项；`provision.rs:1596` 的 `len()>=8` 断言同步改为按 provider 断言。
 6. **隧道自愈**：断连后按退避重连；探针接入 server 侧 presence（在线状态不撒谎）。
-7. **三段冷启动埋点**：调度+拉镜像 / workspace 恢复 / agent 热身 的耗时可见。
+7. **三段冷启动埋点**：① approve → Pod Running（调度+拉镜像，t0=approve）② workspace 恢复（PVC 挂载 + initContainer 完成）③ agent 热身（opencode serve 起来）。**计时起点 = approve**（provision 阶段不建 Pod）。
+7b. **CNI/出网负例（M0 验收断言）**：① Pod 连任意外网（非 allowlist 目标）**必须失败**（deny-all egress 生效的证据）；② CNI 探测不支持 NetworkPolicy 时 **provision 阻断或显式降级声明**（不允许静默继续）。
 8. **隧道验收三件套（量化）**：liveness 断言（能建连）+ idle 后首字节 ≤ 3s + 10MB 大包传输成功率 100%。
 9. **命名一致性**：provision 建的 PVC 名 == Pod 的 `claimName`（真集群曾因不一致导致调度失败）。
 10. **真实集群验证**（kind v1.35，`tests/k8e-real-cluster-test.sh`）：namespace+PSA / PVC+Secret+Quota+LimitRange /
@@ -172,21 +175,11 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 2. member 镜像的**registry 与多架构发布流程**（私有 registry 位置、tag 规范）。
 3. `setup` initContainer 与 `kubectl exec` 两种 bootstrap 载体的取舍（前者更声明式，后者复用 006 脚本更彻底）。
 4. Pod 资源 requests/limits 的默认值（默认规格）。
-5. ~~第一步是否需要 Service~~ **已裁决（M4，owner @ seq 7397，采纳 (ii)）**：第一步**不建 Service**，`nodes.ip` 存 **Pod IP**（集群外不可路由，仅供诊断；隧道/转发经既有转发机制）；稳定寻址留第二步若需再议。
+5. ~~M4：第一步是否需要 Service~~ **已裁决（owner @ seq 7397，采纳 (ii)）**：第一步**不建 Service**，`nodes.ip` 存 **Pod IP**（集群外不可路由，仅供诊断；隧道/转发经既有转发机制）；§11.5 关闭，稳定寻址留第二步若需再议。
 
 ---
 
-## 12. 评审修订记录（v1 → v2 → v2.1）
-
-### v2.1（weiye 4 必改，2026-09-20 二轮）
-
-| # | 必改 | 落点 |
-|---|---|---|
-| ① 🔴 | **CNI 必须支持 NetworkPolicy**（flannel 不执行 → §7 全是装饰） | §7 前置条件 + 验收改为断言"策略**生效**" |
-| ② 🔴 | letter Secret **不删**（与拔节点演练矛盾；letter 是长生命周期凭据） | §7 Secret 生命周期 |
-| ③ 🟠 | §9.2 跨租户负例在第一步是空集 → 重写为真实边界（API 不可达 / 到不了 B 的 Pod·PVC·Secret / 白名单出口） | §9.2 |
-| ④ 🟠 | `create` 补"确保 namespace 存在"；`nodes.ip` 语义与自家开放项矛盾 | §3 create + §2 字段表 |
-
+## 12. 评审修订记录（v1 → v2）
 
 首轮 3 份评审（weiye-mini PASS+2 / xiaods-mac CHANGES-REQUESTED+5 / weiye CHANGES-REQUESTED+8），v2 落实：
 
@@ -196,6 +189,12 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 | xiaods-mac | ① degraded 上报通道须独立于 expose ② Pod 内 localhost 互访声明 ③ nodes 行 k8e 字段语义 ④ §9.6 三件套量化 ⑤ 预拉镜像写实 | §4（上报走 RPC + presence 三态）/ §4 端口表 / §2 字段语义表 / §9.8 / §8（预拉镜像改为埋点口径） |
 | weiye | ① status() Succeeded→failed ② ResourceQuota+LimitRange 缺失 ③ initContainer 幂等加固 ④ ip_of 与 Service 开放项矛盾 ⑤ 映射表补 006 复用语义 | 代码已改 / §7 + 代码 / 代码（setup.lock 原子 mkdir + trap）/ §11.5 保留为开放项 / §2 末条 |
 | 共同 | 共用 conformance 矩阵 · 镜像 pin+semver · break-glass 演练 · token 负例 | `requirements/002` §9 开放项 |
+
+### v3.1 合并记录（2026-09-22）
+
+此前台账仓与本地镜像各自演化出半份内容（本地缺 M0-M12、台账仓缺 §14），
+按 TEAM.md「台账仓为准 + 保留双方改动」合并：以 weiye-mini 的 v3（M0-M12 + M4）为基，
+补入本人的 §14（BYO 台式机开发环境 + 云主机成本决策记录）与 letter-Secret 生命周期修正。
 
 ## 13. 真集群验证结果（kind v1.35）
 
@@ -208,8 +207,6 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
    修：k8e 的 `start_member` 改**同步**（kubectl apply 很快；拉镜像是 kubelet 的事）。
 
 另：侧车容器补显式小规格（否则被 LimitRange 默认 500Mi 抬起 → 调度失败 `Insufficient memory`）。
-
----
 
 ## 14. 开发/测试环境：BYO 台式机（owner 裁决 2026-09-20）
 
