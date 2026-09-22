@@ -277,5 +277,12 @@ else
   echo "debug binary/sqlite3 missing; skipping tenant E2E"
 fi
 
+echo "== 18f/18 platform console E2E (design/014 §5/§6.5：登录/租户 CRUD/平台面/service 车道) =="
+if [ -x target/debug/teamx ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  TEAMX_BIN="$ROOT/target/debug/teamx" bash tests/platform-console-test.sh
+else
+  echo "debug binary/curl/python3 missing; skipping platform console test"
+fi
+
 echo
 echo "ALL TEST SUITES PASSED"
