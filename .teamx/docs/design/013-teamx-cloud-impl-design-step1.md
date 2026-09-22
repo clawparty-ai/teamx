@@ -190,3 +190,25 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
    修：k8e 的 `start_member` 改**同步**（kubectl apply 很快；拉镜像是 kubelet 的事）。
 
 另：侧车容器补显式小规格（否则被 LimitRange 默认 500Mi 抬起 → 调度失败 `Insufficient memory`）。
+
+---
+
+## 14. 开发/测试环境：BYO 台式机（owner 裁决 2026-09-20）
+
+**裁决**：不新开云主机做 k8e 开发环境（成本考虑）；改用**加入团队的台式机**作为 BYO 主机。
+本地 kind 仅用于一次性验证（已完成，见 §13），不作为日常开发环境。
+
+**接入方式（脚本化）**：`scripts/dev-cluster-setup.sh` —— 在台式机上运行：
+1. 装容器运行时（docker）
+2. 装**单节点 k8s**（`DISTRO=k8e` 优先，k3s 兜底 —— 两者都是 k3s 派生，行为等价）
+3. 拉团队源码（经 teamx server mTLS 克隆；GitHub 在受限网络下不可达）
+4. 构建 member 镜像（`BASE_IMAGE`/`APT_MIRROR` 支持镜像源）
+5. 打印 provider 需要的环境变量（`TEAMX_KUBECONFIG` / `TEAMX_K8S_CONTEXT` / `TEAMX_MEMBER_IMAGE` / `TEAMX_K8S_EGRESS_ALLOW`）
+
+**与 BYO 产品路径（D6）的关系**：本脚本是**开发期**的接入方式（人肉执行、信任本机）。
+产品化的 BYO 接入（一次性 join token + 出站假设 + 命名含成员短 id）见 `design/011` D6，尚未实现，
+但两者共用同一套 provider（kubeconfig 指向集群）+ 同一份 Pod/PVC/Secret 清单。
+
+**台式机的网络要求**：能出网访问 ① teamx server（成员 RPC/隧道）② 镜像 registry ③ git 源；
+**不需要**被平台入站访问（出站假设）。若台式机在 NAT 后，provider 侧（server 或开发机）需能连到
+其 API server（`6443`）——开发期通常由开发机直连，故只需开发机 ↔ 台式机互通。

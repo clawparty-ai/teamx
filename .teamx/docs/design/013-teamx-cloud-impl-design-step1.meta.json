@@ -4,7 +4,7 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T10:15:32+00:00",
-  "updated_at": "2026-09-21T14:57:13+00:00",
+  "updated_at": "2026-09-22T02:06:33+00:00",
   "history": [
     {
       "state": "draft",
@@ -17,6 +17,12 @@
       "by": "caishu",
       "at": "2026-09-21T14:57:13+00:00",
       "note": "v2：落实首轮评审（weiye-mini 2 / xiaods-mac 5 / weiye 8 必改）—— §3 去 Pod、degraded 上报独立于 expose + presence 三态、Pod 内 localhost 端口表、nodes 行 k8e 字段语义表、§9 加三件套量化与命名一致性断言、§7 补 quota；并记录真集群（kind v1.35）8 断言全绿与抓到的 3 个真机 bug（命名不一致/空白名单 YAML/异步线程被杀）。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-22T02:06:33+00:00",
+      "note": "补 §14：owner 裁决开发/测试环境改用 BYO 台式机（不开云主机，成本考虑）；给出 scripts/dev-cluster-setup.sh 的接入流程与网络要求，并说明与 D6 产品化 BYO 接入的关系。"
     }
   ]
 }
