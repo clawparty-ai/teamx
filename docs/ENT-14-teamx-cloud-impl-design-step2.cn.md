@@ -40,7 +40,7 @@
 |---|---|---|
 | 工作负载 | **Deployment**（单副本，`strategy: Recreate`）+ PVC | SQLite 单写者；Recreate 避免双写 |
 | 数据 | **SQLite + PVC**（`/data/teamx.db`） | A3；迁移预案见 §8 |
-| 镜像 | `teamx-server:<版本>`（与 member 镜像同源构建，独立 tag） | 版本 pin |
+| 镜像 | `teamx-server:<版本>`（**与 member 镜像同源**：同一 base + 同一 `TEAMX_BIN`，独立 tag；server 更轻——不需要 opencode/ttyd/bun）。统一构建入口 `docker/build.sh`（含同源校验：两镜像的 teamx 版本必须一致） | 版本 pin |
 | 配置 | env：`TEAMX_HOME=/data`、`TEAMX_DB=/data/teamx.db`、`TEAMX_TENANT_TEAM_ID=<team_id>` | |
 | 端口 | `5783`（mTLS RPC）+ 健康检查 `/health` | 与现网一致 |
 | CA | 启动时读 Secret `teamx-ca-<team8>`；缺失则**生成并写回**（首次） | D2 |
