@@ -209,6 +209,73 @@ pub fn issue_member_cert(home: &Path, member_id: &str, role: &str, user_id: Opti
     })
 }
 
+/// 生成一对**独立 CA**（cert PEM, key PEM）—— 不落盘。
+///
+/// 用途：多租户（design/014 §4，D2 裁决）—— 平台在建租户时生成该租户专属 CA，
+/// 存入租户 namespace 的 Secret；租户 server 只读挂载使用，**平台/镜像都不持有**。
+pub fn generate_ca() -> PkiResult<(String, String)> {
+    let ca_key = KeyPair::generate().map_err(|e| format!("ca keygen: {e}"))?;
+    let ca_params = cert_params("teamx-ca", &[], true)?;
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .map_err(|e| format!("ca self-sign: {e}"))?;
+    Ok((ca_cert.pem(), ca_key.serialize_pem()))
+}
+
+/// 用**指定 CA**（PEM 对）签发成员证书 —— 多租户路径用（每租户 CA）。
+///
+/// 单机/单 CA 路径仍走 [`issue_member_cert`]（读 `home/ca`）。
+pub fn issue_member_cert_with_ca(
+    ca_cert_pem: &str,
+    ca_key_pem: &str,
+    member_id: &str,
+    role: &str,
+    user_id: Option<&str>,
+) -> PkiResult<IssuedCert> {
+    let ca_key = KeyPair::from_pem(ca_key_pem).map_err(|e| format!("load ca key: {e}"))?;
+    let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem)
+        .map_err(|e| format!("parse ca cert: {e}"))?;
+    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| format!("reconstruct ca: {e}"))?;
+
+    let cn = match user_id.filter(|u| !u.is_empty()) {
+        Some(u) => format!("member:{member_id}:{role}:{u}"),
+        None => format!("member:{member_id}:{role}"),
+    };
+    let mut params = cert_params(&cn, &[], false)?;
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let serial_bytes: [u8; 16] = uuid::Uuid::new_v4().into_bytes();
+    params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
+
+    let member_key = KeyPair::generate().map_err(|e| format!("member keygen: {e}"))?;
+    let member_cert = params
+        .signed_by(&member_key, &ca_cert, &ca_key)
+        .map_err(|e| format!("member sign: {e}"))?;
+    let serial_hex = member_cert
+        .params()
+        .serial_number
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    Ok(IssuedCert {
+        cert_pem: member_cert.pem(),
+        key_pem: member_key.serialize_pem(),
+        serial_hex,
+        cn,
+    })
+}
+
+/// 从 CA 证书 PEM 算指纹（与 [`ca_fingerprint`] 同格式，供邀请函写入 `ca_fingerprint`）。
+pub fn ca_fingerprint_of(ca_cert_pem: &str) -> PkiResult<String> {
+    // 与 `ca_fingerprint` 完全同算法同格式（rustls_pemfile 解析 + ring SHA-256 over DER），
+    // 便于两条路径（单 CA / 每租户 CA）互换。
+    let der = rustls_pemfile::certs(&mut ca_cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse ca cert: {e}"))?;
+    let der = der.first().ok_or_else(|| "empty ca cert".to_string())?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, der.as_ref());
+    Ok(digest.as_ref().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// Ensure the server certificate covers `extra_sans` (e.g. the LAN IP that
 /// `teamx serve` binds). Regenerates the server cert when the SAN set changes;
 /// the CA is left untouched so previously-issued member certificates keep
@@ -373,6 +440,32 @@ pub struct IssuedCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_tenant_ca_is_independent_and_issues_members() {
+        // 两个租户各生成一个 CA → 必须互不相同（D2：独立信任域）
+        let (ca1_crt, ca1_key) = generate_ca().unwrap();
+        let (ca2_crt, ca2_key) = generate_ca().unwrap();
+        assert_ne!(ca1_crt, ca2_crt, "每租户 CA 必须独立");
+        assert!(ca1_crt.contains("BEGIN CERTIFICATE"));
+        assert!(ca1_key.contains("BEGIN PRIVATE KEY"));
+        // 指纹可算且两租户不同
+        let f1 = ca_fingerprint_of(&ca1_crt).unwrap();
+        let f2 = ca_fingerprint_of(&ca2_crt).unwrap();
+        assert_ne!(f1, f2);
+        assert_eq!(f1.len(), 64, "sha256 hex");
+        assert_eq!(ca_fingerprint_of(&ca1_crt).unwrap(), f1, "同一 CA 指纹稳定");
+        // 用租户 CA 签发成员证书（多租户路径）
+        let c1 = issue_member_cert_with_ca(&ca1_crt, &ca1_key, "m1", "contributor", Some("u1")).unwrap();
+        assert_eq!(c1.cn, "member:m1:contributor:u1");
+        assert!(c1.cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(c1.key_pem.contains("BEGIN PRIVATE KEY"));
+        assert!(!c1.serial_hex.is_empty(), "serial 用于吊销台账");
+        // 另一个租户的 CA 也能独立签发（互不影响）
+        let c2 = issue_member_cert_with_ca(&ca2_crt, &ca2_key, "m2", "contributor", None).unwrap();
+        assert_eq!(c2.cn, "member:m2:contributor");
+        assert_ne!(c1.cert_pem, c2.cert_pem);
+    }
 
     #[test]
     fn parse_member_cn_legacy_and_extended() {

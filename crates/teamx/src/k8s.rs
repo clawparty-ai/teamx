@@ -442,6 +442,158 @@ spec:
     )
 }
 
+/// 租户 server 镜像（`TEAMX_SERVER_IMAGE` 可覆盖）。
+pub fn server_image() -> String {
+    std::env::var("TEAMX_SERVER_IMAGE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "teamx-server:latest".to_string())
+}
+
+/// 租户 server 的 Service/端口约定（与现网一致）。
+pub const SERVER_PORT: u16 = 5783;
+
+/// 租户基础设施清单（design/014 §3/§4）：namespace（PSA）+ CA Secret + server PVC + Deployment。
+///
+/// **CA 由平台在建租户时生成**并写入 Secret（租户 server 只读挂载；它需要 CA key 才能
+/// 在 invite 时签发成员证书）。server 自身证书也由平台用该 CA 签好后放入同一 Secret。
+pub fn tenant_manifests(
+    team_id: &str,
+    ca_cert_pem: &str,
+    ca_key_pem: &str,
+    server_cert_pem: &str,
+    server_key_pem: &str,
+) -> String {
+    let ns = namespace_for(team_id);
+    let ca_secret = format!("teamx-ca-{}", short_id(team_id));
+    let pvc = format!("teamx-serve-data-{}", short_id(team_id));
+    let deploy = format!("teamx-serve-{}", short_id(team_id));
+    let image = server_image();
+    format!(
+        r#"apiVersion: v1
+kind: Namespace
+metadata:
+  name: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/kind: tenant
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {ca_secret}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/kind: tenant-ca
+type: Opaque
+stringData:
+  ca.crt: |
+{ca_crt}
+  ca.key: |
+{ca_key}
+  server.crt: |
+{srv_crt}
+  server.key: |
+{srv_key}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {pvc}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {deploy}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/kind: tenant-server
+spec:
+  replicas: 1
+  strategy: {{ type: Recreate }}
+  selector:
+    matchLabels:
+      teamx.io/tenant-server: "{team_id}"
+  template:
+    metadata:
+      labels:
+        teamx.io/managed: "true"
+        teamx.io/team: "{team_id}"
+        teamx.io/tenant-server: "{team_id}"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: {{ type: RuntimeDefault }}
+      containers:
+        - name: serve
+          image: {image}
+          args: ["serve", "--addr", "0.0.0.0", "--port", "{SERVER_PORT}", "--db", "/data/teamx.db"]
+          env:
+            - name: TEAMX_HOME
+              value: /data
+            - name: TEAMX_DB
+              value: /data/teamx.db
+            - name: TEAMX_TENANT_TEAM_ID
+              value: "{team_id}"
+          ports:
+            - name: mtls
+              containerPort: {SERVER_PORT}
+          readinessProbe:
+            httpGet: {{ path: /health, port: mtls, scheme: HTTPS }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {{ path: /health, port: mtls, scheme: HTTPS }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {{ cpu: "100m", memory: "256Mi" }}
+            limits: {{ cpu: "1", memory: "1Gi" }}
+          volumeMounts:
+            - {{ name: data, mountPath: /data }}
+            - {{ name: ca, mountPath: /data/ca, readOnly: true }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {{ drop: ["ALL"] }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {{ claimName: {pvc} }}
+        - name: ca
+          secret: {{ secretName: {ca_secret} }}
+"#,
+        ca_crt = indent(ca_cert_pem, 4),
+        ca_key = indent(ca_key_pem, 4),
+        srv_crt = indent(server_cert_pem, 4),
+        srv_key = indent(server_key_pem, 4),
+    )
+}
+
+/// YAML 块缩进助手（`stringData` 的块标量）。
+fn indent(s: &str, n: usize) -> String {
+    let pad = " ".repeat(n);
+    s.lines().map(|l| format!("{pad}{l}")).collect::<Vec<_>>().join("\n")
+}
+
 /// 默认拒绝出网 + 显式白名单（NFR-1）。
 ///
 /// **注意语义**：NetworkPolicy 是 **allow-list**（不列即拒绝），因此"封 IMDS"的
@@ -730,6 +882,30 @@ mod tests {
         let y = network_policy_manifest("t1", "m1", &[]);
         assert!(y.contains("egress: []"), "empty allowlist must be an explicit empty list: {y}");
         assert!(!y.contains("egress:\n"), "must not emit a bare `egress:` key");
+    }
+
+    #[test]
+    fn tenant_manifests_carry_ca_pvc_and_single_replica_server() {
+        let y = tenant_manifests("t1", "CA-CRT", "CA-KEY", "SRV-CRT", "SRV-KEY");
+        // 三元组的 namespace 侧
+        assert!(y.contains("name: tenant-t1"), "namespace");
+        assert!(y.contains("pod-security.kubernetes.io/enforce: restricted"));
+        // 独立 CA（D2）：cert+key+server 证书都在同一个 Secret 里
+        assert!(y.contains("kind: Secret"));
+        assert!(y.contains("ca.crt: |"));
+        assert!(y.contains("ca.key: |"));
+        assert!(y.contains("server.crt: |"));
+        assert!(y.contains("CA-KEY"), "CA key 必须注入（invite 时签发成员证书要用）");
+        // server：单副本 + Recreate（SQLite 单写者）+ PVC + 只读 CA 挂载
+        assert!(y.contains("kind: Deployment"));
+        assert!(y.contains("replicas: 1"));
+        assert!(y.contains("type: Recreate"));
+        assert!(y.contains("kind: PersistentVolumeClaim"));
+        assert!(y.contains("mountPath: /data/ca, readOnly: true"));
+        assert!(y.contains("TEAMX_TENANT_TEAM_ID"));
+        // 加固
+        assert!(y.contains("readOnlyRootFilesystem: true"));
+        assert!(y.contains("seccompProfile"));
     }
 
     #[test]
