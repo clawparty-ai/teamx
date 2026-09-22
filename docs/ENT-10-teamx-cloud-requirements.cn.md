@@ -1,4 +1,4 @@
-# 002 — Teamx Cloud 需求分析（草稿 v2 · 已按首轮评审修订）
+# 002 — Teamx Cloud 需求分析（草稿 v3 · 已按两轮评审修订）
 
 > 状态：**draft**（待评审） · 所有者：caishu · 日期：2026-09-20
 > 输入：`design/009`（第一轮 harvest）、`design/010`（4 条架构原语裁决）、`design/011`（交付与里程碑裁决）
@@ -84,11 +84,11 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 
 | # | 需求 | 判据 |
 |---|---|---|
-| NFR-1 隔离 | 租户间 namespace + NetworkPolicy + PSA(restricted) + seccomp + 只读根 + ResourceQuota；**默认拒绝出网 + 显式 allowlist**（必须放行：租户 server、`opencode.ai`、镜像 registry、git 源）；**显式封 IMDS `169.254.169.254`** | 跨租户负例：A 租户 member **解析/访问不到** B 租户的 serve/namespace；白名单外目标不可达（含 IMDS） |
+| NFR-1 隔离 | 租户间 namespace + NetworkPolicy + PSA(restricted) + seccomp + 只读根 + ResourceQuota；**默认拒绝出网 + 显式 allowlist**（初始集：租户 server(mTLS) · `opencode.ai` · 镜像 registry · git 源 · **GitHub API**（D8 合一后需要））；**显式封 IMDS `169.254.169.254`** | 跨租户负例：A 租户 member **解析/访问不到** B 租户的 serve/namespace；白名单外目标不可达（含 IMDS） |
 | NFR-2 身份边界 | 每租户独立 CA；吊销租户 = 废 CA；平台 console 不持跨租户信任 | 吊销后旧证书 RPC 被拒 |
 | NFR-3 可用性 | 爆炸半径**按两类 Pod 分别声明**：① **member Pod**（业务面）死 = 一个 team-member 受影响；② **平台 Pod**（租户 server / console 等）死 = 该租户整体受影响（第二步引入，需单独评估）；节点池分层 / ≥2 worker + 滚动窗口；**拔节点演练**：节点死亡后工作区可恢复 | 拔节点演练通过；两类 Pod 的 RTO 分别有数 |
 | NFR-4 持久化 | member workspace 网络附着存储或显式快照策略；**CA 私钥进灾备清单** | 灾难恢复后证书仍有效 |
-| NFR-5 可观测 | 重连日志 / 断线计数 / 存活探针接入 presence；在线状态**不撒谎** | 隧道断连后 ≤ **90s**（= 空闲超时）状态变为异常；断线计数与重连日志可按成员查询 |
+| NFR-5 可观测 | 重连日志 / 断线计数 / 存活探针接入 presence；在线状态**不撒谎** | 探针失联 **≥2 个探测周期**即翻转（周期 = 探针间隔，默认 30s ⇒ ≤60s；隧道路径另有 90s 空闲超时）；断线计数与重连日志可按成员查询 |
 | NFR-6 冷启动 | 分段耗时可见；provision 不阻塞交互路径 | 三段埋点可查询、**保留 30d**；Pod Running P50 ≤ 180s / P95 ≤ 300s（AIO、镜像预热后） |
 | NFR-7 成本 | **N/A（v1）**：不做计费/计量/配额（owner 裁决 D14/D15 —— k8s 宿主机数量由 owner 控制，容量风险在资源层已限制）。**触发条件备注**：出现多租户共享同一集群且非 owner 控制容量时，本条重开 | — |
 | NFR-8 安全声明 | 文档**如实声明**默认档隔离强度与适用前提（同信任域内团队），不夸大 | 设计文档含声明段落 |
@@ -149,6 +149,7 @@ team/project，邀请成员，并在创建成员时**一并 provision 云端 mem
 |---|---|---|
 | caicai `task-74` | ① 同步已裁决内容、清理过时表述与不明引用 ② NFR-1 改"默认拒绝 + 显式 allowlist" ③ 量化 FR-5/NFR-5/NFR-6 ④ 阐明 k8e 复用语义与 approve 门 | §8/§9、NFR-1、FR-5/NFR-5/NFR-6、§8 末条 |
 | xiaods-mac `task-76` | ① FR-2 里程碑归属 ② D10/D8 补需求落点 ③ NFR-5 阈值 + 隧道验收三件套 ④ FR-20 源保留 ⑤ §8/§9 对齐 ⑥ NFR-7 触发条件 | FR-2、NFR-13/NFR-14、NFR-5/§7.10、FR-20、§8/§9、NFR-7 |
-| weiye-mini `task-78` | ① FR-11 与 FR-5 交互 ② join token 的 user 绑定 ③ NFR-3 区分两类 Pod ④ §7 加 tx-expose 故障注入 | FR-11、FR-19/NFR-12、NFR-3、§7.11 |
+| weiye-mini `task-78`/`task-80` | ① FR-11 与 FR-5 交互 ② join token 的 user 绑定 ③ NFR-3 区分两类 Pod ④ §7 加 tx-expose 故障注入 | FR-11、FR-19/NFR-12、NFR-3、§7.11 |
+| weiye-mini 建议（v3） | allowlist 初始集写进需求；NFR-5 阈值给数字（≥2 个探测周期） | NFR-1、NFR-5 |
 | 共同建议 | 共用 conformance 矩阵、镜像 pin+semver 门、break-glass 演练、token 负例 | §9 开放项 5/6、§7.9 |
 | 缺失需求 | M1 唤醒路径 / M2 秒级可达定义 / M3 命名唯一性 / M4 术语 | §7.13、FR-5、§7.12、§10 |

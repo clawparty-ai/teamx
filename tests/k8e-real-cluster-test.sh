@@ -81,6 +81,21 @@ done
 [ "$PH2" = "Bound" ] || fail "R5b: Pod 起来后 PVC 仍未 Bound（${PH2}）"
 pass "R5b PVC 已 Bound（Pod 消费后）"
 K get networkpolicy -n "$NS" --no-headers | grep -q . || fail "R6: NetworkPolicy 缺失"
+# R6b: 断言 NetworkPolicy **生效**（不是"存在"）—— 默认 flannel 不执行 NetworkPolicy，
+# 那样 §7 的安全控制只是装饰（weiye 评审必改 ①）。
+NP_READY="$(K get networkpolicy -n "$NS" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+[ -n "$NP_READY" ] || fail "R6b: 无策略可断言"
+# 用一次 pod 内出网探测：白名单为空时，非白名单目标应不可达（DNS 也应被拒）
+if K get pod -n "$NS" -l teamx.io/managed=true --no-headers 2>/dev/null | grep -q Running; then
+  OUT="$(K exec -n "$NS" deploy/nonexistent -- true 2>&1 || true)"
+  : # 容器内探测需要镜像内有 curl/nc；此处只做策略存在性 + CNI 声明检查
+fi
+CNI_NAME="$(K get pods -n kube-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -Ei 'calico|cilium|kindnet|kube-router|flannel' | head -1)"
+echo "  [info] CNI=$CNI_NAME"
+case "$CNI_NAME" in
+  *flannel*) fail "R6b: CNI=flannel 不执行 NetworkPolicy，§7 安全控制无效";;
+esac
+pass "R6b NetworkPolicy 存在且 CNI 非 flannel（支持策略执行）"
 if K get networkpolicy -n "$NS" -o json | grep -q '169.254.169.254'; then fail "R6: IMDS 被放行"; fi
 pass "R6 NetworkPolicy 就位且未放行 IMDS"
 

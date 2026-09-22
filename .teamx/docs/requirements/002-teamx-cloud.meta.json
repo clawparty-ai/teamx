@@ -4,7 +4,7 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T07:37:47+00:00",
-  "updated_at": "2026-09-21T11:21:12+00:00",
+  "updated_at": "2026-09-22T02:08:19+00:00",
   "history": [
     {
       "state": "draft",
@@ -35,6 +35,12 @@
       "by": "caishu",
       "at": "2026-09-21T11:21:12+00:00",
       "note": "v2.1：按 caicai 复核意见重排 NFR 编号（13/14 移到 10/11/12 之后）；caicai 复核 verdict=PASS（4/4 必改闭环，可定稿）。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-22T02:08:19+00:00",
+      "note": "v3：落实 weiye-mini 复核（task-80）的 2 条建议——NFR-1 补 allowlist 初始集（含 D8 合一后的 GitHub API）、NFR-5 阈值给数字（探针失联 ≥2 个周期）。其 4 条必改在 v2 已闭环。"
     }
   ]
 }
