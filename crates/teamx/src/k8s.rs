@@ -489,6 +489,9 @@ stringData:
 }
 
 /// 租户 server 镜像（`TEAMX_SERVER_IMAGE` 可覆盖）。
+/// 租户 server 的 PriorityClass（013 M7 server 档；集群级、全租户共享）。
+pub const SERVER_PRIORITY_CLASS: &str = "teamx-tenant-server";
+
 pub fn server_image() -> String {
     std::env::var("TEAMX_SERVER_IMAGE")
         .ok()
@@ -516,7 +519,18 @@ pub fn tenant_manifests(
     let deploy = format!("teamx-serve-{}", short_id(team_id));
     let image = server_image();
     format!(
-        r#"apiVersion: v1
+        r#"apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {SERVER_PRIORITY_CLASS}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/kind: tenant-server-priority
+value: 100000
+globalDefault: false
+description: "teamx 租户 server（租户控制面，单副本）；013 M7 server 档。集群级共享，租户回收时不删除。"
+---
+apiVersion: v1
 kind: Namespace
 metadata:
   name: {ns}
@@ -584,6 +598,7 @@ spec:
         teamx.io/team: "{team_id}"
         teamx.io/tenant-server: "{team_id}"
     spec:
+      priorityClassName: {SERVER_PRIORITY_CLASS}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -626,6 +641,22 @@ spec:
           persistentVolumeClaim: {{ claimName: {pvc} }}
         - name: ca
           secret: {{ secretName: {ca_secret} }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {deploy}-pdb
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/kind: tenant-server-pdb
+spec:
+  # 单副本控制面：自愿中断（节点 drain/升级）一律不得驱逐，须人工处理
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      teamx.io/tenant-server: "{team_id}"
 "#,
         ca_crt = indent(ca_cert_pem, 4),
         ca_key = indent(ca_key_pem, 4),
@@ -950,6 +981,11 @@ mod tests {
         assert!(y.contains("kind: PersistentVolumeClaim"));
         assert!(y.contains("mountPath: /data/ca, readOnly: true"));
         assert!(y.contains("TEAMX_TENANT_TEAM_ID"));
+        // 建议②（weiye task-92）：租户 server 用 server 档 PriorityClass + PDB maxUnavailable=0
+        assert!(y.contains("kind: PriorityClass"), "server tier priority class");
+        assert!(y.contains("priorityClassName: teamx-tenant-server"));
+        assert!(y.contains("kind: PodDisruptionBudget"));
+        assert!(y.contains("maxUnavailable: 0"), "单副本控制面不得被自愿中断驱逐");
         // 加固
         assert!(y.contains("readOnlyRootFilesystem: true"));
         assert!(y.contains("seccompProfile"));

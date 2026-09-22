@@ -103,6 +103,7 @@ done
 grep -q "ca.key: |" "$Y" || fail "N1: CA key 未注入"
 grep -q "server.crt: |" "$Y" || fail "N1: server 证书未注入"
 grep -q "replicas: 1" "$Y" || fail "N1: server 应单副本（SQLite 单写者）"
+cp "$KUBECTL_STATE/last-apply.yaml" "$WORK/tenant-manifests.yaml"
 pass "N1 tenant create → namespace + 独立 CA + server(PVC/Deployment)"
 
 # N2: 租户 CA 独立（指纹与平台 CA 不同）
@@ -185,6 +186,17 @@ subprocess.run(["openssl","verify","-CAfile",cap,cp],check=True,capture_output=T
 print("  issuer =", iss_name)
 PYEOF
 pass "N8 成员证书换发（租户 CA 签发 + Secret 投递 + server_url 同批切换）"
+
+# N9: 租户 server 调度保护（weiye task-92 建议②）
+# 注意：后续 apply（成员 Pod / 换发 Secret）会覆盖 last-apply.yaml，
+# 因此用 N1 时保存的租户清单副本断言
+Y1="$WORK/tenant-manifests.yaml"
+[ -f "$Y1" ] || fail "N9: 缺租户清单副本"
+grep -q "kind: PriorityClass" "$Y1" || fail "N9: 缺 PriorityClass"
+grep -q "priorityClassName: teamx-tenant-server" "$Y1" || fail "N9: server Pod 未用 server 档"
+grep -q "kind: PodDisruptionBudget" "$Y1" || fail "N9: 缺 PDB"
+grep -q "maxUnavailable: 0" "$Y1" || fail "N9: PDB 未禁止自愿中断"
+pass "N9 租户 server 调度保护（server 档 PriorityClass + PDB maxUnavailable=0）"
 
 # N5/N6: destroy 清单 + 清空
 : > "$KUBECTL_LOG"
