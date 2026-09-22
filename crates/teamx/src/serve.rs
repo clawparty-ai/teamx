@@ -1154,6 +1154,81 @@ fn service_method_allowed(method: &str) -> bool {
     SERVICE_METHOD_WHITELIST.contains(&method)
 }
 
+/// 平台控制台 service 车道的方法白名单（design/014 §6.5，**fail-closed**）。
+///
+/// 平台 console 以 `service:platform-console:<instance>` 身份调**租户 server**，
+/// 只允许：租户/主机元数据读 + 成员邀请/provision 触发 + 座位审批。
+/// 其余一律拒绝（含任务/讨论正文等任何内容面 —— 与 D10「平台仅见元数据」一致）。
+const PLATFORM_CONSOLE_METHODS: &[&str] = &[
+    "team.status",    // 租户/成员元数据（不含正文）
+    "node.list",      // 主机元数据
+    "node.status",
+    "invite",         // 成员邀请
+    "node.provision", // 触发 provision
+    "team.approve",   // 审批座位（激活成员）
+];
+
+/// 平台 console 车道是否允许该方法（fail-closed：不在白名单即拒绝）。
+pub fn platform_console_method_allowed(method: &str) -> bool {
+    PLATFORM_CONSOLE_METHODS.contains(&method)
+}
+
+/// Dispatch a **platform-console** service call (design/014 §6.5).
+///
+/// 与 IM 车道同纪律：
+/// - fail-closed 方法白名单；
+/// - 平台**不是**租户成员，因此以**租户 owner 座位**为 actor 重派发（平台本身拥有
+///   该租户的创建权，owner 语义最贴近；下游权限检查不变，不做特权提升）；
+/// - 平台动作**落平台审计**（独立于租户台账，NFR-9）；
+/// - 拒绝任何 `member_id` 伪装参数。
+fn dispatch_platform_console(
+    instance: &str,
+    method: &str,
+    args: &Value,
+    conn: &mut rusqlite::Connection,
+    tunnels: &crate::tunnel::TunnelRegistry,
+    peer: Option<SocketAddr>,
+    host: Option<&str>,
+) -> Result<Value, String> {
+    if !platform_console_method_allowed(method) {
+        return Err(format!(
+            "service `platform-console` may not call `{method}` (fail-closed method whitelist)"
+        ));
+    }
+    if args
+        .get("member_id")
+        .and_then(Value::as_str)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
+        return Err("platform-console call must not carry `member_id` (actor is resolved server-side)".to_string());
+    }
+    let team = args
+        .get("team")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "platform-console call requires `team` (the tenant key)".to_string())?;
+    // 以该租户的 owner 座位为 actor（平台创建租户即代表 owner 语义；下游权限不变）
+    let owner: String = conn
+        .query_row(
+            "SELECT owner_member_id FROM teams WHERE id = ?1 AND state != 'destroyed'",
+            rusqlite::params![team],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("platform-console: unknown tenant `{team}`"))?;
+    // 平台审计（独立表）
+    let _ = conn.execute(
+        "INSERT INTO platform_audit (at, actor, action, detail) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            crate::db::now(),
+            format!("service:platform-console:{instance}"),
+            "tenant.rpc",
+            format!("team={team} method={method}")
+        ],
+    );
+    let cn = format!("member:{owner}:owner");
+    dispatch(method, args, conn, &cn, tunnels, peer, host)
+}
+
 /// Dispatch a call made by a **service** identity (currently the IM gateway).
 ///
 /// Security rules (DQ-0004):
@@ -1174,6 +1249,10 @@ fn dispatch_service(
     peer: Option<SocketAddr>,
     host: Option<&str>,
 ) -> Result<Value, String> {
+    // design/014 §6.5：平台控制台走独立车道（自己的白名单与 actor 解析）
+    if service == "platform-console" {
+        return dispatch_platform_console(instance, method, args, conn, tunnels, peer, host);
+    }
     if service != "im-gateway" {
         return Err(format!("unknown service identity `service:{service}:{instance}`"));
     }
@@ -1274,6 +1353,40 @@ pub fn member_revoked_for_rpc(state: Option<&str>) -> bool {
         Some("left") | Some("denied") => true,
         Some(_) => false,
         None => true,
+    }
+}
+
+#[cfg(test)]
+mod platform_console_lane_tests {
+    use super::platform_console_method_allowed;
+
+    #[test]
+    fn platform_console_whitelist_is_fail_closed() {
+        // 允许：租户/主机元数据 + 邀请/provision/审批
+        for ok in [
+            "team.status",
+            "node.list",
+            "node.status",
+            "invite",
+            "node.provision",
+            "team.approve",
+        ] {
+            assert!(platform_console_method_allowed(ok), "{ok} 应被允许");
+        }
+        // 拒绝：任何内容面/写面（D10：平台仅见元数据；不读任务/讨论正文）
+        for no in [
+            "discussion.say",
+            "discussion.open",
+            "task.create",
+            "task.update",
+            "publish",
+            "respond",
+            "member.set_state",
+            "node.destroy",   // 回收走平台侧（删 namespace），不经租户 RPC
+            "git.clone",
+        ] {
+            assert!(!platform_console_method_allowed(no), "{no} 必须被拒（fail-closed）");
+        }
     }
 }
 
