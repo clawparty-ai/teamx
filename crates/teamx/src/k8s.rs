@@ -270,6 +270,7 @@ pub fn member_pod_manifest(
     let pod = pod_name(member_id);
     let pvc = pvc_name(member_id);
     let sec = secret_name(member_id);
+    let rot = rotation_secret_name(member_id);
     let image = member_image();
     let (cpu_req, cpu_lim) = default_resources();
     format!(
@@ -309,6 +310,12 @@ spec:
           trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
           # 幂等：已认领则跳过
           teamx team import /workspace/.teamx/letters/invite/invitation.letter --session {session} || true
+          # 换发信（design/014 §8）：租户 CA 签发的成员证书 + 租户 server URL。
+          # import 会把证书落到 .teamx/letters/<id>/，CLI 的 mTLS 发现按 host 精确匹配，
+          # 因此切到租户 server 后会选到这一份（旧的平台 CA 信仍在但不匹配该 host）。
+          if [ -f /etc/teamx/rotation/letter ]; then
+            teamx team import "$(cat /etc/teamx/rotation/letter)" --session {session} || true
+          fi
           # 幂等：已 clone 则只做 fetch
           if [ -d /workspace/.git ]; then
             git -C /workspace fetch --all --prune || true
@@ -323,6 +330,7 @@ spec:
       volumeMounts:
         - {{ name: workspace, mountPath: /workspace }}
         - {{ name: letter, mountPath: /etc/teamx/letter, readOnly: true }}
+        - {{ name: rotation, mountPath: /etc/teamx/rotation, readOnly: true }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
@@ -408,6 +416,11 @@ spec:
       persistentVolumeClaim: {{ claimName: {pvc} }}
     - name: letter
       secret: {{ secretName: {sec} }}
+    # 换发信（可选：只有做过证书换发才存在）
+    - name: rotation
+      secret:
+        secretName: {rot}
+        optional: true
     - name: tmp
       emptyDir: {{}}
 "#
@@ -443,6 +456,35 @@ spec:
       defaultRequest: {{ cpu: "250m", memory: "512Mi" }}
       max: {{ cpu: "4", memory: "8Gi" }}
 "#
+    )
+}
+
+/// 换发信 Secret 名（design/014 §8：租户 CA 签发的成员证书 + 租户 server URL）。
+pub fn rotation_secret_name(member_id: &str) -> String {
+    format!("teamx-rot-{}", short_id(member_id))
+}
+
+/// 生成换发信 Secret（放在租户 namespace 内；成员 Pod 的 setup 会读取并 import）。
+pub fn rotation_secret_manifest(team_id: &str, member_id: &str, letter: &str) -> String {
+    let ns = namespace_for(team_id);
+    let name = rotation_secret_name(member_id);
+    format!(
+        r#"apiVersion: v1
+kind: Secret
+metadata:
+  name: {name}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/member: "{member_id}"
+    teamx.io/kind: rotation-letter
+type: Opaque
+stringData:
+  letter: |
+{letter_indented}
+"#,
+        letter_indented = indent(letter, 4)
     )
 }
 

@@ -68,6 +68,7 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
         .route("/api/tenants/{team}/invite", post(api_tenant_invite))
         .route("/api/tenants/{team}/provision", post(api_tenant_provision))
+        .route("/api/tenants/{team}/reissue-members", post(api_tenant_reissue))
         .route("/api/tokens", get(api_tokens))
         .route("/api/admins", get(api_admins))
         .route("/api/audit", get(api_audit))
@@ -220,6 +221,24 @@ async fn api_tenant_provision(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, P
         "os_user": body.get("os_user").cloned().unwrap_or(Value::Null),
     }))
     .await
+}
+
+/// 成员证书换发（design/014 §8 ①②③）：平台面直接执行（非经 service 车道 ——
+/// 换发发生在**成员切换到租户 server 之前**，此时租户 server 可能尚不可达）。
+async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let kubeconfig = ctx.kubeconfig.clone();
+    let context = ctx.context.clone();
+    let t = team.clone();
+    let out = with_conn(&ctx, |c| {
+        crate::provision::reissue_member_certs(c, &t, kubeconfig.as_deref(), context.as_deref())
+    });
+    match out {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
 }
 
 /// 平台服务车道调用：读租户 CA（namespace 的 Secret）→ 用租户 CA 签**平台服务证书** →

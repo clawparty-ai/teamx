@@ -589,6 +589,126 @@ pub fn create_tenant(
     }))
 }
 
+/// 构造**换发信**（design/014 §8）：与邀请函同形态（`teamx-inv:v1:<base64>`），
+/// 但证书由**租户 CA** 签发、`server.url` 指向**租户 server**。
+pub fn rotation_letter(
+    team_id: &str,
+    team_name: &str,
+    member_id: &str,
+    role: &str,
+    server_url: &str,
+    ca_cert_pem: &str,
+    ca_key_pem: &str,
+) -> Result<String, String> {
+    let ca_fp = crate::pki::ca_fingerprint_of(ca_cert_pem)?;
+    let cert = crate::pki::issue_member_cert_with_ca(ca_cert_pem, ca_key_pem, member_id, role, None)?;
+    let payload = json!({
+        "teamx_invitation": {
+            "version": 2,
+            "invitation_id": format!("rot-{member_id}"),
+            "issued_at": db::now(),
+            "expires_at": Value::Null,
+            "as_lead": false,
+            "auto_approve": false,
+            "server": { "url": server_url, "ca_fingerprint": format!("sha256:{ca_fp}") },
+            "team": { "id": team_id, "name": team_name },
+            "member": { "name_hint": "" },
+            "role": { "key": role, "label": role, "description": "rotation (design/014 §8)" },
+        },
+        "certificates": {
+            "ca_cert": ca_cert_pem,
+            "client_cert": cert.cert_pem,
+            "client_key": cert.key_pem,
+        },
+    });
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD
+        .encode(serde_json::to_string(&payload).map_err(|e| e.to_string())?);
+    Ok(format!("teamx-inv:v1:{b64}"))
+}
+
+/// **成员证书换发**（design/014 §8 迁移三步的第 ①②③）：
+/// ① 用**租户 CA** 为该租户每个成员签新证书（构造换发信）
+/// ② 换发信写进租户 namespace 的 Secret（成员 Pod 重建时 setup 自动 import）
+/// ③ 同批把 `nodes.server_url` 切到**租户 server**（切换与换发必须同批，否则成员失联）
+///
+/// ④ 旧 server 保留至新链路验证通过（D11 源保留）—— 本函数不动旧 server，仅返回清单。
+pub fn reissue_member_certs(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let tenant = tenant_get(conn, team_id)?.ok_or_else(|| format!("tenant for team {team_id} not found"))?;
+    let ns = tenant["namespace"].as_str().unwrap_or("").to_string();
+    // 租户 server 地址（集群内 Service DNS；与 tenant_manifests 一致）
+    let server_url = format!("https://teamx-serve-{}.{ns}.svc:{}", crate::k8s::short_id(team_id), crate::k8s::SERVER_PORT);
+    // 读租户 CA（平台在建租户时写入租户 namespace 的 Secret）
+    let kubectl = crate::k8s::Kubectl::new(kubeconfig.map(str::to_string), context.map(str::to_string));
+    let ca_secret = format!("teamx-ca-{}", crate::k8s::short_id(team_id));
+    let secret = kubectl
+        .get_json("secret", &ca_secret, &ns)?
+        .ok_or_else(|| format!("tenant CA secret {ca_secret} not found in {ns}"))?;
+    let dec = |k: &str| -> Option<String> {
+        use base64::Engine as _;
+        secret["data"][k]
+            .as_str()
+            .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    };
+    let (ca_crt, ca_key) = match (dec("ca.crt"), dec("ca.key")) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Err("tenant CA material missing in Secret".to_string()),
+    };
+    let team_name: String = conn
+        .query_row("SELECT name FROM teams WHERE id = ?1", params![team_id], |r| r.get(0))
+        .unwrap_or_default();
+    // 该租户所有非 terminated 节点 → 逐个换发
+    let nodes: Vec<(String, String, String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, member_id, COALESCE(provider,''), server_url FROM nodes
+                 WHERE team_id = ?1 AND state <> 'terminated'",
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt
+            .query_map(params![team_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| format!("db: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("db: {e}"))?
+    };
+    let mut steps = Vec::new();
+    for (node_id, member_id, provider, from_url) in &nodes {
+        let role: String = conn
+            .query_row("SELECT COALESCE(role,'contributor') FROM members WHERE id = ?1", params![member_id], |r| r.get(0))
+            .unwrap_or_else(|_| "contributor".to_string());
+        let letter = rotation_letter(team_id, &team_name, member_id, &role, &server_url, &ca_crt, &ca_key)?;
+        // ② 写 Secret（成员 Pod 重建时 setup 自动 import）
+        let yaml = crate::k8s::rotation_secret_manifest(team_id, member_id, &letter);
+        let applied = kubectl.apply(&yaml).is_ok();
+        // ③ 同批切 server_url
+        let switched = conn
+            .execute(
+                "UPDATE nodes SET server_url = ?1 WHERE id = ?2",
+                params![server_url, node_id],
+            )
+            .unwrap_or(0) > 0;
+        steps.push(json!({
+            "member_id": member_id, "node_id": node_id, "provider": provider,
+            "secret": crate::k8s::rotation_secret_name(member_id),
+            "server_url_from": from_url, "server_url_to": server_url,
+            "secret_applied": applied, "server_url_switched": switched,
+            "done": applied && switched,
+        }));
+    }
+    Ok(json!({
+        "ok": true, "team_id": team_id, "namespace": ns, "server_url": server_url,
+        "members": steps.len(), "steps": steps,
+        "note": "换发信已投递（Secret），成员 Pod 重建后生效；server_url 已同批切换；旧 server 保留待验证（D11）",
+    }))
+}
+
 /// 回收租户（design/014 §2）：删 namespace（级联清掉 server/CA Secret/PVC/NetworkPolicy）
 /// → 删 `tenants` 行 → 返回**可验证清单**。
 ///

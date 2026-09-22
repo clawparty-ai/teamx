@@ -46,6 +46,21 @@ case "$verb" in
   apply)
     y="$(cat)"; printf '%s\n' "$y" > "$STATE/last-apply.yaml"
     printf '%s\n' "$y" | grep -E '^kind: ' | sed 's/^kind: //' >> "$LOG"
+    # 租户 CA Secret：存成 JSON，供换发（reissue-members）读回
+    if printf '%s\n' "$y" | grep -q 'ca.crt: |'; then
+      printf '%s\n' "$y" | python3 -c '
+import sys, json, base64, re
+y = sys.stdin.read()
+name = re.search(r"name: (teamx-ca-\S+)", y).group(1)
+def grab(key):
+    m = re.search(key + r": \|\n((?:    .*\n|\n)+)", y)
+    if not m: return ""
+    lines = [l[4:] if l.startswith("    ") else l for l in m.group(1).splitlines(True)]
+    return "".join(lines)
+data = {k: base64.b64encode(grab(k).encode()).decode() for k in ("ca.crt", "ca.key")}
+json.dump({"data": data}, open(sys.argv[1], "w"))
+' "$STATE/ca-secret.json"
+    fi
     echo applied;;
   delete)
     kind="$1"; shift || true; name="$1"; shift || true
@@ -53,7 +68,15 @@ case "$verb" in
   get)
     kind="$1"; shift || true
     case "$kind" in
-      deployment,pvc,secret,networkpolicy|deployment) echo "";;
+      secret)
+        # 租户 CA Secret 回放；其它 Secret 视为不存在
+        name="$1"; shift || true
+        if [ -f "$STATE/ca-secret.json" ] && printf '%s' "$name" | grep -q '^teamx-ca-'; then
+          cat "$STATE/ca-secret.json"
+        else
+          echo "Error from server (NotFound): secrets \"$name\" not found" >&2; exit 1
+        fi;;
+      deployment,pvc,networkpolicy) echo "";;
       ns|namespace) cat "$STATE/namespaces" 2>/dev/null || true;;
       *) echo "{}";;
     esac;;
@@ -111,6 +134,57 @@ grep -q "^kind: Pod" "$Y2" || fail "N4: 成员 Pod 未创建"
 MNS="$(grep -m1 -oE 'namespace: tenant-[a-z0-9]+' "$Y2" | awk '{print $2}' || true)"
 [ "$MNS" = "$(echo "$T1" | jq "d['tenant']['namespace']")" ] || fail "N4: 成员不在租户 namespace（${MNS}）"
 pass "N4 成员 Pod 与租户 server 共存于 $MNS"
+
+# N8: 成员证书换发（design/014 §8 ①②③）
+: > "$KUBECTL_LOG"
+R="$("$TEAMX" --json tenant reissue-members --team "$TEAM_ID" 2>&1)" || fail "N8: 换发失败: $R"
+[ "$(echo "$R" | jq "d['ok'] and d['members'] >= 1")" = "True" ] || fail "N8: 无成员被换发"
+[ "$(echo "$R" | jq "d['steps'][0]['done']")" = "True" ] || fail "N8: 步骤未完成: $R"
+[ "$(echo "$R" | jq "d['steps'][0]['secret_applied'] and d['steps'][0]['server_url_switched']")" = "True" ] || fail "N8: 投递/切换未同时完成"
+# 换发信确实投递为 Secret
+grep -q "kind: Secret" "$KUBECTL_STATE/last-apply.yaml" || fail "N8: 未 apply 换发 Secret"
+grep -q "teamx.io/kind: rotation-letter" "$KUBECTL_STATE/last-apply.yaml" || fail "N8: Secret 缺 rotation-letter 标签"
+grep -q "teamx-inv:v1:" "$KUBECTL_STATE/last-apply.yaml" || fail "N8: Secret 内无换发信"
+# server_url 同批切到租户 server（集群内 Service DNS）
+TURL="$(echo "$R" | jq "d['server_url']")"
+echo "$TURL" | grep -q "\.svc:" || fail "N8: server_url 不是租户 server: $TURL"
+DBURL="$(sqlite3 "$TEAMX_DB" "SELECT server_url FROM nodes WHERE team_id='$TEAM_ID' AND state<>'terminated' LIMIT 1;")"
+[ "$DBURL" = "$TURL" ] || fail "N8: nodes.server_url 未同批切换（$DBURL != ${TURL}）"
+# 换发信由**租户 CA**签发：解出证书，验证 issuer 与租户 CA 一致 + CA 指纹 == 租户 CA 指纹
+TFP="$(echo "$T1" | jq "d['tenant']['ca_fingerprint']")"
+# 注意：ca_fingerprint_of 是 **DER** 的 SHA-256（不是 PEM 文本），用 openssl 转 DER 后再算
+LFP="$(python3 - "$KUBECTL_STATE/last-apply.yaml" "$WORK" <<'PYEOF'
+import base64, json, re, subprocess, sys, os
+y = open(sys.argv[1]).read(); work = sys.argv[2]
+m = re.search(r"letter: \|\n((?:    .*\n|\n)+)", y)
+lines = [l[4:] if l.startswith("    ") else l for l in m.group(1).splitlines(True)]
+payload = json.loads(base64.b64decode("".join(lines).strip().split("teamx-inv:v1:",1)[1]))
+p = os.path.join(work, "letter-ca.pem"); open(p, "w").write(payload["certificates"]["ca_cert"])
+der = subprocess.run(["openssl","x509","-in",p,"-outform","DER"],capture_output=True,check=True).stdout
+import hashlib; print(hashlib.sha256(der).hexdigest())
+PYEOF
+)"
+[ -n "$LFP" ] && [ "$LFP" = "$TFP" ] || fail "N8: 换发信 CA 指纹($LFP) != 租户 CA($TFP)"
+python3 - "$KUBECTL_STATE/last-apply.yaml" <<'PYEOF' || fail "N8: 换发信证书链校验失败"
+import base64, json, re, subprocess, sys, tempfile, os
+y = open(sys.argv[1]).read()
+m = re.search(r"letter: \|\n((?:    .*\n|\n)+)", y)
+lines = [l[4:] if l.startswith("    ") else l for l in m.group(1).splitlines(True)]
+letter = "".join(lines).strip()
+payload = json.loads(base64.b64decode(letter.split("teamx-inv:v1:",1)[1]))
+cert = payload["certificates"]["client_cert"]; ca = payload["certificates"]["ca_cert"]
+d = tempfile.mkdtemp()
+cp, cap = os.path.join(d,"c.pem"), os.path.join(d,"ca.pem")
+open(cp,"w").write(cert); open(cap,"w").write(ca)
+iss = subprocess.run(["openssl","x509","-in",cp,"-noout","-issuer"],capture_output=True,text=True).stdout
+subj = subprocess.run(["openssl","x509","-in",cap,"-noout","-subject"],capture_output=True,text=True).stdout
+iss_name = iss.split("issuer=",1)[1].strip(); ca_name = subj.split("subject=",1)[1].strip()
+assert iss_name == ca_name, (iss_name, ca_name)
+# 且与平台 CA 不同（租户 CA 独立）
+subprocess.run(["openssl","verify","-CAfile",cap,cp],check=True,capture_output=True)
+print("  issuer =", iss_name)
+PYEOF
+pass "N8 成员证书换发（租户 CA 签发 + Secret 投递 + server_url 同批切换）"
 
 # N5/N6: destroy 清单 + 清空
 : > "$KUBECTL_LOG"

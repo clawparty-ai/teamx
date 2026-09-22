@@ -1963,6 +1963,11 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             kubeconfig: None,
             context: None,
         }),
+        "tenant.reissue_members" | "tenant.reissue-members" => Command::Tenant(TenantCmd::ReissueMembers {
+            team: s("team").ok_or_else(|| "tenant.reissue_members requires `team`".to_string())?,
+            kubeconfig: s("kubeconfig").map(std::path::PathBuf::from),
+            context: s("context"),
+        }),
         "tenant.list" => Command::Tenant(TenantCmd::List),
         "tenant.show" => Command::Tenant(TenantCmd::Show {
             team: s("team").ok_or_else(|| "tenant.show requires `team`".to_string())?,

@@ -2405,6 +2405,19 @@ pub enum TenantCmd {
         #[arg(long)]
         context: Option<String>,
     },
+    /// Re-issue every member's certificate with the **tenant CA** and switch their
+    /// server_url to the tenant server in the same batch (design/014 §8 migration ①②③).
+    /// The old server is retained for verification (D11).
+    ReissueMembers {
+        #[arg(long)]
+        team: String,
+        /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context (default: TEAMX_K8S_CONTEXT)
+        #[arg(long)]
+        context: Option<String>,
+    },
     /// List tenants
     List,
     /// Show one tenant

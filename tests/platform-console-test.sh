@@ -44,11 +44,30 @@ done
 set -- "${args[@]}"
 verb="$1"; shift || true
 case "$verb" in
-  apply) y="$(cat)"; printf '%s\n' "$y" > "$STATE/last-apply.yaml"; printf '%s\n' "$y" | grep -E '^kind: ' | sed 's/^kind: //' >> "$LOG"; echo applied;;
+  apply) y="$(cat)"; printf '%s\n' "$y" > "$STATE/last-apply.yaml"; printf '%s\n' "$y" | grep -E '^kind: ' | sed 's/^kind: //' >> "$LOG"
+       # 租户 CA Secret 存成 JSON，供换发读回
+       if printf '%s\n' "$y" | grep -q 'ca.crt: |'; then
+         printf '%s\n' "$y" | python3 -c '
+import sys, json, base64, re
+y = sys.stdin.read()
+def grab(key):
+    m = re.search(key + r": \|\n((?:    .*\n|\n)+)", y)
+    if not m: return ""
+    return "".join(l[4:] if l.startswith("    ") else l for l in m.group(1).splitlines(True))
+json.dump({"data": {k: base64.b64encode(grab(k).encode()).decode() for k in ("ca.crt","ca.key")}}, open(sys.argv[1],"w"))
+' "$STATE/ca-secret.json"
+       fi
+       echo applied;;
   delete) kind="$1"; shift||true; name="$1"; shift||true; echo "delete $kind $name" >> "$LOG"; echo deleted;;
   get) kind="$1"; shift||true
        case "$kind" in
-         secret) echo "Error from server (NotFound): secrets not found" >&2; exit 1;;
+         secret)
+           name="$1"; shift||true
+           if [ -f "$STATE/ca-secret.json" ] && printf '%s' "$name" | grep -q '^teamx-ca-'; then
+             cat "$STATE/ca-secret.json"
+           else
+             echo "Error from server (NotFound): secrets not found" >&2; exit 1
+           fi;;
          deployment,pvc,networkpolicy) echo "";;
          *) echo "{}";;
        esac;;
@@ -105,11 +124,27 @@ for ep in tokens admins audit; do
 done
 pass "C5 tokens / admins / audit 可读"
 
-# C7: service 车道负例（不在集群内 → 取不到租户 CA Secret，须明确报错而非假装成功）
+# C7: service 车道负例（集群外无法真正送达租户 server，须明确报错而非假装成功）
 S="$($C -b /tmp/teamx-platcon-cookie -X POST -H 'Content-Type: application/json' \
      -d '{"role_desc":"contributor: x"}' "$BASE/api/tenants/$TEAM_ID/invite")"
 echo "$S" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True,d;print('  ',str(d.get('error'))[:80])" || fail "C7: 取不到 CA 时必须失败"
-pass "C7 service 车道负例：取不到租户 CA Secret 时明确失败（不假装成功）"
+pass "C7 service 车道负例：无法真正送达租户 server 时明确失败（不假装成功）"
+
+# C7b: 造一个成员节点（换发的对象）—— 经 CLI（成员链，非平台面）
+INV="$("$TEAMX" --json team invite "contributor: dev" --session s1 --user-name bob \
+        --provision-node --provider k8e --region us-west-2 2>/dev/null)"
+MID="$(echo "$INV" | python3 -c 'import sys,json;print(json.load(sys.stdin)["member_id"])')"
+"$TEAMX" --json node run-jobs >/dev/null 2>&1 || true
+"$TEAMX" --json team approve "$MID" --session s1 >/dev/null 2>&1 || true
+[ "$(sqlite3 "$TEAMX_DB" "SELECT COUNT(*) FROM nodes WHERE team_id='$TEAM_ID' AND state<>'terminated';")" -ge 1 ] \
+  || fail "C7b: 成员节点未创建"
+pass "C7b 成员节点就绪（换发对象）"
+
+# C8: 成员证书换发（design/014 §8）—— 经平台控制台入口
+R8="$($C -b /tmp/teamx-platcon-cookie -X POST "$BASE/api/tenants/$TEAM_ID/reissue-members")"
+echo "$R8" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok'),d;print('  members=%s server_url=%s' % (d.get('members'), d.get('server_url')))" || fail "C8: 换发失败: $R8"
+grep -q "teamx.io/kind: rotation-letter" "$KUBECTL_STATE/last-apply.yaml" || fail "C8: 未投递换发信 Secret"
+pass "C8 平台控制台触发成员证书换发（租户 CA 签发 + Secret 投递）"
 
 # C6: 回收
 D="$($C -b /tmp/teamx-platcon-cookie -X DELETE "$BASE/api/tenants/$TEAM_ID")"
