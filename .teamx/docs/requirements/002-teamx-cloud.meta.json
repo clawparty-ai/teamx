@@ -1,10 +1,10 @@
 {
   "doc": "requirements",
   "id": "002-teamx-cloud",
-  "state": "draft",
+  "state": "approved",
   "owner": "caishu",
   "created_at": "2026-09-21T07:37:47+00:00",
-  "updated_at": "2026-09-22T02:08:19+00:00",
+  "updated_at": "2026-09-22T02:14:40+00:00",
   "history": [
     {
       "state": "draft",
@@ -37,10 +37,22 @@
       "note": "v2.1：按 caicai 复核意见重排 NFR 编号（13/14 移到 10/11/12 之后）；caicai 复核 verdict=PASS（4/4 必改闭环，可定稿）。"
     },
     {
+      "state": "review",
+      "by": "caicai",
+      "at": "2026-09-21",
+      "note": "v3：按 weiye-mini 评审（task-78）修订 —— FR-11 恢复子集+stopped→provisioning+唤醒仅任务指派；FR-19/NFR-12 token 加 user 绑定链；NFR-5 探针≥2周期翻转；§7.1 断言集明确；FR-16 平台自身 bootstrap 澄清；§4.4 对齐 FR-5 量化；新增 §12 v2→v3 对照。NFR-3 拆分与 §7.11 已在 v2，保持。state draft→review，待定稿评审。"
+    },
+    {
       "state": "draft",
       "by": "caishu",
       "at": "2026-09-22T02:08:19+00:00",
       "note": "v3：落实 weiye-mini 复核（task-80）的 2 条建议——NFR-1 补 allowlist 初始集（含 D8 合一后的 GitHub API）、NFR-5 阈值给数字（探针失联 ≥2 个周期）。其 4 条必改在 v2 已闭环。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-22T02:14:40+00:00",
+      "note": "定稿：三路评审（caicai task-74 4必改 / xiaods-mac task-76 6必改 / weiye-mini task-78 4必改）+ 两轮闭环验证（task-79/80/81 及 v3 复核）全部 CLOSED —— weiye-mini 明确「v3 可定稿」。14 必改 + 6 缺失 + 建议均已落实（v1→v2→v3）。"
     }
   ]
 }
