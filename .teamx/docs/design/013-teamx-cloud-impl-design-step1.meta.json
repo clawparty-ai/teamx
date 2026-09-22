@@ -4,7 +4,7 @@
   "state": "draft",
   "owner": "caishu",
   "created_at": "2026-09-21T10:15:32+00:00",
-  "updated_at": "2026-09-22T02:06:33+00:00",
+  "updated_at": "2026-09-22T02:06:48+00:00",
   "history": [
     {
       "state": "draft",
@@ -23,6 +23,12 @@
       "by": "caishu",
       "at": "2026-09-22T02:06:33+00:00",
       "note": "补 §14：owner 裁决开发/测试环境改用 BYO 台式机（不开云主机，成本考虑）；给出 scripts/dev-cluster-setup.sh 的接入流程与网络要求，并说明与 D6 产品化 BYO 接入的关系。"
+    },
+    {
+      "state": "draft",
+      "by": "caishu",
+      "at": "2026-09-22T02:06:48+00:00",
+      "note": "§14 补决策记录：云主机规格与成本评估（t4g.xlarge ≈$98/月、t4g.large ≈$49、spot ≈$30）判定开发期过贵；附未来需要云端测试机时的规格估算式。"
     }
   ]
 }

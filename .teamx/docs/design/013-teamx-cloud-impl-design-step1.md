@@ -209,6 +209,11 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 产品化的 BYO 接入（一次性 join token + 出站假设 + 命名含成员短 id）见 `design/011` D6，尚未实现，
 但两者共用同一套 provider（kubeconfig 指向集群）+ 同一份 Pod/PVC/Secret 清单。
 
+**为什么不新开云主机（决策记录）**：曾评估 `t4g.xlarge`（4C/16G）+ 100GiB gp3 + us-west-2
+（≈ $98/月 + $8/月磁盘；`t4g.large` ≈ $49/月；spot ≈ $30/月）—— 判定**开发期过贵**，
+改用手边台式机。若将来需要云端测试机，规格按下式估算：控制面 ~1C/2G + 每 member ~0.5G
++ 构建峰值 ~4G + 3×PVC(10G) ⇒ **4C/16G + 100G gp3** 起步。
+
 **台式机的网络要求**：能出网访问 ① teamx server（成员 RPC/隧道）② 镜像 registry ③ git 源；
 **不需要**被平台入站访问（出站假设）。若台式机在 NAT 后，provider 侧（server 或开发机）需能连到
 其 API server（`6443`）——开发期通常由开发机直连，故只需开发机 ↔ 台式机互通。
