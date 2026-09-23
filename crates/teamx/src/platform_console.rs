@@ -790,7 +790,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .divider::before,.divider::after{content:"";flex:1;border-top:1px solid #EBEEF5}
  .error{font-size:13px;color:#F56C6C;margin-top:4px;display:none;min-height:18px}
  .oauth-row{display:flex;flex-direction:column;gap:10px}
- .app{flex:1;display:block;padding:24px 20px;max-width:1080px;width:100%;margin:0 auto}
+ .app{flex:1;display:block;padding:20px 24px;width:100%}
+ .app-inner{width:100%}
+ @media (min-width:1600px){.app{padding:24px 32px}}
  .tabs{display:flex;gap:4px;border-bottom:1px solid #EBEEF5;margin-bottom:18px;background:#fff;border-radius:4px 4px 0 0;padding:8px 12px 0;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7)}
  .tab{border:none;background:none;padding:10px 16px;font-size:14px;color:#909399;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit}
  .tab:hover{color:#4A90E5}
