@@ -494,6 +494,37 @@ pub struct PkiPaths {
     pub server_key: PathBuf,
 }
 
+/// 租户模式的 CA 目录（design/014 §4）：`TEAMX_TENANT_TEAM_ID` 非空 **且**
+/// `TEAMX_TENANT_CA_DIR`（默认 `/data/ca`，k8s 把租户 CA Secret 挂在那里）含有 `ca.crt`。
+/// 只有租户 server Pod 满足该条件；平台/普通 server 返回 None。
+pub fn tenant_ca_dir() -> Option<std::path::PathBuf> {
+    let team = std::env::var("TEAMX_TENANT_TEAM_ID").ok()?;
+    if team.is_empty() {
+        return None;
+    }
+    let dir = std::env::var("TEAMX_TENANT_CA_DIR")
+        .unwrap_or_else(|_| "/data/ca".to_string());
+    let dir = std::path::PathBuf::from(dir);
+    if dir.join("ca.crt").is_file() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// 租户模式的签发材料：`(ca.crt, ca.key)` 的 PEM 内容。`ca.key` 不存在时返回 None
+///（只能验不能签 —— serve 起得来，但本机 invite 会回落到实例 CA；该情况应告警）。
+pub fn tenant_ca_material() -> Option<(String, String)> {
+    let dir = tenant_ca_dir()?;
+    let crt = std::fs::read_to_string(dir.join("ca.crt")).ok()?;
+    let key = std::fs::read_to_string(dir.join("ca.key")).ok()?;
+    if crt.contains("BEGIN CERTIFICATE") && key.contains("PRIVATE KEY") {
+        Some((crt, key))
+    } else {
+        None
+    }
+}
+
 /// A member certificate freshly issued by the instance CA (for invitation letters).
 #[derive(Debug, Clone)]
 pub struct IssuedCert {
@@ -508,6 +539,67 @@ pub struct IssuedCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 租户模式检测是纯环境变量 + 文件存在性逻辑；用进程级串行锁避免并行测试互相污染。
+    static TENANT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_tenant_env(team: Option<&str>, dir: Option<&std::path::Path>, f: impl FnOnce()) {
+        let _g = TENANT_ENV_LOCK.lock().unwrap();
+        let old_team = std::env::var("TEAMX_TENANT_TEAM_ID").ok();
+        let old_dir = std::env::var("TEAMX_TENANT_CA_DIR").ok();
+        match team {
+            Some(t) => std::env::set_var("TEAMX_TENANT_TEAM_ID", t),
+            None => std::env::remove_var("TEAMX_TENANT_TEAM_ID"),
+        }
+        match dir {
+            Some(d) => std::env::set_var("TEAMX_TENANT_CA_DIR", d),
+            None => std::env::remove_var("TEAMX_TENANT_CA_DIR"),
+        }
+        f();
+        match old_team {
+            Some(t) => std::env::set_var("TEAMX_TENANT_TEAM_ID", t),
+            None => std::env::remove_var("TEAMX_TENANT_TEAM_ID"),
+        }
+        match old_dir {
+            Some(d) => std::env::set_var("TEAMX_TENANT_CA_DIR", d),
+            None => std::env::remove_var("TEAMX_TENANT_CA_DIR"),
+        }
+    }
+
+    #[test]
+    fn tenant_mode_detects_only_with_team_id_and_ca_crt() {
+        // 无 TEAMX_TENANT_TEAM_ID → 非租户模式
+        with_tenant_env(None, None, || {
+            assert!(tenant_ca_dir().is_none());
+            assert!(tenant_ca_material().is_none());
+        });
+        // 有 team id 但目录不存在 → 非租户模式
+        with_tenant_env(Some("t1"), None, || {
+            std::env::set_var(
+                "TEAMX_TENANT_CA_DIR",
+                "/nonexistent-teamx-ca-dir-xyz",
+            );
+            assert!(tenant_ca_dir().is_none());
+            std::env::remove_var("TEAMX_TENANT_CA_DIR");
+        });
+        // 有 team id + ca.crt 但无 ca.key → 能验不能签
+        let d = std::env::temp_dir().join(format!("teamx-tenant-ca-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (ca_crt, ca_key) = generate_ca().unwrap();
+        std::fs::write(d.join("ca.crt"), &ca_crt).unwrap();
+        with_tenant_env(Some("t1"), Some(&d), || {
+            assert!(tenant_ca_dir().is_some());
+            assert!(tenant_ca_material().is_none(), "缺 ca.key 时不能签发");
+        });
+        // ca.key 到位 → 完整签发材料
+        std::fs::write(d.join("ca.key"), &ca_key).unwrap();
+        with_tenant_env(Some("t1"), Some(&d), || {
+            let (crt, key) = tenant_ca_material().expect("应返回签发材料");
+            assert_eq!(crt, ca_crt);
+            assert_eq!(key, ca_key);
+        });
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn per_tenant_ca_is_independent_and_issues_members() {

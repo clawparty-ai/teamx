@@ -201,7 +201,31 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {    // When launched by the 
     // signed by the instance CA, and present the server certificate chain.
     // The server cert is (re)generated to cover any extra SANs (e.g. LAN IP).
     let home = crate::db::teamx_home();
-    let pk = pki::ensure_server_sans(&home, &cmd.san)?;
+    let pk = match crate::pki::tenant_ca_dir() {
+        Some(dir) => {
+            let p = crate::pki::PkiPaths {
+                ca_cert: dir.join("ca.crt"),
+                ca_key: dir.join("ca.key"),
+                server_cert: dir.join("server.crt"),
+                server_key: dir.join("server.key"),
+            };
+            if p.server_cert.is_file() && p.server_key.is_file() {
+                eprintln!(
+                    "teamx serve: tenant mode (team {}), identity from {}",
+                    std::env::var("TEAMX_TENANT_TEAM_ID").unwrap_or_default(),
+                    dir.display()
+                );
+                p
+            } else {
+                eprintln!(
+                    "teamx serve: WARN tenant CA dir {} lacks server.crt/key, falling back to instance PKI",
+                    dir.display()
+                );
+                pki::ensure_server_sans(&home, &cmd.san)?
+            }
+        }
+        None => pki::ensure_server_sans(&home, &cmd.san)?,
+    };
     let tls_config = build_mtls_config(&pk)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -383,6 +407,25 @@ fn build_mtls_config(pk: &pki::PkiPaths) -> Result<Arc<rustls::ServerConfig>, St
         .map_err(|e| format!("parse ca cert: {e}"))?
     {
         roots.add(cert).map_err(|e| format!("add ca to roots: {e}"))?;
+    }
+    // 双 CA 信任包（design/014 §4，weiye-mini 建议）：租户模式下 pk.ca_cert 已是租户 CA，
+    // 再把实例 CA 也加进来 —— 过渡期本地签发的成员证书仍可驗，不中断。
+    if let Some(dir) = crate::pki::tenant_ca_dir() {
+        let home_ca = crate::pki::ca_dir(&crate::db::teamx_home()).join("ca.crt");
+        if home_ca != pk.ca_cert {
+            if let Ok(home_pem) = std::fs::read(&home_ca) {
+                let mut n = 0;
+                for cert in rustls_pemfile::certs(&mut home_pem.as_slice())
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default()
+                {
+                    if roots.add(cert).is_ok() {
+                        n += 1;
+                    }
+                }
+                eprintln!("teamx serve: dual-CA trust bundle (tenant {} + instance, +{n} roots)", dir.display());
+            }
+        }
     }
 
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots))

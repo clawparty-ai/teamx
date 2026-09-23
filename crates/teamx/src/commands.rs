@@ -3097,11 +3097,34 @@ fn mint_invite_cert(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let invitation_id = uuid::Uuid::new_v4().to_string();
     let home = teamx_home_dir();
-    let issued =
-        pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id)).map_err(AppError)?;
-    let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
-        .map_err(|e| AppError(format!("read ca cert: {e}")))?;
-    let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
+    // 租户模式（design/014 §4）：租户 server 签发的成员证书必须走**租户 CA**，
+    // 否则成员拿着实例 CA 的证书连不上只信租户 CA 的 server（真集群抓到）。
+    // 信里嵌的 ca_cert / ca_fingerprint 同步换成租户 CA（成员用它验 server 链）。
+    let (issued, ca_pem, fingerprint) = match pki::tenant_ca_material() {
+        Some((tenant_crt, tenant_key)) => {
+            let issued = pki::issue_member_cert_with_ca(
+                &tenant_crt,
+                &tenant_key,
+                &member_id,
+                role_key,
+                user.map(|(id, _)| id),
+            )
+            .map_err(AppError)?;
+            let fp = pki::ca_fingerprint_of(&tenant_crt).map_err(AppError)?;
+            (issued, tenant_crt, fp)
+        }
+        None => {
+            if std::env::var("TEAMX_TENANT_TEAM_ID").ok().is_some_and(|t| !t.is_empty()) {
+                eprintln!("teamx: WARN tenant mode but no tenant CA key; invite falls back to instance CA");
+            }
+            let issued = pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id))
+                .map_err(AppError)?;
+            let ca_pem = std::fs::read_to_string(pki::ca_dir(&home).join("ca.crt"))
+                .map_err(|e| AppError(format!("read ca cert: {e}")))?;
+            let fingerprint = pki::ca_fingerprint(&home).map_err(AppError)?;
+            (issued, ca_pem, fingerprint)
+        }
+    };
     let now = db::now();
 
     let mut letter = json!({
