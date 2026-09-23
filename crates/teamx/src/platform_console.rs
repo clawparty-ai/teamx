@@ -755,56 +755,103 @@ async fn api_oauth_callback(
 
 /// 平台控制台页面（单文件；平台面：租户 / token / 管理员 / 审计）。
 const INDEX_HTML: &str = r#"<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>Teamx Cloud · 平台控制台</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录 | Teamx Cloud · 平台控制台</title>
 <style>
- :root{--fg:#1f2328;--muted:#6b7280;--bd:#e5e7eb;--bg:#fff;--accent:#7c5cff}
- body{font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--fg);background:#fafafa;margin:0}
- header{padding:14px 20px;border-bottom:1px solid var(--bd);background:var(--bg);display:flex;justify-content:space-between;align-items:center}
- h1{font-size:15px;margin:0} h2{font-size:13px;margin:20px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
- main{padding:20px;max-width:1000px;margin:0 auto}
- table{width:100%;border-collapse:collapse;background:var(--bg);border:1px solid var(--bd);border-radius:8px;overflow:hidden}
- th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--bd);font-size:13px}
- th{background:#f6f7f9;font-weight:600;color:var(--muted)}
- code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
- .btn{border:1px solid var(--bd);background:var(--bg);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px}
- .btn:hover{border-color:var(--accent);color:var(--accent)}
- input{border:1px solid var(--bd);border-radius:6px;padding:6px 8px;font-size:13px;width:260px}
- .muted{color:var(--muted)} .row{display:flex;gap:8px;align-items:center;margin:8px 0}
- .pill{border:1px solid var(--bd);border-radius:999px;padding:0 8px;font-size:12px}
+ *{box-sizing:border-box;margin:0;padding:0}
+ body{font-family:"Microsoft YaHei","PingFang SC",-apple-system,BlinkMacSystemFont,sans-serif;background:#f8f8f8;color:#333;min-height:100vh;display:flex;flex-direction:column}
+ header{height:60px;background:#fff;border-bottom:1px solid #EBEEF5;display:flex;align-items:center;justify-content:space-between;padding:0 20px;box-shadow:0 1px 4px rgba(0,0,0,0.08)}
+ .logo{display:flex;align-items:center;gap:10px}
+ .logo-icon{width:32px;height:32px;background:linear-gradient(135deg,#4A90E5,#357ABD);border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px}
+ .logo-text{font-size:16px;font-weight:600;color:#4A90E5}
+ .logo-sub{font-size:13px;color:#909399;font-weight:400}
+ .head-right{display:flex;align-items:center;gap:10px;font-size:13px;color:#909399}
+ .main{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px}
+ .card{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:48px 56px;text-align:center;max-width:460px;width:100%}
+ .icon{width:72px;height:72px;margin:0 auto 20px;background:#EBF5FF;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:34px}
+ h1{font-size:20px;font-weight:600;margin-bottom:6px}
+ .subtitle{font-size:14px;color:#909399;margin-bottom:28px}
+ .form{display:flex;flex-direction:column;gap:14px;text-align:left}
+ .input{width:100%;padding:10px 14px;border:1px solid #EBEEF5;border-radius:4px;font-size:14px;color:#333;background:#fff;outline:none;transition:border-color 200ms}
+ .input:focus{border-color:#4A90E5;box-shadow:0 0 0 2px rgba(74,144,229,0.15)}
+ .input::placeholder{color:#C0C4CC}
+ .btn{border:none;border-radius:4px;background:#4A90E5;color:#fff;font-size:15px;font-weight:500;cursor:pointer;transition:background 200ms;padding:10px 18px}
+ .btn:hover{background:#357ABD}
+ .btn:active{background:#2A6AA0}
+ .btn-ghost{background:#fff;color:#4A90E5;border:1px solid #4A90E5}
+ .btn-ghost:hover{background:#EBF5FF;color:#357ABD}
+ .btn-sm{font-size:13px;padding:5px 12px;font-weight:400}
+ .btn-danger{background:#F56C6C}
+ .btn-danger:hover{background:#dd5c5c}
+ .divider{display:flex;align-items:center;gap:10px;color:#C0C4CC;font-size:12px;margin:4px 0}
+ .divider::before,.divider::after{content:"";flex:1;border-top:1px solid #EBEEF5}
+ .error{font-size:13px;color:#F56C6C;margin-top:4px;display:none;min-height:18px}
+ .oauth-row{display:flex;flex-direction:column;gap:10px}
+ .app{flex:1;display:block;padding:24px 20px;max-width:1080px;width:100%;margin:0 auto}
+ .panel{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:20px 22px;margin-bottom:18px}
+ .panel h2{font-size:14px;font-weight:600;margin-bottom:12px}
+ .panel h2 .tag{font-size:12px;color:#909399;font-weight:400}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #EBEEF5}
+ th{background:#F2F6FC;font-weight:600;color:#909399;font-size:12px}
+ tr:last-child td{border-bottom:none}
+ code{font-family:"SF Mono","Fira Code",ui-monospace,Menlo,monospace;font-size:12px;background:#F2F6FC;padding:1px 5px;border-radius:3px}
+ .row{display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap}
+ .row .input{width:240px}
+ .row .input.wide{width:340px}
+ .muted{color:#909399;font-size:13px}
+ .pill{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12px;background:#EBF5FF;color:#4A90E5}
+ .pill.green{background:#eef8e8;color:#4e9a2e}
+ .pill.orange{background:#fdf3e7;color:#c07f1f}
+ pre.out{background:#F2F6FC;border-radius:4px;padding:12px;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto}
+ a.link{color:#4A90E5;text-decoration:none}
+ a.link:hover{text-decoration:underline}
 </style></head>
 <body>
-<header><h1>Teamx Cloud · 平台控制台 <span class="muted">(platform plane)</span></h1><span><span id="who" class="muted"></span> <button class="btn" id="logoutBtn" style="display:none" onclick="logout()">退出</button></span></header>
-<main>
-  <div id="login">
-    <h2>平台登录</h2>
-    <div class="row"><input id="uname" placeholder="用户名"><input id="password" type="password" placeholder="密码"><button class="btn" onclick="loginPassword()">登录</button></div>
-    <div class="row"><input id="token" placeholder="launch token（启动时打印，运维）"><button class="btn" onclick="login()">运维登录</button></div>
-    <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span> <a class="btn" id="oauthBtn" style="display:none;text-decoration:none" href="/api/oauth/start">GitHub 登录</a></div>
+<header><div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Cloud</span><span class="logo-sub">平台控制台</span></div><div class="head-right"><span id="who"></span><button class="btn btn-sm" id="logoutBtn" style="display:none" onclick="logout()">退出</button></div></header>
+<div class="main" id="loginWrap">
+  <div class="card" id="login">
+    <div class="icon">☁️</div>
+    <h1>平台登录</h1>
+    <div class="subtitle">Teamx Cloud · 平台控制台</div>
+    <div class="form">
+      <input class="input" id="uname" placeholder="用户名" autocomplete="username">
+      <input class="input" id="password" type="password" placeholder="密码" autocomplete="current-password">
+      <button class="btn" onclick="loginPassword()">登 录</button>
+      <div class="error" id="loginErr"></div>
+      <div class="divider">或</div>
+      <input class="input" id="token" placeholder="launch token（启动时打印，运维）">
+      <button class="btn btn-ghost" onclick="login()">运维登录</button>
+      <div class="oauth-row"><a class="btn btn-ghost" id="oauthBtn" style="display:none;text-decoration:none;text-align:center" href="/api/oauth/start">GitHub 登录</a></div>
+      <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
+    </div>
   </div>
+</div>
 
-  <div id="app" style="display:none">
-    <h2>租户（project）</h2>
-    <div class="row"><input id="team" placeholder="team id"><button class="btn" onclick="createTenant()">创建租户</button></div>
-    <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th>server 镜像</th><th></th></tr></thead><tbody id="tenants"></tbody></table>
-
-    <h2>我的团队（自助，O-1(a) 全新开始）</h2>
+<div class="app" id="app" style="display:none">
+  <div class="panel"><h2>我的团队 <span class="tag">自助 · O-1(a) 全新开始</span></h2>
     <div class="muted" id="quota"></div>
-    <div class="row"><input id="myName" placeholder="团队名"><button class="btn" onclick="createMyTeam()">创建团队</button></div>
+    <div class="row"><input class="input" id="myName" placeholder="团队名"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button></div>
     <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th></th></tr></thead><tbody id="mine"></tbody></table>
-    <div class="row"><input id="bsTeam" placeholder="team id"><input id="bsUrl" placeholder="租户 endpoint（O-5，形如 https://host:5783）" style="width:340px"><button class="btn" onclick="bootstrapTeam()">初始化团队</button></div>
-    <div class="muted">初始化后把 owner 邀请函导入本地（`teamx team import`）即成为该团队 owner：</div>
-    <pre id="letterOut" class="muted" style="white-space:pre-wrap;word-break:break-all"></pre>
-
-    <h2>租户内成员操作（经 service 车道 §6.5）</h2>
-    <div class="row"><input id="invTeam" placeholder="team id"><input id="invRole" placeholder="role: 描述" value="contributor: 成员"><button class="btn" onclick="invite()">邀请成员</button></div>
-    <div class="row"><input id="pvTeam" placeholder="team id"><input id="pvMember" placeholder="member id"><button class="btn" onclick="provision()">一键 provision</button></div>
-    <pre id="svcOut" class="muted"></pre>
-
-    <h2>平台 token</h2><table><thead><tr><th>id</th><th>state</th><th>created</th><th>redeemed_by</th></tr></thead><tbody id="tokens"></tbody></table>
-    <h2>平台管理员</h2><table><thead><tr><th>user</th><th>granted_at</th><th>via</th></tr></thead><tbody id="admins"></tbody></table>
-    <h2>平台审计（独立于租户台账）</h2><table><thead><tr><th>at</th><th>actor</th><th>action</th><th>detail</th></tr></thead><tbody id="audit"></tbody></table>
+    <div class="row"><input class="input" id="bsTeam" placeholder="team id"><input class="input wide" id="bsUrl" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam()">初始化团队</button></div>
+    <div class="muted">初始化后把 owner 邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner：</div>
+    <pre class="out muted" id="letterOut"></pre>
   </div>
-</main>
+
+  <div class="panel"><h2>租户 <span class="tag">project（运维全量）</span></h2>
+    <div class="row"><input class="input" id="team" placeholder="team id"><button class="btn btn-sm" onclick="createTenant()">创建租户</button></div>
+    <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th>server 镜像</th><th></th></tr></thead><tbody id="tenants"></tbody></table>
+  </div>
+
+  <div class="panel"><h2>租户内成员操作 <span class="tag">经 service 车道 §6.5</span></h2>
+    <div class="row"><input class="input" id="invTeam" placeholder="team id"><input class="input" id="invRole" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="invite()">邀请成员</button></div>
+    <div class="row"><input class="input" id="pvTeam" placeholder="team id"><input class="input" id="pvMember" placeholder="member id"><button class="btn btn-sm" onclick="provision()">一键 provision</button></div>
+    <pre class="out muted" id="svcOut"></pre>
+  </div>
+
+  <div class="panel"><h2>平台 token</h2><table><thead><tr><th>id</th><th>state</th><th>created</th><th>redeemed_by</th></tr></thead><tbody id="tokens"></tbody></table></div>
+  <div class="panel"><h2>平台管理员</h2><table><thead><tr><th>user</th><th>granted_at</th><th>via</th></tr></thead><tbody id="admins"></tbody></table></div>
+  <div class="panel"><h2>平台审计 <span class="tag">独立于租户台账</span></h2><table><thead><tr><th>at</th><th>actor</th><th>action</th><th>detail</th></tr></thead><tbody id="audit"></tbody></table></div>
+</div>
 <script>
 const q=new URLSearchParams(location.search);
 if(q.get('token')){fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:q.get('token')})}).then(()=>{history.replaceState({},'',location.pathname);boot()})}
@@ -812,21 +859,22 @@ else boot();
 async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.json()}
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
+function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
 async function boot(){
   const me=await jget('/api/me');
-  if(!me.ok){document.getElementById('login').style.display='block';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';document.getElementById('oauthBtn').style.display=me.github_oauth?'inline':'none';return}
-  document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';
+  if(!me.ok){document.getElementById('loginWrap').style.display='flex';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';document.getElementById('oauthBtn').style.display=me.github_oauth?'block':'none';return}
+  document.getElementById('loginWrap').style.display='none';document.getElementById('app').style.display='block';
   document.getElementById('who').textContent=me.who||'';
-  document.getElementById('logoutBtn').style.display='inline';
+  document.getElementById('logoutBtn').style.display='inline-block';
   await loadMine();await loadTenants();await loadPlatform();
 }
-async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else alert(r.error||'登录失败')}
-async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else alert(r.error||'登录失败')}
+async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else loginFail(r.error)}
+async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
-async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok)return;document.getElementById('quota').textContent=`配额：${d.used}/${d.quota}`;document.getElementById('mine').innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td><button class="btn" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=4 class="muted">暂无团队，去上面创建一个</td></tr>'}catch(e){}}
+async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok){document.getElementById('quota').textContent='';document.getElementById('mine').innerHTML='';return}document.getElementById('quota').textContent=`配额：${d.used}/${d.quota}`;document.getElementById('mine').innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=4 class="muted">暂无团队，去上面创建一个</td></tr>'}catch(e){}}
 async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}document.getElementById('bsTeam').value=r.team_id;await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
 async function bootstrapTeam(){const team=document.getElementById('bsTeam').value.trim();const server_url=document.getElementById('bsUrl').value.trim();if(!team||!server_url){alert('team id 和 endpoint 都要填');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
-async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
+async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
  document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${x.id.slice(0,8)}</code></td><td><span class="pill">${x.state}</span></td><td class="muted">${x.created_at}</td><td>${x.redeemed_by||'—'}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
  document.getElementById('admins').innerHTML=(a.admins||[]).map(x=>`<tr><td>${x.user_name}</td><td class="muted">${x.granted_at}</td><td class="muted">${x.granted_via}</td></tr>`).join('')||'<tr><td colspan=3 class="muted">无</td></tr>';
