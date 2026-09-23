@@ -111,9 +111,13 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 fn cookie_token(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
-    raw.split(';')
-        .map(str::trim)
+    // 注意：HTTP/2 下浏览器（Firefox）可能把 cookie 拆成多个 `cookie` 字段发送；
+    // 只读第一个（headers.get）会丢 token → 已登录用户被踢 401。必须遍历全部。
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|raw| raw.split(';').map(str::trim))
         .find_map(|kv| kv.strip_prefix("teamx_platform_token=").map(str::to_string))
 }
 
@@ -907,6 +911,27 @@ mod tests {
             context: None,
             oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    #[test]
+    fn cookie_token_reads_all_cookie_fields() {
+        use axum::http::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        // 单字段多 cookie
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("a=1; teamx_platform_token=TOK123; b=2"),
+        );
+        assert_eq!(cookie_token(&h).as_deref(), Some("TOK123"));
+        // HTTP/2 拆分多字段（Firefox 行为）：token 在第二个字段
+        let mut h2 = HeaderMap::new();
+        h2.insert(header::COOKIE, HeaderValue::from_static("oc_locale=en"));
+        h2.append(header::COOKIE, HeaderValue::from_static("teamx_platform_token=TOK456"));
+        assert_eq!(cookie_token(&h2).as_deref(), Some("TOK456"));
+        // 无关 cookie → None
+        let mut h3 = HeaderMap::new();
+        h3.insert(header::COOKIE, HeaderValue::from_static("a=1"));
+        assert_eq!(cookie_token(&h3), None);
     }
 
     #[test]
