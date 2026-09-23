@@ -819,7 +819,11 @@ pub fn tenant_ca_audit(
     let mut server_rows: Vec<Value> = Vec::new();
     let mut server_note = "platform rows only (--server-url not given)".to_string();
     if let Some(url) = server_url {
-        match tenant_service_post(conn, team_id, url, kubeconfig, context, "issued.list", json!({})) {
+        // 按 CA 过滤（server 侧 team id 与平台侧本就不同，用 CA 这一共同语言）。
+        match tenant_service_post(
+            conn, team_id, url, kubeconfig, context, "issued.list",
+            json!({ "ca": current_ca }),
+        ) {
             Ok(v) => {
                 server_rows = v
                     .get("issued")

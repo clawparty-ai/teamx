@@ -1270,6 +1270,27 @@ fn dispatch_platform_console(
     {
         return Err("platform-console call must not carry `member_id` (actor is resolved server-side)".to_string());
     }
+    // issued.list 是只读台账：允许只带 ca 不带 team —— 平台按 CA 分代合并，
+    // 不关心 server 侧的 team 划分（server 侧 team id 与平台侧本就不同）。
+    // 认证靠租户 CA 签的 service 证书本身；该命令不需要 actor，不做 owner 解析。
+    // 其余方法仍强制 team（下不变）。
+    if method == "issued.list" && args.get("team").is_none() {
+        // 直接调台账（不进 dispatch）：该命令不需要 actor；虚构 member CN 反而会被
+        // 座位检查拦下。认证已由外层 mTLS（租户 CA 签的 service 证书）完成。
+        let ca = args.get("ca").and_then(Value::as_str).unwrap_or("");
+        let _ = conn.execute(
+            "INSERT INTO platform_audit (at, actor, action, detail) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                crate::db::now(),
+                format!("service:platform-console:{instance}"),
+                "tenant.rpc",
+                format!("ca={ca} method=issued.list (no team scope)"),
+            ],
+        );
+        let rows = crate::issued::list(conn, None, if ca.is_empty() { None } else { Some(ca) })
+            .map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({ "ok": true, "issued": rows }));
+    }
     let team = args
         .get("team")
         .and_then(Value::as_str)
