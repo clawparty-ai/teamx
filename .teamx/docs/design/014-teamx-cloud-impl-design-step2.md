@@ -161,6 +161,7 @@
 | 7 升级/回滚 | ⬜ 未实现 | 镜像同源构建已就绪（`75971a4`）；滚动升级/回滚断言未写 |
 | 8 bootstrap 一次性 token | ✅ 已实现 | `platform bootstrap-token/redeem/revoke`（`4d192ff`）+ `tests/platform-test.sh` 7 断言 |
 | §8 迁移 ①②③ 成员证书换发 | ✅ 已实现 | `teamx tenant reissue-members` + RPC + 平台控制台路由（`98f8059`）；E2E 断言换发信 CA **DER 指纹 == 租户 CA**（tenant N8）+ 控制台入口（platform-console C8） |
+| 🖥️完整测试环境（台式机 k3s + cloud console，2026-09-23） | ✅ 已实现并验证 | 控制台 systemd 常驻（`scripts/teamx-console.service`，DB 持久化 `~/teamx-console`，绑 0.0.0.0:9540）；Mac 局域网访问 + 密码登录。**真集群全链**：建 team → namespace + server Pod 1/1 + PVC Bound + Service → bootstrap → owner 信（租户 CA）→ import → active/owner。修 2 真机问题：①控制台只认 CLI flag、忽略 `TEAMX_KUBECONFIG` env（k3s 的 kubectl 是包装器，缺省读 /etc/rancher 权限不足）→ 建租户必失败；②arm64/x86 二进制混用（Exec format error，本机跨架构拷错）。<br>**O-5 实测证据（重要）**：租户 server 证书 SAN 只含集群内 DNS + localhost/127.0.0.1，**站外按 LAN IP 拨号 TLS 校验失败**（`certificate not valid for name "192.168.0.229"`）。控制台与集群同机时 loopback port-forward 可用（127.0.0.1 在 SAN 内）；跨机访问必须走开放项 1 裁决的「每租户独立端点」（或把可达地址纳入签发 SAN）—— 这为 O-5 主选 (d) 提供了直接证据。 |
 | 🖥️Phase 3+4（2026-09-23） | ✅ 已实现并验证 | Phase 3：OAuth 真流程（start 302→callback 换 token→github_id 锚定→会话→回 /；state 单次+10分钟；端点可覆盖；secret 不落日志）；mock E2E G1-G5（不断网）+ 单测。Phase 4：我的团队区（配额/创建/回收/初始化+信展示）+ GitHub 登录按钮。单测 404。真 GitHub 联调待 App+网络（台式机不通 github.com）。 |
 | 🖥️Phase 2 真集群 headline（2026-09-23） | ✅ 已实现并验证 | 控制台登录→my/teams 自助建租户（真 k3s）→service 车道 bootstrap（首 team+owner 邀请，租户 CA 信）→owner import→**active**。修 2 真机问题：service 身份 CN 双前缀/统一 platform-console；issued.list 按 team 查对不上（改按 CA+免 team）；RPC 信封 data 层。D1-D6（隔离/403/配额）stub+真机双绿。 |
 | 🖥️ 云控制台用户 Phase 1（2026-09-23） | ✅ 已实现并验证 | 密码登录（PBKDF2/60万轮，ring 无新依赖）+ 7 天会话 + 后台用户管理（建/改密踢会话/禁用/列表无 hash）；控制台守卫接受 launch token 或有效会话 + 登出 + 登录页；E2E C9/C9b；单测 400。GitHub OAuth（Phase 3）与用户归属 team（Phase 2）未做。 |
@@ -247,3 +248,6 @@ weiye 给出的三选一（其倾向：**(c) 为 v1 默认 + (a) 作为显式选
     保留端到端 mTLS"——service 车道可直接拨该独立端点（平台持租户 CA 签的 service 证书，
     端到端 mTLS 不变），**无需 ClusterIP 可达**。这是目前最顺的路径，待 owner 确认是否采纳为 O-5 主选。
     **未裁决前 service 车道在真集群不可达**，stub E2E 的 C7 负例保持 fail-closed。
+    **2026-09-23 实测补充**：租户 server 证书 SAN = `teamx-serve-<id>.<ns>.svc` + localhost + 127.0.0.1；
+    站外（含局域网 IP）拨号 TLS 校验失败。同机 loopback port-forward 可用（演示环境即此路径）；
+    跨机必须走独立端点（(d)）或把可达地址纳入签发 SAN —— 建议 (d) 为 v1 主选。
