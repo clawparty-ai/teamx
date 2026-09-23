@@ -214,6 +214,24 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {    // When launched by the 
         db_path.display()
     );
     rt.block_on(async {
+        // 就绪文件（design/014 §3 真集群修正）：mTLS 下 kubelet 的 HTTPS 探针没有
+        // 客户端证书、握手必失败，Pod 永远 0/1。改为：端口能 TCP 连上即写就绪文件，
+        // manifest 用 exec 探针读它。路径 TEAMX_HEALTH_FILE（默认 /data/.teamx-ready，
+        // /data 是 PVC；容器根文件系统只读，只能写挂载卷）。
+        let health_path = health_file_path();
+        let _ = std::fs::remove_file(&health_path); // 清上次残留（crash 重启语义）
+        {
+            let hp = health_path.clone();
+            tokio::spawn(async move {
+                for _ in 0..600 {
+                    if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                        let _ = tokio::fs::write(&hp, "ok").await;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            });
+        }
         // Start the idle-team nudge task: periodically write a `system.nudge`
         // ledger event for teams that have gone silent with an unfinished goal,
         // and fan it out to live WS connections. Offline members get it on the
@@ -240,6 +258,11 @@ pub fn serve(cmd: &ServeCmd) -> Result<(), String> {    // When launched by the 
             .await
             .map_err(|e| format!("server error: {e}"))
     })
+}
+
+/// 就绪文件路径：`TEAMX_HEALTH_FILE`，默认 `/data/.teamx-ready`（租户 server 的 PVC）。
+pub fn health_file_path() -> String {
+    std::env::var("TEAMX_HEALTH_FILE").unwrap_or_else(|_| "/data/.teamx-ready".to_string())
 }
 
 /// Background task: periodically nudge teams whose goal is unfinished but which
@@ -1387,6 +1410,18 @@ mod platform_console_lane_tests {
         ] {
             assert!(!platform_console_method_allowed(no), "{no} 必须被拒（fail-closed）");
         }
+    }
+}
+
+#[cfg(test)]
+mod health_file_tests {
+    #[test]
+    fn health_file_path_default_and_override() {
+        std::env::remove_var("TEAMX_HEALTH_FILE");
+        assert_eq!(crate::serve::health_file_path(), "/data/.teamx-ready");
+        std::env::set_var("TEAMX_HEALTH_FILE", "/tmp/probe-ready");
+        assert_eq!(crate::serve::health_file_path(), "/tmp/probe-ready");
+        std::env::remove_var("TEAMX_HEALTH_FILE");
     }
 }
 

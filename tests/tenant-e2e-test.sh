@@ -198,6 +198,15 @@ grep -q "kind: PodDisruptionBudget" "$Y1" || fail "N9: 缺 PDB"
 grep -q "maxUnavailable: 0" "$Y1" || fail "N9: PDB 未禁止自愿中断"
 pass "N9 租户 server 调度保护（server 档 PriorityClass + PDB maxUnavailable=0）"
 
+# N10: 租户 server 可达性（真集群修正：Service + exec 探针；mTLS 下 HTTPS 探针必失败）
+Y1="$WORK/tenant-manifests.yaml"
+grep -q "kind: Service" "$Y1" || fail "N10: 缺 Service（服务发现）"
+grep -q "teamx-serve-" "$Y1" | grep -q "name:" || true
+grep -q "targetPort: mtls" "$Y1" || fail "N10: Service 未指到 mtls 端口"
+grep -q "/data/.teamx-ready" "$Y1" || fail "N10: 缺 exec 探针（就绪文件）"
+if grep -q "scheme: HTTPS" "$Y1"; then fail "N10: mTLS 下不得用 HTTPS 探针"; fi
+pass "N10 租户 server 可达性（Service + exec 探针，无 HTTPS 探针）"
+
 # N5/N6: destroy 清单 + 清空
 : > "$KUBECTL_LOG"
 D="$("$TEAMX" --json tenant destroy --team "$TEAM_ID" 2>&1)" || fail "N5: destroy 失败: $D"

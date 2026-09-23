@@ -618,12 +618,14 @@ spec:
           ports:
             - name: mtls
               containerPort: {SERVER_PORT}
+          # mTLS 下 kubelet 的 HTTPS 探针无客户端证书、握手必失败（真集群抓到 Pod 永远 0/1）。
+          # server 在端口能连上后写 TEAMX_HEALTH_FILE（默认 /data/.teamx-ready），探针只读文件。
           readinessProbe:
-            httpGet: {{ path: /health, port: mtls, scheme: HTTPS }}
+            exec: {{ command: ["test", "-f", "/data/.teamx-ready"] }}
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: {{ path: /health, port: mtls, scheme: HTTPS }}
+            exec: {{ command: ["test", "-f", "/data/.teamx-ready"] }}
             initialDelaySeconds: 20
             periodSeconds: 30
           resources:
@@ -641,6 +643,28 @@ spec:
           persistentVolumeClaim: {{ claimName: {pvc} }}
         - name: ca
           secret: {{ secretName: {ca_secret} }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {deploy}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/kind: tenant-server-svc
+spec:
+  # 服务发现名与平台 service 车道拨号一致：
+  # https://teamx-serve-<id>.<ns>.svc:<port>（design/014 §6.5）。
+  # 注意：站外（operator 本机）的平台控制台直连不到 ClusterIP，
+  # 需经 kube-apiserver proxy（开放项 O-5）。
+  selector:
+    teamx.io/tenant-server: "{team_id}"
+  ports:
+    - name: mtls
+      port: {SERVER_PORT}
+      targetPort: mtls
+      protocol: TCP
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -986,6 +1010,11 @@ mod tests {
         assert!(y.contains("priorityClassName: teamx-tenant-server"));
         assert!(y.contains("kind: PodDisruptionBudget"));
         assert!(y.contains("maxUnavailable: 0"), "单副本控制面不得被自愿中断驱逐");
+        // 真集群修正：Service（服务发现）+ exec 探针（mTLS 下 HTTPS 探针必失败）
+        assert!(y.contains("kind: Service"), "tenant server Service");
+        assert!(y.contains("teamx.io/tenant-server: \"t1\""), "Service selector");
+        assert!(!y.contains("scheme: HTTPS"), "mTLS 下不得用 HTTPS 探针");
+        assert!(y.contains("/data/.teamx-ready"), "exec 探针读就绪文件");
         // 加固
         assert!(y.contains("readOnlyRootFilesystem: true"));
         assert!(y.contains("seccompProfile"));
