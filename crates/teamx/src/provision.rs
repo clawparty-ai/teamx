@@ -884,7 +884,14 @@ pub fn create_my_tenant(
     )
     .map_err(|e| format!("db: {e}"))?;
     // 租户 infra（复用 operator 路径；kubeconfig 来自控制台/CLI 环境）。
-    let tenant = create_tenant(conn, &team_id, server_image, kubeconfig, context)?;
+    // 失败补偿：infra 建不起来时删掉刚建的空壳 team（否则残留无租户的孤儿 team 行）。
+    let tenant = match create_tenant(conn, &team_id, server_image, kubeconfig, context) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = conn.execute("DELETE FROM teams WHERE id = ?1", params![team_id]);
+            return Err(e);
+        }
+    };
     crate::platform::tag_tenant_owner(conn, &team_id, user_id)?;
     Ok(json!({
         "ok": true, "team_id": team_id, "team_name": name,
