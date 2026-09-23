@@ -161,6 +161,7 @@
 | 7 升级/回滚 | ⬜ 未实现 | 镜像同源构建已就绪（`75971a4`）；滚动升级/回滚断言未写 |
 | 8 bootstrap 一次性 token | ✅ 已实现 | `platform bootstrap-token/redeem/revoke`（`4d192ff`）+ `tests/platform-test.sh` 7 断言 |
 | §8 迁移 ①②③ 成员证书换发 | ✅ 已实现 | `teamx tenant reissue-members` + RPC + 平台控制台路由（`98f8059`）；E2E 断言换发信 CA **DER 指纹 == 租户 CA**（tenant N8）+ 控制台入口（platform-console C8） |
+| 🖥️Phase 2 真集群 headline（2026-09-23） | ✅ 已实现并验证 | 控制台登录→my/teams 自助建租户（真 k3s）→service 车道 bootstrap（首 team+owner 邀请，租户 CA 信）→owner import→**active**。修 2 真机问题：service 身份 CN 双前缀/统一 platform-console；issued.list 按 team 查对不上（改按 CA+免 team）；RPC 信封 data 层。D1-D6（隔离/403/配额）stub+真机双绿。 |
 | 🖥️ 云控制台用户 Phase 1（2026-09-23） | ✅ 已实现并验证 | 密码登录（PBKDF2/60万轮，ring 无新依赖）+ 7 天会话 + 后台用户管理（建/改密踢会话/禁用/列表无 hash）；控制台守卫接受 launch token 或有效会话 + 登出 + 登录页；E2E C9/C9b；单测 400。GitHub OAuth（Phase 3）与用户归属 team（Phase 2）未做。 |
 | 🖥️ O-2 真合并审计（2026-09-23，真集群 service 车道） | ✅ 已实现并验证 | 平台行（server 证 + service 证）与租户 server 行（租户模式 invite）经 mTLS 合并：`merged 1 server rows`，分代活数 plat/srv 归因正确。修了 3 个真机问题：CN 双前缀、CLI 身份 server 不认（统一 platform-console）、issued.list 按 team 查对不上（改按 CA + 免 team 分支）、RPC 信封 data 层。轮换 v1 的 O-2 前置已就绪（owner 附注满足，可进入轮换实现）。 |
 | 🖥️ 租户 server 真用租户 CA（2026-09-23，真集群 mTLS 四对照） | ✅ 已实现并验证 | 起因：真集群发现 server 跑自生成实例 PKI、Secret 里租户 CA 装饰化。修：`pki::tenant_ca_dir/material` + serve 租户身份/双信任包 + `mint_invite` 租户签发（`dd9aebb`）。真集群证明：① server 出示链 issuer=租户 CA；② 租户 CA 客户端证书握手 OK；③ 实例 CA 证书亦 OK（双包）；④ 随机 CA 被拒（alert unknown ca）；⑤ server 现场 invite 的信 CA 指纹 == 租户 CA。 |
