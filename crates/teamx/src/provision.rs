@@ -823,8 +823,12 @@ pub fn tenant_ca_audit(
             json!({ "ca": current_ca }),
         ) {
             Ok(v) => {
+                // RPC 信封：{"ok":true,"data":<dispatch 结果>}，issued 在 data 内；
+                // 兼容直调形状（防后继重构改信封）。
                 server_rows = v
-                    .get("issued")
+                    .get("data")
+                    .and_then(|d| d.get("issued"))
+                    .or_else(|| v.get("issued"))
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
