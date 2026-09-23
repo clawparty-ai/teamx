@@ -781,11 +781,9 @@ pub fn tenant_service_post(
         &ca_fp, crate::pki::SERVICE_CERT_DAYS, crate::issued::local_issuer(),
     )?;
     let url = server_url.to_string();
-    // service 车道要求 args 带 team（租户键；actor 在 server 侧解析，拒绝 member_id 伪装）。
-    let mut args = args;
-    if args.get("team").is_none() {
-        args["team"] = json!(team_id);
-    }
+    // 注意：不要在这里自动补 team —— 合并审计走的就是"无 team 按 CA 查"分支，
+    // 自动补会把请求推回 team 路径（server 侧 team id 与平台侧本就不同）。
+    // 需要 team 作用域的方法由调用方显式传。
     let body = json!({ "method": method, "args": args }).to_string();
     std::thread::spawn(move || -> Result<Value, String> {
         let mtls = crate::tunnel_client::material_from_pem(
