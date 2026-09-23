@@ -92,9 +92,9 @@ if K get pod -n "$NS" -l teamx.io/managed=true --no-headers 2>/dev/null | grep -
   OUT="$(K exec -n "$NS" deploy/nonexistent -- true 2>&1 || true)"
   : # 容器内探测需要镜像内有 curl/nc；此处只做策略存在性 + CNI 声明检查
 fi
-CNI_NAME="$(K get pods -n kube-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -Ei 'calico|cilium|kindnet|kube-router|flannel' | head -1)"
+CNI_NAME="$(K get pods -n kube-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -Ei 'calico|cilium|kindnet|kube-router|flannel' | head -1 || true)"
 # k3s 把 flannel 跑在进程内（无 DaemonSet Pod），用节点注解兜底检测
-FLANNEL_NODE="$(K get nodes -o jsonpath='{.items[*].metadata.annotations}' 2>/dev/null | grep -o 'flannel\.alpha\.coreos\.com' | head -1)"
+FLANNEL_NODE="$(K get nodes -o jsonpath='{.items[*].metadata.annotations}' 2>/dev/null | grep -o 'flannel\.alpha\.coreos\.com' | head -1 || true)"
 echo "  [info] CNI=$CNI_NAME flannel_node=${FLANNEL_NODE:-none}"
 case "$CNI_NAME|$FLANNEL_NODE" in
   *flannel*)
