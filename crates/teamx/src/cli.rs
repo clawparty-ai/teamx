@@ -2307,6 +2307,37 @@ pub enum GitCmd {
     },
 }
 
+// 云控制台用户 Phase 1（密码登录）。
+#[derive(Subcommand, Debug)]
+pub enum PlatformUserCmd {
+    /// Create a user (admin sets the initial password)
+    Create {
+        /// login name (unique)
+        #[arg(long)]
+        name: String,
+        /// initial password (min 8 chars)
+        #[arg(long)]
+        password: String,
+    },
+    /// Set (reset) a user's password (revokes all their sessions)
+    SetPassword {
+        /// user id
+        #[arg(long)]
+        user_id: String,
+        /// new password (min 8 chars)
+        #[arg(long)]
+        password: String,
+    },
+    /// Disable a user (rejects login + sessions)
+    Disable {
+        /// user id
+        #[arg(long)]
+        user_id: String,
+    },
+    /// List users (never prints password hashes)
+    List,
+}
+
 /// 平台面（design/014 §6/§7）。
 #[derive(Subcommand, Debug)]
 pub enum PlatformCmd {
@@ -2350,6 +2381,9 @@ pub enum PlatformCmd {
         #[arg(long)]
         limit: Option<i64>,
     },
+    /// Cloud-console users (Phase 1: password login)
+    #[command(subcommand)]
+    User(PlatformUserCmd),
     /// Start the platform-plane web console (tenants / tokens / admins / audit;
     /// tenant member ops go through the platform-console service lane)
     Console {

@@ -146,6 +146,33 @@ echo "$R8" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok
 grep -q "teamx.io/kind: rotation-letter" "$KUBECTL_STATE/last-apply.yaml" || fail "C8: 未投递换发信 Secret"
 pass "C8 平台控制台触发成员证书换发（租户 CA 签发 + Secret 投递）"
 
+# C9: 用户密码登录全链（Phase 1）
+U="$("$TEAMX" --json platform user create --name ops --password 's3cret-pw!' 2>&1)" || fail "C9: 建用户失败: $U"
+USER_ID="$(echo "$U" | python3 -c 'import sys,json;print(json.load(sys.stdin)["user_id"])')"
+[ -n "$USER_ID" ] || fail "C9: 无 user_id"
+# 用户列表不含 hash
+"$TEAMX" --json platform user list 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['users'][0]['display_name']=='ops',d;assert 'password_hash' not in str(d),d" || fail "C9: 用户列表异常"
+# 密码登录 → 会话 cookie → API 可用
+$C -c /tmp/teamx-platcon-ucookie -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"ops","password":"s3cret-pw!"}' "$BASE/api/login/password" -o /dev/null
+grep -q "teamx_platform_token" /tmp/teamx-platcon-ucookie || fail "C9: 未下发会话 cookie"
+ME="$($C -b /tmp/teamx-platcon-ucookie "$BASE/api/me")"
+echo "$ME" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and d.get('who','').startswith('user:ops'),d" || fail "C9: 会话身份不对: $ME"
+$C -b /tmp/teamx-platcon-ucookie "$BASE/api/tenants" | python3 -c "import json,sys;assert json.load(sys.stdin)['ok']" || fail "C9: 会话调 API 失败"
+# 错密码 → 401（统一口径）
+CODE="$($C -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"ops","password":"wrong-wrong"}' "$BASE/api/login/password")"
+[ "$CODE" = "401" ] || fail "C9: 错密码应 401，实际 $CODE"
+# 登出 → 会话失效
+$C -b /tmp/teamx-platcon-ucookie -X POST "$BASE/api/logout" -o /dev/null
+CODE="$($C -b /tmp/teamx-platcon-ucookie -o /dev/null -w '%{http_code}' "$BASE/api/me")"
+[ "$CODE" = "401" ] || fail "C9: 登出后会话应失效，实际 $CODE"
+pass "C9 用户密码登录（建用户/登录/会话/登出）"
+# C9b: 禁用 → 登录与会话双拒
+"$TEAMX" --json platform user disable --user-id "$USER_ID" >/dev/null 2>&1 || fail "C9b: 禁用失败"
+CODE="$($C -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"ops","password":"s3cret-pw!"}' "$BASE/api/login/password")"
+[ "$CODE" = "401" ] || fail "C9b: 禁用后登录应 401，实际 $CODE"
+pass "C9b 禁用用户（登录拒绝）"
+
 # C6: 回收
 D="$($C -b /tmp/teamx-platcon-cookie -X DELETE "$BASE/api/tenants/$TEAM_ID")"
 echo "$D" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok'),d" || fail "C6: 回收失败: $D"

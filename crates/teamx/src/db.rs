@@ -467,6 +467,30 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            created_at     TEXT NOT NULL
          );",
     )?;
+    // 云控制台用户（Phase 1：密码登录；GitHub 见 Phase 3）。
+    // password_hash 格式 `pbkdf2-sha256$<iter>$<salt-b64>$<hash-b64>`（ring，无新依赖；
+    // 前缀版本化，将来可迁 argon2id 而不断旧行）。github_id 为空 = 纯密码用户。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS platform_users (
+           id            TEXT PRIMARY KEY,
+           display_name  TEXT NOT NULL,
+           github_id     TEXT NOT NULL DEFAULT '',
+           password_hash TEXT NOT NULL DEFAULT '',
+           disabled_at   TEXT,
+           created_at    TEXT NOT NULL
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_github
+           ON platform_users(github_id) WHERE github_id != '';
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_name
+           ON platform_users(display_name);
+         CREATE TABLE IF NOT EXISTS platform_sessions (
+           token      TEXT PRIMARY KEY,
+           user_id    TEXT NOT NULL REFERENCES platform_users(id) ON DELETE CASCADE,
+           created_at TEXT NOT NULL,
+           expires_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_platform_sessions_user ON platform_sessions(user_id);",
+    )?;
     // 签发台账 O-2（design/014 §4）：server 能按 CA 分代枚举自己签发的有效证书。
     // 所有经 CA 签发的证书（member/server/service）都在签发处落一行；
     // 平台库记平台侧签发，租户 server 库记租户侧签发，ca-audit 合并两边。

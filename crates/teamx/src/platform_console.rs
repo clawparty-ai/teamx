@@ -63,6 +63,8 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/login", post(api_login))
+        .route("/api/login/password", post(api_login_password))
+        .route("/api/logout", post(api_logout))
         .route("/api/me", get(api_me))
         .route("/api/tenants", get(api_tenants).post(api_tenant_create))
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
@@ -109,12 +111,32 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
         .find_map(|kv| kv.strip_prefix("teamx_platform_token=").map(str::to_string))
 }
 
-/// 平台面鉴权：cookie 必须等于 launch token（fail-closed）。
+/// 平台面鉴权（fail-closed）：cookie 是 launch token（运维）**或**有效的用户会话（Phase 1）。
+/// 先比 launch token（无 DB 开销），再验会话（查库 + 过期/禁用检查）。
 #[allow(clippy::result_large_err)] // Response 作为错误值直接返回，避免多层包装
 fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
     match cookie_token(headers) {
         Some(t) if t == ctx.launch_token => Ok(()),
-        _ => Err((StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "unauthorized"}))).into_response()),
+        Some(t) => match with_conn(ctx, |c| crate::platform::verify_session(c, &t)) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(unauth()),
+        },
+        None => Err(unauth()),
+    }
+}
+
+fn unauth() -> Response {
+    (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "unauthorized"}))).into_response()
+}
+
+/// 当前身份（展示 + 审计用）：运维 launch token 或已登录用户。
+fn identity(ctx: &Ctx, headers: &HeaderMap) -> String {
+    match cookie_token(headers) {
+        Some(t) if t == ctx.launch_token => "operator(launch-token)".to_string(),
+        Some(t) => with_conn(ctx, |c| crate::platform::verify_session(c, &t))
+            .map(|v| format!("user:{}", v["display_name"].as_str().unwrap_or("?")))
+            .unwrap_or_else(|_| "unknown".to_string()),
+        None => "anonymous".to_string(),
     }
 }
 
@@ -143,12 +165,64 @@ async fn api_login(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Resp
     resp
 }
 
+/// 密码登录（Phase 1）：成功发会话 cookie（7 天），失败统一 401（防枚举，不写库）。
+async fn api_login_password(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Response {
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+    let password = body.get("password").and_then(Value::as_str).unwrap_or("");
+    let user = match with_conn(&ctx, |c| crate::platform::authenticate(c, name, password)) {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "invalid credentials"})))
+                .into_response()
+        }
+    };
+    let uid = user["user_id"].as_str().unwrap_or("").to_string();
+    let uname = user["display_name"].as_str().unwrap_or("").to_string();
+    let sess = match with_conn(&ctx, |c| crate::platform::issue_session(c, &uid)) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e})))
+                .into_response()
+        }
+    };
+    let token = sess["token"].as_str().unwrap_or("").to_string();
+    let _ = with_conn(&ctx, |c| {
+        crate::platform::audit(c, &format!("user:{uname}"), "platform_user.login", None)
+    });
+    let mut resp = Json(json!({"ok": true, "display_name": uname})).into_response();
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        format!("teamx_platform_token={token}; Path=/; HttpOnly; SameSite=Strict")
+            .parse()
+            .unwrap(),
+    );
+    resp
+}
+
+/// 登出：吊销会话（若是）+ 清 cookie（幂等）。
+async fn api_logout(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Some(t) = cookie_token(&headers) {
+        if t != ctx.launch_token {
+            let _ = with_conn(&ctx, |c| crate::platform::revoke_session(c, &t));
+        }
+    }
+    let mut resp = Json(json!({"ok": true})).into_response();
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        "teamx_platform_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            .parse()
+            .unwrap(),
+    );
+    resp
+}
+
 async fn api_me(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
     if let Err(r) = guard(&ctx, &headers) {
         return r;
     }
     let admins = with_conn(&ctx, |c| crate::platform::list_admins(c)).unwrap_or_default();
-    Json(json!({ "ok": true, "admins": admins, "github_oauth": github_configured() })).into_response()
+    let who = identity(&ctx, &headers);
+    Json(json!({ "ok": true, "who": who, "admins": admins, "github_oauth": github_configured() })).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -400,11 +474,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .pill{border:1px solid var(--bd);border-radius:999px;padding:0 8px;font-size:12px}
 </style></head>
 <body>
-<header><h1>Teamx Cloud · 平台控制台 <span class="muted">(platform plane)</span></h1><span id="who" class="muted"></span></header>
+<header><h1>Teamx Cloud · 平台控制台 <span class="muted">(platform plane)</span></h1><span><span id="who" class="muted"></span> <button class="btn" id="logoutBtn" style="display:none" onclick="logout()">退出</button></span></header>
 <main>
   <div id="login">
     <h2>平台登录</h2>
-    <div class="row"><input id="token" placeholder="launch token（启动时打印）"><button class="btn" onclick="login()">登录</button></div>
+    <div class="row"><input id="uname" placeholder="用户名"><input id="password" type="password" placeholder="密码"><button class="btn" onclick="loginPassword()">登录</button></div>
+    <div class="row"><input id="token" placeholder="launch token（启动时打印，运维）"><button class="btn" onclick="login()">运维登录</button></div>
     <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
   </div>
 
@@ -434,10 +509,13 @@ async function boot(){
   const me=await jget('/api/me');
   if(!me.ok){document.getElementById('login').style.display='block';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';return}
   document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';
-  document.getElementById('who').textContent=(me.admins||[]).map(a=>a.user_name).join(', ')||'launch-token 运维';
+  document.getElementById('who').textContent=me.who||'';
+  document.getElementById('logoutBtn').style.display='inline';
   await loadTenants();await loadPlatform();
 }
 async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else alert(r.error||'登录失败')}
+async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else alert(r.error||'登录失败')}
+async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
 async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
  document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${x.id.slice(0,8)}</code></td><td><span class="pill">${x.state}</span></td><td class="muted">${x.created_at}</td><td>${x.redeemed_by||'—'}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';

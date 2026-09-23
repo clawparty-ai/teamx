@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -506,6 +506,18 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             PlatformCmd::Console { .. } => {
                 return err("`platform console` runs its own server; it must not reach the DB dispatcher")
             }
+            PlatformCmd::User(u) => match u {
+                PlatformUserCmd::Create { name, password } => {
+                    crate::platform::create_user(conn, name, password).map_err(AppError)?
+                }
+                PlatformUserCmd::SetPassword { user_id, password } => {
+                    crate::platform::set_password(conn, user_id, password).map_err(AppError)?
+                }
+                PlatformUserCmd::Disable { user_id } => {
+                    crate::platform::disable_user(conn, user_id).map_err(AppError)?
+                }
+                PlatformUserCmd::List => crate::platform::list_users(conn).map_err(AppError)?,
+            },
             PlatformCmd::Audit { limit } => json!({
                 "ok": true,
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
