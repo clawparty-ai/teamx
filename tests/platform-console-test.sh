@@ -225,6 +225,24 @@ CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X POST -H
 [ "$CODE" = "403" ] || fail "D6: 越权 bootstrap 应 403，实际 $CODE"
 pass "D6 bootstrap 入口校验（400/失败明示/403）"
 
+# D7: M2 —— 用户自助不接受 server_image（镜像由平台 pin）
+R7="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"evil-image","server_image":"attacker/evil:latest"}' "$BASE/api/my/teams")"
+if echo "$R7" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok')" 2>/dev/null; then
+  # 建成功（配额已满应先拒；此处若成功则查其镜像未被采用）
+  echo "  info: 建成功，检查镜像是否被忽略"
+fi
+grep -q "attacker/evil" "$KUBECTL_STATE/last-apply.yaml" && fail "D7: server_image 被采用（应忽略）"
+pass "D7 用户面 server_image 被忽略（M2）"
+
+# D8: M3 —— bootstrap server_url 必须锚定本租户 endpoint
+EVIL="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' \
+  -d '{"server_url":"https://attacker.example.com:443"}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 30)"
+echo "$EVIL" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True and 'not this tenant' in str(d.get('error','')),d" || fail "D8: 外部端点应被拒: $EVIL"
+CODE="$($C -b /tmp/teamx-platcon-bob -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"server_url":"http://insecure.example"}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 20)"
+[ "$CODE" = "400" ] || fail "D8: 非 https 应 400，实际 $CODE"
+pass "D8 bootstrap server_url 锚定校验（M3）"
+
 # C6: 回收
 D="$($C -b /tmp/teamx-platcon-cookie -X DELETE "$BASE/api/tenants/$TEAM_ID")"
 echo "$D" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok'),d" || fail "C6: 回收失败: $D"

@@ -857,7 +857,6 @@ pub fn create_my_tenant(
     conn: &mut Connection,
     user_id: &str,
     team_name: &str,
-    server_image: Option<&str>,
     kubeconfig: Option<&str>,
     context: Option<&str>,
 ) -> Result<Value, String> {
@@ -884,8 +883,10 @@ pub fn create_my_tenant(
     )
     .map_err(|e| format!("db: {e}"))?;
     // 租户 infra（复用 operator 路径；kubeconfig 来自控制台/CLI 环境）。
+    // 镜像**不接受用户输入**（weiye-mini task-103 M2）：用户面不可指定 server_image，
+    // 否则任意租户用户可让平台集群拉起任意镜像 —— 一律走平台 pin 的默认镜像。
     // 失败补偿：infra 建不起来时删掉刚建的空壳 team（否则残留无租户的孤儿 team 行）。
-    let tenant = match create_tenant(conn, &team_id, server_image, kubeconfig, context) {
+    let tenant = match create_tenant(conn, &team_id, None, kubeconfig, context) {
         Ok(t) => t,
         Err(e) => {
             let _ = conn.execute("DELETE FROM teams WHERE id = ?1", params![team_id]);
@@ -903,6 +904,33 @@ pub fn create_my_tenant(
 
 /// 自助 team 第二步：经 service 车道在租户 server 上建首 team + owner 邀请。
 /// server 未就绪时明确报错（UI 显示重试，不静默）。
+/// 校验租户 endpoint（weiye-mini task-103 M3）：平台要拿**租户 CA 签的服务证书**
+/// 拨这个地址，用户可填任意 https 收集端 → 必须锚定到该租户自己的集群内 Service DNS。
+/// 允许：`https://teamx-serve-<short16>.<ns>.svc[:port]`（集群内）、前述的 localhost/127.0.0.1
+/// （控制台与集群同机的 port-forward 路径）；其余一律拒绝。
+pub fn validate_tenant_endpoint(team_id: &str, server_url: &str) -> Result<(), String> {
+    let ns = crate::k8s::namespace_for(team_id);
+    let svc = format!("teamx-serve-{}", crate::k8s::short_id(team_id));
+    let ok_scheme = server_url.starts_with("https://");
+    if !ok_scheme {
+        return Err("server_url must be https://".to_string());
+    }
+    let rest = &server_url["https://".len()..];
+    let host = rest.split(['/', ':']).next().unwrap_or("");
+    let allowed = host == svc
+        || host == format!("{svc}.{ns}.svc")
+        || host.ends_with(&format!(".{ns}.svc"))
+        || host == "127.0.0.1"
+        || host == "localhost"
+        || host == "::1";
+    if !allowed {
+        return Err(format!(
+            "server_url host `{host}` is not this tenant's endpoint (expected `{svc}.{ns}.svc`              or loopback port-forward) — refusing to hand the tenant service certificate to it"
+        ));
+    }
+    Ok(())
+}
+
 pub fn bootstrap_my_team(
     conn: &mut Connection,
     team_id: &str,
@@ -915,6 +943,7 @@ pub fn bootstrap_my_team(
     if !crate::platform::tenant_owned_by(conn, team_id, user_id)? {
         return Err("not your tenant (403)".to_string());
     }
+    validate_tenant_endpoint(team_id, server_url)?;
     let (team_name, uname): (String, String) = conn
         .query_row(
             "SELECT t.name, u.display_name FROM teams t, platform_users u
@@ -2324,6 +2353,29 @@ pub fn auto_stop_decision(instances: &[(String, bool)]) -> (Vec<String>, bool) {
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::validate_tenant_endpoint;
+
+    #[test]
+    fn tenant_endpoint_must_be_anchored_to_own_service() {
+        let tid = "07759446-69f8-4aea-8da0-984d8a4016ef";
+        // 集群内 Service DNS（含端口/路径变体）
+        assert!(validate_tenant_endpoint(tid, "https://teamx-serve-0775944669f84aea.tenant-0775944669f84aea.svc:5783").is_ok());
+        assert!(validate_tenant_endpoint(tid, "https://teamx-serve-0775944669f84aea.tenant-0775944669f84aea.svc").is_ok());
+        // 同机 loopback port-forward
+        assert!(validate_tenant_endpoint(tid, "https://127.0.0.1:5790").is_ok());
+        assert!(validate_tenant_endpoint(tid, "https://localhost:5790").is_ok());
+        // 外部端点一律拒绝（防把租户服务证书递给攻击者）
+        assert!(validate_tenant_endpoint(tid, "https://attacker.example.com").is_err());
+        assert!(validate_tenant_endpoint(tid, "https://teamx-serve-0775944669f84aea.tenant-other.svc").is_err());
+        // 非 https 拒绝
+        assert!(validate_tenant_endpoint(tid, "http://127.0.0.1:5790").is_err());
+        // 其它租户的 service 拒绝
+        assert!(validate_tenant_endpoint(tid, "https://teamx-serve-deadbeefdeadbeef.tenant-deadbeefdeadbeef.svc").is_err());
+    }
+}
 
 #[cfg(test)]
 mod tests {

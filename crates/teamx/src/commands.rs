@@ -3160,8 +3160,16 @@ fn mint_invite_cert(
             (issued, tenant_crt, fp)
         }
         None => {
+            // 租户模式下 CA 材料缺失 = 安全姿态静默降级（会用实例 CA 签发、租户隔离被
+            // 换成共享实例信任域），与 M0「CNI 静默失效」同判据 → **fail-closed 拒签**。
+            // 邀请是低频操作，失败可见优于静默可用（weiye task-102 必改②）。
             if std::env::var("TEAMX_TENANT_TEAM_ID").ok().is_some_and(|t| !t.is_empty()) {
-                eprintln!("teamx: WARN tenant mode but no tenant CA key; invite falls back to instance CA");
+                return Err(AppError(
+                    "tenant mode but tenant CA material unavailable (TEAMX_TENANT_CA_DIR \
+                     needs ca.crt+ca.key) — refusing to issue with the instance CA; fix the \
+                     tenant CA Secret mount and retry"
+                        .to_string(),
+                ));
             }
             let issued = pki::issue_member_cert(&home, &member_id, role_key, user.map(|(id, _)| id))
                 .map_err(AppError)?;

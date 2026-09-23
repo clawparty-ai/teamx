@@ -195,7 +195,7 @@ async fn api_login(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Resp
     let mut resp = Json(json!({"ok": true})).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
-        format!("teamx_platform_token={}; Path=/; HttpOnly; SameSite=Strict", ctx.launch_token)
+        format!("teamx_platform_token={}; Path=/; HttpOnly; Secure; SameSite=Strict", ctx.launch_token)
             .parse()
             .unwrap(),
     );
@@ -229,7 +229,7 @@ async fn api_login_password(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>
     let mut resp = Json(json!({"ok": true, "display_name": uname})).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
-        format!("teamx_platform_token={token}; Path=/; HttpOnly; SameSite=Strict")
+        format!("teamx_platform_token={token}; Path=/; HttpOnly; Secure; SameSite=Strict")
             .parse()
             .unwrap(),
     );
@@ -246,7 +246,7 @@ async fn api_logout(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response
     let mut resp = Json(json!({"ok": true})).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
-        "teamx_platform_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        "teamx_platform_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
             .parse()
             .unwrap(),
     );
@@ -455,13 +455,13 @@ async fn api_my_teams_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Js
             .into_response();
     };
     let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-    let image = body.get("server_image").and_then(Value::as_str).map(str::to_string);
+    // M2（weiye-mini task-103）：用户面**不接受** server_image（镜像由平台 pin）。
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "name is required"}))).into_response();
     }
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| {
-        crate::provision::create_my_tenant(c, &uid, &name, image.as_deref(), kc.as_deref(), cx.as_deref())
+        crate::provision::create_my_tenant(c, &uid, &name, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
@@ -760,7 +760,9 @@ async fn api_oauth_callback(
     let mut resp = axum::response::Redirect::to("/").into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
-        format!("teamx_platform_token={token}; Path=/; HttpOnly; SameSite=Lax")
+        // Lax（非 Strict）：OAuth 回调是跨站 302 回来，Strict 会丢 cookie；
+        // 已有 state 单次校验防 CSRF，此处放宽是刻意的（task-103 建议 1）。
+        format!("teamx_platform_token={token}; Path=/; HttpOnly; Secure; SameSite=Lax")
             .parse()
             .unwrap(),
     );
@@ -915,6 +917,7 @@ else boot();
 async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.json()}
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function showTab(name){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));document.querySelectorAll('.tabpage').forEach(p=>p.style.display=p.id==='tab-'+name?'block':'none')}
 async function copyLetter(){const t=document.getElementById('letterOut').textContent;if(!t){alert('暂无邀请函，先点"初始化团队"');return}try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
@@ -937,16 +940,16 @@ const ts=d.tenants||[];const me=(await jget('/api/me')).who||'';
 document.getElementById('mineCards').innerHTML=
 `<div class="stat-card"><div class="stat-icon blue">👥</div><div><div class="stat-label">我的团队</div><div class="stat-value">${ts.length}</div></div></div>`+
 `<div class="stat-card"><div class="stat-icon orange">📊</div><div><div class="stat-label">租户配额</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
-`<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${me}</div></div></div>`;
+`<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${esc(me)}</div></div></div>`;
 document.getElementById('quota').textContent=`配额 ${d.used}/${d.quota}`;
-document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${t.team_name||'未命名团队'}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${t.team_id}</code></span><span>ns <code>${t.namespace}</code></span><span>CA <code>${(t.ca_fingerprint||'').slice(0,16)}…</code></span><span>${t.server_image||''}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
+document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${esc(t.team_id)}</code></span><span>ns <code>${esc(t.namespace)}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span><span>${esc(t.server_image||'')}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
 async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
 async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team||!server_url){alert('填该团队卡片上的 endpoint');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
-async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
+async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${esc(t.team_id)}</code></td><td><code>${esc(t.namespace)}</code></td><td><code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></td><td>${esc(t.server_image||'—')}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
- document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${x.id.slice(0,8)}</code></td><td><span class="pill">${x.state}</span></td><td class="muted">${x.created_at}</td><td>${x.redeemed_by||'—'}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
- document.getElementById('admins').innerHTML=(a.admins||[]).map(x=>`<tr><td>${x.user_name}</td><td class="muted">${x.granted_at}</td><td class="muted">${x.granted_via}</td></tr>`).join('')||'<tr><td colspan=3 class="muted">无</td></tr>';
- document.getElementById('audit').innerHTML=(au.audit||[]).map(x=>`<tr><td class="muted">${x.at}</td><td><code>${x.actor}</code></td><td>${x.action}</td><td class="muted">${x.detail||''}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>'}
+ document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${esc(x.id.slice(0,8))}</code></td><td><span class="pill">${esc(x.state)}</span></td><td class="muted">${esc(x.created_at)}</td><td>${esc(x.redeemed_by||'—')}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
+ document.getElementById('admins').innerHTML=(a.admins||[]).map(x=>`<tr><td>${esc(x.user_name)}</td><td class="muted">${esc(x.granted_at)}</td><td class="muted">${esc(x.granted_via)}</td></tr>`).join('')||'<tr><td colspan=3 class="muted">无</td></tr>';
+ document.getElementById('audit').innerHTML=(au.audit||[]).map(x=>`<tr><td class="muted">${esc(x.at)}</td><td><code>${esc(x.actor)}</code></td><td>${esc(x.action)}</td><td class="muted">${esc(x.detail||'')}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>'}
 async function createTenant(){const team=document.getElementById('team').value.trim();if(!team)return;const r=await jpost('/api/tenants',{team});if(!r.ok)alert(r.error);await loadTenants();await loadPlatform()}
 async function destroyTenant(t){if(!confirm('回收租户 '+t+' ?（删 namespace，级联清掉 server/CA/PVC）'))return;const r=await jdel('/api/tenants/'+encodeURIComponent(t));if(!r.ok)alert(r.error);await loadTenants();await loadPlatform()}
 async function invite(){const team=document.getElementById('invTeam').value.trim();const role_desc=document.getElementById('invRole').value.trim();const r=await jpost('/api/tenants/'+encodeURIComponent(team)+'/invite',{role_desc});document.getElementById('svcOut').textContent=JSON.stringify(r,null,2)}
@@ -962,7 +965,8 @@ mod tests {
     #[test]
     fn index_html_has_platform_surfaces() {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
-            "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout"] {
+            "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
+            "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
     }

@@ -219,6 +219,10 @@ pub const SESSION_DAYS: i64 = 7;
 /// PBKDF2 迭代次数（OWASP 2023 对 HMAC-SHA256 的建议值）。
 const PBKDF2_ITER: u32 = 600_000;
 
+/// 时序对齐用的固定哈希（task-103 建议 3）：用户不存在时也跑一次 PBKDF2，
+/// 避免响应耗时泄漏 display_name 是否存在。值无意义，只需格式合法。
+const DUMMY_HASH: &str = "pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
 /// 密码哈希：`pbkdf2-sha256$<iter>$<salt-b64>$<hash-b64>`（ring，无新依赖）。
 /// 前缀版本化 —— 将来迁 argon2id 时旧行仍可验（按前缀分发）。
 pub fn hash_password(password: &str) -> Result<String, String> {
@@ -368,7 +372,12 @@ pub fn authenticate(conn: &Connection, display_name: &str, password: &str) -> Re
         )
         .optional()
         .map_err(|e| format!("db: {e}"))?;
-    let (id, hash, disabled) = row.ok_or_else(|| "invalid credentials".to_string())?;
+    let Some((id, hash, disabled)) = row else {
+        // 时序侧信道防护（weiye-mini task-103 建议 3）：用户不存在时也跑一次 PBKDF2，
+        // 使响应耗时不泄漏 display_name 是否存在。
+        let _ = verify_password(password, DUMMY_HASH);
+        return Err("invalid credentials".to_string());
+    };
     if disabled.is_some() || hash.is_empty() || !verify_password(password, &hash) {
         return Err("invalid credentials".to_string());
     }
