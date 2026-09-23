@@ -161,6 +161,7 @@
 | 7 升级/回滚 | ⬜ 未实现 | 镜像同源构建已就绪（`75971a4`）；滚动升级/回滚断言未写 |
 | 8 bootstrap 一次性 token | ✅ 已实现 | `platform bootstrap-token/redeem/revoke`（`4d192ff`）+ `tests/platform-test.sh` 7 断言 |
 | §8 迁移 ①②③ 成员证书换发 | ✅ 已实现 | `teamx tenant reissue-members` + RPC + 平台控制台路由（`98f8059`）；E2E 断言换发信 CA **DER 指纹 == 租户 CA**（tenant N8）+ 控制台入口（platform-console C8） |
+| 🖥️ O-2 真合并审计（2026-09-23，真集群 service 车道） | ✅ 已实现并验证 | 平台行（server 证 + service 证）与租户 server 行（租户模式 invite）经 mTLS 合并：`merged 1 server rows`，分代活数 plat/srv 归因正确。修了 3 个真机问题：CN 双前缀、CLI 身份 server 不认（统一 platform-console）、issued.list 按 team 查对不上（改按 CA + 免 team 分支）、RPC 信封 data 层。轮换 v1 的 O-2 前置已就绪（owner 附注满足，可进入轮换实现）。 |
 | 🖥️ 租户 server 真用租户 CA（2026-09-23，真集群 mTLS 四对照） | ✅ 已实现并验证 | 起因：真集群发现 server 跑自生成实例 PKI、Secret 里租户 CA 装饰化。修：`pki::tenant_ca_dir/material` + serve 租户身份/双信任包 + `mint_invite` 租户签发（`dd9aebb`）。真集群证明：① server 出示链 issuer=租户 CA；② 租户 CA 客户端证书握手 OK；③ 实例 CA 证书亦 OK（双包）；④ 随机 CA 被拒（alert unknown ca）；⑤ server 现场 invite 的信 CA 指纹 == 租户 CA。 |
 | 🖥️ 台式机真集群验证（2026-09-23，k3s v1.34 单节点） | ✅ 部分 | 单测 394 + stub E2E 47 全绿；member 真集群 `k8e-real-cluster-test.sh` **ALL PASSED**（R6b 走 flannel 显式例外）；**租户首次上真集群**：namespace/CA Secret/Deployment/PVC(Bound)/PDB/PriorityClass/Service 全就位，server Pod **1/1**，Service DNS 解析正常，destroy 清单完整。抓到并修了 4 个真机问题（见下） |
 
