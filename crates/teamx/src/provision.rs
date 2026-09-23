@@ -979,18 +979,20 @@ pub fn destroy_tenant(
 /// 读租户记录。
 pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, String> {
     conn.query_row(
-        "SELECT t.team_id, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
+         "SELECT t.team_id, tm.name, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
                 COALESCE(o.user_id, '') FROM tenants t
+         LEFT JOIN teams tm ON tm.id = t.team_id
          LEFT JOIN tenant_owners o ON o.team_id = t.team_id WHERE t.team_id = ?1",
         params![team_id],
         |r| {
             Ok(json!({
                 "team_id": r.get::<_, String>(0)?,
-                "namespace": r.get::<_, String>(1)?,
-                "ca_fingerprint": r.get::<_, String>(2)?,
-                "server_image": r.get::<_, String>(3)?,
-                "created_at": r.get::<_, String>(4)?,
-                "owner_user_id": r.get::<_, String>(5)?,
+                "team_name": r.get::<_, Option<String>>(1)?,
+                "namespace": r.get::<_, String>(2)?,
+                "ca_fingerprint": r.get::<_, String>(3)?,
+                "server_image": r.get::<_, String>(4)?,
+                "created_at": r.get::<_, String>(5)?,
+                "owner_user_id": r.get::<_, String>(6)?,
             }))
         },
     )
@@ -1001,19 +1003,21 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
 /// 列全部租户。
 pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
-        .prepare("SELECT t.team_id, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
+        .prepare("SELECT t.team_id, tm.name, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
                          COALESCE(o.user_id, '') FROM tenants t
+                  LEFT JOIN teams tm ON tm.id = t.team_id
                   LEFT JOIN tenant_owners o ON o.team_id = t.team_id ORDER BY t.created_at")
         .map_err(|e| format!("db: {e}"))?;
     let rows = stmt
         .query_map([], |r| {
             Ok(json!({
                 "team_id": r.get::<_, String>(0)?,
-                "namespace": r.get::<_, String>(1)?,
-                "ca_fingerprint": r.get::<_, String>(2)?,
-                "server_image": r.get::<_, String>(3)?,
-                "created_at": r.get::<_, String>(4)?,
-                "owner_user_id": r.get::<_, String>(5)?,
+                "team_name": r.get::<_, Option<String>>(1)?,
+                "namespace": r.get::<_, String>(2)?,
+                "ca_fingerprint": r.get::<_, String>(3)?,
+                "server_image": r.get::<_, String>(4)?,
+                "created_at": r.get::<_, String>(5)?,
+                "owner_user_id": r.get::<_, String>(6)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;

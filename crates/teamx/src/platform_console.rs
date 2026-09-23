@@ -796,6 +796,23 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .tab:hover{color:#4A90E5}
  .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
  .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
+ .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px}
+ @media (max-width:900px){.cards{grid-template-columns:1fr}}
+ .stat-card{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:18px 20px;display:flex;align-items:center;gap:16px}
+ .stat-icon{width:46px;height:46px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0}
+ .stat-icon.blue{background:#EBF5FF;color:#4A90E5}.stat-icon.orange{background:#FDF0E0;color:#E6A23C}.stat-icon.green{background:#E8F8E8;color:#67C23A}
+ .stat-label{font-size:13px;color:#909399;margin-bottom:4px}
+ .stat-value{font-size:23px;font-weight:600;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .team-card{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:18px 20px;margin-bottom:14px}
+ .team-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+ .team-head h3{margin:0;font-size:15px}
+ .team-actions{margin-left:auto;display:flex;gap:8px}
+ .team-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#909399;margin-bottom:6px}
+ .team-meta code{font-family:"SF Mono","Fira Code",ui-monospace,Menlo,monospace;font-size:12px;background:#F2F6FC;padding:1px 5px;border-radius:3px;color:#333}
+ .boot-row{display:flex;gap:8px;align-items:center;margin-top:10px;padding-top:12px;border-top:1px solid #EBEEF5;flex-wrap:wrap}
+ .boot-row .input{width:300px}
+ .empty{padding:28px;text-align:center;color:#909399;font-size:13px}
+ .empty .big{font-size:30px;margin-bottom:8px}
  .panel{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:20px 22px;margin-bottom:18px}
  .panel h2{font-size:14px;font-weight:600;margin-bottom:12px}
  .panel h2 .tag{font-size:12px;color:#909399;font-weight:400}
@@ -844,13 +861,15 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <button class="tab op-only" data-tab="platform" onclick="showTab('platform')">平台管理</button>
   </nav>
   <div class="tabpage" id="tab-mine">
-  <div class="panel"><h2>我的团队 <span class="tag">自助 · O-1(a) 全新开始</span><span class="quota-pill" id="quota"></span></h2>
-    <div class="row"><input class="input" id="myName" placeholder="团队名"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button></div>
-    <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th></th></tr></thead><tbody id="mine"></tbody></table>
-    <div class="row"><input class="input" id="bsTeam" placeholder="team id"><input class="input wide" id="bsUrl" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam()">初始化团队</button></div>
-    <div class="muted">初始化后把 owner 邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner
+  <div class="cards" id="mineCards"></div>
+  <div class="panel"><h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
+    <div class="row"><input class="input" id="myName" placeholder="团队名，比如 data-team"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button><span class="muted" id="quota"></span></div>
+  </div>
+  <div id="mine"></div>
+  <div class="panel"><h2>Owner 邀请函</h2>
+    <div class="muted">点团队卡片上的"初始化团队"后，邀请函显示在这里 —— 导入本地（<code>teamx team import</code>）即成为该团队 owner
       <button class="btn btn-sm copybtn" onclick="copyLetter()">复制邀请函</button></div>
-    <pre class="out muted" id="letterOut"></pre>
+    <pre class="out muted" id="letterOut">（初始化团队后显示）</pre>
   </div>
   </div>
   <div class="tabpage" id="tab-tenants" style="display:none">
@@ -900,9 +919,16 @@ async function boot(){
 async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else loginFail(r.error)}
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
-async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok){document.getElementById('quota').textContent='';document.getElementById('mine').innerHTML='';return}document.getElementById('quota').textContent=`配额：${d.used}/${d.quota}`;document.getElementById('mine').innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=4 class="muted">暂无团队，去上面创建一个</td></tr>'}catch(e){}}
-async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}document.getElementById('bsTeam').value=r.team_id;await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
-async function bootstrapTeam(){const team=document.getElementById('bsTeam').value.trim();const server_url=document.getElementById('bsUrl').value.trim();if(!team||!server_url){alert('team id 和 endpoint 都要填');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
+async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok){document.getElementById('quota').textContent='';document.getElementById('mine').innerHTML='';document.getElementById('mineCards').innerHTML='';return}
+const ts=d.tenants||[];const me=(await jget('/api/me')).who||'';
+document.getElementById('mineCards').innerHTML=
+`<div class="stat-card"><div class="stat-icon blue">👥</div><div><div class="stat-label">我的团队</div><div class="stat-value">${ts.length}</div></div></div>`+
+`<div class="stat-card"><div class="stat-icon orange">📊</div><div><div class="stat-label">租户配额</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
+`<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${me}</div></div></div>`;
+document.getElementById('quota').textContent=`配额 ${d.used}/${d.quota}`;
+document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${t.team_name||'未命名团队'}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${t.team_id}</code></span><span>ns <code>${t.namespace}</code></span><span>CA <code>${(t.ca_fingerprint||'').slice(0,16)}…</code></span><span>${t.server_image||''}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
+async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
+async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team||!server_url){alert('填该团队卡片上的 endpoint');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
 async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
  document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${x.id.slice(0,8)}</code></td><td><span class="pill">${x.state}</span></td><td class="muted">${x.created_at}</td><td>${x.redeemed_by||'—'}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
