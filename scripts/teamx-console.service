@@ -1,0 +1,36 @@
+# teamx 云控制台 systemd 单元（BYO 台式机/测试机）。
+#
+# 安装（台式机上，root）：
+#   sudo cp scripts/teamx-console.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now teamx-console
+#
+# 前提（同一台机器）：
+#   - 源码在 /home/caishu/teamx-enterprise 且已 cargo build -p teamx
+#   - k3s 就绪（TEAMX_KUBECONFIG 指向它），teamx-server:dev 已导入 k3s
+#   - 首次启动后建用户：TEAMX_DB=... ./target/debug/teamx platform user create ...
+#
+# 注意：
+#   - 绑 0.0.0.0（局域网可达；公网暴露需另做 TLS 终止 + 访问控制）。
+#   - launch token 每次重启都换；日常用密码用户登录。
+#   - DB 在 /home/caishu/teamx-console（持久化；/tmp 重启会丢）。
+[Unit]
+Description=teamx platform console (cloud console)
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=caishu
+WorkingDirectory=/home/caishu/teamx-enterprise
+Environment=TEAMX_DB=/home/caishu/teamx-console/teamx.db
+Environment=TEAMX_HOME=/home/caishu/teamx-console/home
+Environment=TEAMX_KUBECONFIG=/home/caishu/.kube/config
+Environment=TEAMX_K8S_CONTEXT=default
+Environment=TEAMX_SERVER_IMAGE=teamx-server:dev
+ExecStart=/home/caishu/teamx-enterprise/target/debug/teamx platform console --addr 0.0.0.0 --port 9540
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -56,11 +56,22 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         crate::db::migrate(&conn).map_err(|e| format!("migrate: {e}"))?;
     }
     let launch_token = crate::util::gen_access_token(16);
+    // kubeconfig/context：CLI flag 优先，其次环境变量（TEAMX_KUBECONFIG / TEAMX_K8S_CONTEXT）。
+    // 环境变量回退是必需的：systemd 部署没有 CLI flag，而 k3s 自带的 kubectl 是 k3s
+    // 包装器，缺省读 /etc/rancher/k3s/k3s.yaml（普通用户权限不足）—— 真机踩到。
+    let flag_kc = cmd.kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+    let kubeconfig = flag_kc.or_else(|| {
+        std::env::var("TEAMX_KUBECONFIG").ok().filter(|s| !s.trim().is_empty())
+    });
+    let context = cmd
+        .context
+        .clone()
+        .or_else(|| std::env::var("TEAMX_K8S_CONTEXT").ok().filter(|s| !s.trim().is_empty()));
     let ctx = Arc::new(Ctx {
         db_path,
         launch_token: launch_token.clone(),
-        kubeconfig: cmd.kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()),
-        context: cmd.context.clone(),
+        kubeconfig,
+        context,
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
