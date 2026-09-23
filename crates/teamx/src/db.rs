@@ -467,6 +467,26 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            created_at     TEXT NOT NULL
          );",
     )?;
+    // 签发台账 O-2（design/014 §4）：server 能按 CA 分代枚举自己签发的有效证书。
+    // 所有经 CA 签发的证书（member/server/service）都在签发处落一行；
+    // 平台库记平台侧签发，租户 server 库记租户侧签发，ca-audit 合并两边。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS issued_certs (
+           serial_hex     TEXT PRIMARY KEY,
+           cn             TEXT NOT NULL,
+           kind           TEXT NOT NULL,
+           role           TEXT NOT NULL DEFAULT '',
+           member_id      TEXT NOT NULL DEFAULT '',
+           team_id        TEXT NOT NULL DEFAULT '',
+           ca_fingerprint TEXT NOT NULL,
+           issued_at      TEXT NOT NULL,
+           expires_at     TEXT,
+           revoked_at     TEXT,
+           issuer         TEXT NOT NULL DEFAULT ''
+         );
+         CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certs(ca_fingerprint);
+         CREATE INDEX IF NOT EXISTS idx_issued_certs_team ON issued_certs(team_id);",
+    )?;
     // Cloud-host provisioning (design/006: invite 时开通云主机，server 侧 AWS CLI 执行).
     // Converge-style: brand-new tables, no user_version bump needed.
     conn.execute_batch(

@@ -68,6 +68,10 @@ pub enum Command {
     #[command(subcommand)]
     Tenant(TenantCmd),
 
+    /// Certificate issuance ledger O-2 (design/014 §4): list/revoke issued certs
+    #[command(subcommand)]
+    Issued(IssuedCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2375,6 +2379,23 @@ pub struct PlatformConsoleCmd {
 
 /// Multi-tenant platform (design/014): one tenant = one team + one namespace
 /// + one independent CA. Executor = the platform (kubectl + tenant CA).
+// 签发台账 O-2（design/014 §4）。
+#[derive(Subcommand, Debug)]
+pub enum IssuedCmd {
+    /// List issued certificates (optionally filtered by team / CA)
+    List {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        ca: Option<String>,
+    },
+    /// Revoke one certificate by serial (it stops counting as live)
+    Revoke {
+        #[arg(long)]
+        serial: String,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum TenantCmd {
     /// Create a tenant: generate its own CA, sign the server cert, apply
@@ -2411,6 +2432,23 @@ pub enum TenantCmd {
     ReissueMembers {
         #[arg(long)]
         team: String,
+        /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context (default: TEAMX_K8S_CONTEXT)
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// CA audit (O-2): merge platform + tenant-server issuance rows per CA generation,
+    /// report live counts and whether an old CA may be retired.
+    /// `--server-url` points at the tenant server (independent endpoint per decision 1,
+    /// or kubectl port-forward); without it only platform rows are shown.
+    CaAudit {
+        #[arg(long)]
+        team: String,
+        /// tenant server URL for merging server-side rows (optional)
+        #[arg(long)]
+        server_url: Option<String>,
         /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
         #[arg(long)]
         kubeconfig: Option<PathBuf>,

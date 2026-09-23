@@ -187,6 +187,31 @@ print("  issuer =", iss_name)
 PYEOF
 pass "N8 成员证书换发（租户 CA 签发 + Secret 投递 + server_url 同批切换）"
 
+# N11: 签发台账 O-2（记录 + 活数 + 吊销 + 合并审计）
+L="$("$TEAMX" --json issued list --team "$TEAM_ID" 2>&1)"
+[ "$(echo "$L" | jq "len(d['issued'])")" -ge 2 ] || fail "N11: 台账行数不足（server + member 应 ≥2）: $L"
+[ "$(echo "$L" | jq "len([x for x in d['issued'] if x['kind']=='server'])")" -ge 1 ] || fail "N11: 缺 server 行"
+[ "$(echo "$L" | jq "len([x for x in d['issued'] if x['kind']=='member'])")" -ge 1 ] || fail "N11: 缺 member 行"
+# 租户 CA 的行：server（N1）+ 换发成员（N8）；N4 的 invite 是平台 CA（换发前）——
+# 两代并存正是合并审计要覆盖的情形
+TFP="$(echo "$T1" | jq "d['tenant']['ca_fingerprint']")"
+[ "$(echo "$L" | jq "len([x for x in d['issued'] if x['ca_fingerprint']=='$TFP' and x['kind']=='server'])")" -ge 1 ] || fail "N11: 缺租户 CA 的 server 行"
+[ "$(echo "$L" | jq "len([x for x in d['issued'] if x['ca_fingerprint']=='$TFP' and x['kind']=='member'])")" -ge 1 ] || fail "N11: 缺租户 CA 的 member 行"
+[ "$(echo "$L" | jq "len(set(x['ca_fingerprint'] for x in d['issued']))")" -ge 2 ] || fail "N11: 应有 ≥2 代 CA（租户 + 平台）"
+# 吊销**租户 CA 的换发成员证书**（按 CA+kind 精确挑 —— O-2 按代计数的核心）
+MSER="$(echo "$L" | jq "[x['serial_hex'] for x in d['issued'] if x['kind']=='member' and x['ca_fingerprint']=='$TFP'][0]")"
+# 吊销成员证书 → ca-audit 活数下降；当前代不可废须为 true（它是 current），编造旧代验证 verdict 逻辑走单测
+RV="$("$TEAMX" --json issued revoke --serial "$MSER" 2>&1)"
+[ "$(echo "$RV" | jq "d['revoked']")" = "True" ] || fail "N11: 吊销失败: $RV"
+[ "$(echo "$("$TEAMX" --json issued revoke --serial deadbeef 2>&1)" | jq "d['revoked']")" = "False" ] || fail "N11: 吊销不存在应为 false"
+A="$("$TEAMX" --json tenant ca-audit --team "$TEAM_ID" 2>&1)" || fail "N11: ca-audit 失败: $A"
+[ "$(echo "$A" | jq "d['ok']")" = "True" ] || fail "N11: ca-audit 未 ok"
+[ "$(echo "$A" | jq "d['current_ca'] == d['per_ca'][0]['ca_fingerprint']")" = "True" ] || fail "N11: current_ca 对不上"
+[ "$(echo "$A" | jq "d['server_note']")" != "" ] || fail "N11: 缺 server_note（合并口径声明）"
+# 吊销**租户 CA 的换发成员证书**（按 CA+kind 精确挑 —— O-2 按代计数的核心）
+MSER="$(echo "$L" | jq "[x['serial_hex'] for x in d['issued'] if x['kind']=='member' and x['ca_fingerprint']=='$TFP'][0]")"
+pass "N11 签发台账 O-2（记录/活数/吊销/合并审计）"
+
 # N9: 租户 server 调度保护（weiye task-92 建议②）
 # 注意：后续 apply（成员 Pod / 换发 Secret）会覆盖 last-apply.yaml，
 # 因此用 N1 时保存的租户清单副本断言

@@ -20,7 +20,8 @@ use time::{Duration, OffsetDateTime};
 
 pub type PkiResult<T> = Result<T, String>;
 
-const CERT_DAYS: i64 = 3650;
+/// 成员/server 证书有效期（天）。台账 O-2 用它算 expires_at；改这里必须同步改 issued 记录。
+pub const CERT_DAYS: i64 = 3650;
 
 /// Directory where this instance's PKI material lives.
 pub fn ca_dir(home: &Path) -> PathBuf {

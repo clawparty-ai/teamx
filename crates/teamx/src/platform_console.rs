@@ -274,6 +274,20 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
     };
+    // O-2 台账：平台服务证书（短 TTL，每次调用重签）也落一行 —— 否则"旧 CA 活数"永远少算。
+    // 记录失败不阻断本次调用（台账是审计，不是门禁），但要写日志。
+    {
+        let r = with_conn(ctx, |c| {
+            crate::issued::record(
+                c, &svc.serial_hex, &svc.cn, "service", "platform-console", "", team,
+                &crate::pki::ca_fingerprint_of(&ca_crt).unwrap_or_default(),
+                crate::pki::SERVICE_CERT_DAYS, "platform-console",
+            )
+        });
+        if let Err(e) = r {
+            eprintln!("platform-console: issued.record failed: {e}");
+        }
+    }
     // 3) mTLS 调租户 server（集群内 Service DNS）
     let url = format!("https://teamx-serve-{}.{ns}.svc:5783", crate::k8s::short_id(team));
     let body = json!({ "method": method, "args": args }).to_string();

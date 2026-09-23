@@ -554,6 +554,12 @@ pub fn create_tenant(
     let svc = format!("teamx-serve-{}.{}.svc", crate::k8s::short_id(team_id), ns);
     let sans = vec![svc.clone(), "localhost".to_string(), "127.0.0.1".to_string()];
     let srv = crate::pki::issue_server_cert_with_ca(&ca_cert_pem, &ca_key_pem, &sans)?;
+    // O-2 台账：server 证书是租户 CA 签的第一张证书 —— 签发即记录（与 apply 成败无关；
+    // 幂等复用分支不走到这里，不会重复）。
+    crate::issued::record(
+        conn, &srv.serial_hex, &srv.cn, "server", "", "", team_id, &ca_fp,
+        crate::pki::CERT_DAYS, "platform",
+    )?;
 
     // 3) apply 租户基础设施
     let yaml = crate::k8s::tenant_manifests(
@@ -591,6 +597,13 @@ pub fn create_tenant(
 
 /// 构造**换发信**（design/014 §8）：与邀请函同形态（`teamx-inv:v1:<base64>`），
 /// 但证书由**租户 CA** 签发、`server.url` 指向**租户 server**。
+/// 换发信 + 其成员证书元数据（O-2 台账用 serial/cn）。
+pub struct RotationLetter {
+    pub letter: String,
+    pub serial_hex: String,
+    pub cn: String,
+}
+
 pub fn rotation_letter(
     team_id: &str,
     team_name: &str,
@@ -599,7 +612,7 @@ pub fn rotation_letter(
     server_url: &str,
     ca_cert_pem: &str,
     ca_key_pem: &str,
-) -> Result<String, String> {
+) -> Result<RotationLetter, String> {
     let ca_fp = crate::pki::ca_fingerprint_of(ca_cert_pem)?;
     let cert = crate::pki::issue_member_cert_with_ca(ca_cert_pem, ca_key_pem, member_id, role, None)?;
     let payload = json!({
@@ -624,7 +637,40 @@ pub fn rotation_letter(
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD
         .encode(serde_json::to_string(&payload).map_err(|e| e.to_string())?);
-    Ok(format!("teamx-inv:v1:{b64}"))
+    Ok(RotationLetter {
+        letter: format!("teamx-inv:v1:{b64}"),
+        serial_hex: cert.serial_hex.clone(),
+        cn: cert.cn.clone(),
+    })
+}
+
+/// 读租户 CA（namespace 的 Secret；平台建租户时写入，平台不保留副本 —— 必改①）。
+/// 返回 `(namespace, ca.crt, ca.key)`。签 service 证书 / 换发 / ca-audit 都走这里。
+pub fn read_tenant_ca(
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<(String, String, String), String> {
+    let ns = crate::k8s::namespace_for(team_id);
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    let ca_secret = format!("teamx-ca-{}", crate::k8s::short_id(team_id));
+    let secret = kubectl
+        .get_json("secret", &ca_secret, &ns)?
+        .ok_or_else(|| format!("tenant CA secret {ca_secret} not found in {ns}"))?;
+    let dec = |k: &str| -> Option<String> {
+        use base64::Engine as _;
+        secret["data"][k]
+            .as_str()
+            .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    };
+    match (dec("ca.crt"), dec("ca.key")) {
+        (Some(a), Some(b)) => Ok((ns, a, b)),
+        _ => Err("tenant CA material missing in Secret".to_string()),
+    }
 }
 
 /// **成员证书换发**（design/014 §8 迁移三步的第 ①②③）：
@@ -643,23 +689,15 @@ pub fn reissue_member_certs(
     let ns = tenant["namespace"].as_str().unwrap_or("").to_string();
     // 租户 server 地址（集群内 Service DNS；与 tenant_manifests 一致）
     let server_url = format!("https://teamx-serve-{}.{ns}.svc:{}", crate::k8s::short_id(team_id), crate::k8s::SERVER_PORT);
-    // 读租户 CA（平台在建租户时写入租户 namespace 的 Secret）
-    let kubectl = crate::k8s::Kubectl::new(kubeconfig.map(str::to_string), context.map(str::to_string));
-    let ca_secret = format!("teamx-ca-{}", crate::k8s::short_id(team_id));
-    let secret = kubectl
-        .get_json("secret", &ca_secret, &ns)?
-        .ok_or_else(|| format!("tenant CA secret {ca_secret} not found in {ns}"))?;
-    let dec = |k: &str| -> Option<String> {
-        use base64::Engine as _;
-        secret["data"][k]
-            .as_str()
-            .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
-            .map(|b| String::from_utf8_lossy(&b).to_string())
-    };
-    let (ca_crt, ca_key) = match (dec("ca.crt"), dec("ca.key")) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return Err("tenant CA material missing in Secret".to_string()),
-    };
+    // 读租户 CA（平台在建租户时写入租户 namespace 的 Secret；与 service 车道同源）
+    let (secret_ns, ca_crt, ca_key) = read_tenant_ca(team_id, kubeconfig, context)?;
+    if secret_ns != ns {
+        return Err(format!("tenant namespace drift: db={ns} vs secret={secret_ns}"));
+    }
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
     let team_name: String = conn
         .query_row("SELECT name FROM teams WHERE id = ?1", params![team_id], |r| r.get(0))
         .unwrap_or_default();
@@ -683,7 +721,14 @@ pub fn reissue_member_certs(
         let role: String = conn
             .query_row("SELECT COALESCE(role,'contributor') FROM members WHERE id = ?1", params![member_id], |r| r.get(0))
             .unwrap_or_else(|_| "contributor".to_string());
-        let letter = rotation_letter(team_id, &team_name, member_id, &role, &server_url, &ca_crt, &ca_key)?;
+        let rot = rotation_letter(team_id, &team_name, member_id, &role, &server_url, &ca_crt, &ca_key)?;
+        let letter = rot.letter;
+        // O-2 台账：换发即记录（与 Secret 投递成败无关；重复换发靠 serial 去重）。
+        let ca_fp_here = crate::pki::ca_fingerprint_of(&ca_crt)?;
+        crate::issued::record(
+            conn, &rot.serial_hex, &rot.cn, "member", &role, member_id, team_id,
+            &ca_fp_here, crate::pki::CERT_DAYS, "platform",
+        )?;
         // ② 写 Secret（成员 Pod 重建时 setup 自动 import）
         let yaml = crate::k8s::rotation_secret_manifest(team_id, member_id, &letter);
         let applied = kubectl.apply(&yaml).is_ok();
@@ -707,6 +752,76 @@ pub fn reissue_member_certs(
         "members": steps.len(), "steps": steps,
         "note": "换发信已投递（Secret），成员 Pod 重建后生效；server_url 已同批切换；旧 server 保留待验证（D11）",
     }))
+}
+
+/// 经 service 车道调租户 server（同步版，供 CLI/commands 用；design/014 §6.5）：
+/// 读租户 CA Secret → 签一次性平台服务证书（短 TTL）→ mTLS POST `/rpc`。
+///
+/// 网络 I/O 跑在**独立 OS 线程**内自建 current-thread runtime —— `commands::execute`
+/// 在 CLI 是 sync 上下文、在 serve 侧可能是 async 上下文，独立线程两边都安全
+///（绝不在调用方线程上建 runtime，避免 "Cannot start a runtime from within a runtime"）。
+pub fn tenant_service_post(
+    team_id: &str,
+    server_url: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+    method: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let (_ns, ca_crt, ca_key) = read_tenant_ca(team_id, kubeconfig, context)?;
+    let svc_cn = format!("service:platform-cli:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let svc = crate::pki::issue_service_cert_with_ca(&ca_crt, &ca_key, "platform-cli", &svc_cn)?;
+    let url = server_url.to_string();
+    let body = json!({ "method": method, "args": args }).to_string();
+    std::thread::spawn(move || -> Result<Value, String> {
+        let mtls = crate::tunnel_client::material_from_pem(
+            &svc.cert_pem, &svc.key_pem, &ca_crt, "platform-cli",
+        )
+        .ok_or_else(|| "build service mTLS material failed".to_string())?;
+        let cfg = crate::tunnel_client::client_config(&mtls)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("runtime: {e}"))?;
+        let resp = rt.block_on(crate::tunnel_client::https_post_shared(&url, "/rpc", &body, &cfg, 15))?;
+        serde_json::from_str(&resp).map_err(|e| format!("bad response: {e}"))
+    })
+    .join()
+    .map_err(|_| "service call thread panicked".to_string())?
+}
+
+/// 租户 CA 审计 O-2：合并平台行 + 租户 server 行（`--server-url` 给出时才合；否则只
+/// 平台行 + 明确声明口径不完整），按 CA 分代给活数与"能否废旧 CA" verdict。
+pub fn tenant_ca_audit(
+    conn: &mut Connection,
+    team_id: &str,
+    server_url: Option<&str>,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let tenant =
+        tenant_get(conn, team_id)?.ok_or_else(|| format!("tenant for team {team_id} not found"))?;
+    let current_ca = tenant["ca_fingerprint"].as_str().unwrap_or("").to_string();
+    let mut server_rows: Vec<Value> = Vec::new();
+    let mut server_note = "platform rows only (--server-url not given)".to_string();
+    if let Some(url) = server_url {
+        match tenant_service_post(team_id, url, kubeconfig, context, "issued.list", json!({})) {
+            Ok(v) => {
+                server_rows = v
+                    .get("issued")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                server_note = format!("merged {} server rows via service lane", server_rows.len());
+            }
+            Err(e) => {
+                server_note = format!("tenant server unreachable ({e}); platform rows only");
+            }
+        }
+    }
+    let mut out = crate::issued::audit(conn, team_id, &current_ca, &server_rows)?;
+    out["server_note"] = json!(server_note);
+    Ok(out)
 }
 
 /// 回收租户（design/014 §2）：删 namespace（级联清掉 server/CA Secret/PVC/NetworkPolicy）

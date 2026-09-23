@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -511,6 +511,16 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
         },
+        Command::Issued(i) => match i {
+            IssuedCmd::List { team, ca } => json!({
+                "ok": true,
+                "issued": crate::issued::list(conn, team.as_deref(), ca.as_deref()).map_err(AppError)?,
+            }),
+            IssuedCmd::Revoke { serial } => {
+                let revoked = crate::issued::revoke(conn, serial).map_err(AppError)?;
+                json!({ "ok": true, "serial": serial, "revoked": revoked })
+            }
+        },
         Command::Tenant(t) => match t {
             TenantCmd::Create { team, server_image, kubeconfig, context } => {
                 crate::provision::create_tenant(
@@ -535,6 +545,16 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 crate::provision::reissue_member_certs(
                     conn,
                     team,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
+            TenantCmd::CaAudit { team, server_url, kubeconfig, context } => {
+                crate::provision::tenant_ca_audit(
+                    conn,
+                    team,
+                    server_url.as_deref(),
                     kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
                     context.as_deref(),
                 )
@@ -3075,6 +3095,8 @@ struct MintedInvite {
     invitation_id: String,
     serial_hex: String,
     cn: String,
+    /// 签发它的 CA 指纹（实例 CA 或租户 CA）—— O-2 台账按 CA 分代归集。
+    ca_fingerprint: String,
     letter: String, // "teamx-inv:v1:<base64>"
 }
 
@@ -3125,6 +3147,7 @@ fn mint_invite_cert(
             (issued, ca_pem, fingerprint)
         }
     };
+
     let now = db::now();
 
     let mut letter = json!({
@@ -3158,6 +3181,7 @@ fn mint_invite_cert(
         invitation_id,
         serial_hex: issued.serial_hex,
         cn: issued.cn,
+        ca_fingerprint: fingerprint,
         letter: format!("teamx-inv:v1:{encoded}"),
     })
 }
@@ -3252,6 +3276,12 @@ fn mint_invite(
         )
     })
     .map_err(|e| AppError(format!("invite failed: {e}")))?;
+    // O-2 台账：邀请即记录（成员证书签发；auto_approve 与否不影响"签发过"这一事实）。
+    crate::issued::record(
+        conn, &mint.serial_hex, &mint.cn, "member", role_key, &mint.member_id,
+        team_id, &mint.ca_fingerprint, crate::pki::CERT_DAYS, crate::issued::local_issuer(),
+    )
+    .map_err(AppError)?;
     Ok((mint.member_id, mint.invitation_id, mint.letter))
 }
 
@@ -3575,6 +3605,14 @@ pub fn cmd_team_clone(
             member_id_override,
         )?;
         minted.push((plan, mint));
+    }
+    // O-2 台账：clone 预签的每张成员证书都记录（签发即事实，与后继事务成败无关）。
+    for (plan, mint) in &minted {
+        crate::issued::record(
+            conn, &mint.serial_hex, &mint.cn, "member", &plan.role_key, &mint.member_id,
+            &clone_team_id, &mint.ca_fingerprint, crate::pki::CERT_DAYS, crate::issued::local_issuer(),
+        )
+        .map_err(AppError)?;
     }
 
     // Single outer transaction: create team + seed roles + copy custom roles +

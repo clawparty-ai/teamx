@@ -1232,6 +1232,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "invite",         // 成员邀请
     "node.provision", // 触发 provision
     "team.approve",   // 审批座位（激活成员）
+    "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
 ];
 
 /// 平台 console 车道是否允许该方法（fail-closed：不在白名单即拒绝）。
@@ -2045,6 +2046,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             team: s("team").ok_or_else(|| "tenant.reissue_members requires `team`".to_string())?,
             kubeconfig: s("kubeconfig").map(std::path::PathBuf::from),
             context: s("context"),
+        }),
+        "issued.list" => Command::Issued(crate::cli::IssuedCmd::List {
+            team: o("team"),
+            ca: o("ca"),
+        }),
+        "issued.revoke" => Command::Issued(crate::cli::IssuedCmd::Revoke {
+            serial: s("serial").ok_or_else(|| "issued.revoke requires `serial`".to_string())?,
+        }),
+        "tenant.ca_audit" | "tenant.ca-audit" => Command::Tenant(TenantCmd::CaAudit {
+            team: s("team").ok_or_else(|| "tenant.ca_audit requires `team`".to_string())?,
+            server_url: o("server_url"),
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
         }),
         "tenant.list" => Command::Tenant(TenantCmd::List),
         "tenant.show" => Command::Tenant(TenantCmd::Show {
