@@ -785,7 +785,7 @@ pub fn tenant_service_post(
     // 自动补会把请求推回 team 路径（server 侧 team id 与平台侧本就不同）。
     // 需要 team 作用域的方法由调用方显式传。
     let body = json!({ "method": method, "args": args }).to_string();
-    std::thread::spawn(move || -> Result<Value, String> {
+    let v: Value = std::thread::spawn(move || -> Result<Value, String> {
         let mtls = crate::tunnel_client::material_from_pem(
             &svc.cert_pem, &svc.key_pem, &ca_crt, "platform-console",
         )
@@ -799,7 +799,13 @@ pub fn tenant_service_post(
         serde_json::from_str(&resp).map_err(|e| format!("bad response: {e}"))
     })
     .join()
-    .map_err(|_| "service call thread panicked".to_string())?
+    .map_err(|_| "service call thread panicked".to_string())??;
+    // RPC 信封归一：在这里剥掉 {"ok":true,"data":...} 一层，调用方直接拿 dispatch 结果。
+    // 失败形 {"ok":false,"error":...} 原样返回（调用方判 ok）。
+    match v.get("data") {
+        Some(inner) if v.get("ok").and_then(Value::as_bool).unwrap_or(false) => Ok(inner.clone()),
+        _ => Ok(v),
+    }
 }
 
 /// 租户 CA 审计 O-2：合并平台行 + 租户 server 行（`--server-url` 给出时才合；否则只
