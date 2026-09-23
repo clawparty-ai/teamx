@@ -161,10 +161,18 @@
 | 7 升级/回滚 | ⬜ 未实现 | 镜像同源构建已就绪（`75971a4`）；滚动升级/回滚断言未写 |
 | 8 bootstrap 一次性 token | ✅ 已实现 | `platform bootstrap-token/redeem/revoke`（`4d192ff`）+ `tests/platform-test.sh` 7 断言 |
 | §8 迁移 ①②③ 成员证书换发 | ✅ 已实现 | `teamx tenant reissue-members` + RPC + 平台控制台路由（`98f8059`）；E2E 断言换发信 CA **DER 指纹 == 租户 CA**（tenant N8）+ 控制台入口（platform-console C8） |
+| 🖥️ 台式机真集群验证（2026-09-23，k3s v1.34 单节点） | ✅ 部分 | 单测 394 + stub E2E 47 全绿；member 真集群 `k8e-real-cluster-test.sh` **ALL PASSED**（R6b 走 flannel 显式例外）；**租户首次上真集群**：namespace/CA Secret/Deployment/PVC(Bound)/PDB/PriorityClass/Service 全就位，server Pod **1/1**，Service DNS 解析正常，destroy 清单完整。抓到并修了 4 个真机问题（见下） |
 
 其它已实现但不在 §9 列表内的：平台控制台骨架（`1a0e56f`/`33c5a45`，含 launch token 登录 + GitHub OAuth 配置面）、租户全链 E2E 接入 `run-all.sh`（18c–18f）。
 
-**明确未做**（避免"看起来完成"）：GitHub OAuth 真实 token 交换（网络不可达，接口如实返回未完成）；平台服务证书吊销/轮换；CA 轮换双窗口与灾备演练；真实集群（kind 一次性验证后已清理，BYO 台式机未到位）。
+**台式机真集群抓到的 4 个问题（已修）**：
+1. 测试 NS 取 8 位已过期（short_id 早改 16 位）→ R1 误报。
+2. R6b 的 CNI 探测 `grep` 无匹配 + `set -e/pipefail` → 脚本静默死（无 FAIL 无 PASS）；两处加 `|| true`。
+3. **租户 server 无 Service** → service 车道拨号目标不存在；补 ClusterIP Service。
+4. **server Pod 永远 0/1**：mTLS 下 kubelet HTTPS 探针无客户端证书 → 改就绪文件 + exec 探针。
+另：台式机 k3s 自身 overlay 曾因换网段（flannel public-ip 陈旧）瘫痪，表现为 PVC 永 Pending + 调度器对 PVC Pod 静默 —— 重启 k3s 自愈；与本项目无关，已记录。
+
+**明确未做**（避免"看起来完成"）：GitHub OAuth 真实 token 交换（网络不可达，接口如实返回未完成）；平台服务证书吊销/轮换；CA 轮换双窗口与灾备演练；**站外控制台直连租户 ClusterIP（开放项 O-5）**。
 
 ## 9.7 评审处置（weiye task-92 · v2 评审 CHANGES-REQUESTED）
 
@@ -172,7 +180,7 @@
 
 | # | 意见 | 处置 | 落点 |
 |---|---|---|---|
-| 🔴 重大缺口 | 迁移只设计了 member 侧；**team 服务端状态**（ledger/goal/tasks/discussions/members/tunnels/IM 绑定）在旧库，新租户 server 是空库——"用户显式迁移"后成员签到的是一个"失忆"的租户；全仓无 team 状态导出/导入能力 | **⏸ 待 owner 产品决定**（三选一，见下）。**不擅自裁决**（涉及产品承诺与工作量，非实现细节） | §11 开放项 O-1 |
+| 🔴 重大缺口 | 迁移只设计了 member 侧；**team 服务端状态**（ledger/goal/tasks/discussions/members/tunnels/IM 绑定）在旧库，新租户 server 是空库——"用户显式迁移"后成员签到的是一个"失忆"的租户；全仓无 team 状态导出/导入能力 | ✅ **已裁决（owner @ 2026-09-22）**：采纳 weiye 倾向——**(c) v1 默认**（第二步只服务新建租户，存量 step-1 永久留旧 server，与 D11 一致）+ **(a) 作为显式选项**（控制台显式「全新开始」，标注空账本）；**(b) 导出/导入列后续**，v1 不做 | §11 开放项 O-1 |
 | 必改① | platform-console service 证书**签发路径**未定义（鸡生蛋：CA 私钥在租户 server 侧，平台签不了） | ✅ **已裁决并已实现**：平台建租户时生成 CA；平台不保留副本，签 service 证书时经 kubeconfig **读回** Secret 现场签、短 TTL、每次重签 | §4 生成行 + §6.5 签发路径 |
 | 必改② | CA 轮换的**成员侧换发触发器**未定义；"废旧 CA"缺前置校验 | ✅ 触发器已实现（`tenant reissue-members`，operator 驱动 + Pod 重建语义 + 会话中断一次）；⚠️ **"旧 CA 有效证书数=0"前置校验未实现**（无按 CA 分代签发台账）→ 开放项 O-2 | §4 轮换行 + §9.6 |
 | 必改③ | 不变量 1 对**非 GitHub 来源租户**不成立（CLI/IM 团队无 installation） | ✅ 已改：`team_id ↔ namespace` 恒 1:1；`installation_id` 可空、有值才断言；§9.2 负例同步限定 | §1 不变量 1 + §9.2 |
@@ -208,22 +216,29 @@ weiye 给出的三选一（其倾向：**(c) 为 v1 默认 + (a) 作为显式选
 **M11 闭环声明**：第二步 server 入集群后，平台建租户所用的 kubeconfig 权限须收敛
 （namespace 模板化 + 最小 RBAC，或 operator 模式），并声明**成员数据面不再依赖集群级凭据**。
 
-**开放项（评审时定）**
-1. 租户 server 的**端口/Ingress 暴露方式**（每租户独立域名 vs 平台统一入口 + 路径前缀）。
-2. 平台 console 的技术栈（复用现有 console 的静态+API 模式 vs 新建 Next.js）。
-3. 租户 CA 的算法与有效期口径（沿用现有 pki 默认 vs 按租户配置）。
-4. 双 CA 并存期的**最长窗口**（轮换 SLA）。
-5. 平台库（租户元数据/审计）自身的高可用方案（v1 单副本 + PVC？）—— **平台库也须进灾备清单**，
-   并补 console 重建 runbook（平台挂了全租户无法新建/回收）。
+**开放项（评审时定）** —— 以下 1–5 已由 owner 裁决（2026-09-22，v1 口径，可后续修订）：
+
+1. ~~租户 server 的**端口/Ingress 暴露方式**~~ **裁决**：**每租户独立端点**（独立子域或独立端口），**TLS 透传（不终止）**，保留端到端 mTLS（每租户 CA，NFR-2）；平台统一入口仅服务平台面 API/console，**不代理成员 mTLS 流量**。
+2. ~~平台 console 的技术栈~~ **裁决**：**复用现有 console（静态 + API 模式）**，v1 不新建 Next.js。
+3. ~~租户 CA 的算法与有效期口径~~ **裁决**：**沿用现有 pki 默认**（v1 不做 per-tenant 配置）。
+4. ~~双 CA 并存期的**最长窗口**（轮换 SLA）~~ **裁决**：**≤ 30 天**；窗口内完成成员证书换发（`tenant reissue-members` + Pod 重建）；超期废旧 CA 前必须满足 O-2 前置（旧 CA 有效证书数=0）。
+5. ~~平台库（租户元数据/审计）自身的高可用方案~~ **裁决**：**v1 单副本 + PVC**，**纳入灾备清单**并补 console 重建 runbook（平台挂了全租户无法新建/回收）；HA（多副本/外部 DB）列后续。
 
 **评审新开开放项（weiye task-92）**
 
-6. **O-1 🔴 team 服务端状态的迁移**（重大缺口，待 owner 决定）：(a) 全新开始（空账本，旧库只读归档）/
-   (b) 设计 team 状态导出导入（ledger+taskx+goal+members，约一个 PR 量级，含 id/seq 与引用完整性）/
-   (c) v1 只服务新建租户、存量永久留旧 server。**未裁决前不实现迁移入口**（避免做出与产品决定冲突的默认）。
+6. **O-1 🔴 team 服务端状态的迁移** —— **已裁决（owner @ 2026-09-22）**：**v1 默认 (c)**（第二步只服务新建租户，存量 step-1 member 永久留旧 server，与 D11「不强制迁移」最一致，接受长期双轨）+ **(a) 作为显式选项**（控制台提供「全新开始/新建团队」入口，显式标注空账本；旧 server 数据只读归档）；**(b) team 状态导出/导入列后续**（约一个 PR，含 id/seq 与引用完整性），v1 不做。实现要求：(a) 入口须显式、不设默认迁移路径。
 7. **O-2 CA 轮换的签发台账**：需 server 能按 CA 分代枚举自己签发的有效证书（否则"废旧 CA"无法证明
-   前置条件"旧 CA 有效证书数=0"）→ 与轮换实现一并做。
+   前置条件"旧 CA 有效证书数=0"）→ 与轮换实现一并做。**owner 附注**：**轮换 v1 默认不启用**，直到 O-2 台账落地（否则无法证明废旧 CA 前置）。
 8. **O-3 平台 service 证书的吊销/轮换**：当前为短 TTL + 每次重签（见 §6.5），未做显式吊销；
-   若后续改为长期证书，须补吊销路径与审计。
+   若后续改为长期证书，须补吊销路径与审计。**owner 附注**：v1 维持短 TTL + 每次重签，不做显式吊销。
 9. **O-4 GitHub OAuth 真实 token 交换**：接口与配置面已就位，callback 如实返回未完成（受限网络）；
    落地需可达 github.com 的环境。
+10. **O-5 🔴 站外平台控制台 → 租户 server 的拨号路径**（真集群验证新发现）：Service 补上后，
+    集群内 DNS/拨号已通，但 operator 本机跑的 `platform console` 直连不到 ClusterIP。
+    候选：(a) 控制台进集群跑（Deployment）；(b) 经 kube-apiserver proxy 拨号
+    （`/api/v1/namespaces/<ns>/services/<svc>:<port>/proxy/`，复用 kubeconfig 凭据）；
+    (c) 每租户 NodePort/LB（暴露面，需安全评审）；
+    **(d)（与开放项 1 裁决衔接）拨租户独立端点**：开放项 1 已裁决"每租户独立端点 + TLS 透传、
+    保留端到端 mTLS"——service 车道可直接拨该独立端点（平台持租户 CA 签的 service 证书，
+    端到端 mTLS 不变），**无需 ClusterIP 可达**。这是目前最顺的路径，待 owner 确认是否采纳为 O-5 主选。
+    **未裁决前 service 车道在真集群不可达**，stub E2E 的 C7 负例保持 fail-closed。

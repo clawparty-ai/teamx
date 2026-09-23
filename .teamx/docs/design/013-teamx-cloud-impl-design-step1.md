@@ -171,10 +171,10 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 
 ## 11. 开放项（评审时定）
 
-1. PVC 快照的**频率与保留期**具体值（NFR-10）。
-2. member 镜像的**registry 与多架构发布流程**（私有 registry 位置、tag 规范）。
-3. `setup` initContainer 与 `kubectl exec` 两种 bootstrap 载体的取舍（前者更声明式，后者复用 006 脚本更彻底）。
-4. Pod 资源 requests/limits 的默认值（默认规格）。
+1. ~~PVC 快照的**频率与保留期**具体值（NFR-10）~~ **已裁决（owner @ 2026-09-22）**：频率 = **每日 1 次自动 + 升级/迁移前即时一次**；保留期 = **7 天**（与 design/004 节点快照「保留 7d 后删」口径一致）；PVC 走网络附着存储（云盘 CSI，D7）。开放项关闭。
+2. member 镜像的**registry 与多架构发布流程**——**方向（owner @ 2026-09-22）**：私有 registry、**digest pin + semver tag**、**多架构 arm64+amd64**；具体 registry 位置由 WS-G 定（未关闭）。
+3. ~~`setup` initContainer 与 `kubectl exec` 两种 bootstrap 载体的取舍~~ **已裁决（owner @ 2026-09-22，采纳 A）**：以 **`setup` initContainer 为唯一正式载体**（声明式 + 幂等，真集群已验证）；`kubectl exec` 仅保留为人工调试/逃生手段，不进 provision 主链。开放项关闭。
+4. ~~Pod 资源 requests/limits 的默认值（默认规格）~~ **已裁决（owner @ 2026-09-22，原则）**：member Pod 全部容器 **Guaranteed QoS（requests==limits）**；初值 main `500m/1Gi`、侧车（ttyd/fs/expose）各 `50m/64Mi`，合计不超节点下限（1 vCPU / 2 GiB，006 D/Q），`LimitRange` 兜底；具体数值由 WS-F 真集群 profiling 校准（校准后仍须 Guaranteed）。开放项关闭。
 5. ~~M4：第一步是否需要 Service~~ **已裁决（owner @ seq 7397，采纳 (ii)）**：第一步**不建 Service**，`nodes.ip` 存 **Pod IP**（集群外不可路由，仅供诊断；隧道/转发经既有转发机制）；§11.5 关闭，稳定寻址留第二步若需再议。
 
 ---

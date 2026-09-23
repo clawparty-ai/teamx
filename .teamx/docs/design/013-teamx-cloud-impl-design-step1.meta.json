@@ -4,7 +4,7 @@
   "state": "approved",
   "owner": "caishu",
   "created_at": "2026-09-21T10:15:32+00:00",
-  "updated_at": "2026-09-22T02:52:52+00:00",
+  "updated_at": "2026-09-22T15:55:00+00:00",
   "history": [
     {
       "state": "draft",
@@ -35,6 +35,12 @@
       "by": "caishu",
       "at": "2026-09-22T02:52:52+00:00",
       "note": "定稿（owner 指示不再等 caicai）：三份评审（weiye 4必改 / weiye-mini 2必改 + M0-M12 系列修正 / xiaods-mac 5必改）全部落实；真集群（kind）8 断言全绿；M4 已裁决。v3.1 = weiye-mini 的 M0-M12 与本人 §14 的并集（此前双方各持半份，已按 TEAM.md 同步规则合并）。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-22T15:55:00+00:00",
+      "note": "owner 裁决 §11 开放项：1) PVC 快照 每日1次+升级/迁移前即时一次、保留7天（对齐 design/004）；3) bootstrap 载体定 setup initContainer（kubectl exec 仅人工调试/逃生）；4) Pod 全容器 Guaranteed QoS（初值 main 500m/1Gi、侧车 ttyd/fs/expose 各 50m/64Mi，WS-F 真集群校准后仍须 Guaranteed）。§11.2 镜像 registry 仅给方向（私有 registry + digest pin + 多架构 arm64/amd64），未关闭。"
     }
   ]
 }

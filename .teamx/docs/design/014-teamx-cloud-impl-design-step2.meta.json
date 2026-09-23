@@ -4,7 +4,7 @@
   "state": "approved",
   "owner": "caishu",
   "created_at": "2026-09-22T02:09:01+00:00",
-  "updated_at": "2026-09-22T02:53:31+00:00",
+  "updated_at": "2026-09-22T16:05:00+00:00",
   "history": [
     {
       "state": "draft",
@@ -17,6 +17,18 @@
       "by": "caishu",
       "at": "2026-09-22T02:53:31+00:00",
       "note": "定稿（owner 指示不等最后一位评审）：weiye-mini 的 2 必改 + 1 重大缺口 + 5 建议全部落实 —— §2 命名改全长/≥16 hash（M5，代码 short_id 8→16 同步）、§8 补成员证书换发三步、新增 §6.5 平台 console 认证通道（service 车道 + 二维白名单 fail-closed）、Recreate 措辞、users 双层权威、双 CA trust bundle、平台 HA/灾备。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-22T16:00:00+00:00",
+      "note": "owner 裁决 O-1（team 服务端状态迁移）：v1 默认 (c) 只服务新建租户 + (a) 作为显式选项（控制台「全新开始」、标注空账本）；(b) 导出/导入列后续。§9.7 表与 §11 O-1 同步更新。"
+    },
+    {
+      "state": "approved",
+      "by": "caishu",
+      "at": "2026-09-22T16:05:00+00:00",
+      "note": "owner 裁决 §11 开放项 1-5：每租户独立端点 + TLS 透传保留端到端 mTLS；console 复用现有静态+API；CA 沿用 pki 默认；双 CA 窗口 ≤30d（废旧 CA 须先满足 O-2）；平台库 v1 单副本+PVC+灾备。附注 O-2（轮换 v1 默认不启用）/O-3（维持短 TTL）。"
     }
   ]
 }
