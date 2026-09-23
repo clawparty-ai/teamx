@@ -791,6 +791,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .error{font-size:13px;color:#F56C6C;margin-top:4px;display:none;min-height:18px}
  .oauth-row{display:flex;flex-direction:column;gap:10px}
  .app{flex:1;display:block;padding:24px 20px;max-width:1080px;width:100%;margin:0 auto}
+ .tabs{display:flex;gap:4px;border-bottom:1px solid #EBEEF5;margin-bottom:18px;background:#fff;border-radius:4px 4px 0 0;padding:8px 12px 0;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7)}
+ .tab{border:none;background:none;padding:10px 16px;font-size:14px;color:#909399;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:inherit}
+ .tab:hover{color:#4A90E5}
+ .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
+ .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
  .panel{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:20px 22px;margin-bottom:18px}
  .panel h2{font-size:14px;font-weight:600;margin-bottom:12px}
  .panel h2 .tag{font-size:12px;color:#909399;font-weight:400}
@@ -832,29 +837,44 @@ const INDEX_HTML: &str = r#"<!doctype html>
 </div>
 
 <div class="app" id="app" style="display:none">
-  <div class="panel"><h2>我的团队 <span class="tag">自助 · O-1(a) 全新开始</span></h2>
-    <div class="muted" id="quota"></div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="mine" onclick="showTab('mine')">我的团队</button>
+    <button class="tab op-only" data-tab="tenants" onclick="showTab('tenants')">租户管理</button>
+    <button class="tab" data-tab="members" onclick="showTab('members')">成员操作</button>
+    <button class="tab op-only" data-tab="platform" onclick="showTab('platform')">平台管理</button>
+  </nav>
+  <div class="tabpage" id="tab-mine">
+  <div class="panel"><h2>我的团队 <span class="tag">自助 · O-1(a) 全新开始</span><span class="quota-pill" id="quota"></span></h2>
     <div class="row"><input class="input" id="myName" placeholder="团队名"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button></div>
     <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th></th></tr></thead><tbody id="mine"></tbody></table>
     <div class="row"><input class="input" id="bsTeam" placeholder="team id"><input class="input wide" id="bsUrl" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam()">初始化团队</button></div>
-    <div class="muted">初始化后把 owner 邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner：</div>
+    <div class="muted">初始化后把 owner 邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner
+      <button class="btn btn-sm copybtn" onclick="copyLetter()">复制邀请函</button></div>
     <pre class="out muted" id="letterOut"></pre>
   </div>
+  </div>
+  <div class="tabpage" id="tab-tenants" style="display:none">
 
   <div class="panel"><h2>租户 <span class="tag">project（运维全量）</span></h2>
     <div class="row"><input class="input" id="team" placeholder="team id"><button class="btn btn-sm" onclick="createTenant()">创建租户</button></div>
     <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th>server 镜像</th><th></th></tr></thead><tbody id="tenants"></tbody></table>
   </div>
 
+  </div>
+  <div class="tabpage" id="tab-members" style="display:none">
   <div class="panel"><h2>租户内成员操作 <span class="tag">经 service 车道 §6.5</span></h2>
+    <div class="muted">普通用户填自己名下租户的 team id 即可（归属鉴权）；运维可操作全部。</div>
     <div class="row"><input class="input" id="invTeam" placeholder="team id"><input class="input" id="invRole" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="invite()">邀请成员</button></div>
     <div class="row"><input class="input" id="pvTeam" placeholder="team id"><input class="input" id="pvMember" placeholder="member id"><button class="btn btn-sm" onclick="provision()">一键 provision</button></div>
     <pre class="out muted" id="svcOut"></pre>
   </div>
 
+  </div>
+  <div class="tabpage" id="tab-platform" style="display:none">
   <div class="panel"><h2>平台 token</h2><table><thead><tr><th>id</th><th>state</th><th>created</th><th>redeemed_by</th></tr></thead><tbody id="tokens"></tbody></table></div>
   <div class="panel"><h2>平台管理员</h2><table><thead><tr><th>user</th><th>granted_at</th><th>via</th></tr></thead><tbody id="admins"></tbody></table></div>
   <div class="panel"><h2>平台审计 <span class="tag">独立于租户台账</span></h2><table><thead><tr><th>at</th><th>actor</th><th>action</th><th>detail</th></tr></thead><tbody id="audit"></tbody></table></div>
+  </div>
 </div>
 <script>
 const q=new URLSearchParams(location.search);
@@ -863,6 +883,8 @@ else boot();
 async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.json()}
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
+function showTab(name){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));document.querySelectorAll('.tabpage').forEach(p=>p.style.display=p.id==='tab-'+name?'block':'none')}
+async function copyLetter(){const t=document.getElementById('letterOut').textContent;if(!t){alert('暂无邀请函，先点"初始化团队"');return}try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
 async function boot(){
   const me=await jget('/api/me');
@@ -870,6 +892,9 @@ async function boot(){
   document.getElementById('loginWrap').style.display='none';document.getElementById('app').style.display='block';
   document.getElementById('who').textContent=me.who||'';
   document.getElementById('logoutBtn').style.display='inline-block';
+  const isOp=(me.who||'').indexOf('operator')===0;
+  document.querySelectorAll('.tab.op-only').forEach(b=>b.style.display=isOp?'':'none');
+  showTab('mine');
   await loadMine();await loadTenants();await loadPlatform();
 }
 async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else loginFail(r.error)}
