@@ -759,7 +759,7 @@ async fn api_oauth_callback(
 
 /// 平台控制台页面（单文件；平台面：租户 / token / 管理员 / 审计）。
 const INDEX_HTML: &str = r#"<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>登录 | Teamx Cloud · 平台控制台</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Teamx Cloud · 平台控制台</title>
 <style>
  *{box-sizing:border-box;margin:0;padding:0}
  body{font-family:"Microsoft YaHei","PingFang SC",-apple-system,BlinkMacSystemFont,sans-serif;background:#f8f8f8;color:#333;min-height:100vh;display:flex;flex-direction:column}
