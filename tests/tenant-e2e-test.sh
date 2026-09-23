@@ -206,7 +206,7 @@ RV="$("$TEAMX" --json issued revoke --serial "$MSER" 2>&1)"
 [ "$(echo "$("$TEAMX" --json issued revoke --serial deadbeef 2>&1)" | jq "d['revoked']")" = "False" ] || fail "N11: 吊销不存在应为 false"
 A="$("$TEAMX" --json tenant ca-audit --team "$TEAM_ID" 2>&1)" || fail "N11: ca-audit 失败: $A"
 [ "$(echo "$A" | jq "d['ok']")" = "True" ] || fail "N11: ca-audit 未 ok"
-[ "$(echo "$A" | jq "d['current_ca'] == d['per_ca'][0]['ca_fingerprint']")" = "True" ] || fail "N11: current_ca 对不上"
+[ "$(echo "$A" | jq "len([x for x in d['per_ca'] if x['ca_fingerprint']==d['current_ca']])")" = "1" ] || fail "N11: per_ca 缺 current_ca 条目"
 [ "$(echo "$A" | jq "d['server_note']")" != "" ] || fail "N11: 缺 server_note（合并口径声明）"
 # 吊销**租户 CA 的换发成员证书**（按 CA+kind 精确挑 —— O-2 按代计数的核心）
 MSER="$(echo "$L" | jq "[x['serial_hex'] for x in d['issued'] if x['kind']=='member' and x['ca_fingerprint']=='$TFP'][0]")"

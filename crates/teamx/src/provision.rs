@@ -761,6 +761,7 @@ pub fn reissue_member_certs(
 /// 在 CLI 是 sync 上下文、在 serve 侧可能是 async 上下文，独立线程两边都安全
 ///（绝不在调用方线程上建 runtime，避免 "Cannot start a runtime from within a runtime"）。
 pub fn tenant_service_post(
+    conn: &mut Connection,
     team_id: &str,
     server_url: &str,
     kubeconfig: Option<&str>,
@@ -769,13 +770,26 @@ pub fn tenant_service_post(
     args: Value,
 ) -> Result<Value, String> {
     let (_ns, ca_crt, ca_key) = read_tenant_ca(team_id, kubeconfig, context)?;
-    let svc_cn = format!("service:platform-cli:{}", &uuid::Uuid::new_v4().to_string()[..8]);
-    let svc = crate::pki::issue_service_cert_with_ca(&ca_crt, &ca_key, "platform-cli", &svc_cn)?;
+    // 平台面统一身份 platform-console（server 只认该身份 + im-gateway）；
+    // instance 前缀 cli- 与控制台的 console- 区分调用方（审计可辨）。
+    let svc_cn = format!("cli-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let svc = crate::pki::issue_service_cert_with_ca(&ca_crt, &ca_key, "platform-console", &svc_cn)?;
+    // O-2 台账：平台侧签发的 service 证书（短 TTL）落一行。
+    let ca_fp = crate::pki::ca_fingerprint_of(&ca_crt)?;
+    crate::issued::record(
+        conn, &svc.serial_hex, &svc.cn, "service", "platform-cli", "", team_id,
+        &ca_fp, crate::pki::SERVICE_CERT_DAYS, crate::issued::local_issuer(),
+    )?;
     let url = server_url.to_string();
+    // service 车道要求 args 带 team（租户键；actor 在 server 侧解析，拒绝 member_id 伪装）。
+    let mut args = args;
+    if args.get("team").is_none() {
+        args["team"] = json!(team_id);
+    }
     let body = json!({ "method": method, "args": args }).to_string();
     std::thread::spawn(move || -> Result<Value, String> {
         let mtls = crate::tunnel_client::material_from_pem(
-            &svc.cert_pem, &svc.key_pem, &ca_crt, "platform-cli",
+            &svc.cert_pem, &svc.key_pem, &ca_crt, "platform-console",
         )
         .ok_or_else(|| "build service mTLS material failed".to_string())?;
         let cfg = crate::tunnel_client::client_config(&mtls)?;
@@ -805,7 +819,7 @@ pub fn tenant_ca_audit(
     let mut server_rows: Vec<Value> = Vec::new();
     let mut server_note = "platform rows only (--server-url not given)".to_string();
     if let Some(url) = server_url {
-        match tenant_service_post(team_id, url, kubeconfig, context, "issued.list", json!({})) {
+        match tenant_service_post(conn, team_id, url, kubeconfig, context, "issued.list", json!({})) {
             Ok(v) => {
                 server_rows = v
                     .get("issued")

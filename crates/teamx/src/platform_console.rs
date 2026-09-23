@@ -269,7 +269,8 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
         _ => return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "tenant CA material missing in Secret"}))).into_response(),
     };
     // 2) 用租户 CA 签平台服务证书（service:platform-console:<instance>）
-    let svc_cn = format!("service:platform-console:{}", &ctx.launch_token[..8.min(ctx.launch_token.len())]);
+    // instance 只取 token 前缀（CN 由签发函数组装为 service:platform-console:<instance>，调用方不得自带前缀）
+    let svc_cn = format!("console-{}", &ctx.launch_token[..8.min(ctx.launch_token.len())]);
     let svc = match crate::pki::issue_service_cert_with_ca(&ca_crt, &ca_key, "platform-console", &svc_cn) {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
