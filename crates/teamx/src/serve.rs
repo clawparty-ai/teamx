@@ -1233,6 +1233,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "node.provision", // 触发 provision
     "team.approve",   // 审批座位（激活成员）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
+    "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
 ];
 
 /// 平台 console 车道是否允许该方法（fail-closed：不在白名单即拒绝）。
@@ -1274,6 +1275,28 @@ fn dispatch_platform_console(
     // 不关心 server 侧的 team 划分（server 侧 team id 与平台侧本就不同）。
     // 认证靠租户 CA 签的 service 证书本身；该命令不需要 actor，不做 owner 解析。
     // 其余方法仍强制 team（下不变）。
+    // 租户 team 自举 O-1(a)：只在空 server 上一次性建首 team + owner 邀请。
+    // 认证靠租户 CA 签的 service 证书（仅平台持有签发能力）；一次性由 core 保证。
+    if method == "tenant.bootstrap" {
+        let team_id = args.get("team_id").and_then(Value::as_str).unwrap_or("");
+        let team_name = args.get("team_name").and_then(Value::as_str).unwrap_or("");
+        let owner_name = args.get("owner_name").and_then(Value::as_str).unwrap_or("");
+        let owner_user_id = args.get("owner_user_id").and_then(Value::as_str).unwrap_or("");
+        let server_url = args.get("server_url").and_then(Value::as_str).unwrap_or("");
+        let _ = conn.execute(
+            "INSERT INTO platform_audit (at, actor, action, detail) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                crate::db::now(),
+                format!("service:platform-console:{instance}"),
+                "tenant.rpc",
+                format!("team={team_id} method=tenant.bootstrap"),
+            ],
+        );
+        return crate::commands::bootstrap_tenant_team(
+            conn, team_id, team_name, owner_name, owner_user_id, server_url,
+        )
+        .map_err(|e| e.to_string());
+    }
     if method == "issued.list" && args.get("team").is_none() {
         // 直接调台账（不进 dispatch）：该命令不需要 actor；虚构 member CN 反而会被
         // 座位检查拦下。认证已由外层 mTLS（租户 CA 签的 service 证书）完成。
@@ -2055,6 +2078,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "tenant.create" => Command::Tenant(TenantCmd::Create {
             team: s("team").ok_or_else(|| "tenant.create requires `team`".to_string())?,
             server_image: o("server_image"),
+            owner_user: o("owner_user"),
             kubeconfig: None,
             context: None,
         }),

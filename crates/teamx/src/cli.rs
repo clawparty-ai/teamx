@@ -2336,6 +2336,15 @@ pub enum PlatformUserCmd {
     },
     /// List users (never prints password hashes)
     List,
+    /// Set a user's tenant quota (0..=100)
+    SetQuota {
+        /// user id
+        #[arg(long)]
+        user_id: String,
+        /// max tenants the user may own
+        #[arg(long)]
+        quota: i64,
+    },
 }
 
 /// 平台面（design/014 §6/§7）。
@@ -2438,6 +2447,9 @@ pub enum TenantCmd {
         /// team id this tenant serves (the tenant key is installation_id ↔ team_id ↔ namespace)
         #[arg(long)]
         team: String,
+        /// platform user id owning this tenant (Phase 2; quota-checked; empty = operator tenant)
+        #[arg(long)]
+        owner_user: Option<String>,
         /// server image (default: TEAMX_SERVER_IMAGE or teamx-server:latest)
         #[arg(long)]
         server_image: Option<String>,

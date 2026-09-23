@@ -491,6 +491,22 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_platform_sessions_user ON platform_sessions(user_id);",
     )?;
+    // 用户归属 team Phase 2：租户归属 + 配额（新表；不 ALTER 老表）。
+    // tenant_owners：租户 → 平台用户（自助建租户的用户）；无行 = 历史/operator 租户（仅 operator 可见）。
+    // platform_quotas：用户配额（无行 = 默认配额，见 platform::DEFAULT_TENANT_QUOTA）。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tenant_owners (
+           team_id    TEXT PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+           user_id    TEXT NOT NULL,
+           created_at TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_tenant_owners_user ON tenant_owners(user_id);
+         CREATE TABLE IF NOT EXISTS platform_quotas (
+           user_id      TEXT PRIMARY KEY,
+           tenant_quota INTEGER NOT NULL,
+           updated_at   TEXT NOT NULL
+         );",
+    )?;
     // 签发台账 O-2（design/014 §4）：server 能按 CA 分代枚举自己签发的有效证书。
     // 所有经 CA 签发的证书（member/server/service）都在签发处落一行；
     // 平台库记平台侧签发，租户 server 库记租户侧签发，ca-audit 合并两边。

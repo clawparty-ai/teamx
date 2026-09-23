@@ -483,6 +483,98 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 用户归属 team Phase 2：配额 + 归属查询。
+// ---------------------------------------------------------------------------
+
+/// 默认租户配额（用户无显式配额行时）。
+pub const DEFAULT_TENANT_QUOTA: i64 = 3;
+
+/// 用户配额（显式行，否则默认）。
+pub fn tenant_quota(conn: &Connection, user_id: &str) -> Result<i64, String> {
+    let q: Option<i64> = conn
+        .query_row(
+            "SELECT tenant_quota FROM platform_quotas WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    Ok(q.unwrap_or(DEFAULT_TENANT_QUOTA))
+}
+
+/// 设配额（管理员操作；调用方鉴权）。
+pub fn set_quota(conn: &mut Connection, user_id: &str, quota: i64) -> Result<Value, String> {
+    if !(0..=100).contains(&quota) {
+        return Err("quota must be 0..=100".to_string());
+    }
+    // 用户须存在
+    let exists: Option<String> = conn
+        .query_row("SELECT id FROM platform_users WHERE id = ?1", params![user_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    if exists.is_none() {
+        return Err("user not found".to_string());
+    }
+    let now = crate::db::now();
+    conn.execute(
+        "INSERT INTO platform_quotas (user_id, tenant_quota, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(user_id) DO UPDATE SET tenant_quota = ?2, updated_at = ?3",
+        params![user_id, quota, now],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    audit(conn, "platform", "platform_user.quota_set", Some(&format!("id={user_id} quota={quota}")))?;
+    Ok(json!({ "ok": true, "user_id": user_id, "tenant_quota": quota }))
+}
+
+/// 配额检查：名下租户数 < 配额才允许新建。
+pub fn check_tenant_quota(conn: &Connection, user_id: &str) -> Result<Value, String> {
+    let quota = tenant_quota(conn, user_id)?;
+    let used: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tenant_owners WHERE user_id = ?1", params![user_id], |r| r.get(0))
+        .map_err(|e| format!("db: {e}"))?;
+    if used >= quota {
+        return Err(format!("tenant quota exceeded ({used}/{quota})"));
+    }
+    Ok(json!({ "ok": true, "used": used, "quota": quota }))
+}
+
+/// 租户归属用户吗（鉴权用；operator/launch-token 走旁路，不调这里）。
+pub fn tenant_owned_by(conn: &Connection, team_id: &str, user_id: &str) -> Result<bool, String> {
+    let hit: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM tenant_owners WHERE team_id = ?1",
+            params![team_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    Ok(hit.as_deref() == Some(user_id))
+}
+
+/// 名下租户 id 列表。
+pub fn owned_teams(conn: &Connection, user_id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT team_id FROM tenant_owners WHERE user_id = ?1 ORDER BY created_at")
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map(params![user_id], |r| r.get(0))
+        .map_err(|e| format!("db: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<String>>>().map_err(|e| format!("db: {e}"))
+}
+
+/// 标记归属（租户创建时调用；重复标记幂等拒绝）。
+pub fn tag_tenant_owner(conn: &mut Connection, team_id: &str, user_id: &str) -> Result<(), String> {
+    let now = crate::db::now();
+    conn.execute(
+        "INSERT INTO tenant_owners (team_id, user_id, created_at) VALUES (?1, ?2, ?3)",
+        params![team_id, user_id, now],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    audit(conn, &format!("user:{user_id}"), "tenant.claimed", Some(&format!("team={team_id}")))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod user_tests {
     use super::*;
@@ -545,5 +637,51 @@ mod user_tests {
         assert_eq!(l["users"][0]["display_name"], json!("alice"));
         assert!(l["users"][0].get("password_hash").is_none());
         assert!(l["users"][0].get("hash").is_none());
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn testdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE platform_users (id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+              github_id TEXT NOT NULL DEFAULT '', password_hash TEXT NOT NULL DEFAULT '',
+              disabled_at TEXT, created_at TEXT NOT NULL);
+             CREATE UNIQUE INDEX idx_platform_users_name ON platform_users(display_name);
+             CREATE TABLE platform_quotas (user_id TEXT PRIMARY KEY, tenant_quota INTEGER NOT NULL,
+              updated_at TEXT NOT NULL);
+             CREATE TABLE tenant_owners (team_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+              created_at TEXT NOT NULL);
+             CREATE TABLE platform_audit (id INTEGER PRIMARY KEY, at TEXT NOT NULL,
+              actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn quota_default_enforced_and_raisable() {
+        let mut c = testdb();
+        let u = create_user(&mut c, "bob", "password-1").unwrap();
+        let uid = u["user_id"].as_str().unwrap();
+        assert_eq!(tenant_quota(&c, uid).unwrap(), DEFAULT_TENANT_QUOTA);
+        // 默认 3：前 3 次过，第 4 次拒
+        for i in 0..3 {
+            check_tenant_quota(&c, uid).unwrap();
+            tag_tenant_owner(&mut c, &format!("t{i}"), uid).unwrap();
+        }
+        assert!(check_tenant_quota(&c, uid).is_err());
+        assert_eq!(owned_teams(&c, uid).unwrap().len(), 3);
+        assert!(tenant_owned_by(&c, "t0", uid).unwrap());
+        assert!(!tenant_owned_by(&c, "t0", "other").unwrap());
+        // 提额后可过；归零即禁建
+        set_quota(&mut c, uid, 4).unwrap();
+        check_tenant_quota(&c, uid).unwrap();
+        assert!(set_quota(&mut c, uid, 101).is_err());
+        assert!(set_quota(&mut c, "no-such-user", 1).is_err());
     }
 }

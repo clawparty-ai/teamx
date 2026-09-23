@@ -7,7 +7,7 @@
 #   C3 租户列表可读（初始为空）
 #   C4 建租户（POST /api/tenants，经 stub kubectl 真实调用 create_tenant）
 #   C5 平台面只读视图：tokens / admins / audit 均可读
-#   C6 回收租户（DELETE）→ 列表回到空
+#   C6 回收租户（DELETE）→ 被回收的不在列表（bob 自助建的保留）
 #   C7 service 车道：未在集群内 → /invite 明确报"取不到租户 CA Secret"（不假装成功）
 #
 # Requires: curl + python3 + openssl（不需要集群：stub kubectl）。
@@ -173,11 +173,62 @@ CODE="$($C -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/
 [ "$CODE" = "401" ] || fail "C9b: 禁用后登录应 401，实际 $CODE"
 pass "C9b 禁用用户（登录拒绝）"
 
+# D1: 建两个用户并登录
+for u in bob alice; do
+  "$TEAMX" --json platform user create --name "$u" --password 'pw-12345!' >/dev/null 2>&1 || fail "D1: 建用户 $u 失败"
+done
+for u in bob alice; do
+  $C -c /tmp/teamx-platcon-$u -X POST -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$u\",\"password\":\"pw-12345!\"}" "$BASE/api/login/password" -o /dev/null
+  grep -q "teamx_platform_token" /tmp/teamx-platcon-$u || fail "D1: $u 登录失败"
+done
+pass "D1 bob/alice 建用户并登录"
+
+# D2: bob 自助建 team（O-1(a) 入口）
+BOB_T="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"bob-team"}' "$BASE/api/my/teams")"
+echo "$BOB_T" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and d.get('bootstrap')=='pending',d;print('  team=%s ns=%s' % (d['team_id'][:8], d['tenant']['namespace']))" || fail "D2: 自助建失败: $BOB_T"
+BOB_TEAM="$(echo "$BOB_T" | python3 -c 'import sys,json;print(json.load(sys.stdin)["team_id"])')"
+pass "D2 bob 自助建 team（配额内，bootstrap pending）"
+
+# D3: 归属隔离（bob 见自己的；alice 看不到；运维租户用户不可见）
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and len(d['tenants'])==1 and d['used']==1 and d['quota']==3,d" || fail "D3: bob 的 my/teams 不对"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['tenants']==[],d" || fail "D3: alice 应为空"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/tenants" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['tenants']==[],d" || fail "D3: alice 在 /api/tenants 应看不到任何（含运维建的）"
+pass "D3 归属隔离（各看各的）"
+
+# D4: 越权 403（alice 动 bob 的租户：destroy + invite）
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/tenants/$BOB_TEAM")"
+[ "$CODE" = "403" ] || fail "D4: 越权 destroy 应 403，实际 $CODE"
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"role_desc":"contributor: x"}' "$BASE/api/tenants/$BOB_TEAM/invite")"
+[ "$CODE" = "403" ] || fail "D4: 越权 invite 应 403，实际 $CODE"
+# 用户走运维入口建租户 → 403 指引
+CODE="$($C -b /tmp/teamx-platcon-bob -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"team":"x"}' "$BASE/api/tenants")"
+[ "$CODE" = "403" ] || fail "D4: 用户走运维入口应 403，实际 $CODE"
+pass "D4 越权 403（destroy/invite/运维入口）"
+
+# D5: 配额（bob 配额改为 1，已用 1 → 再建被拒；运维不受影响）
+"$TEAMX" --json platform user set-quota --user-id "$("$TEAMX" --json platform user list 2>/dev/null | python3 -c 'import sys,json;print([u["user_id"] for u in json.load(sys.stdin)["users"] if u["display_name"]=="bob"][0])')" --quota 1 >/dev/null || fail "D5: 设配额失败"
+R="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"name":"bob-team-2"}' "$BASE/api/my/teams")"
+echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True and 'quota' in str(d.get('error','')),d" || fail "D5: 超配额应明确拒绝"
+pass "D5 配额生效（1/1 后再建被拒）"
+
+# D6: bootstrap 入口校验（缺 server_url → 400；不可达 → 明确失败不假装）
+CODE="$($C -b /tmp/teamx-platcon-bob -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap")"
+[ "$CODE" = "400" ] || fail "D6: 缺 server_url 应 400，实际 $CODE"
+R="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"server_url":"https://127.0.0.1:9"}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 30)"
+echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True,d" || fail "D6: 不可达应明确失败"
+# alice 替 bob bootstrap → 403
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"server_url":"https://127.0.0.1:9"}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 30)"
+[ "$CODE" = "403" ] || fail "D6: 越权 bootstrap 应 403，实际 $CODE"
+pass "D6 bootstrap 入口校验（400/失败明示/403）"
+
 # C6: 回收
 D="$($C -b /tmp/teamx-platcon-cookie -X DELETE "$BASE/api/tenants/$TEAM_ID")"
 echo "$D" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok'),d" || fail "C6: 回收失败: $D"
 T2="$($C -b /tmp/teamx-platcon-cookie "$BASE/api/tenants")"
-echo "$T2" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['tenants']==[],d" || fail "C6: 回收后列表应空"
+# D2 建的 bob 租户还在 —— 只断言被回收的不在即可
+echo "$T2" | python3 -c "import json,sys;d=json.load(sys.stdin);assert '$TEAM_ID' not in [t['team_id'] for t in d['tenants']],d" || fail "C6: 被回收的仍在列表"
 pass "C6 回收租户（DELETE）"
 
 printf '\nALL PASSED (platform console E2E)\n'

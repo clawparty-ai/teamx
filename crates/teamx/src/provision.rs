@@ -844,6 +844,83 @@ pub fn tenant_ca_audit(
     Ok(out)
 }
 
+/// 用户自助建 team Phase 2（O-1(a) 全新开始）：配额 → 平台 team 空壳 →
+/// 租户 infra → 标记归属。server 侧 team 自举走 `/api/my/teams/{team}/bootstrap`
+///（分两步：server Pod 启动要 ~1 分钟，建完即调大概率撞上未就绪；UI 显式第二步）。
+pub fn create_my_tenant(
+    conn: &mut Connection,
+    user_id: &str,
+    team_name: &str,
+    server_image: Option<&str>,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    crate::platform::check_tenant_quota(conn, user_id)?;
+    let name = team_name.trim();
+    if name.is_empty() || name.len() > 64 {
+        return Err("team name must be 1..=64 chars".to_string());
+    }
+    let uname: String = conn
+        .query_row(
+            "SELECT display_name FROM platform_users WHERE id = ?1 AND disabled_at IS NULL",
+            params![user_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "user not found or disabled".to_string())?;
+    // 平台 team 空壳（给 tenants.team_id 的 FK + 控制台列表；成员/台账在租户 server 上）。
+    let team_id = uuid::Uuid::new_v4().to_string();
+    let now = db::now();
+    let token = crate::util::gen_access_token(16);
+    conn.execute(
+        "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+         VALUES (?1, ?2, NULL, NULL, 'forming', ?3, ?4, ?4)",
+        params![team_id, name, token, now],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    // 租户 infra（复用 operator 路径；kubeconfig 来自控制台/CLI 环境）。
+    let tenant = create_tenant(conn, &team_id, server_image, kubeconfig, context)?;
+    crate::platform::tag_tenant_owner(conn, &team_id, user_id)?;
+    Ok(json!({
+        "ok": true, "team_id": team_id, "team_name": name,
+        "owner": uname, "tenant": tenant["tenant"],
+        "bootstrap": "pending",
+        "note": "空账本（O-1(a) 全新开始）。租户 server 启动后调 bootstrap 初始化团队，owner 用返回的信认领。",
+    }))
+}
+
+/// 自助 team 第二步：经 service 车道在租户 server 上建首 team + owner 邀请。
+/// server 未就绪时明确报错（UI 显示重试，不静默）。
+pub fn bootstrap_my_team(
+    conn: &mut Connection,
+    team_id: &str,
+    user_id: &str,
+    server_url: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    // 归属鉴权（operator 不走这里，走 operator 路由）。
+    if !crate::platform::tenant_owned_by(conn, team_id, user_id)? {
+        return Err("not your tenant (403)".to_string());
+    }
+    let (team_name, uname): (String, String) = conn
+        .query_row(
+            "SELECT t.name, u.display_name FROM teams t, platform_users u
+             WHERE t.id = ?1 AND u.id = ?2",
+            params![team_id, user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "team or user not found".to_string())?;
+    let out = tenant_service_post(
+        conn, team_id, server_url, kubeconfig, context, "tenant.bootstrap",
+        json!({
+            "team_id": team_id, "team_name": team_name,
+            "owner_name": uname, "owner_user_id": user_id,
+            "server_url": server_url,
+        }),
+    )?;
+    Ok(json!({ "ok": true, "team_id": team_id, "bootstrap": out }))
+}
+
 /// 回收租户（design/014 §2）：删 namespace（级联清掉 server/CA Secret/PVC/NetworkPolicy）
 /// → 删 `tenants` 行 → 返回**可验证清单**。
 ///
@@ -889,7 +966,9 @@ pub fn destroy_tenant(
 /// 读租户记录。
 pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, String> {
     conn.query_row(
-        "SELECT team_id, namespace, ca_fingerprint, server_image, created_at FROM tenants WHERE team_id = ?1",
+        "SELECT t.team_id, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
+                COALESCE(o.user_id, '') FROM tenants t
+         LEFT JOIN tenant_owners o ON o.team_id = t.team_id WHERE t.team_id = ?1",
         params![team_id],
         |r| {
             Ok(json!({
@@ -898,6 +977,7 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
                 "ca_fingerprint": r.get::<_, String>(2)?,
                 "server_image": r.get::<_, String>(3)?,
                 "created_at": r.get::<_, String>(4)?,
+                "owner_user_id": r.get::<_, String>(5)?,
             }))
         },
     )
@@ -908,7 +988,9 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
 /// 列全部租户。
 pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
-        .prepare("SELECT team_id, namespace, ca_fingerprint, server_image, created_at FROM tenants ORDER BY created_at")
+        .prepare("SELECT t.team_id, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
+                         COALESCE(o.user_id, '') FROM tenants t
+                  LEFT JOIN tenant_owners o ON o.team_id = t.team_id ORDER BY t.created_at")
         .map_err(|e| format!("db: {e}"))?;
     let rows = stmt
         .query_map([], |r| {
@@ -918,6 +1000,7 @@ pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
                 "ca_fingerprint": r.get::<_, String>(2)?,
                 "server_image": r.get::<_, String>(3)?,
                 "created_at": r.get::<_, String>(4)?,
+                "owner_user_id": r.get::<_, String>(5)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;

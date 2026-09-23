@@ -517,6 +517,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     crate::platform::disable_user(conn, user_id).map_err(AppError)?
                 }
                 PlatformUserCmd::List => crate::platform::list_users(conn).map_err(AppError)?,
+                PlatformUserCmd::SetQuota { user_id, quota } => {
+                    crate::platform::set_quota(conn, user_id, *quota).map_err(AppError)?
+                }
             },
             PlatformCmd::Audit { limit } => json!({
                 "ok": true,
@@ -534,15 +537,24 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Tenant(t) => match t {
-            TenantCmd::Create { team, server_image, kubeconfig, context } => {
-                crate::provision::create_tenant(
+            TenantCmd::Create { team, server_image, kubeconfig, context, owner_user } => {
+                let mut out = crate::provision::create_tenant(
                     conn,
                     team,
                     server_image.as_deref(),
                     kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
                     context.as_deref(),
                 )
-                .map_err(AppError)?
+                .map_err(AppError)?;
+                // 归属标记（Phase 2；配额检查；空 = operator 租户不标记）
+                if let Some(uid) = owner_user {
+                    if !uid.trim().is_empty() {
+                        crate::platform::check_tenant_quota(conn, uid).map_err(AppError)?;
+                        crate::platform::tag_tenant_owner(conn, team, uid).map_err(AppError)?;
+                        out["owner_user_id"] = json!(uid);
+                    }
+                }
+                out
             }
             TenantCmd::Destroy { team, kubeconfig, context } => {
                 crate::provision::destroy_tenant(
@@ -3295,6 +3307,85 @@ fn mint_invite(
     )
     .map_err(AppError)?;
     Ok((mint.member_id, mint.invitation_id, mint.letter))
+}
+
+/// 租户 team 自举 O-1(a)（跑在**租户 server**上，经 service 车道调用）：
+/// 空 server 建首个 team + owner 邀请（auto_approve，绑定平台用户 id）。
+/// 只做建 team + 邀请行 + 信；成员行在 owner import 认领时按标准流创建
+/// （`claim_invitation`，auto_approve → active），不做特殊成员手术。
+/// owner 用返回的 letter import 即可用；信里 server_url 由调用方给
+/// （O-5 独立端点未定前可能是占位，调用方须如实声明）。
+pub(crate) fn bootstrap_tenant_team(
+    conn: &mut Connection,
+    team_id: &str,
+    team_name: &str,
+    owner_name: &str,
+    owner_user_id: &str,
+    server_url: &str,
+) -> std::result::Result<Value, String> {
+    // 仅空 server 可自举（一次性；之后再调即拒绝 —— 防重复初始化）。
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM teams", [], |r| r.get(0))
+        .map_err(|e| format!("db: {e}"))?;
+    if n > 0 {
+        return Err("server already initialized (teams exist)".to_string());
+    }
+    if team_id.trim().is_empty() || team_name.trim().is_empty() {
+        return Err("team_id and team_name are required".to_string());
+    }
+    // 租户模式签发（tenant CA；server 在 Pod 里，TEAMX_TENANT_TEAM_ID 已注入）。
+    let mint = mint_invite_cert(
+        team_id,
+        team_name,
+        "owner",
+        "Owner",
+        Some("tenant bootstrap owner"),
+        Some((owner_user_id, owner_name)),
+        Some(owner_name),
+        server_url,
+        false,
+        true, // auto_approve：平台已验过该用户身份
+        None,
+    )
+    .map_err(|e| format!("mint owner invite: {e}"))?;
+    let now = db::now();
+    let token = crate::util::gen_access_token(16);
+    let member_id = mint.member_id.clone();
+    let invitation_id = mint.invitation_id.clone();
+    let letter = mint.letter.clone();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "INSERT INTO teams (id, name, owner_member_id, goal_id, state, invite_token, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, 'forming', ?4, ?5, ?5)",
+            params![team_id, team_name, member_id, token, now],
+        )?;
+        mint_invite_db(
+            tx,
+            &mint,
+            team_id,
+            "owner",
+            "Owner",
+            Some("tenant bootstrap owner"),
+            Some((owner_user_id, owner_name)),
+            false,
+            true,
+            "platform-bootstrap",
+        )?;
+        emit_json(
+            tx,
+            team_id,
+            Some(&member_id),
+            "team.bootstrapped",
+            json!({ "by": "platform", "owner_user_id": owner_user_id }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("bootstrap failed: {e}"))?;
+    Ok(json!({
+        "ok": true, "team_id": team_id, "member_id": member_id,
+        "invitation_id": invitation_id, "letter": letter,
+        "note": "empty ledger (O-1(a) 全新开始）. Owner imports the letter to claim the seat.",
+    }))
 }
 
 /// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
@@ -8335,5 +8426,88 @@ mod tests {
         let got = verified_rebroadcast_events(&conn, "m1", &real);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1["type"], "e1");
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    static BOOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn memdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        // bootstrap 只碰 teams/invitations/roles/events 相关表；建最小可用 schema
+        c.execute_batch(
+            "CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_member_id TEXT,
+              goal_id TEXT, state TEXT NOT NULL DEFAULT 'forming', invite_token TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE roles (team_id TEXT NOT NULL, key TEXT NOT NULL, label TEXT NOT NULL,
+              description TEXT, permissions_json TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'approved',
+              proposed_by TEXT, PRIMARY KEY (team_id, key));
+             CREATE TABLE invitations (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, member_id TEXT NOT NULL,
+              role_key TEXT NOT NULL, role_label TEXT NOT NULL, role_desc TEXT, cert_serial TEXT,
+              cert_cn TEXT, user_id TEXT, created_by TEXT, created_at TEXT NOT NULL,
+              used_by TEXT, used_at TEXT, revoked_at TEXT, auto_approve INTEGER NOT NULL DEFAULT 0,
+              as_lead INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE members (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, session_key TEXT NOT NULL,
+              display_name TEXT NOT NULL, role TEXT, state TEXT NOT NULL DEFAULT 'pending',
+              loopx_project TEXT, joined_at TEXT, left_at TEXT, is_lead INTEGER NOT NULL DEFAULT 0,
+              workspace TEXT, user_id TEXT NOT NULL DEFAULT '');
+             CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL,
+              member_id TEXT, seq INTEGER NOT NULL, type TEXT NOT NULL, payload_json TEXT,
+              created_at TEXT NOT NULL, UNIQUE(team_id, seq));",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn bootstrap_first_team_only_with_tenant_ca_letter() {
+        let _g = BOOT_ENV_LOCK.lock().unwrap();
+        // 租户 CA 材料（真 CA；server 在 Pod 里就是这么挂载的）
+        let d = std::env::temp_dir().join(format!("teamx-boot-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (ca_crt, ca_key) = crate::pki::generate_ca().unwrap();
+        std::fs::write(d.join("ca.crt"), &ca_crt).unwrap();
+        std::fs::write(d.join("ca.key"), &ca_key).unwrap();
+        std::env::set_var("TEAMX_TENANT_TEAM_ID", "t-boot");
+        std::env::set_var("TEAMX_TENANT_CA_DIR", &d);
+        let mut c = memdb();
+        let out =
+            bootstrap_tenant_team(&mut c, "t-boot", "Boot", "opak", "u-opak", "https://t.example:5783")
+                .unwrap();
+        assert_eq!(out["team_id"], json!("t-boot"));
+        // team 行 + auto_approve 邀请行
+        let st: String = c
+            .query_row("SELECT state FROM teams WHERE id='t-boot'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(st, "forming");
+        let (autoapp, uid): (i64, Option<String>) = c
+            .query_row(
+                "SELECT auto_approve, user_id FROM invitations WHERE team_id='t-boot'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(autoapp, 1);
+        assert_eq!(uid.as_deref(), Some("u-opak"));
+        // 信里是租户 CA（不是实例 CA）
+        let letter = out["letter"].as_str().unwrap().to_string();
+        let payload: Value = {
+            use base64::Engine as _;
+            let b64 = letter.strip_prefix("teamx-inv:v1:").unwrap();
+            serde_json::from_slice(&base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap()
+        };
+        let fp = crate::pki::ca_fingerprint_of(&ca_crt).unwrap();
+        assert_eq!(
+            payload["teamx_invitation"]["server"]["ca_fingerprint"],
+            json!(format!("sha256:{fp}"))
+        );
+        // 第二次自举必须拒绝（一次性）
+        assert!(bootstrap_tenant_team(&mut c, "t2", "T2", "x", "u", "https://t.example:5783").is_err());
+        std::env::remove_var("TEAMX_TENANT_TEAM_ID");
+        std::env::remove_var("TEAMX_TENANT_CA_DIR");
+        std::fs::remove_dir_all(&d).ok();
     }
 }

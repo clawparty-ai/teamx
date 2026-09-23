@@ -67,6 +67,8 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/logout", post(api_logout))
         .route("/api/me", get(api_me))
         .route("/api/tenants", get(api_tenants).post(api_tenant_create))
+        .route("/api/my/teams", get(api_my_teams).post(api_my_teams_create))
+        .route("/api/my/teams/{team}/bootstrap", post(api_my_teams_bootstrap))
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
         .route("/api/tenants/{team}/invite", post(api_tenant_invite))
         .route("/api/tenants/{team}/provision", post(api_tenant_provision))
@@ -127,6 +129,22 @@ fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
 
 fn unauth() -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "unauthorized"}))).into_response()
+}
+
+/// 会话对应的平台用户（None = 运维 launch-token 或未登录）。
+fn session_user(ctx: &Ctx, headers: &HeaderMap) -> Option<(String, String)> {
+    let t = cookie_token(headers)?;
+    if t == ctx.launch_token {
+        return None;
+    }
+    with_conn(ctx, |c| crate::platform::verify_session(c, &t))
+        .ok()
+        .map(|v| {
+            (
+                v["user_id"].as_str().unwrap_or("").to_string(),
+                v["display_name"].as_str().unwrap_or("").to_string(),
+            )
+        })
 }
 
 /// 当前身份（展示 + 审计用）：运维 launch token 或已登录用户。
@@ -233,15 +251,59 @@ async fn api_tenants(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respons
     if let Err(r) = guard(&ctx, &headers) {
         return r;
     }
-    match with_conn(&ctx, |c| crate::provision::tenant_list(c)) {
+    let mine = session_user(&ctx, &headers).map(|(uid, _)| uid);
+    match with_conn(&ctx, |c| {
+        let all = crate::provision::tenant_list(c)?;
+        match mine {
+            Some(uid) => {
+                let owned = crate::platform::owned_teams(c, &uid).map_err(|e| e.to_string())?;
+                Ok::<_, String>(
+                    all.into_iter()
+                        .filter(|t| {
+                            t.get("team_id")
+                                .and_then(Value::as_str)
+                                .map(|id| owned.contains(&id.to_string()))
+                                .unwrap_or(false)
+                        })
+                        .collect(),
+                )
+            }
+            None => Ok(all),
+        }
+    }) {
         Ok(ts) => Json(json!({ "ok": true, "tenants": ts })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
     }
 }
 
+/// 归属门：用户会话只能动名下租户；运维（无会话用户）放行。返回 Err(Response) 即拒。
+#[allow(clippy::result_large_err)] // 与 guard 同：Response 作错误值直接返回
+fn own_guard(ctx: &Ctx, headers: &HeaderMap, team: &str) -> Result<(), Response> {
+    if let Some((uid, _)) = session_user(ctx, headers) {
+        let ok =
+            with_conn(ctx, |c| crate::platform::tenant_owned_by(c, team, &uid)).unwrap_or(false);
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"ok": false, "error": "not your tenant"})),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
 async fn api_tenant_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     if let Err(r) = guard(&ctx, &headers) {
         return r;
+    }
+    // 用户自助走 /api/my/teams（配额 + 归属）；本入口仅运维。
+    if session_user(&ctx, &headers).is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "use POST /api/my/teams for self-service"})),
+        )
+            .into_response();
     }
     let team = body.get("team").and_then(Value::as_str).unwrap_or("").to_string();
     let image = body.get("server_image").and_then(Value::as_str).map(str::to_string);
@@ -259,6 +321,9 @@ async fn api_tenant_destroy(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
     if let Err(r) = guard(&ctx, &headers) {
         return r;
     }
+    if let Err(r) = own_guard(&ctx, &headers, &team) {
+        return r;
+    }
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| crate::provision::destroy_tenant(c, &team, kc.as_deref(), cx.as_deref())) {
         Ok(v) => Json(v).into_response(),
@@ -269,6 +334,9 @@ async fn api_tenant_destroy(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
 /// 经 **service 车道**（§6.5）在租户内邀请成员。
 async fn api_tenant_invite(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>, Json(body): Json<Value>) -> Response {
     if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    if let Err(r) = own_guard(&ctx, &headers, &team) {
         return r;
     }
     let role_desc = body.get("role_desc").and_then(Value::as_str).unwrap_or("contributor").to_string();
@@ -282,6 +350,9 @@ async fn api_tenant_invite(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path
 /// 经 service 车道触发该租户的成员 provision。
 async fn api_tenant_provision(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>, Json(body): Json<Value>) -> Response {
     if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    if let Err(r) = own_guard(&ctx, &headers, &team) {
         return r;
     }
     let member = body.get("member").and_then(Value::as_str).unwrap_or("").to_string();
@@ -303,6 +374,9 @@ async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
     if let Err(r) = guard(&ctx, &headers) {
         return r;
     }
+    if let Err(r) = own_guard(&ctx, &headers, &team) {
+        return r;
+    }
     let kubeconfig = ctx.kubeconfig.clone();
     let context = ctx.context.clone();
     let t = team.clone();
@@ -310,6 +384,104 @@ async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
         crate::provision::reissue_member_certs(c, &t, kubeconfig.as_deref(), context.as_deref())
     });
     match out {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 用户自助 team Phase 2：只看名下租户（含配额用量）。
+async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        // 运维走 /api/tenants（全量）；my/* 是用户面。
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    match with_conn(&ctx, |c| {
+        let owned = crate::platform::owned_teams(c, &uid).map_err(|e| e.to_string())?;
+        let all = crate::provision::tenant_list(c)?;
+        let mine: Vec<Value> = all
+            .into_iter()
+            .filter(|t| {
+                t.get("team_id")
+                    .and_then(Value::as_str)
+                    .map(|id| owned.contains(&id.to_string()))
+                    .unwrap_or(false)
+            })
+            .collect();
+        let quota = crate::platform::tenant_quota(c, &uid).map_err(|e| e.to_string())?;
+        Ok::<_, String>(json!({ "ok": true, "tenants": mine, "used": owned.len(), "quota": quota }))
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 用户自助建 team（O-1(a) 全新开始入口）：配额 → 空壳 team → 租户 infra → 标记归属。
+/// server 侧 team 自举是第二步（server Pod 启动要 ~1 分钟），见 bootstrap 路由。
+async fn api_my_teams_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let image = body.get("server_image").and_then(Value::as_str).map(str::to_string);
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "name is required"}))).into_response();
+    }
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        crate::provision::create_my_tenant(c, &uid, &name, image.as_deref(), kc.as_deref(), cx.as_deref())
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 自助 team 第二步：server 就绪后经 service 车道初始化团队（建首 team + owner 邀请）。
+async fn api_my_teams_bootstrap(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    // 先归属（403），后参数（400）：越权者无论参数对错都先吃 403。
+    if let Err(r) = own_guard(&ctx, &headers, &team) {
+        return r;
+    }
+    let server_url = body.get("server_url").and_then(Value::as_str).unwrap_or("").to_string();
+    if server_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "server_url is required (tenant endpoint, O-5)"})),
+        )
+            .into_response();
+    }
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        crate::provision::bootstrap_my_team(c, &team, &uid, &server_url, kc.as_deref(), cx.as_deref())
+    }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
