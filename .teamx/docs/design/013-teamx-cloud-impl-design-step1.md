@@ -232,3 +232,34 @@ operator/CRD（第一步直接用 kubeconfig 调 API，第二步再评估）· �
 **台式机的网络要求**：能出网访问 ① teamx server（成员 RPC/隧道）② 镜像 registry ③ git 源；
 **不需要**被平台入站访问（出站假设）。若台式机在 NAT 后，provider 侧（server 或开发机）需能连到
 其 API server（`6443`）——开发期通常由开发机直连，故只需开发机 ↔ 台式机互通。
+
+## 15. k8e 真机验证（2026-09-24，台式机 BYO）
+
+**结论：k8e 是本项目云底座的正确选择 —— 它内置 Cilium，标准 k8s NetworkPolicy 默认被执行**，
+设计/013 M0 的 CNI 缺口在 k8e 上**不存在**（k3s 默认 flannel 才有）。
+
+| 项 | k3s（旧） | k8e（新） |
+|---|---|---|
+| CNI | flannel（无策略引擎） | **Cilium 1.20（eBPF）** |
+| NetworkPolicy | **静默 no-op**（对象存在但不拦包）→ R6b 必须显式例外 | **真实执行** |
+| R6b 断言 | 需 `TEAMX_ALLOW_FLANNEL=1` 降级 | **原生 PASS（无需例外）** |
+| k8s 版本 | v1.34.6+k3s1 | v1.37.0-20260916-rc1+k8e1 |
+
+**网络策略实测（nptest 命名空间，标准 `networking.k8s.io/v1`）**：
+- Ingress deny-all：基线 `wget http://srv:8080` → `HELLO-FROM-SRV`；加策略后 → `download timed out` ✅
+- Egress deny-all：基线 `wget http://mirrors.aliyun.com` → 有响应；加策略后 → `bad address`（DNS 一并被拒，符合 §7「DNS 也应被拒」）✅
+
+**teamx 在 k8e 上全链验证**：
+- `tests/k8e-real-cluster-test.sh`（**不设** `TEAMX_ALLOW_FLANNEL`）→ **ALL PASSED**（含 R6b 原生通过）
+- 平台控制台（systemd，`TEAMX_KUBECONFIG=~/.kube/config` 指向 k8e）→ 用户登录 → 自助建租户 → 租户 server Pod **1/1 Running** + Service + PDB 就位
+
+**安装与踩坑记录（可复用）**：
+1. 安装源 `get.k8e.io` 已弃用（DNS 失效）→ **`https://k8e.sh/install.sh`**（脚本内 `curl … | sh -` 需 root）。
+2. `k8e` 与 `k3s` **不能同机共存**：k8e 用 6443（外部）+ **6444**（内部 supervisor），k3s 两个都占 → 必须整机切换（停+禁 k3s，数据目录保留可回退）。
+3. **airgap 镜像包必需**：内置 Cilium 通过 HelmChart 安装，但 `rancher/klipper-helm` 在常见国内镜像站**不收录** → 用 release 的 `k8e-airgap-images.tar.gz`（186MB）`k8e ctr -n k8s.io images import`；**Cilium 本体镜像来自 quay.io（可达）**，不在 airgap 包内。
+4. **切 CNI 必须先清 k3s 遗留网络设备**：残留 `cni0`/`flannel.1`/半创建 `cilium_vxlan` 会让 Cilium datapath 起不来（`setting up device cilium_vxlan: address already in use` → `Failed to initialize datapath`）。清理 `ip link del cni0/flannel.1/cilium_vxlan` 后重启 cilium agent 即恢复。
+5. 配置路径与 k3s 不同：kubeconfig `/etc/k8e/k8e.yaml`、registry 镜像 `/etc/k8e/registries.yaml`（k3s 是 `/etc/rancher/k3s/…`）、数据 `/var/lib/k8e`。
+6. 受限网络下的大文件（k8e 二进制 135MB / airgap 186MB）走「**美国出口机直下 → Mac → 局域网台式机**」比经国内代理快一个数量级（20–40s vs 超时）。
+
+**回退方式（保留）**：`systemctl disable --now k8e` → `systemctl enable --now k3s`；k3s 数据与 kubeconfig 均在
+（`/var/lib/rancher/k3s`、`/etc/rancher/k3s/k3s.yaml`，另备份 `/root/k3s-kubeconfig.bak` 与 `~/.kube/config.k3s.bak`）。
