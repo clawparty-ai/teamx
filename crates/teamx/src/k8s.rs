@@ -156,7 +156,7 @@ pub fn short_id(id: &str) -> String {
     if s.is_empty() { "unknown000000000".to_string() } else { s }
 }
 
-/// 租户 namespace：`tenant-<team 前 8>`（C11 三元组之一）。
+/// 租户 namespace：`tenant-<team 去横线前 16 字母数字>`（C11 三元组之一，M5）。
 pub fn namespace_for(team_id: &str) -> String {
     format!("tenant-{}", short_id(team_id))
 }

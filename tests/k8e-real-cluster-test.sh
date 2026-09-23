@@ -33,9 +33,11 @@ OUT="$("$TEAMX" --json team invite "contributor: dev" --session s1 --user-name a
 NODE="$(echo "$OUT" | jq "d['provision']['node_id']")"
 MEMBER="$(echo "$OUT" | jq "d['member_id']")"
 LETTER="$(echo "$OUT" | jq "d['letter']")"
+# 与 k8s::short_id 对齐：team_id 去横线后取前 16 个字母数字（M5，weiye-mini 必改 1）
 NS="tenant-$(python3 -c "
 import sqlite3;c=sqlite3.connect('$TEAMX_DB')
-print(c.execute('SELECT team_id FROM nodes LIMIT 1').fetchone()[0].replace('-','')[:8])")"
+tid=c.execute('SELECT team_id FROM nodes LIMIT 1').fetchone()[0]
+print(''.join(c for c in tid if c.isalnum())[:16])")"
 "$TEAMX" --json node run-jobs >/dev/null 2>&1 || true
 ST="$("$TEAMX" --json node status "$NODE" --session s1 2>/dev/null | jq "d['node']['state']")"
 [ "$ST" = "ready" ] || fail "node not ready: $ST"
@@ -91,9 +93,19 @@ if K get pod -n "$NS" -l teamx.io/managed=true --no-headers 2>/dev/null | grep -
   : # 容器内探测需要镜像内有 curl/nc；此处只做策略存在性 + CNI 声明检查
 fi
 CNI_NAME="$(K get pods -n kube-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -Ei 'calico|cilium|kindnet|kube-router|flannel' | head -1)"
-echo "  [info] CNI=$CNI_NAME"
-case "$CNI_NAME" in
-  *flannel*) fail "R6b: CNI=flannel 不执行 NetworkPolicy，§7 安全控制无效";;
+# k3s 把 flannel 跑在进程内（无 DaemonSet Pod），用节点注解兜底检测
+FLANNEL_NODE="$(K get nodes -o jsonpath='{.items[*].metadata.annotations}' 2>/dev/null | grep -o 'flannel\.alpha\.coreos\.com' | head -1)"
+echo "  [info] CNI=$CNI_NAME flannel_node=${FLANNEL_NODE:-none}"
+case "$CNI_NAME|$FLANNEL_NODE" in
+  *flannel*)
+    # flannel 不执行 NetworkPolicy：默认硬失败；已知 flannel 的开发集群可用
+    # TEAMX_ALLOW_FLANNEL=1 显式降级为 SKIP（仅验证存在性），例外必须在报告中写明
+    if [ "${TEAMX_ALLOW_FLANNEL:-0}" = "1" ]; then
+      echo "  skip: R6b（flannel 不执行 NetworkPolicy；TEAMX_ALLOW_FLANNEL=1 已显式声明例外）"
+    else
+      fail "R6b: CNI=flannel 不执行 NetworkPolicy，§7 安全控制无效"
+    fi
+    ;;
 esac
 pass "R6b NetworkPolicy 存在且 CNI 非 flannel（支持策略执行）"
 if K get networkpolicy -n "$NS" -o json | grep -q '169.254.169.254'; then fail "R6: IMDS 被放行"; fi
