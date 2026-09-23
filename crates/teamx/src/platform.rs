@@ -640,6 +640,62 @@ mod user_tests {
     }
 }
 
+/// GitHub 登录绑定/新建用户（Phase 3）：github_id 锚定。
+/// - 已存在 → 该用户（禁用则拒绝）。
+/// - 不存在 → 新建（无密码，不能走密码登录；display 取 GitHub login，重名加 -gh 后缀，
+///   **不自动并户** —— 不同身份源禁止静默合并）。
+pub fn find_or_create_github_user(
+    conn: &mut Connection,
+    github_id: &str,
+    login: &str,
+) -> Result<Value, String> {
+    if github_id.trim().is_empty() || login.trim().is_empty() {
+        return Err("github id/login missing".to_string());
+    }
+    let row: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, display_name, disabled_at FROM platform_users WHERE github_id = ?1",
+            params![github_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    if let Some((id, name, disabled)) = row {
+        if disabled.is_some() {
+            return Err("user disabled".to_string());
+        }
+        return Ok(json!({ "ok": true, "user_id": id, "display_name": name }));
+    }
+    // 新建：重名加后缀
+    let base: String = login.trim().chars().take(48).collect();
+    let mut name = base.clone();
+    for i in 1..100 {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM platform_users WHERE display_name = ?1",
+                params![name],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| format!("db: {e}"))?
+            .is_some();
+        if !exists {
+            break;
+        }
+        name = format!("{base}-gh{i}");
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = crate::db::now();
+    conn.execute(
+        "INSERT INTO platform_users (id, display_name, github_id, password_hash, created_at)
+         VALUES (?1, ?2, ?3, '', ?4)",
+        params![id, name, github_id, now],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    audit(conn, &format!("user:{name}"), "platform_user.github_created", Some(&format!("github_id={github_id}")))?;
+    Ok(json!({ "ok": true, "user_id": id, "display_name": name }))
+}
+
 #[cfg(test)]
 mod quota_tests {
     use super::*;
@@ -683,5 +739,51 @@ mod quota_tests {
         check_tenant_quota(&c, uid).unwrap();
         assert!(set_quota(&mut c, uid, 101).is_err());
         assert!(set_quota(&mut c, "no-such-user", 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod github_user_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn testdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE platform_users (id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+              github_id TEXT NOT NULL DEFAULT '', password_hash TEXT NOT NULL DEFAULT '',
+              disabled_at TEXT, created_at TEXT NOT NULL);
+             CREATE UNIQUE INDEX idx_platform_users_name ON platform_users(display_name);
+             CREATE UNIQUE INDEX idx_platform_users_github ON platform_users(github_id) WHERE github_id != '';
+             CREATE TABLE platform_sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+              created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+             CREATE TABLE platform_audit (id INTEGER PRIMARY KEY, at TEXT NOT NULL,
+              actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn github_bind_create_suffix_and_disabled() {
+        let mut c = testdb();
+        // 新建（无密码）
+        let u = find_or_create_github_user(&mut c, "1001", "octocat").unwrap();
+        assert_eq!(u["display_name"], json!("octocat"));
+        let uid = u["user_id"].as_str().unwrap().to_string();
+        // 同一 github_id 再来 → 同一人（不重复建）
+        let u2 = find_or_create_github_user(&mut c, "1001", "octocat-renamed").unwrap();
+        assert_eq!(u2["user_id"], json!(uid));
+        // 重名密码用户存在 → -gh 后缀，不并户
+        create_user(&mut c, "hubot", "password-1").unwrap();
+        let u3 = find_or_create_github_user(&mut c, "1002", "hubot").unwrap();
+        assert_eq!(u3["display_name"], json!("hubot-gh1"));
+        assert_ne!(u3["user_id"], json!(uid));
+        // 新建的 github 用户无密码 → 密码登录必须拒绝
+        assert!(authenticate(&c, "octocat", "anything12").is_err());
+        // 禁用 → 拒绝
+        disable_user(&mut c, &uid).unwrap();
+        assert!(find_or_create_github_user(&mut c, "1001", "octocat").is_err());
+        assert!(find_or_create_github_user(&mut c, "", "x").is_err());
     }
 }

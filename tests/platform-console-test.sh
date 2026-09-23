@@ -26,6 +26,8 @@ pass() { printf '  ok: %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
   [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null || true
+  [ -n "${PID2:-}" ] && kill "$PID2" 2>/dev/null || true
+  [ -n "${MPID:-}" ] && kill "$MPID" 2>/dev/null || true
   [ "${KEEP:-0}" = 1 ] && { echo "[keep] $WORK"; return; }
   rm -rf "$WORK" /tmp/teamx-platcon-cookie
 }
@@ -230,5 +232,90 @@ T2="$($C -b /tmp/teamx-platcon-cookie "$BASE/api/tenants")"
 # D2 建的 bob 租户还在 —— 只断言被回收的不在即可
 echo "$T2" | python3 -c "import json,sys;d=json.load(sys.stdin);assert '$TEAM_ID' not in [t['team_id'] for t in d['tenants']],d" || fail "C6: 被回收的仍在列表"
 pass "C6 回收租户（DELETE）"
+
+# G1-G5: GitHub OAuth 真流程（mock，不碰 github.com）
+echo "== G: GitHub OAuth（mock） =="
+MOCK_PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+PC2_PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+cat > "$WORK/mock-oauth.py" <<'PYEOF2'
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+import os
+CALLBACK = os.environ["MOCK_CALLBACK"]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        u = urlparse(self.path)
+        if u.path == "/login/oauth/authorize":
+            st = parse_qs(u.query).get("state", [""])[0]
+            loc = f"{CALLBACK}/api/oauth/callback?code=mockcode123&state={st}"
+            self.send_response(302); self.send_header("Location", loc); self.end_headers()
+        elif u.path == "/user":
+            if self.headers.get("Authorization") == "Bearer mocktoken":
+                body = json.dumps({"id": 4242, "login": "mockuser", "name": "Mock User"}).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(401); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path == "/login/oauth/access_token":
+            length = int(self.headers.get("Content-Length", 0)); self.rfile.read(length)
+            body = json.dumps({"access_token": "mocktoken", "token_type": "bearer", "scope": "read:user"}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404); self.end_headers()
+HTTPServer(("127.0.0.1", int(os.environ["MOCK_PORT"])), H).serve_forever()
+PYEOF2
+export MOCK_PORT="$MOCK_PORT" MOCK_CALLBACK="https://127.0.0.1:$PC2_PORT"
+python3 "$WORK/mock-oauth.py" & MPID=$!
+sleep 1
+export TEAMX_GITHUB_CLIENT_ID="mock-id" TEAMX_GITHUB_CLIENT_SECRET="mock-secret"
+export TEAMX_GITHUB_BASE="http://127.0.0.1:$MOCK_PORT" TEAMX_GITHUB_API_BASE="http://127.0.0.1:$MOCK_PORT"
+"$TEAMX" platform console --addr 127.0.0.1 --port "$PC2_PORT" > "$WORK/pc2.log" 2>&1 &
+PID2=$!
+for _ in $(seq 1 40); do grep -q "token=" "$WORK/pc2.log" 2>/dev/null && break; sleep 0.3; done
+BASE2="https://127.0.0.1:$PC2_PORT"
+pass "G1 mock OAuth 与第二控制台就绪"
+
+# G2: start（未登录可调）→ 302 到 mock authorize
+LOC="$($C -o /dev/null -w '%{redirect_url}' "$BASE2/api/oauth/start")"
+echo "$LOC" | grep -q "http://127.0.0.1:$MOCK_PORT/login/oauth/authorize" || fail "G2: 未指到 mock authorize: $LOC"
+echo "$LOC" | grep -q "state=" || fail "G2: 缺 state"
+pass "G2 authorize 重定向（带 state）"
+
+# G3: 跟随全链 → 回调换 token → 建用户 → 会话 cookie → / 跳转
+$C -c /tmp/teamx-platcon-gh -L --max-time 20 -v "$BASE2/api/oauth/start" -o /dev/null > "$WORK/g3.txt" 2>&1 || fail "G3: 链路失败"
+grep -q "teamx_platform_token" /tmp/teamx-platcon-gh || fail "G3: 未下发会话 cookie"
+tr -d '\r' < "$WORK/g3.txt" | grep -qi "location: /$" || fail "G3: 未回到 /"
+ME="$($C -b /tmp/teamx-platcon-gh "$BASE2/api/me")"
+echo "$ME" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and d.get('who')=='user:mockuser',d" || fail "G3: 身份不对: $ME"
+# 用户行：github 锚定、无密码
+"$TEAMX" --json platform user list 2>/dev/null | python3 -c "import json,sys;us=json.load(sys.stdin)['users'];m=[u for u in us if u['display_name']=='mockuser'];assert len(m)==1,d" || fail "G3: 用户行未建"
+pass "G3 全链（授权→换 token→建用户→会话→/)"
+
+# G4: state 复用 → 400（取 G3 链中的 callback URL 重放）
+CBURL="$(tr -d '\r' < "$WORK/g3.txt" | grep -oi 'location: https://127.0.0.1:[^[:space:]]*api/oauth/callback[^[:space:]]*' | head -1 | sed 's/^[Ll]ocation: //')"
+if [ -n "$CBURL" ]; then
+  CODE="$($C -o /dev/null -w '%{http_code}' "$CBURL")"
+  [ "$CODE" = "400" ] || fail "G4: state 复用应 400，实际 $CODE"
+  pass "G4 state 单次有效（重放 400）"
+else
+  echo "  skip: G4（未捕获 callback URL）"
+fi
+# G5: 坏 state / 缺 code → 400
+CODE="$($C -o /dev/null -w '%{http_code}' "$BASE2/api/oauth/callback?code=x&state=nope")"
+[ "$CODE" = "400" ] || fail "G5: 坏 state 应 400，实际 $CODE"
+CODE="$($C -o /dev/null -w '%{http_code}' "$BASE2/api/oauth/callback?state=y")"
+[ "$CODE" = "400" ] || fail "G5: 缺 code 应 400，实际 $CODE"
+pass "G5 坏请求 400（state/code）"
+kill "$PID2" "$MPID" 2>/dev/null || true
+unset TEAMX_GITHUB_CLIENT_ID TEAMX_GITHUB_CLIENT_SECRET TEAMX_GITHUB_BASE TEAMX_GITHUB_API_BASE
 
 printf '\nALL PASSED (platform console E2E)\n'

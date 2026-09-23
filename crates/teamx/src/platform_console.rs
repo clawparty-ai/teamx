@@ -28,13 +28,16 @@ use serde_json::{json, Value};
 
 use crate::cli::PlatformConsoleCmd;
 
-/// 平台控制台状态：平台 DB 句柄 + launch token + K8s 访问参数。
+/// 平台控制台状态：平台 DB 句柄 + launch token + K8s 访问参数 + OAuth state 表。
 #[derive(Clone)]
 struct Ctx {
     db_path: std::path::PathBuf,
     launch_token: String,
     kubeconfig: Option<String>,
     context: Option<String>,
+    /// OAuth state（CSRF）：state → 发起时间；单次有效，10 分钟过期。
+    /// 内存态（单进程控制台；重启后未完成的登录作废，需重走 start）。
+    oauth_states: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
 }
 
 /// 启动平台控制台（HTTPS，绑 127.0.0.1 或显式地址）。
@@ -58,6 +61,7 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         launch_token: launch_token.clone(),
         kubeconfig: cmd.kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()),
         context: cmd.context.clone(),
+        oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = Router::new()
@@ -596,35 +600,158 @@ fn github_configured() -> bool {
         && std::env::var("TEAMX_GITHUB_CLIENT_SECRET").map(|s| !s.is_empty()).unwrap_or(false)
 }
 
-async fn api_oauth_start(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
-    if let Err(r) = guard(&ctx, &headers) { return r; }
+// ---------------------------------------------------------------------------
+// GitHub OAuth 真流程 Phase 3（D8：与 #8 同一 GitHub App；配置齐才启用）。
+//
+// - 地址可覆盖（测试/企业版 GitHub）：TEAMX_GITHUB_BASE（默认 https://github.com，
+//   授权 + 换 token）与 TEAMX_GITHUB_API_BASE（默认 https://api.github.com，用户信息）。
+// - state 单次有效 + 10 分钟过期（CSRF）；内存态，重启作废。
+// - 回调全程 fail-closed：任何一步失败都明确报错，不写半截会话。
+// ---------------------------------------------------------------------------
+
+/// OAuth 端点基地址（默认 github.com；mock 测试可覆盖）。
+fn github_base() -> String {
+    std::env::var("TEAMX_GITHUB_BASE").unwrap_or_else(|_| "https://github.com".to_string())
+}
+fn github_api_base() -> String {
+    std::env::var("TEAMX_GITHUB_API_BASE").unwrap_or_else(|_| "https://api.github.com".to_string())
+}
+
+/// 发起 state（单次有效）。
+fn oauth_issue(ctx: &Ctx) -> String {
+    let state = crate::util::gen_access_token(24);
+    if let Ok(mut m) = ctx.oauth_states.lock() {
+        let now = std::time::Instant::now();
+        m.retain(|_, t| now.duration_since(*t).as_secs() < 600);
+        m.insert(state.clone(), now);
+    }
+    state
+}
+
+/// 消费 state（不存在/过期/复用一律 false）。
+fn oauth_consume(ctx: &Ctx, state: &str) -> bool {
+    if state.is_empty() {
+        return false;
+    }
+    match ctx.oauth_states.lock() {
+        Ok(mut m) => matches!(m.remove(state), Some(t) if t.elapsed().as_secs() < 600),
+        Err(_) => false,
+    }
+}
+
+/// 登录入口（公开 —— OAuth 本身就是登录方式，不要守卫）。
+/// 302 到 GitHub 授权页（浏览器跟随；用户在 GitHub 完成授权）。
+async fn api_oauth_start(State(ctx): State<Arc<Ctx>>) -> Response {
     if !github_configured() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "GitHub OAuth not configured (set TEAMX_GITHUB_CLIENT_ID/SECRET)"}))).into_response();
     }
     let client_id = std::env::var("TEAMX_GITHUB_CLIENT_ID").unwrap_or_default();
-    let state = crate::util::gen_access_token(16);
-    let url = format!("https://github.com/login/oauth/authorize?client_id={client_id}&state={state}&scope=read:user");
-    Json(json!({ "ok": true, "authorize_url": url, "state": state })).into_response()
+    let state = oauth_issue(&ctx);
+    let url = format!(
+        "{}/login/oauth/authorize?client_id={client_id}&state={state}&scope=read:user",
+        github_base()
+    );
+    axum::response::Redirect::to(&url).into_response()
 }
 
-async fn api_oauth_callback(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
-    if let Err(r) = guard(&ctx, &headers) { return r; }
+/// 回调（公开）：验 state → 换 token → 取用户信息 → 绑定/新建用户 → 发会话 → 回 /。
+async fn api_oauth_callback(
+    State(ctx): State<Arc<Ctx>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if !github_configured() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "GitHub OAuth not configured"}))).into_response();
+    }
+    let state = q.get("state").cloned().unwrap_or_default();
+    if !oauth_consume(&ctx, &state) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "bad or expired state (CSRF)"}))).into_response();
+    }
+    if let Some(e) = q.get("error") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": format!("github refused: {e}")}))).into_response();
     }
     let code = q.get("code").cloned().unwrap_or_default();
     if code.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "missing code"}))).into_response();
     }
-    // 骨架：真实换取 token 需要访问 github.com（受限网络下不可达）。
-    // 这里明确返回"未完成"，而不是假装成功 —— 避免"看起来能用"的假象。
-    Json(json!({
-        "ok": false,
-        "error": "GitHub token exchange not implemented yet (needs network to github.com)",
-        "code_received": !code.is_empty(),
-    }))
-    .into_response()
+    // 换 token + 取用户：阻塞 HTTP（ureq）跑在 spawn_blocking（async 上下文禁直接阻塞）。
+    // secret 只出现在发往 GitHub 的请求体里，永不进日志/审计/响应。
+    let client_id = std::env::var("TEAMX_GITHUB_CLIENT_ID").unwrap_or_default();
+    let client_secret = std::env::var("TEAMX_GITHUB_CLIENT_SECRET").unwrap_or_default();
+    let base = github_base();
+    let api_base = github_api_base();
+    let fetched = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(20)).build();
+        let tok: Value = agent
+            .post(&format!("{base}/login/oauth/access_token"))
+            .set("Accept", "application/json")
+            .send_json(serde_json::json!({
+                "client_id": client_id, "client_secret": client_secret, "code": code,
+            }))
+            .map_err(|e| format!("token exchange failed: {e}"))?
+            .into_json()
+            .map_err(|e| format!("token response parse failed: {e}"))?;
+        if let Some(e) = tok.get("error_description").or_else(|| tok.get("error")) {
+            return Err(format!("github token error: {e}"));
+        }
+        let access = tok
+            .get("access_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "github did not return access_token".to_string())?;
+        let me: Value = agent
+            .get(&format!("{api_base}/user"))
+            .set("Authorization", &format!("Bearer {access}"))
+            .set("Accept", "application/vnd.github+json")
+            .call()
+            .map_err(|e| format!("github user fetch failed: {e}"))?
+            .into_json()
+            .map_err(|e| format!("github user parse failed: {e}"))?;
+        Ok(me)
+    })
+    .await;
+    let fetched: Result<Value, String> = match fetched {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("oauth task failed: {e}")),
+    };
+    let me = match fetched {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e}))).into_response()
+        }
+    };
+    let gid = me.get("id").map(|v| v.to_string()).unwrap_or_default();
+    let login = me.get("login").and_then(Value::as_str).unwrap_or("").to_string();
+    if gid.is_empty() || gid == "null" || login.is_empty() {
+        return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "github user missing id/login"}))).into_response();
+    }
+    // 绑定/新建用户（github_id 锚定；禁用用户拒绝；重名加 -gh 后缀，不自动并户）。
+    let user = match with_conn(&ctx, |c| crate::platform::find_or_create_github_user(c, &gid, &login)) {
+        Ok(u) => u,
+        Err(e) => {
+            return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": e}))).into_response()
+        }
+    };
+    let uid = user["user_id"].as_str().unwrap_or("").to_string();
+    let uname = user["display_name"].as_str().unwrap_or("").to_string();
+    let sess = match with_conn(&ctx, |c| crate::platform::issue_session(c, &uid)) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response()
+        }
+    };
+    let token = sess["token"].as_str().unwrap_or("").to_string();
+    let _ = with_conn(&ctx, |c| {
+        crate::platform::audit(c, &format!("user:{uname}"), "platform_user.github_login", None)
+    });
+    let mut resp = axum::response::Redirect::to("/").into_response();
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        format!("teamx_platform_token={token}; Path=/; HttpOnly; SameSite=Lax")
+            .parse()
+            .unwrap(),
+    );
+    resp
 }
+
 
 /// 平台控制台页面（单文件；平台面：租户 / token / 管理员 / 审计）。
 const INDEX_HTML: &str = r#"<!doctype html>
@@ -652,13 +779,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <h2>平台登录</h2>
     <div class="row"><input id="uname" placeholder="用户名"><input id="password" type="password" placeholder="密码"><button class="btn" onclick="loginPassword()">登录</button></div>
     <div class="row"><input id="token" placeholder="launch token（启动时打印，运维）"><button class="btn" onclick="login()">运维登录</button></div>
-    <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
+    <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span> <a class="btn" id="oauthBtn" style="display:none;text-decoration:none" href="/api/oauth/start">GitHub 登录</a></div>
   </div>
 
   <div id="app" style="display:none">
     <h2>租户（project）</h2>
     <div class="row"><input id="team" placeholder="team id"><button class="btn" onclick="createTenant()">创建租户</button></div>
     <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th>server 镜像</th><th></th></tr></thead><tbody id="tenants"></tbody></table>
+
+    <h2>我的团队（自助，O-1(a) 全新开始）</h2>
+    <div class="muted" id="quota"></div>
+    <div class="row"><input id="myName" placeholder="团队名"><button class="btn" onclick="createMyTeam()">创建团队</button></div>
+    <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th></th></tr></thead><tbody id="mine"></tbody></table>
+    <div class="row"><input id="bsTeam" placeholder="team id"><input id="bsUrl" placeholder="租户 endpoint（O-5，形如 https://host:5783）" style="width:340px"><button class="btn" onclick="bootstrapTeam()">初始化团队</button></div>
+    <div class="muted">初始化后把 owner 邀请函导入本地（`teamx team import`）即成为该团队 owner：</div>
+    <pre id="letterOut" class="muted" style="white-space:pre-wrap;word-break:break-all"></pre>
 
     <h2>租户内成员操作（经 service 车道 §6.5）</h2>
     <div class="row"><input id="invTeam" placeholder="team id"><input id="invRole" placeholder="role: 描述" value="contributor: 成员"><button class="btn" onclick="invite()">邀请成员</button></div>
@@ -679,15 +814,18 @@ async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
 async function boot(){
   const me=await jget('/api/me');
-  if(!me.ok){document.getElementById('login').style.display='block';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';return}
+  if(!me.ok){document.getElementById('login').style.display='block';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';document.getElementById('oauthBtn').style.display=me.github_oauth?'inline':'none';return}
   document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';
   document.getElementById('who').textContent=me.who||'';
   document.getElementById('logoutBtn').style.display='inline';
-  await loadTenants();await loadPlatform();
+  await loadMine();await loadTenants();await loadPlatform();
 }
 async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else alert(r.error||'登录失败')}
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else alert(r.error||'登录失败')}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
+async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok)return;document.getElementById('quota').textContent=`配额：${d.used}/${d.quota}`;document.getElementById('mine').innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td><button class="btn" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=4 class="muted">暂无团队，去上面创建一个</td></tr>'}catch(e){}}
+async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}document.getElementById('bsTeam').value=r.team_id;await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
+async function bootstrapTeam(){const team=document.getElementById('bsTeam').value.trim();const server_url=document.getElementById('bsUrl').value.trim();if(!team||!server_url){alert('team id 和 endpoint 都要填');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
 async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${t.team_id}</code></td><td><code>${t.namespace}</code></td><td><code>${(t.ca_fingerprint||'').slice(0,16)}…</code></td><td>${t.server_image||'—'}</td><td><button class="btn" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
  document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${x.id.slice(0,8)}</code></td><td><span class="pill">${x.state}</span></td><td class="muted">${x.created_at}</td><td>${x.redeemed_by||'—'}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
@@ -707,9 +845,31 @@ mod tests {
 
     #[test]
     fn index_html_has_platform_surfaces() {
-        for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth"] {
+        for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
+            "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
+    }
+
+    fn test_ctx() -> Ctx {
+        Ctx {
+            db_path: std::path::PathBuf::from(":memory:"),
+            launch_token: "launch".to_string(),
+            kubeconfig: None,
+            context: None,
+            oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn oauth_state_single_use() {
+        let ctx = test_ctx();
+        let s = oauth_issue(&ctx);
+        assert!(!s.is_empty());
+        assert!(oauth_consume(&ctx, &s), "首次消费应成功");
+        assert!(!oauth_consume(&ctx, &s), "复用必须拒绝（CSRF）");
+        assert!(!oauth_consume(&ctx, ""), "空 state 拒绝");
+        assert!(!oauth_consume(&ctx, "nope"), "未知 state 拒绝");
     }
 
     #[test]
