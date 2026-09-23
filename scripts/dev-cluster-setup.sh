@@ -50,12 +50,15 @@ if command -v kubectl >/dev/null && kubectl get nodes >/dev/null 2>&1; then
 else
   case "$DISTRO" in
     k8e)
-      # k8e 是 k3s 派生发行版（xiaods/k8e）。安装方式随版本变化，
-      # 若本机拿不到官方安装脚本，请改用 DISTRO=k3s 再跑一次。
-      if curl -fsSL https://get.k8e.io 2>/dev/null | sh; then
+      # k8e（xiaods/k8e）现在是一个 <100MB 单二进制「Agentic AI Sandbox Matrix」，
+      # 内置 **Cilium**（默认 CNI，执行标准 k8s NetworkPolicy —— 优于 k3s 的 flannel）。
+      # 安装源 2026-09 已从 get.k8e.io 迁移到 k8e.sh/install.sh（旧域名 DNS 已失效）。
+      # 若本机拿不到安装脚本，可改用 DISTRO=k3s 再跑一次（但 k3s 默认 flannel 不执行
+      # NetworkPolicy，须如实声明安全降级，见 design/013 M0）。
+      if curl -fsSL https://k8e.sh/install.sh 2>/dev/null | sh -; then
         ok "k8e 安装脚本已执行"
       else
-        die "k8e 安装脚本不可达 —— 用 DISTRO=k3s 重跑，或在能访问 GitHub 的网络下预装"
+        die "k8e 安装脚本不可达（k8e.sh）—— 用 DISTRO=k3s 重跑，或在能访问 GitHub 的网络下预装"
       fi
       ;;
     k3s)
