@@ -31,13 +31,21 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- ttyd（官方静态发行版；Ubuntu 仓库没有）----
-RUN case "$TARGETARCH" in \
-      arm64) A=ttyd.aarch64 ;; \
-      amd64) A=ttyd.x86_64 ;; \
-      *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
-    esac \
- && curl -fsSL -o /usr/local/bin/ttyd \
-      "https://github.com/tsl0922/ttyd/releases/latest/download/$A" \
+# 受限网络可用 TTYD_BIN 注入预下载二进制（与 TEAMX_BIN 同模式），如：
+#   TTYD_BIN=vendor/ttyd.x86_64 bash docker/build.sh
+ARG TTYD_BIN=
+RUN --mount=type=bind,target=/ctx \
+    if [ -n "$TTYD_BIN" ]; then \
+      cp "/ctx/$TTYD_BIN" /usr/local/bin/ttyd; \
+    else \
+      case "$TARGETARCH" in \
+        arm64) A=ttyd.aarch64 ;; \
+        amd64) A=ttyd.x86_64 ;; \
+        *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
+      esac \
+      && curl -fsSL -o /usr/local/bin/ttyd \
+        "https://github.com/tsl0922/ttyd/releases/latest/download/$A"; \
+    fi \
  && chmod 0755 /usr/local/bin/ttyd
 
 # ---- bun（独立层：体积大且变动少）----

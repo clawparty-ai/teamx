@@ -38,6 +38,9 @@ ok "前置检查通过"
 
 COMMON_ARGS=(--build-arg "BASE_IMAGE=$BASE_IMAGE" --build-arg "TEAMX_BIN=$TEAMX_BIN")
 [ -n "$APT_MIRROR" ] && COMMON_ARGS+=(--build-arg "APT_MIRROR=$APT_MIRROR")
+# 受限网络：TTYD_BIN 指向构建上下文内的预下载 ttyd 二进制（如 TTYD_BIN=ttyd.x86_64）
+TTYD_BIN="${TTYD_BIN:-}"
+[ -n "$TTYD_BIN" ] && COMMON_ARGS+=(--build-arg "TTYD_BIN=$TTYD_BIN")
 
 say "1) member 镜像（teamx + opencode + ttyd + bun + git）"
 docker build -f docker/member/Dockerfile "${COMMON_ARGS[@]}" -t "$MEMBER_IMAGE" .
