@@ -788,6 +788,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
  h1{font-size:20px;font-weight:600;margin-bottom:6px}
  .subtitle{font-size:14px;color:#909399;margin-bottom:28px}
  .form{display:flex;flex-direction:column;gap:14px;text-align:left}
+ .form form{display:flex;flex-direction:column;gap:14px;margin:0}
  .input{width:100%;padding:10px 14px;border:1px solid #EBEEF5;border-radius:4px;font-size:14px;color:#333;background:#fff;outline:none;transition:border-color 200ms}
  .input:focus{border-color:#4A90E5;box-shadow:0 0 0 2px rgba(74,144,229,0.15)}
  .input::placeholder{color:#C0C4CC}
@@ -855,13 +856,18 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <h1>平台登录</h1>
     <div class="subtitle">Teamx Cloud · 平台控制台</div>
     <div class="form">
-      <input class="input" id="uname" placeholder="用户名" autocomplete="username">
-      <input class="input" id="password" type="password" placeholder="密码" autocomplete="current-password">
-      <button class="btn" onclick="loginPassword()">登 录</button>
+      <!-- 用户名/密码用真 <form>：回车即提交（此前是 div，回车无反应） -->
+      <form id="pwForm" autocomplete="on">
+        <input class="input" id="uname" placeholder="用户名" autocomplete="username">
+        <input class="input" id="password" type="password" placeholder="密码" autocomplete="current-password">
+        <button class="btn" type="submit">登 录</button>
+      </form>
       <div class="error" id="loginErr"></div>
       <div class="divider">或</div>
-      <input class="input" id="token" placeholder="launch token（启动时打印，运维）">
-      <button class="btn btn-ghost" onclick="login()">运维登录</button>
+      <form id="tokForm">
+        <input class="input" id="token" placeholder="launch token（启动时打印，运维）">
+        <button class="btn btn-ghost" type="submit">运维登录</button>
+      </form>
       <div class="oauth-row"><a class="btn btn-ghost" id="oauthBtn" style="display:none;text-decoration:none;text-align:center" href="/api/oauth/start">GitHub 登录</a></div>
       <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
     </div>
@@ -932,6 +938,8 @@ async function boot(){
   showTab('mine');
   await loadMine();await loadTenants();await loadPlatform();
 }
+document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
+document.getElementById('tokForm').addEventListener('submit',e=>{e.preventDefault();login()});
 async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else loginFail(r.error)}
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
@@ -966,6 +974,7 @@ mod tests {
     fn index_html_has_platform_surfaces() {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
+            "pwForm", "tokForm",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
