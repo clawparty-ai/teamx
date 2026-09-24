@@ -368,7 +368,7 @@ async fn api_tenant_invite(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path
     }
     let role_desc = body.get("role_desc").and_then(Value::as_str).unwrap_or("contributor").to_string();
     let name_hint = body.get("name_hint").and_then(Value::as_str).map(str::to_string);
-    service_call(&ctx, &team, "invite", json!({
+    service_call(&ctx, &team, "team.invite", json!({
         "role_desc": role_desc, "name_hint": name_hint, "team": team,
     }))
     .await

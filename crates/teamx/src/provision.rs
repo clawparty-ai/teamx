@@ -678,7 +678,7 @@ pub fn materialize_member_seat(
         team_id,
         kubeconfig,
         context,
-        "invite",
+        "team.invite",
         json!({
             "team": team_id,
             "role_desc": "contributor: 通过公开申请加入",

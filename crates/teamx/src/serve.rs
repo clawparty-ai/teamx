@@ -1229,7 +1229,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "team.status",    // 租户/成员元数据（不含正文）
     "node.list",      // 主机元数据
     "node.status",
-    "invite",         // 成员邀请
+    "team.invite",    // 成员邀请（白名单需用**完整 RPC 方法名**，与 dispatch 一致）
     "node.provision", // 触发 provision
     "team.approve",   // 审批座位（激活成员）
     "public.team_meta", // 公开团队元数据（design/015 SD-15：租户侧白名单裁剪，无 invite_token/正文）
@@ -1488,13 +1488,17 @@ mod platform_console_lane_tests {
             "team.status",
             "node.list",
             "node.status",
-            "invite",
+            "team.invite",
             "node.provision",
             "team.approve",
         ] {
             assert!(platform_console_method_allowed(ok), "{ok} 应被允许");
         }
         // 拒绝：任何内容面/写面（D10：平台仅见元数据；不读任务/讨论正文）
+        // design/015 真机踩到：白名单必须用**完整 RPC 方法名**（team.invite），
+        // 用短名（invite）会永远匹配不上 dispatch → "unknown rpc method"。
+        assert!(platform_console_method_allowed("team.invite"), "必须放行完整方法名");
+        assert!(!platform_console_method_allowed("invite"), "短名不应再放行");
         for no in [
             "discussion.say",
             "discussion.open",
