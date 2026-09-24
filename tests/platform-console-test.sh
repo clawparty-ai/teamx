@@ -251,6 +251,91 @@ T2="$($C -b /tmp/teamx-platcon-cookie "$BASE/api/tenants")"
 echo "$T2" | python3 -c "import json,sys;d=json.load(sys.stdin);assert '$TEAM_ID' not in [t['team_id'] for t in d['tenants']],d" || fail "C6: 被回收的仍在列表"
 pass "C6 回收租户（DELETE）"
 
+# E1-E9: 团队发现与加入（design/015）
+echo "== E: 团队发现与加入 =="
+# 用运维身份建一个"公开可加入"的租户（stub kubectl 会模拟建租户）
+TE="$($C -b /tmp/teamx-platcon-cookie -X POST -H 'Content-Type: application/json' \
+  -d '{"team":"discoverable"}' "$BASE/api/tenants")" 2>/dev/null || true
+# 运维建的租户 team_id 需从列表取（create 需要 team id；这里用 bob 的自助建更贴近真实流程）
+# bob 在 D5 被降配额到 1 且已有团队 → 先提额再建（E 段自足）
+BOB_ID="$("$TEAMX" --json platform user list 2>/dev/null | python3 -c 'import sys,json;print([u["user_id"] for u in json.load(sys.stdin)["users"] if u["display_name"]=="bob"][0])')"
+"$TEAMX" --json platform user set-quota --user-id "$BOB_ID" --quota 5 >/dev/null 2>&1
+E_TEAM="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"name":"公开测试团队"}' "$BASE/api/my/teams" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("team_id","") if d.get("ok") else "")')"
+[ -n "$E_TEAM" ] || fail "E1: 造团队失败"
+# E1: 默认 private → 目录里看不到
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/directory" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d['ok'], d
+assert '$E_TEAM' not in [i['team_id'] for i in d['items']], 'private 不应出现在目录'
+" || fail "E1: 默认 private 未生效"
+pass "E1 默认 private → 不在公开名录"
+
+# E2: owner 设为 public + open_request + 简介
+$C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' \
+  -d '{"visibility":"public","join_policy":"open_request","summary":"一个可申请加入的公开团队"}' \
+  "$BASE/api/discovery/teams/$E_TEAM/settings" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d
+assert d['settings']['visibility']=='public' and d['settings']['join_policy']=='open_request', d" || fail "E2: 设置失败"
+pass "E2 owner 设为 public + open_request（含简介）"
+
+# E3: 目录可见（alice 视角）+ joinable + 搜索
+D="$($C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/directory")"
+echo "$D" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+m=[i for i in d['items'] if i['team_id']=='$E_TEAM']
+assert m and m[0]['joinable'] is True, d
+print('  ', m[0]['name'], '| joinable=', m[0]['joinable'], '| members=', m[0]['member_count'])" || fail "E3: 目录未列出"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/directory?query=%E5%85%AC%E5%BC%80" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert any(i['team_id']=='$E_TEAM' for i in d['items']), d" || fail "E3: 搜索失败"
+pass "E3 目录可见 + 可加入标记 + 搜索"
+
+# E4: 非成员详情可见；未登录 403
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/teams/$E_TEAM" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d['ok'] and d['team']['joinable'] is True, d
+assert d['team'].get('tenant_meta') is None, '租户侧字段应诚实为空(O-5)'
+assert 'invite_token' not in json.dumps(d), '不得泄漏 invite_token'" || fail "E4: 详情异常"
+CODE="$($C -o /dev/null -w '%{http_code}' "$BASE/api/discovery/directory")"
+[ "$CODE" = "401" ] || fail "E4: 未登录应 401（未认证），实际 $CODE"
+pass "E4 详情（无凭据泄漏）+ 未登录 401"
+
+# E5: alice 申请加入
+R="$($C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{"message":"我想加入"}' "$BASE/api/discovery/teams/$E_TEAM/apply")"
+RID="$(echo "$R" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("ok"),d;print(d["request_id"])')" || fail "E5: 申请失败: $R"
+# 重复申请被拒
+$C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/discovery/teams/$E_TEAM/apply" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok') is not True and 'pending' in str(d.get('error','')), d" || fail "E5: 重复申请应被拒"
+pass "E5 申请加入 + 重复申请被拒"
+
+# E6: owner 待审可见 + 非 owner 不能审批
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/pending" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert any(r['request_id']=='$RID' for r in d['requests']), d" || fail "E6: owner 待审列表缺申请"
+$C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{"approve":true}' "$BASE/api/discovery/requests/$RID/decide" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok') is not True, d" || fail "E6: 非 owner 不应能审批"
+pass "E6 owner 待审列表 + 非 owner 审批被拒"
+
+# E7: 我的申请（alice）可见 pending；撤回后批准应失败
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/mine" | python3 -c "
+import json,sys; d=json.load(sys.stdin); r=[x for x in d['requests'] if x['request_id']=='$RID'][0]; assert r['status']=='pending', d" || fail "E7: 我的申请状态异常"
+pass "E7 我的申请（pending）"
+
+# E8: owner 批准
+$C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"approve":true}' "$BASE/api/discovery/requests/$RID/decide" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok') and d['status']=='approved' and d['applicant_name']=='alice', d" || fail "E8: 批准失败"
+pass "E8 owner 批准（返回申请人）"
+
+# E9: 拒绝 → 冷却（新申请一次再拒）
+R2="$($C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/discovery/teams/$E_TEAM/apply")"
+RID2="$(echo "$R2" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("request_id",""))')"
+[ -n "$RID2" ] || fail "E9: 二次申请失败: $R2"
+$C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"approve":false}' "$BASE/api/discovery/requests/$RID2/decide" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok') and d['status']=='rejected', d" || fail "E9: 拒绝失败"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/mine" | python3 -c "
+import json,sys; d=json.load(sys.stdin); r=[x for x in d['requests'] if x['request_id']=='$RID2'][0]
+assert r['status']=='rejected' and r['cooldown_until'], d" || fail "E9: 冷却未记录"
+$C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/discovery/teams/$E_TEAM/apply" | python3 -c "
+import json,sys; d=json.load(sys.stdin); assert d.get('ok') is not True and 're-apply' in str(d.get('error','')), d" || fail "E9: 冷却期内不应能再申请"
+pass "E9 拒绝 + 7 天冷却生效"
+
 # G1-G5: GitHub OAuth 真流程（mock，不碰 github.com）
 echo "== G: GitHub OAuth（mock） =="
 MOCK_PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
