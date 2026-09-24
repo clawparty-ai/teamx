@@ -76,6 +76,7 @@
 | 与既有 console 的分层 | **platform console**（新建，平台面）/ **admin-console**（`teamx ui`，租户内 lead 看板）/ **user-console**（`teamx console`，成员自助）—— 三者数据源分层：平台面读平台 API，租户面读租户 server RPC |
 | API | 平台 API（REST + SSE）：`/api/tenants`、`/api/tenants/{id}`、`/api/provision`、`/api/quota`（v1 只读）；租户内操作仍走 teamx RPC（mTLS） |
 | 承载 | 平台 console 自身也容器化（namespace `teamx-platform`），Ingress + TLS |
+| **运维面与用户面的拆分（owner 决定 2026-09-24）** | 云控制台**只面向用户**（登录 / 建团队 / 邀请 / 查看自己的资源）。**运维功能（跨租户管理、平台 token/管理员/审计、节点与配额运营）不属控制台，计划独立成一个程序（前后台分离），v1 先用 CLI 承担**（`teamx tenant/platform/issued/node ...` 已全覆盖）。控制台内现有的「租户管理 / 平台管理」Tab 与 launch-token 入口**属过渡形态**，待运维程序落地后移出。<br>现状说明：控制台当前是**宿主机 systemd 进程**（非容器）——因为租户写操作需 kubeconfig（与控制面同机最直接）；进集群 Deployment 形态（用 in-cluster RBAC 替代 kubeconfig）**明确不做**（owner 2026-09-24）。 |
 
 ## 6. 平台自身 bootstrap（C15）
 
