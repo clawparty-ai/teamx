@@ -128,3 +128,36 @@ updated_at: 2026-09-24（Shared Understanding 已确认，session 完成）
 - `adr/ADR-0001-public-team-directory-data-source.md`
 - `CONTEXT.md`（术语表）
 - `design/014`（§5 控制台分层 / §6.5 service 车道）
+
+## 实现状态（2026-09-24，真机验证）
+
+「我的团队」按定稿实现并**真集群验证**。
+
+| 能力 | 实现 | 验证 |
+|---|---|---|
+| 二级菜单 | 子 Tab：`我的团队` / `创建团队`（表单页）/ `Owner 邀请函`（取件页） | ✅ 活体 |
+| 两组列表 | `provision::my_teams`：`owned`（tenant_owners）+ `joined`（**按团队去重**，取最新一条；离开/回收后不再出现） | ✅ 真机（去重修复 + 孤儿失效） |
+| 顶部三卡 | 我创建的 N/配额 · 我加入的 K · 运行中工作区 X | ✅ 活体 |
+| 工作区状态 | `kubectl get pods -A` 按 `teamx.io/managed` 标签**实时**取；不可达回落快照并标注 `workspace_live=false`；owner 用 `tenants.owner_member_id` | ✅ 真机（applicant 显示 `Pending/live=true`；owner 无 pod → 如实 `none`） |
+| 成员只读名册 | 租户侧 `team_roster`（仅 名/角色/状态/is_lead）+ service 车道白名单 `team.roster` | ✅ 单测/接口；无端点时**明确失败** |
+| 邀请成员 | `POST /api/my/teams/{t}/invite`（owner 鉴权 → `team.invite`） | ✅ 无端点时明确失败（E2E F5） |
+| 创建表单 | 一步带 名称/可见性/加入策略/简介 | ✅ 真机（public+open_request 生效） |
+| Owner 邀请函 | `tenants.owner_letter` 持久化（bootstrap 写入）+ 取件页 | ✅ 真机（新建团队 `available=true`，老团队无信如实 `false`） |
+| 离开团队 | `leave_team`：租户侧 `team.release_seat`（窄接口）→ 删 member Pod → 平台置 `left`；租户不可达则整体失败（ADR-0002） | ✅ E2E F6（非成员被拒） |
+| 回收确认 | 需输入团队名 + 销毁清单 + "成员会失联" | ✅ 活体 |
+| 回收失效 | destroy 时把该团队 pending/approved 申请置 `left`（成员失联） | ✅ 真机（清理孤儿后 joined 回到 1） |
+
+### 真机踩到并修掉的 3 个问题
+
+1. **「我加入的」未去重**（真 bug）：反复申请/离开会在同一团队留多条 approved，
+   实测同一团队出现 7 次 → 改为"按团队取最新一条（含 `left`）"，仅最新为 approved 才计入（`a34d149`）。
+2. **owner 工作区状态取不到**：owner 无 join 请求（座位来自 bootstrap）→ 新增
+   `tenants.owner_member_id`（bootstrap 写入）（`a34d149`）。
+3. **回收后成员的「我加入的」仍显示该团队** → destroy 时失效其 pending/approved 申请
+   （`0525de9`，destroy 清单加 `invalidate-join-requests`）。
+
+另：编辑 UI 时一次**非贪婪正则误删**了 `INDEX_HTML` 结束标记与测试模块（`git checkout` 恢复后改用
+精确切片 + 锚点替换，并加结构自检：div 配平 / 真实 id 去重 / `"#;` 与 tests 存在）。
+
+**未做（延后项，与 record 一致）**：转让所有权（O-1）、搜索/分页（O-2）、重建工作区（O-3）、
+申请历史去重（O-4）；租户端点仍靠 operator 配置（O-5）。
