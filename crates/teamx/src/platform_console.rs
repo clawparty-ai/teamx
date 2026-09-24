@@ -970,6 +970,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .btn-ghost:hover{background:#EBF5FF;color:#357ABD}
  .btn-sm{font-size:13px;padding:5px 12px;font-weight:400}
  .btn-danger{background:#F56C6C}
+ .btn-primary{background:#4A90E5;color:#fff}
  .btn-danger:hover{background:#dd5c5c}
  .divider{display:flex;align-items:center;gap:10px;color:#C0C4CC;font-size:12px;margin:4px 0}
  .divider::before,.divider::after{content:"";flex:1;border-top:1px solid #EBEEF5}
@@ -989,11 +990,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .usermenu-panel a:hover{background:#F2F6FC;color:#4A90E5}
  .usermenu-panel .sep{border-top:1px solid #EBEEF5;margin:4px 0}
  .usermenu-panel .dim{color:#C0C4CC;cursor:default}
- .pubcard{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:16px 18px;margin-bottom:12px;display:flex;gap:14px;align-items:flex-start}
- .pubcard .pc-main{flex:1;min-width:0}
- .pubcard h3{margin:0 0 4px;font-size:14px}
- .pubcard .pc-sum{color:#909399;font-size:13px;margin-bottom:6px;word-break:break-word}
- .pubcard .pc-meta{font-size:12px;color:#909399;display:flex;gap:14px;flex-wrap:wrap}
+ /* master-detail split（与成员端 console 的 discussions/documents 同口径） */
+ .split{display:grid;grid-template-columns:minmax(300px,38%) 1fr;gap:16px;align-items:start}
+ .split-list{max-height:calc(100vh - 300px);overflow:auto}
+ .split-detail{position:sticky;top:16px;min-height:220px}
+ @media (max-width:900px){.split{grid-template-columns:1fr}.split-detail{position:static}.split-list{max-height:none}}
+ .row-item{display:flex;align-items:center;gap:10px;padding:10px 8px;border-bottom:1px solid #EBEEF5;cursor:pointer;border-radius:4px}
+ .row-item:last-child{border-bottom:none}
+ .row-item:hover{background:#F2F6FC}
+ .row-item.sel{background:#EBF3FC;box-shadow:inset 3px 0 0 #4A90E5}
+ .row-item .ri-title{flex:1;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .row-item .ri-meta{color:#909399;font-size:12px;white-space:nowrap;font-family:"SF Mono","Fira Code",monospace}
+ .detail-empty{color:#909399;font-size:13px;padding:24px 4px;text-align:center}
+ .pc-sum{color:#909399;font-size:13px;margin:6px 0 10px;word-break:break-word}
+ .pc-meta{font-size:12px;color:#909399;display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
  .tag-j{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12px;background:#E8F8E8;color:#67C23A;margin-left:6px}
  .tag-i{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12px;background:#F2F6FC;color:#909399;margin-left:6px}
  .pager{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px;color:#909399}
@@ -1079,8 +1089,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <button class="tab op-only" data-tab="platform" onclick="showTab('platform')">平台管理</button>
   </nav>
   <div class="tabpage" id="tab-all">
-    <div class="panel"><h2>全部团队 <span class="tag">公开 · 可发现</span></h2>
-      <div class="row">
+    <div class="panel" style="padding:14px 16px">
+      <div class="row" style="margin:0">
         <input class="input" id="dQuery" placeholder="搜索团队名或简介" onkeydown="if(event.key==='Enter'){loadDir(1)}">
         <select class="input" id="dSort" onchange="loadDir(1)">
           <option value="created">最新创建</option>
@@ -1089,21 +1099,35 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <label class="muted"><input type="checkbox" id="dJoinable" onchange="loadDir(1)"> 只看可加入</label>
         <button class="btn btn-sm" onclick="loadDir(1)">搜索</button>
       </div>
-      <div id="dirList"></div>
-      <div class="pager" id="dirPager"></div>
     </div>
-    <div class="panel" id="dirDetail" style="display:none"><div id="dirDetailBody"></div></div>
+    <div class="split">
+      <section class="panel split-list">
+        <h2>全部团队 <span class="tag" id="dirCount"></span></h2>
+        <div id="dirList"></div>
+        <div class="pager" id="dirPager"></div>
+      </section>
+      <section class="panel split-detail" id="dirDetail"><div class="detail-empty">← 点击左侧团队查看详情</div></section>
+    </div>
   </div>
   <div class="tabpage" id="tab-reqs" style="display:none">
-    <div class="panel" id="pendPanel" style="display:none"><h2>待我审批 <span class="tag">owner</span></h2><div id="pendBody"></div></div>
-    <div class="panel"><h2>我的申请</h2><div id="mineBody"></div></div>
+    <div class="split">
+      <section class="panel split-list">
+        <h2 id="reqListTitle">我的申请</h2>
+        <div class="row" style="margin:0 0 8px"><button class="btn btn-sm" id="reqTabMine" onclick="reqMode('mine')">我的申请</button><button class="btn btn-sm" id="reqTabPend" onclick="reqMode('pend')">待我审批</button></div>
+        <div id="reqList"></div>
+      </section>
+      <section class="panel split-detail" id="reqDetail"><div class="detail-empty">← 点击左侧条目查看详情</div></section>
+    </div>
   </div>
   <div class="tabpage" id="tab-mine">
   <div class="cards" id="mineCards"></div>
   <div class="panel"><h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
     <div class="row"><input class="input" id="myName" placeholder="团队名，比如 data-team"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button><span class="muted" id="quota"></span></div>
   </div>
-  <div id="mine"></div>
+  <div class="split">
+    <section class="panel split-list"><h2>我的团队</h2><div id="mine"></div></section>
+    <section class="panel split-detail" id="mineDetail"><div class="detail-empty">← 点击左侧团队查看/管理</div></section>
+  </div>
   <div class="panel"><h2>Owner 邀请函</h2>
     <div class="muted">点团队卡片上的"初始化团队"后，邀请函显示在这里 —— 导入本地（<code>teamx team import</code>）即成为该团队 owner
       <button class="btn btn-sm copybtn" onclick="copyLetter()">复制邀请函</button></div>
@@ -1114,7 +1138,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
   <div class="panel"><h2>租户 <span class="tag">project（运维全量）</span></h2>
     <div class="row"><input class="input" id="team" placeholder="team id"><button class="btn btn-sm" onclick="createTenant()">创建租户</button></div>
-    <table><thead><tr><th>team_id</th><th>namespace</th><th>CA 指纹</th><th>server 镜像</th><th></th></tr></thead><tbody id="tenants"></tbody></table>
+  </div>
+  <div class="split">
+    <section class="panel split-list"><div id="tenants"></div></section>
+    <section class="panel split-detail" id="tenantDetail"><div class="detail-empty">← 点击左侧租户查看详情</div></section>
   </div>
 
   </div>
@@ -1152,29 +1179,33 @@ async function loadDir(page){
   const d=await jget(`/api/discovery/directory?query=${q}&sort=${sort}&joinable=${j}&page=${page||1}&per_page=20`);
   if(!d.ok){document.getElementById('dirList').innerHTML=`<div class="muted">加载失败：${esc(d.error||'')}</div>`;return}
   const items=d.items||[];
+  window.__dirItems=items;
+  document.getElementById('dirCount').textContent=`${d.total||0} 个`;
   document.getElementById('dirList').innerHTML=items.length?items.map(t=>`
-    <div class="pubcard"><div class="pc-main">
-      <h3>${esc(t.name)}${t.joinable?'<span class="tag-j">可申请加入</span>':'<span class="tag-i">仅邀请</span>'}</h3>
-      <div class="pc-sum">${esc(t.public_summary||'（未填写简介）')}</div>
-      <div class="pc-meta"><span>成员 ${esc(t.member_count)}</span><span>创建 ${esc((t.created_at||'').slice(0,10))}</span></div>
-    </div><div><button class="btn btn-sm" onclick="openDirDetail('${esc(t.team_id)}')">查看</button></div></div>`).join('')
-    : '<div class="pubcard"><div class="muted">没有匹配的公开团队</div></div>';
+    <div class="row-item" data-id="${esc(t.team_id)}" onclick="openDirDetail('${esc(t.team_id)}',this)">
+      <span class="ri-title">${esc(t.name)}</span>
+      ${t.joinable?'<span class="tag-j">可加入</span>':'<span class="tag-i">仅邀请</span>'}
+      <span class="ri-meta">${esc(t.member_count)} 人</span>
+    </div>`).join('')
+    : '<div class="detail-empty">没有匹配的公开团队</div>';
   const total=d.total||0, per=d.per_page||20, cur=d.page||1, pages=Math.max(1,Math.ceil(total/per));
   document.getElementById('dirPager').innerHTML=`共 ${total} 个 · 第 ${cur}/${pages} 页
     <button class="btn btn-sm" ${cur<=1?'disabled':''} onclick="loadDir(${cur-1})">上一页</button>
     <button class="btn btn-sm" ${cur>=pages?'disabled':''} onclick="loadDir(${cur+1})">下一页</button>`;
 }
-async function openDirDetail(id){
+function markSel(el){document.querySelectorAll('.row-item.sel').forEach(x=>x.classList.remove('sel'));if(el)el.classList.add('sel')}
+async function openDirDetail(id,el){
+  markSel(el);
+  const box=document.getElementById('dirDetail');
+  box.innerHTML='<div class="detail-empty">加载中…</div>';
   const d=await jget('/api/discovery/teams/'+encodeURIComponent(id));
-  const el=document.getElementById('dirDetail'), body=document.getElementById('dirDetailBody');
-  el.style.display='block';
-  if(!d.ok){body.innerHTML=`<div class="muted">${esc(d.error||'不可见')}</div>`;return}
+  if(!d.ok){box.innerHTML=`<div class="detail-empty">${esc(d.error||'不可见')}</div>`;return}
   const t=d.team||{};
-  body.innerHTML=`<div class="team-head"><h3>${esc(t.name)}</h3>${t.joinable?'<span class="tag-j">可申请加入</span>':'<span class="tag-i">仅邀请</span>'}<span class="team-actions"><button class="btn btn-sm" onclick="document.getElementById('dirDetail').style.display='none'">关闭</button></span></div>
+  box.innerHTML=`<div class="team-head"><h3>${esc(t.name)}</h3>${t.joinable?'<span class="tag-j">可申请加入</span>':'<span class="tag-i">仅邀请</span>'}</div>
    <div class="pc-sum">${esc(t.public_summary||'（未填写简介）')}</div>
-   <div class="pc-meta"><span>owner ${esc(t.owner_name||'—')}</span><span>成员 ${esc(t.member_count)}</span><span>状态 ${esc(t.state||'')}</span></div>
-   <div class="muted" style="margin-top:8px">${esc(t.tenant_meta_note||'')}</div>
-   ${t.joinable?`<div class="boot-row"><input class="input wide" id="applyMsg" placeholder="申请留言（可选）"><button class="btn btn-sm" onclick="applyJoin('${esc(t.team_id)}')">申请加入</button></div>`:''}`;
+   <div class="pc-meta"><span>owner ${esc(t.owner_name||'—')}</span><span>成员 ${esc(t.member_count)}</span><span>状态 ${esc(t.state||'')}</span><span>team ${esc((t.team_id||'').slice(0,8))}</span></div>
+   <div class="muted" style="margin-bottom:10px">${esc(t.tenant_meta_note||'')}</div>
+   ${t.joinable?`<div class="boot-row"><input class="input wide" id="applyMsg" placeholder="申请留言（可选）"><button class="btn btn-sm" onclick="applyJoin('${esc(t.team_id)}')">申请加入</button></div>`:'<div class="muted">该团队仅接受邀请。</div>'}`;
 }
 async function applyJoin(id){
   const message=(document.getElementById('applyMsg')||{}).value||'';
@@ -1183,13 +1214,23 @@ async function applyJoin(id){
   alert('申请已提交，等待团队 owner 审批。可在「我的申请」查看状态。');
   document.getElementById('dirDetail').style.display='none';
 }
+const REQ_ZH={pending:'待审批',approved:'已批准',rejected:'已拒绝',withdrawn:'已撤回'};
+let REQ_MODE='mine';
+function reqMode(m){REQ_MODE=m;
+  document.getElementById('reqTabMine').className='btn btn-sm'+(m==='mine'?' btn-primary':'');
+  document.getElementById('reqTabPend').className='btn btn-sm'+(m==='pend'?' btn-primary':'');
+  document.getElementById('reqListTitle').textContent=(m==='mine'?'我的申请':'待我审批');
+  document.getElementById('reqDetail').innerHTML='<div class="detail-empty">← 点击左侧条目查看详情</div>';
+  if(m==='mine')loadMineReqs();else loadPendingReqs();}
 async function loadMineReqs(){
   const d=await jget('/api/discovery/mine');
-  const rows=(d.requests||[]);
-  const zh={pending:'待审批',approved:'已批准',rejected:'已拒绝',withdrawn:'已撤回'};
-  document.getElementById('mineBody').innerHTML=rows.length?`<table><thead><tr><th>团队</th><th>状态</th><th>申请时间</th><th></th></tr></thead><tbody>`+
-    rows.map(r=>`<tr><td>${esc(r.team_name||r.team_id)}</td><td><span class="pill">${esc(zh[r.status]||r.status)}</span>${r.status==='rejected'&&r.cooldown_until?`<div class="muted" style="font-size:12px">冷却至 ${esc((r.cooldown_until||'').slice(0,10))}</div>`:''}</td><td class="muted">${esc((r.created_at||'').slice(0,16).replace('T',' '))}</td><td>${r.status==='pending'?`<button class="btn btn-sm" onclick="withdrawReq('${esc(r.request_id)}')">撤回</button>`:''}${r.status==='approved'?'<span class="muted">邀请函由 owner 侧交付</span>':''}</td></tr>`).join('')+`</tbody></table>`
-    :'<div class="muted">还没有申请记录</div>';
+  const rows=(d.requests||[]); window.__reqs=rows; window.__reqKind='mine';
+  if(REQ_MODE!=='mine')return;
+  document.getElementById('reqList').innerHTML=rows.length?rows.map(r=>`
+    <div class="row-item" data-id="${esc(r.request_id)}" onclick="openReqDetail('${esc(r.request_id)}',this)">
+      <span class="ri-title">${esc(r.team_name||r.team_id)}</span>
+      <span class="pill">${esc(REQ_ZH[r.status]||r.status)}</span>
+    </div>`).join(''):'<div class="detail-empty">还没有申请记录</div>';
 }
 async function withdrawReq(id){
   const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/withdraw',{});
@@ -1198,15 +1239,33 @@ async function withdrawReq(id){
 }
 async function loadPendingReqs(){
   const d=await jget('/api/discovery/pending');
-  const rows=(d.requests||[]);
-  const panel=document.getElementById('pendPanel'), body=document.getElementById('pendBody');
+  const rows=(d.requests||[]); window.__reqs=rows; window.__reqKind='pend';
   document.getElementById('miPending').style.display=rows.length?'block':'none';
-  if(!rows.length){panel.style.display='none';return}
-  panel.style.display='block';
-  body.innerHTML=`<table><thead><tr><th>团队</th><th>申请人</th><th>留言</th><th></th></tr></thead><tbody>`+
-    rows.map(r=>`<tr><td>${esc(r.team_name||r.team_id)}</td><td>${esc(r.applicant_name||r.applicant_user_id)}</td><td class="muted">${esc(r.message||'—')}</td>
-      <td><button class="btn btn-sm" onclick="decideReq('${esc(r.request_id)}',true)">批准</button>
-          <button class="btn btn-sm btn-danger" onclick="decideReq('${esc(r.request_id)}',false)">拒绝</button></td></tr>`).join('')+`</tbody></table>`;
+  if(REQ_MODE!=='pend')return;
+  document.getElementById('reqList').innerHTML=rows.length?rows.map(r=>`
+    <div class="row-item" data-id="${esc(r.request_id)}" onclick="openReqDetail('${esc(r.request_id)}',this)">
+      <span class="ri-title">${esc(r.team_name||r.team_id)}</span>
+      <span class="ri-meta">${esc(r.applicant_name||r.applicant_user_id)}</span>
+    </div>`).join(''):'<div class="detail-empty">暂无待审申请</div>';
+}
+function openReqDetail(id,el){
+  markSel(el);
+  const kind=window.__reqKind;
+  const r=(window.__reqs||[]).find(x=>x.request_id===id)||{};
+  const box=document.getElementById('reqDetail');
+  if(kind==='pend'){
+    box.innerHTML=`<div class="team-head"><h3>${esc(r.team_name||r.team_id)}</h3><span class="tag-i">待审批</span></div>
+      <div class="pc-meta"><span>申请人 ${esc(r.applicant_name||r.applicant_user_id)}</span><span>${esc((r.created_at||'').slice(0,16).replace('T',' '))}</span></div>
+      <div class="pc-sum">${esc(r.message||'（无留言）')}</div>
+      <div class="boot-row"><button class="btn btn-sm" onclick="decideReq('${esc(r.request_id)}',true)">批准</button>
+      <button class="btn btn-sm btn-danger" onclick="decideReq('${esc(r.request_id)}',false)">拒绝</button></div>`;
+  }else{
+    box.innerHTML=`<div class="team-head"><h3>${esc(r.team_name||r.team_id)}</h3><span class="pill">${esc(REQ_ZH[r.status]||r.status)}</span></div>
+      <div class="pc-meta"><span>申请于 ${esc((r.created_at||'').slice(0,16).replace('T',' '))}</span></div>
+      ${r.status==='rejected'&&r.cooldown_until?`<div class="muted">冷却至 ${esc((r.cooldown_until||'').slice(0,10))}（到期后可再次申请）</div>`:''}
+      ${r.status==='approved'?'<div class="muted">已批准：邀请函与成员工作区交付见后续步骤。</div>':''}
+      <div class="boot-row">${r.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="withdrawReq('${esc(r.request_id)}')">撤回申请</button>`:''}</div>`;
+  }
 }
 async function decideReq(id,approve){
   const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/decide',{approve});
@@ -1225,7 +1284,7 @@ async function boot(){
   document.getElementById('usermenu').style.display='inline-block';
   const isOp=(me.who||'').indexOf('operator')===0;
   document.querySelectorAll('.tab.op-only').forEach(b=>b.style.display=isOp?'':'none');
-  showTab('all');await loadDir(1);
+  showTab('all');reqMode('mine');await loadDir(1);
   await loadMine();await loadTenants();await loadPlatform();
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
@@ -1238,10 +1297,30 @@ document.getElementById('mineCards').innerHTML=
 `<div class="stat-card"><div class="stat-icon orange">📊</div><div><div class="stat-label">租户配额</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
 `<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${esc(me)}</div></div></div>`;
 document.getElementById('quota').textContent=`配额 ${d.used}/${d.quota}`;
-document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${esc(t.team_id)}</code></span><span>ns <code>${esc(t.namespace)}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span><span>${esc(t.server_image||'')}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div>
-      <div class="boot-row"><select class="input" id="vis_${short}"><option value="private">私有（不可发现）</option><option value="public">公开（可被发现在全部团队）</option></select>
-        <select class="input" id="jp_${short}"><option value="invite_only">仅邀请</option><option value="open_request">允许申请加入</option></select>
-        <input class="input wide" id="sum_${short}" placeholder="公开简介（≤200 字）"><button class="btn btn-sm" onclick="saveDiscover('${t.team_id}')">保存发现设置</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
+window.__mine=ts;
+  document.getElementById('mine').innerHTML=ts.length?ts.map(t=>`
+    <div class="row-item" data-id="${esc(t.team_id)}" onclick="openMineDetail('${esc(t.team_id)}',this)">
+      <span class="ri-title">${esc(t.team_name||'未命名团队')}</span>
+      <span class="ri-meta">${esc(t.namespace)}</span>
+    </div>`).join(''):'<div class="detail-empty">还没有团队，在上面创建一个</div>'}catch(e){}}
+async function openMineDetail(id,el){
+  markSel(el);
+  const t=(window.__mine||[]).find(x=>x.team_id===id)||{};const short=id.slice(0,8);
+  let d={};try{d=await jget('/api/discovery/teams/'+encodeURIComponent(id));}catch(e){}
+  const dt=d.team||{};
+  const vis=(dt.visibility||'private'), jp=(dt.join_policy||'invite_only'), sum=(dt.public_summary||'');
+  document.getElementById('mineDetail').innerHTML=`
+    <div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
+    <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
+    <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
+    <h2 style="margin-top:14px">初始化（O-1(a) 空账本）</h2>
+    <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（O-5）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+    <h2 style="margin-top:14px">发现设置</h2>
+    <div class="boot-row"><select class="input" id="vis_${short}"><option value="private"${vis==='private'?' selected':''}>私有（不可发现）</option><option value="public"${vis==='public'?' selected':''}>公开（可被发现）</option></select>
+      <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select></div>
+    <div class="boot-row"><input class="input wide" id="sum_${short}" placeholder="公开简介（≤200 字）" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
+    <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}')">回收租户</button></div>`;
+}
 async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
 async function saveDiscover(team){
   const short=team.slice(0,8);
@@ -1254,7 +1333,24 @@ async function saveDiscover(team){
   loadDir(1);
 }
 async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team||!server_url){alert('填该团队卡片上的 endpoint');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
-async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${esc(t.team_id)}</code></td><td><code>${esc(t.namespace)}</code></td><td><code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></td><td>${esc(t.server_image||'—')}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
+async function loadTenants(){const d=await jget('/api/tenants');
+ window.__tenants=d.tenants||[];
+ const tb=document.getElementById('tenants');
+ tb.innerHTML=window.__tenants.length?window.__tenants.map(t=>`
+   <div class="row-item" data-id="${esc(t.team_id)}" onclick="openTenantDetail('${esc(t.team_id)}',this)">
+     <span class="ri-title">${esc(t.team_name||t.team_id)}</span>
+     <span class="ri-meta">${esc(t.namespace)}</span>
+   </div>`).join(''):'<div class="detail-empty">暂无租户</div>'}
+function openTenantDetail(id,el){
+  markSel(el);
+  const t=(window.__tenants||[]).find(x=>x.team_id===id)||{};
+  document.getElementById('tenantDetail').innerHTML=`
+    <div class="team-head"><h3>${esc(t.team_name||id)}</h3><span class="pill">租户</span></div>
+    <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span></div>
+    <div class="pc-meta"><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,24))}…</code></span><span>镜像 ${esc(t.server_image||'—')}</span></div>
+    <div class="pc-meta"><span>owner ${esc(t.owner_user_id||'—')}</span><span>创建 ${esc((t.created_at||'').slice(0,10))}</span></div>
+    <div class="boot-row"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}')">回收租户</button></div>`;
+}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
  document.getElementById('tokens').innerHTML=(t.tokens||[]).map(x=>`<tr><td><code>${esc(x.id.slice(0,8))}</code></td><td><span class="pill">${esc(x.state)}</span></td><td class="muted">${esc(x.created_at)}</td><td>${esc(x.redeemed_by||'—')}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>';
  document.getElementById('admins').innerHTML=(a.admins||[]).map(x=>`<tr><td>${esc(x.user_name)}</td><td class="muted">${esc(x.granted_at)}</td><td class="muted">${esc(x.granted_via)}</td></tr>`).join('')||'<tr><td colspan=3 class="muted">无</td></tr>';
@@ -1276,6 +1372,7 @@ mod tests {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
+            "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
