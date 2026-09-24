@@ -121,6 +121,44 @@ TCoin 被 owner 定义为：**租户在 teamx 里的货币**；用途之一是�
 
 （暂无）
 
+## 实现状态（2026-09-25）
+
+**已实现**（代码仓 `main`，3 个提交）：
+
+| 层 | 内容 |
+|---|---|
+| 平台账本 `tcoin.rs` | append-only `tcoin_entries`（`seq/at/team_id/account/delta/reason/ref/actor`）；余额 = `SUM(delta)`；`grant`（发行）/`allocate`（owner→成员内部转账）/`settle`（按 batch **幂等**）/`reverse`（反向分录，重复冲正不重复回补）/`balance`/`entries`；`usd_to_tcoin`（1 TCoin = 0.001 USD，整数四舍五入） |
+| 租户侧 | **物化自 `activity`**（唯一计量源，不另存账）：`pending_usage`（逐成员未结算）/`settle_usage`（原子标记 `activity.tcoin_settled_at` + 返回批次摘要） |
+| service 车道 | `tcoin.usage`（只读）/`tcoin.settle`（结算）入平台白名单，走 service 身份 |
+| 平台编排 | `settle_team_tcoin`（租户结算 → 平台落总账，两级对账）、`tcoin_overview`（余额+流水+租户侧未结算；通道不可达如实报错） |
+| CLI | `teamx tcoin grant|allocate|settle|reverse|show` + RPC `tcoin.*` |
+| 控制台 | `GET /api/my/tcoin`（各团队余额/我的分配/累计消耗/软告警+最近动态）、`GET /api/my/tcoin/{team}`（归属校验，owner 附成员分配余额）、`POST /api/my/tcoin/{team}/settle`（owner-only）；UI：用户名菜单 **TCoin 实页**（列表→明细分栏）+ 「我的团队」详情 **本团队累计消耗** 块 |
+| 测试 | 单测 3 组（汇率取整 / append-only 全流程 / 租户用量物化与一次结算）；E2E H1–H5（46 断言） |
+
+**真机验证**（k8e 单节点，`teamx-server:dev` 重建导入）：建团队 → 自动通道 bootstrap（等待 Pod 就绪 14–20s）
+→ 导入 owner 信认领座位（租户 DB 出现 owner 成员）→ 平台 grant 5000 → 租户 pod 内 `activity push` 注入
+2 行消耗（1.0 USD）→ 控制台 `settle`：**consumed=1000**、余额 5000→4000、审户侧 2 行全部标记已结算
+→ 再结算 **consumed=0（幂等，余额/条数不变）** → `reverse` seq=1：追加 −5000 分录、余额 −1000、
+重复冲正 `already=true` 且不重复回补。全程 append-only（条数只增）。
+
+### 真机发现的缺口（已修，3 项）
+
+1. **bootstrap 不等 Pod 就绪** → port-forward 秒退、报无意义错误。修：`wait_tenant_deploy_ready`
+   仅在**确认 Deployment 存在**时有界等待（默认 90s，`TEAMX_TENANT_READY_TIMEOUT_SECS` 可覆盖），
+   不可解析/报错时不等待（保持快速失败）。
+2. **destroy 残留平台 `teams` 行** → public 团队租户已删却在「全部团队」残留幽灵团队
+   （`directory` 只按 `state IN ('forming','active')` 过滤）。修：置 `state='destroyed'`（不删除，保留审计）。
+3. **`tcoin grant/reverse/settle/show` 要求 member 会话**，但平台库只有 platform 用户 → 平台侧无法写账。
+   修：抽 `tcoin_actor`，先按平台会话令牌 `verify_session`（`user:<id>`），再退回会员会（`member:<id>`）。
+
+### 遗留开放项
+
+- **O-7（新）**：平台 bootstrap 后、**owner 未导入邀请函前**，控制台邀请成员会报
+  `member <id> is revoked (seat state: unknown)` —— 语义正确（租户侧该座位尚不存在）但**提示不友好**，
+  用户不知道"要先导入 owner 信"。建议：把该错误翻译成「请先导入 owner 邀请函认领座位」，或在
+  邀请入口前置检查。**未修**（等 owner 裁决是否需要）。
+- O-1 Pod 资源时长计量（v2）· O-2 动态定价 · O-3 成员排行 · O-4 日结批处理 · O-5 支付通道 · O-6 成员自助消费
+
 ## Related Artifacts
 
 - `adr/ADR-0003-tcoin-two-level-ledger.md`（本 session 产出）
