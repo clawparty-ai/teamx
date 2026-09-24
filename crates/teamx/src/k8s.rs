@@ -183,6 +183,28 @@ impl Kubectl {
     }
 
     /// 列 namespace（用于隔离断言 / 排查）。
+    /// Deployment 的 `(spec.replicas, status.availableReplicas)`。
+    /// 供「等租户 server 就绪」使用；输出不可解析（如 stub kubectl）时返回 Err，
+    /// 调用方据此**跳过等待**、保持快速失败。
+    pub fn deployment_replicas(&self, namespace: &str, name: &str) -> Result<(i32, i32), String> {
+        let spec = self.run(&[
+            "get", "deployment", name, "-n", namespace, "-o", "jsonpath={.spec.replicas}",
+        ])?;
+        let want: i32 = spec
+            .trim()
+            .parse()
+            .map_err(|_| format!("unparsable spec.replicas: {spec:?}"))?;
+        let avail = self
+            .run(&[
+                "get", "deployment", name, "-n", namespace,
+                "-o", "jsonpath={.status.availableReplicas}",
+            ])
+            .ok()
+            .and_then(|o| o.trim().parse::<i32>().ok())
+            .unwrap_or(0);
+        Ok((want, avail))
+    }
+
     pub fn list_namespaces(&self) -> Result<Vec<String>, String> {
         let s = self.run(&["get", "ns", "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}"])?;
         Ok(s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())

@@ -781,6 +781,39 @@ static FORWARDS: std::sync::OnceLock<
 ///
 /// 与集群同机时由 console/CLI 自行建立（无需 operator 手动开端口）；
 /// 集群不可达时**明确报错**（含排查提示），不静默。
+/// 等租户 server Deployment 就绪 —— **仅在确认 Deployment 存在时**才等待。
+///
+/// 真机踩到：新建租户后立刻初始化，Pod 还在 ContainerCreating，`port-forward`
+/// 因 Service 无就绪端点而**秒退**，用户看到的是无意义的 "exited immediately"。
+/// 这里先做有界等待（默认 90s，可用 `TEAMX_TENANT_READY_TIMEOUT_SECS` 覆盖）。
+/// kubectl 报错/输出不可解析（stub、无权限、Deployment 不存在）→ **不进等待**，
+/// 保持原有的快速失败语义（配置错误不该被拖成慢超时）。
+fn wait_tenant_deploy_ready(kubectl: &crate::k8s::Kubectl, ns: &str, deploy: &str) -> bool {
+    let secs: u64 = std::env::var("TEAMX_TENANT_READY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(90);
+    let want = match kubectl.deployment_replicas(ns, deploy) {
+        Ok((w, a)) => {
+            if a >= w {
+                return true;
+            }
+            w
+        }
+        Err(_) => return false, // 不确认存在 → 不等待（快速失败路径不变）
+    };
+    for i in 1..=secs {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if let Ok((_, a)) = kubectl.deployment_replicas(ns, deploy) {
+            if a >= want {
+                eprintln!("teamx: waited {i}s for {ns}/deploy/{deploy} to become ready");
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn ensure_forward(
     team_id: &str,
     kubeconfig: Option<&str>,
@@ -812,6 +845,9 @@ pub fn ensure_forward(
         kubeconfig.map(str::to_string),
         context.map(str::to_string),
     );
+    // 新建租户首次初始化：先等 Deployment 就绪，避免 port-forward 秒退（真机缺口）。
+    let deploy = format!("teamx-serve-{}", crate::k8s::short_id(team_id));
+    let _ = wait_tenant_deploy_ready(&kubectl, &ns, &deploy);
     let mut child = kubectl.port_forward(&ns, &svc, port, crate::k8s::SERVER_PORT)?;
     // 就绪探测：TCP 可连即成功；**子进程已退出 → 立即失败**（不傻等满窗口，
     // 例如 kubectl 不可用/无权限/服务不存在时，stub 与真机都能快速报错）。
@@ -1528,6 +1564,17 @@ pub fn destroy_tenant(
         .execute("DELETE FROM tenant_owners WHERE team_id = ?1", params![team_id])
         .unwrap_or(0);
     steps.push(json!({"step": "delete-tenant-owner (释放用户配额)", "target": team_id, "done": unowned > 0}));
+    // 平台 `teams` 行必须一并置 destroyed（design/015 ADR-0001：目录只读平台库）。
+    // 真机踩到：删租户后 teams 行残留 → 若可见性为 public 则「全部团队」会残留**幽灵团队**
+    // （directory 只按 `state IN ('forming','active')` 过滤）。置 destroyed 而非 DELETE，
+    // 保留台账/审计可追溯。
+    let retired = conn
+        .execute(
+            "UPDATE teams SET state = 'destroyed', updated_at = ?1 WHERE id = ?2 AND state != 'destroyed'",
+            params![crate::db::now(), team_id],
+        )
+        .unwrap_or(0);
+    steps.push(json!({"step": "retire-team-row (防目录幽灵团队)", "target": team_id, "done": retired > 0}));
     // 回收 = 成员失联（design/016 SD-16）：把该团队所有**未离开**的加入申请置 left，
     // 否则成员的「我加入的」会一直显示一个已不存在的团队。
     let orphaned = conn

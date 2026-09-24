@@ -278,6 +278,20 @@ fn memberships_for_session(
 
 /// Resolve the member + team for an actor session.
 /// `team_opt` disambiguates when the session belongs to several teams.
+/// TCoin 写账的 actor 解析（design/017 SD-5：写账 = 平台自动 + owner 手动）。
+/// **平台库只有 platform 用户、没有 member 行** —— 先按平台会话令牌解析，再退回 member 会话。
+/// 返回 `user:<id>` / `member:<id>` 记入分录 `actor`。
+pub(crate) fn tcoin_actor(conn: &Connection, session: &str) -> Result<String> {
+    if let Ok(v) = crate::platform::verify_session(conn, session) {
+        let uid = v.get("user_id").and_then(|x| x.as_str()).unwrap_or("");
+        if !uid.is_empty() {
+            return Ok(format!("user:{uid}"));
+        }
+    }
+    let (actor, _) = resolve_actor(conn, session, None)?;
+    Ok(format!("member:{}", actor.id))
+}
+
 fn resolve_actor(conn: &Connection, session: &str, team_opt: Option<&str>) -> Result<(MemberRow, TeamRow)> {
     let members = memberships_for_session(conn, session)
         .map_err(|e| AppError(format!("db error: {e}")))?;
@@ -528,10 +542,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         },
         Command::Tcoin(t) => match t {
             TcoinCmd::Grant { team, amount, reason, session } => {
-                let (actor, _) = resolve_actor(conn, session, None)?;
-                // 发行是平台动作：要求 actor 是团队归属用户或本地 owner 座位
-                let uid = crate::platform::session_user_id(conn, &actor.id).unwrap_or_default();
-                let by = if uid.is_empty() { actor.id.clone() } else { format!("user:{uid}") };
+                // 发行方是**平台**：优先按 platform 用户会话解析 actor（平台库只有用户、没有 member 行），
+                // 其次退回 member 会话（本地/租户库场景）。
+                let by = tcoin_actor(conn, session)?;
                 crate::tcoin::grant(conn, team, *amount, reason, &by).map_err(AppError)?
             }
             TcoinCmd::Allocate { team, member, amount, session } => {
@@ -541,7 +554,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     .map_err(AppError)?
             }
             TcoinCmd::Settle { team, kubeconfig, context, session } => {
-                let _ = resolve_actor(conn, session, None)?;
+                let by = tcoin_actor(conn, session)?;
+                let _ = by;
                 crate::provision::settle_team_tcoin(
                     conn,
                     team,
@@ -551,12 +565,11 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 .map_err(AppError)?
             }
             TcoinCmd::Reverse { seq, reason, session } => {
-                let (actor, _) = resolve_actor(conn, session, None)?;
-                crate::tcoin::reverse(conn, *seq, reason, &format!("member:{}", actor.id))
-                    .map_err(AppError)?
+                let by = tcoin_actor(conn, session)?;
+                crate::tcoin::reverse(conn, *seq, reason, &by).map_err(AppError)?
             }
             TcoinCmd::Show { team, kubeconfig, context, session } => {
-                let _ = resolve_actor(conn, session, None)?;
+                let _ = tcoin_actor(conn, session)?;
                 crate::provision::tcoin_overview(
                     conn,
                     team,
