@@ -7351,7 +7351,19 @@ mod tests {
         assert_eq!(id4, id1);
         assert_eq!(name4, "张三");
         // unknown id errors
-        assert!(resolve_user(&conn, Some("nope"), None, "owner").is_err());
+        // D8 修订：未登记的外部 user id 不再报错，而是**按引用登记**（平台权威、租户引用）
+        let r = resolve_user(&conn, Some("nope"), None, "owner").unwrap();
+        assert_eq!(r.as_ref().unwrap().0, "nope", "外部 id 原样保留");
+        let created: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = 'nope'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(created, 1, "引用行已登记");
+        // 幂等：再调一次不新增
+        let _ = resolve_user(&conn, Some("nope"), None, "owner").unwrap();
+        let again: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = 'nope'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(again, 1, "重复引用不新增");
         // no name / no id → None (unbound)
         assert!(resolve_user(&conn, None, None, "owner").unwrap().is_none());
         assert!(resolve_user(&conn, None, Some("  "), "owner").unwrap().is_none());
