@@ -1240,18 +1240,36 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
   </div>
   <div class="tabpage" id="tab-mine">
-  <div class="cards" id="mineCards"></div>
-  <div class="panel"><h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
-    <div class="row"><input class="input" id="myName" placeholder="团队名，比如 data-team"><button class="btn btn-sm" onclick="createMyTeam()">创建团队</button><span class="muted" id="quota"></span></div>
+  <nav class="tabs" style="margin-bottom:12px">
+    <button class="tab active" data-sub="list" onclick="mineTab('list')">我的团队</button>
+    <button class="tab" data-sub="create" onclick="mineTab('create')">创建团队</button>
+    <button class="tab" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</button>
+  </nav>
+  <div id="sub-list">
+    <div class="cards" id="mineCards"></div>
+    <div class="split">
+      <section class="panel split-list"><h2>我的团队</h2><div id="mine"></div></section>
+      <section class="panel split-detail" id="mineDetail"><div class="detail-empty">← 点击左侧团队查看/管理</div></section>
+    </div>
   </div>
-  <div class="split">
-    <section class="panel split-list"><h2>我的团队</h2><div id="mine"></div></section>
-    <section class="panel split-detail" id="mineDetail"><div class="detail-empty">← 点击左侧团队查看/管理</div></section>
+  <div id="sub-create" style="display:none">
+    <div class="panel" style="max-width:640px">
+      <h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
+      <div class="form" style="gap:14px">
+        <input class="input" id="ncName" placeholder="团队名，比如 data-team">
+        <select class="input" id="ncVis"><option value="private">私有（不可被发现）</option><option value="public">公开（出现在「全部团队」）</option></select>
+        <select class="input" id="ncJoin"><option value="invite_only">仅邀请</option><option value="open_request">允许申请加入</option></select>
+        <input class="input" id="ncSum" placeholder="公开简介（≤200 字，可选）">
+        <div><button class="btn" onclick="createMyTeam()">创建团队</button><span class="muted" id="ncQuota" style="margin-left:10px"></span></div>
+        <div class="muted">创建后 server 由平台自动拉起（约 1 分钟）；随后到「Owner 邀请函」取函导入即成为 owner。</div>
+      </div>
+    </div>
   </div>
-  <div class="panel"><h2>Owner 邀请函</h2>
-    <div class="muted">点团队卡片上的"初始化团队"后，邀请函显示在这里 —— 导入本地（<code>teamx team import</code>）即成为该团队 owner
-      <button class="btn btn-sm copybtn" onclick="copyLetter()">复制邀请函</button></div>
-    <pre class="out muted" id="letterOut">（初始化团队后显示）</pre>
+  <div id="sub-letters" style="display:none">
+    <div class="panel"><h2>Owner 邀请函 <span class="tag">取件页</span></h2>
+      <div class="muted">把邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner。</div>
+      <div id="lettersList"></div>
+    </div>
   </div>
   </div>
   <div class="tabpage" id="tab-tenants" style="display:none">
@@ -1409,44 +1427,118 @@ async function boot(){
   document.getElementById('usermenu').style.display='inline-block';
   const isOp=(me.who||'').indexOf('operator')===0;
   document.querySelectorAll('.tab.op-only').forEach(b=>b.style.display=isOp?'':'none');
-  showTab('all');reqMode('mine');await loadDir(1);
+  showTab('all');reqMode('mine');mineTab('list');await loadDir(1);
   await loadMine();await loadTenants();await loadPlatform();
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
-async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok){document.getElementById('quota').textContent='';document.getElementById('mine').innerHTML='';document.getElementById('mineCards').innerHTML='';return}
-const ts=d.tenants||[];const me=(await jget('/api/me')).who||'';
-document.getElementById('mineCards').innerHTML=
-`<div class="stat-card"><div class="stat-icon blue">👥</div><div><div class="stat-label">我的团队</div><div class="stat-value">${ts.length}</div></div></div>`+
-`<div class="stat-card"><div class="stat-icon orange">📊</div><div><div class="stat-label">租户配额</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
-`<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${esc(me)}</div></div></div>`;
-document.getElementById('quota').textContent=`配额 ${d.used}/${d.quota}`;
-window.__mine=ts;
-  document.getElementById('mine').innerHTML=ts.length?ts.map(t=>`
-    <div class="row-item" data-id="${esc(t.team_id)}" onclick="openMineDetail('${esc(t.team_id)}',this)">
-      <span class="ri-title">${esc(t.team_name||'未命名团队')}</span>
-      <span class="ri-meta">${esc(t.namespace)}</span>
-    </div>`).join(''):'<div class="detail-empty">还没有团队，在上面创建一个</div>'}catch(e){}}
-async function openMineDetail(id,el){
-  markSel(el);
-  const t=(window.__mine||[]).find(x=>x.team_id===id)||{};const short=id.slice(0,8);
-  let d={};try{d=await jget('/api/discovery/teams/'+encodeURIComponent(id));}catch(e){}
-  const dt=d.team||{};
-  const vis=(dt.visibility||'private'), jp=(dt.join_policy||'invite_only'), sum=(dt.public_summary||'');
-  document.getElementById('mineDetail').innerHTML=`
-    <div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
-    <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
-    <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
-    <h2 style="margin-top:14px">初始化（O-1(a) 空账本）</h2>
-    <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（O-5）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
-    <h2 style="margin-top:14px">发现设置</h2>
-    <div class="boot-row"><select class="input" id="vis_${short}"><option value="private"${vis==='private'?' selected':''}>私有（不可发现）</option><option value="public"${vis==='public'?' selected':''}>公开（可被发现）</option></select>
-      <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select></div>
-    <div class="boot-row"><input class="input wide" id="sum_${short}" placeholder="公开简介（≤200 字）" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
-    <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}')">回收租户</button></div>`;
+function mineTab(name){
+  document.querySelectorAll('#tab-mine > nav .tab').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
+  ['list','create','letters'].forEach(n=>{const el=document.getElementById('sub-'+n); if(el) el.style.display=(n===name?'block':'none')});
+  if(name==='letters')loadLetters();
+  if(name==='list')loadMine();
 }
-async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
+async function loadMine(){try{
+  const d=await jget('/api/my/teams');
+  if(!d.ok){document.getElementById('mine').innerHTML='';document.getElementById('mineCards').innerHTML='';return}
+  const owned=d.owned||[], joined=d.joined||[];
+  document.getElementById('mineCards').innerHTML=
+   `<div class="stat-card"><div class="stat-icon blue">👥</div><div><div class="stat-label">我创建的</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
+   `<div class="stat-card"><div class="stat-icon orange">🤝</div><div><div class="stat-label">我加入的</div><div class="stat-value">${d.joined_count}</div></div></div>`+
+   `<div class="stat-card"><div class="stat-icon green">💻</div><div><div class="stat-label">运行中工作区</div><div class="stat-value">${d.running_workspaces}</div></div></div>`;
+  const q=document.getElementById('ncQuota'); if(q) q.textContent='当前 '+d.used+'/'+d.quota;
+  window.__owned=owned; window.__joined=joined;
+  const row=(id,name,meta,kind)=>`<div class="row-item" data-id="${esc(id)}" onclick="openMineDetail('${esc(id)}','${kind}',this)"><span class="ri-title">${esc(name)}</span><span class="ri-meta">${esc(meta)}</span></div>`;
+  document.getElementById('mine').innerHTML=
+    `<div class="muted" style="margin:6px 0 4px">我创建的（${owned.length}）</div>`+
+    (owned.length?owned.map(t=>row(t.team_id,t.team_name||'未命名',(t.visibility==='public'?'公开':'私有')+' · '+(t.namespace||''),'owned')).join(''):'<div class="detail-empty">暂无</div>')+
+    `<div class="muted" style="margin:14px 0 4px">我加入的（${joined.length}）</div>`+
+    (joined.length?joined.map(t=>row(t.team_id,t.team_name||t.team_id,(t.joined_at||'').slice(0,10)+' 加入','joined')).join(''):'<div class="detail-empty">暂无</div>');
+  if(!owned.length&&!joined.length){
+    document.getElementById('mine').innerHTML='<div class="detail-empty">还没有团队<br><br><button class="btn btn-sm" onclick="mineTab(\'create\')">创建团队</button> <button class="btn btn-sm" onclick="showTab(\'all\')">去全部团队发现</button></div>';
+  }
+}catch(e){}}
+
+async function openMineDetail(id,kind,el){
+  markSel(el);
+  const box=document.getElementById('mineDetail');
+  box.innerHTML='<div class="detail-empty">加载中…</div>';
+  let det={};try{det=(await jget('/api/discovery/teams/'+encodeURIComponent(id))).team||{};}catch(e){}
+  const t=(kind==='owned'?(window.__owned||[]):(window.__joined||[])).find(x=>x.team_id===id)||{};
+  const short=id.slice(0,8); const ws=t.workspace_state||'none';
+  if(kind==='owned'){
+    const vis=det.visibility||'private', jp=det.join_policy||'invite_only', sum=det.public_summary||'';
+    box.innerHTML=`
+      <div class="team-head"><h3>${esc(t.team_name||id)}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
+      <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
+      <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
+      <h2 style="margin-top:12px">初始化（若尚未）</h2>
+      <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，如 https://127.0.0.1:5790）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+      <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
+      <div id="roster_${short}" class="muted">加载中…</div>
+      <h2 style="margin-top:12px">邀请成员</h2>
+      <div class="boot-row"><input class="input" id="invRole_${short}" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="inviteMember('${esc(id)}')">生成邀请函</button></div>
+      <pre class="out" id="invOut_${short}" style="display:none"></pre>
+      <h2 style="margin-top:12px">发现设置</h2>
+      <div class="boot-row"><select class="input" id="vis_${short}"><option value="private"${vis==='private'?' selected':''}>私有</option><option value="public"${vis==='public'?' selected':''}>公开</option></select>
+        <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select>
+        <input class="input wide" id="sum_${short}" placeholder="公开简介" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
+      <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}','${esc(t.team_name||'')}')">回收租户</button></div>`;
+    loadRoster(id);
+  }else{
+    box.innerHTML=`
+      <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
+      <div class="pc-meta"><span>加入于 ${esc((t.joined_at||'').slice(0,10)||'—')}</span><span>席位 <code>${esc((t.member_id||'').slice(0,12))}</code></span>${t.workspace_live?'':'<span class="tag-i">状态为快照</span>'}</div>
+      <div class="pc-sum">${esc(det.public_summary||'')}</div>
+      <h2 style="margin-top:12px">我的邀请函</h2>
+      ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
+      <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px">
+        <button class="btn btn-sm btn-danger" onclick="leaveTeam('${esc(id)}','${esc(t.team_name||'')}')">离开团队</button>
+        <span class="muted">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</span></div>`;
+  }
+}
+async function loadRoster(id){
+  const short=id.slice(0,8); const el=document.getElementById('roster_'+short);
+  const d=await jget('/api/my/teams/'+encodeURIComponent(id)+'/roster');
+  if(!d.ok){el.innerHTML='<span class="muted">不可用：'+esc(d.error||'')+'</span>';return}
+  const ms=d.members||[];
+  el.innerHTML=ms.length?('<table><thead><tr><th>成员</th><th>角色</th><th>状态</th></tr></thead><tbody>'+
+    ms.map(m=>`<tr><td>${esc(m.display_name)}${m.is_lead?' <span class="tag-j">lead</span>':''}</td><td>${esc(m.role)}</td><td>${esc(m.state)}</td></tr>`).join('')+'</tbody></table>'):'<div class="muted">暂无成员</div>';
+}
+async function inviteMember(id){
+  const short=id.slice(0,8);
+  const role_desc=document.getElementById('invRole_'+short).value.trim()||'contributor: 成员';
+  const r=await jpost('/api/my/teams/'+encodeURIComponent(id)+'/invite',{role_desc});
+  const out=document.getElementById('invOut_'+short); out.style.display='block';
+  if(!r.ok){out.textContent='失败：'+(r.error||'');return}
+  out.textContent=r.letter||JSON.stringify(r,null,2);
+  alert('邀请函已生成，可复制发给成员');
+}
+async function leaveTeam(id,name){
+  if(!confirm('离开团队「'+name+'」？\n\n会释放我的座位、回收我的工作区（PVC 保留 7 天），之后可再次申请。'))return;
+  const r=await jpost('/api/my/teams/'+encodeURIComponent(id)+'/leave',{});
+  if(!r.ok){alert('离开失败：'+(r.error||''));return}
+  alert('已离开'+(r.pod_deleted?'（工作区已回收）':'（工作区待回收）'));
+  loadMine();
+}
+async function loadLetters(){
+  const d=await jget('/api/my/letters'); const el=document.getElementById('lettersList');
+  if(!d.ok){el.innerHTML='<span class="muted">'+esc(d.error||'')+'</span>';return}
+  const ts=d.teams||[];
+  el.innerHTML=ts.length?('<table><thead><tr><th>团队</th><th>邀请函</th></tr></thead><tbody>'+
+   ts.map(t=>`<tr><td>${esc(t.team_name||t.team_id)}</td><td>${t.available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<span class="muted">尚未初始化</span>'}</td></tr>`).join('')+'</tbody></table>')
+   :'<div class="muted">还没有团队</div>';
+}
+async function createMyTeam(){
+  const name=document.getElementById('ncName').value.trim(); if(!name)return;
+  const visibility=document.getElementById('ncVis').value, join_policy=document.getElementById('ncJoin').value;
+  const summary=document.getElementById('ncSum').value;
+  const r=await jpost('/api/my/teams',{name,visibility,join_policy,summary});
+  if(!r.ok){alert(r.error);return}
+  alert('团队已创建（空账本）。server 启动后到「Owner 邀请函」取函导入。');
+  mineTab('list'); await loadMine();
+}
 async function saveDiscover(team){
   const short=team.slice(0,8);
   const visibility=document.getElementById('vis_'+short).value;
@@ -1481,7 +1573,15 @@ async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/token
  document.getElementById('admins').innerHTML=(a.admins||[]).map(x=>`<tr><td>${esc(x.user_name)}</td><td class="muted">${esc(x.granted_at)}</td><td class="muted">${esc(x.granted_via)}</td></tr>`).join('')||'<tr><td colspan=3 class="muted">无</td></tr>';
  document.getElementById('audit').innerHTML=(au.audit||[]).map(x=>`<tr><td class="muted">${esc(x.at)}</td><td><code>${esc(x.actor)}</code></td><td>${esc(x.action)}</td><td class="muted">${esc(x.detail||'')}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">无</td></tr>'}
 async function createTenant(){const team=document.getElementById('team').value.trim();if(!team)return;const r=await jpost('/api/tenants',{team});if(!r.ok)alert(r.error);await loadTenants();await loadPlatform()}
-async function destroyTenant(t){if(!confirm('回收租户 '+t+' ?（删 namespace，级联清掉 server/CA/PVC）'))return;const r=await jdel('/api/tenants/'+encodeURIComponent(t));if(!r.ok)alert(r.error);await loadTenants();await loadPlatform()}
+async function destroyTenant(t,teamName){
+  const expect=teamName||t;
+  const typed=prompt('回收租户「'+expect+'」是不可逆操作，将销毁：\n  · 租户 server 与全部数据\n  · 租户独立 CA（成员证书立即失效）\n  · 成员工作区（成员会失联）\n\n请输入团队名确认：');
+  if(typed===null)return;
+  if(typed.trim()!==expect.trim()){alert('团队名不匹配，已取消');return}
+  const r=await jdel('/api/tenants/'+encodeURIComponent(t));
+  if(!r.ok){alert(r.error);return}
+  loadMine();loadTenants();loadPlatform();
+}
 async function invite(){const team=document.getElementById('invTeam').value.trim();const role_desc=document.getElementById('invRole').value.trim();const r=await jpost('/api/tenants/'+encodeURIComponent(team)+'/invite',{role_desc});document.getElementById('svcOut').textContent=JSON.stringify(r,null,2)}
 async function provision(){const team=document.getElementById('pvTeam').value.trim();const member=document.getElementById('pvMember').value.trim();const r=await jpost('/api/tenants/'+encodeURIComponent(team)+'/provision',{member});document.getElementById('svcOut').textContent=JSON.stringify(r,null,2)}
 </script>
@@ -1498,6 +1598,7 @@ mod tests {
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
+            "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
