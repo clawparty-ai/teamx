@@ -1116,7 +1116,50 @@ pub fn leave_team(
     }))
 }
 
-/// 我拥有的团队的 **owner 邀请函**（design/016 SD-10：取件页）。
+/// **加入团队用的邀请函**（design/016 SD-10 修订为"加入团队"页）：
+/// 两类信都列出来 —— ① 我创建的团队的 **owner 邀请函**（导入即成为该团队 owner）
+/// ② 我加入的团队的 **成员邀请函**（换机器/没保存时重新取回）。
+pub fn my_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
+    let mut letters: Vec<Value> = Vec::new();
+    // ① owner 邀请函（我创建的团队）
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.team_id, tm.name, COALESCE(t.owner_letter,'')
+                 FROM tenants t
+                 JOIN tenant_owners o ON o.team_id = t.team_id AND o.user_id = ?1
+                 LEFT JOIN teams tm ON tm.id = t.team_id
+                 ORDER BY t.created_at DESC",
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let rows = stmt
+            .query_map(params![user_id], |r| {
+                let letter: String = r.get(2)?;
+                Ok(json!({
+                    "team_id": r.get::<_, String>(0)?,
+                    "team_name": r.get::<_, String>(1)?,
+                    "kind": "owner",
+                    "available": !letter.is_empty(),
+                    "letter": letter,
+                }))
+            })
+            .map_err(|e| format!("db: {e}"))?;
+        letters.extend(rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("db: {e}"))?);
+    }
+    // ② 成员邀请函（我加入的团队，按团队去重取最新）
+    for j in crate::discovery::joined_teams(conn, user_id)? {
+        letters.push(json!({
+            "team_id": j["team_id"],
+            "team_name": j["team_name"],
+            "kind": "member",
+            "available": j["letter_available"],
+            "letter": j["letter"],
+        }));
+    }
+    Ok(json!({ "ok": true, "letters": letters }))
+}
+
+/// 我拥有的团队的 **owner 邀请函**（保留：内部复用）。
 pub fn owner_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
     let mut stmt = conn
         .prepare(

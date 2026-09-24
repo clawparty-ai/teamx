@@ -720,7 +720,7 @@ async fn api_my_leave(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team
 async fn api_my_letters(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
     if let Err(r) = guard(&ctx, &headers) { return r; }
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
-    match with_conn(&ctx, |c| crate::provision::owner_letters(c, &uid)) {
+    match with_conn(&ctx, |c| crate::provision::my_letters(c, &uid)) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
@@ -1107,12 +1107,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
  /* 二级菜单：**左侧竖排**导航（与一级下划线 Tab 明显分层） */
  .subnav-layout{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:start}
  .subnav{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:8px;position:sticky;top:16px}
- .subnav-title{font-size:12px;color:#909399;padding:4px 10px 8px;letter-spacing:.04em}
  .subnav-item{display:block;padding:9px 12px;border-radius:6px;font-size:13px;color:#606266;cursor:pointer;transition:background 150ms,color 150ms;border-left:3px solid transparent}
  .subnav-item:hover{background:#F2F6FC;color:#4A90E5}
  .subnav-item.active{background:#EBF3FC;color:#4A90E5;font-weight:600;border-left-color:#4A90E5}
  @media (max-width:900px){.subnav-layout{grid-template-columns:1fr}.subnav{position:static;display:flex;gap:4px;overflow:auto;padding:6px}
-   .subnav-title{display:none}.subnav-item{border-left:none;white-space:nowrap}}
+.subnav-item{border-left:none;white-space:nowrap}}
  /* 轻量分段控件（用于「我的申请/待我审批」这类**视图切换**，不是章节导航） */
  .subtabs{display:inline-flex;gap:4px;padding:4px;background:#F2F6FC;border-radius:8px;margin:0 0 8px}
  .subtab{border:none;background:none;padding:6px 16px;font-size:13px;color:#606266;cursor:pointer;border-radius:6px;font-family:inherit;transition:background 150ms,color 150ms}
@@ -1256,10 +1255,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
   <div class="tabpage" id="tab-mine">
   <div class="subnav-layout">
   <nav class="subnav" id="mineSubtabs">
-    <div class="subnav-title">我的团队</div>
     <a class="subnav-item active" data-sub="list" onclick="mineTab('list')">团队列表</a>
     <a class="subnav-item" data-sub="create" onclick="mineTab('create')">创建团队</a>
-    <a class="subnav-item" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</a>
+    <a class="subnav-item" data-sub="letters" onclick="mineTab('letters')">加入团队</a>
   </nav>
   <div>
   <div id="sub-list">
@@ -1283,8 +1281,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
   </div>
   <div id="sub-letters" style="display:none">
-    <div class="panel"><h2>Owner 邀请函 <span class="tag">取件页</span></h2>
-      <div class="muted">把邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner。</div>
+    <div class="panel"><h2>加入团队 <span class="tag">取件页</span></h2>
+      <div class="muted">把邀请函导入本地（<code>teamx team import</code>）即加入该团队：<b>我创建的</b>团队 → 你是 owner；<b>我加入的</b>团队 → 你是成员。</div>
       <div id="lettersList"></div>
     </div>
   </div>
@@ -1544,10 +1542,15 @@ async function leaveTeam(id,name){
 async function loadLetters(){
   const d=await jget('/api/my/letters'); const el=document.getElementById('lettersList');
   if(!d.ok){el.innerHTML='<span class="muted">'+esc(d.error||'')+'</span>';return}
-  const ts=d.teams||[];
-  el.innerHTML=ts.length?('<table><thead><tr><th>团队</th><th>邀请函</th></tr></thead><tbody>'+
-   ts.map(t=>`<tr><td>${esc(t.team_name||t.team_id)}</td><td>${t.available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<span class="muted">尚未初始化</span>'}</td></tr>`).join('')+'</tbody></table>')
-   :'<div class="muted">还没有团队</div>';
+  const ls=d.letters||[];
+  const grp=(kind,title)=>{
+    const xs=ls.filter(x=>x.kind===kind);
+    if(!xs.length)return '';
+    return `<h2 style="margin-top:12px">${title}</h2><table><thead><tr><th>团队</th><th>邀请函</th></tr></thead><tbody>`+
+      xs.map(t=>`<tr><td>${esc(t.team_name||t.team_id)}</td><td>${t.available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<span class="muted">尚未生成（先初始化/等待审批生效）</span>'}</td></tr>`).join('')+
+      '</tbody></table>';
+  };
+  el.innerHTML=(grp('owner','我创建的团队（你将是 owner）')+grp('member','我加入的团队（你是成员）'))||'<div class="muted">暂无可用的邀请函</div>';
 }
 async function createMyTeam(){
   const name=document.getElementById('ncName').value.trim(); if(!name)return;
@@ -1618,7 +1621,7 @@ mod tests {
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
-            "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表",
+            "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表", "加入团队",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
