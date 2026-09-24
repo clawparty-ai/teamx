@@ -4082,6 +4082,34 @@ fn cmd_teamfile_sync(
     }))
 }
 
+/// 把外部（平台）用户 id 作为**引用**登记到本库 users 表（幂等）。
+/// D8：平台 users.id 权威，租户只引用；不存在的行按引用创建。
+fn err_or_reference(conn: &Connection, id: &str, name: &str, created_by: &str) -> Result<()> {
+    let now = db::now();
+    // display_name 有 UNIQUE 约束：与既有用户重名时加后缀重试一次（引用行不是我方权威）。
+    for candidate in [name.to_string(), format!("{name}-ref")] {
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO users (id, display_name, email, created_by, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?4)",
+                params![id, candidate, created_by, now],
+            )
+            .map_err(|e| AppError(format!("register user reference failed: {e}")))?;
+        if n > 0 {
+            return Ok(());
+        }
+        // n==0：要么 id 已存在（已引用，无需再插），要么 display_name 冲突 → 换名重试
+        let exists: Option<String> = conn
+            .query_row("SELECT id FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(|e| AppError(format!("db error: {e}")))?;
+        if exists.is_some() {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 fn resolve_user(    conn: &Connection,
     user_id: Option<&str>,
     user_name: Option<&str>,
@@ -4092,8 +4120,18 @@ fn resolve_user(    conn: &Connection,
             .query_row("SELECT display_name FROM users WHERE id = ?1", [id], |r| r.get(0))
             .optional()
             .map_err(|e| AppError(format!("db error: {e}")))?;
+        // D8：平台的 `users.id` 是权威源，租户 server **只引用**。云路径下邀请会带
+        // 平台用户 id（`user`），租户库未必有该行 —— 此时按引用**登记一行**（display_name
+        // 取 name_hint / id 前缀），而不是报错拒绝（真机踩到：批准执行链被
+        // "user <platform-id> not found" 卡住）。
         let Some(name) = name else {
-            return err(format!("user `{id}` not found"));
+            let ref_name = user_name
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("user-{}", &id[..8.min(id.len())]));
+            err_or_reference(conn, id, &ref_name, created_by)?;
+            return Ok(Some((id.to_string(), ref_name)));
         };
         return Ok(Some((id.to_string(), name)));
     }
