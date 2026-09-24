@@ -82,6 +82,14 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/logout", post(api_logout))
         .route("/api/me", get(api_me))
         .route("/api/tenants", get(api_tenants).post(api_tenant_create))
+        .route("/api/discovery/directory", get(api_dir))
+        .route("/api/discovery/teams/{team}", get(api_dir_team))
+        .route("/api/discovery/teams/{team}/apply", post(api_dir_apply))
+        .route("/api/discovery/teams/{team}/settings", post(api_dir_settings))
+        .route("/api/discovery/mine", get(api_dir_mine))
+        .route("/api/discovery/requests/{id}/withdraw", post(api_dir_withdraw))
+        .route("/api/discovery/pending", get(api_dir_pending))
+        .route("/api/discovery/requests/{id}/decide", post(api_dir_decide))
         .route("/api/my/teams", get(api_my_teams).post(api_my_teams_create))
         .route("/api/my/teams/{team}/bootstrap", post(api_my_teams_bootstrap))
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
@@ -403,6 +411,169 @@ async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
         crate::provision::reissue_member_certs(c, &t, kubeconfig.as_deref(), context.as_deref())
     });
     match out {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 团队发现与加入（design/015）：全部团队 / 详情 / 申请 / 审批
+// ---------------------------------------------------------------------------
+
+/// 要求登录用户会话；返回 (user_id, display_name)。
+#[allow(clippy::result_large_err)]
+fn require_user(ctx: &Ctx, headers: &HeaderMap) -> Result<(String, String), Response> {
+    session_user(ctx, headers).ok_or_else(|| {
+        (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "user session required"})))
+            .into_response()
+    })
+}
+
+/// 「全部团队」名录（SD-12：须登录；SD-19/SD-25：搜索/排序/筛选/分页）。
+async fn api_dir(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    if let Err(r) = require_user(&ctx, &headers) { return r; }
+    let query = q.get("query").cloned();
+    let sort = q.get("sort").cloned();
+    let joinable = q.get("joinable").map(|v| v == "1" || v == "true").unwrap_or(false);
+    let page = q.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1);
+    let per_page = q.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20);
+    match with_conn(&ctx, |c| {
+        crate::discovery::directory(c, query.as_deref(), sort.as_deref(), joinable, page, per_page)
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 详情（SD-20：private 非成员 → 403）。
+///
+/// **诚实降级**：租户侧字段（goal 标题/状态）需要租户 server 端点（开放项 O-5 未定，
+/// 控制台与集群同机时靠 port-forward）。端点不可达时返回平台元数据 + `tenant_meta: null`
+/// 并说明原因，**不假装有**。
+async fn api_dir_team(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let detail = with_conn(&ctx, |c| {
+        if !crate::discovery::visible_to(c, &team, Some(&uid)).map_err(|e| e.to_string())? {
+            return Err("team not found".to_string());
+        }
+        let s = crate::discovery::settings(c, &team).map_err(|e| e.to_string())?
+            .ok_or_else(|| "team not found".to_string())?;
+        let owner: String = c
+            .query_row("SELECT COALESCE(user_id,'') FROM tenant_owners WHERE team_id = ?1", rusqlite::params![team], |r| r.get(0))
+            .unwrap_or_default();
+        let owner_name: String = c
+            .query_row("SELECT display_name FROM platform_users WHERE id = ?1", rusqlite::params![owner], |r| r.get(0))
+            .unwrap_or_default();
+        let member_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM members WHERE team_id = ?1 AND state NOT IN ('left','denied')", rusqlite::params![team], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(json!({
+            "team_id": team,
+            "name": s["name"], "public_summary": s["public_summary"],
+            "state": s["state"], "joinable": s["join_policy"] == json!("open_request"),
+            "owner_name": owner_name, "member_count": member_count,
+        }))
+    });
+    let base = match detail {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "team not found"}))).into_response(),
+    };
+    // 租户侧字段（可选）：端点未定（O-5）时诚实置空
+    let mut out = base;
+    out["tenant_meta"] = Value::Null;
+    out["tenant_meta_note"] = json!("tenant-side fields pending endpoint decision (O-5)");
+    Json(json!({ "ok": true, "team": out })).into_response()
+}
+
+/// 申请加入（SD-11）。
+async fn api_dir_apply(
+    State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>, Json(body): Json<Value>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let msg = body.get("message").and_then(Value::as_str).map(str::to_string);
+    match with_conn(&ctx, |c| crate::discovery::request_join(c, &team, &uid, msg.as_deref())) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// owner 改发现设置（SD-8/SD-16/SD-15）。
+async fn api_dir_settings(
+    State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>, Json(body): Json<Value>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let out = with_conn(&ctx, |c| {
+        if !crate::platform::tenant_owned_by(c, &team, &uid).map_err(|e| e.to_string())? {
+            return Err("only the team owner may change these settings".to_string());
+        }
+        if let Some(v) = body.get("visibility").and_then(Value::as_str) {
+            crate::discovery::set_visibility(c, &team, v)?;
+        }
+        if let Some(p) = body.get("join_policy").and_then(Value::as_str) {
+            crate::discovery::set_join_policy(c, &team, p)?;
+        }
+        if let Some(s) = body.get("summary").and_then(Value::as_str) {
+            crate::discovery::set_public_summary(c, &team, s)?;
+        }
+        crate::discovery::settings(c, &team)?.ok_or_else(|| "team not found".to_string())
+    });
+    match out {
+        Ok(v) => Json(json!({ "ok": true, "settings": v })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 「我的申请」（SD-26）。
+async fn api_dir_mine(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    match with_conn(&ctx, |c| crate::discovery::my_requests(c, &uid)) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+async fn api_dir_withdraw(
+    State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    match with_conn(&ctx, |c| crate::discovery::withdraw_request(c, &id, &uid)) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// owner 待审列表。
+async fn api_dir_pending(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    match with_conn(&ctx, |c| crate::discovery::pending_for_owner(c, &uid)) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// owner 审批（approve/reject；批准后的 seat+邀请函+pod 见后续提交）。
+async fn api_dir_decide(
+    State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let approve = body.get("approve").and_then(Value::as_bool).unwrap_or(false);
+    match with_conn(&ctx, |c| crate::discovery::decide_request(c, &id, &uid, approve)) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }

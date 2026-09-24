@@ -3457,6 +3457,54 @@ pub(crate) fn bootstrap_tenant_team(
     }))
 }
 
+/// 公开团队元数据（design/015 SD-15）：**只出白名单字段**，供平台的公开详情页使用。
+///
+/// 硬约束（ADR-0001）：**绝不**返回 `invite_token`、goal 正文、成员名单/座位细节。
+/// 调用方负责"该团队是否 public"的判定（可见性在平台库）；本函数只保证"即使被滥用，
+/// 也拿不到超出公开白名单的东西"。
+pub(crate) fn public_team_meta(
+    conn: &Connection,
+    team_id: &str,
+) -> std::result::Result<Value, String> {
+    let (name, state, created): (String, String, String) = match conn.query_row(
+        "SELECT name, COALESCE(state,''), created_at FROM teams WHERE id = ?1",
+        params![team_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ) {
+        Ok(v) => v,
+        Err(_) => return Err(format!("team {team_id} not found")),
+    };
+    if state == "destroyed" {
+        return Err(format!("team {team_id} not found"));
+    }
+    // goal：**只出标题与状态**（正文属正文，D10）
+    let goal: Option<(String, String)> = conn
+        .query_row(
+            "SELECT title, COALESCE(state,'') FROM goals
+             WHERE team_id = ?1 AND COALESCE(state,'') NOT IN ('closed','completed')
+             ORDER BY created_at DESC LIMIT 1",
+            params![team_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    let member_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM members WHERE team_id = ?1 AND state NOT IN ('left','denied')",
+            params![team_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    Ok(json!({
+        "team_id": team_id,
+        "name": name,
+        "state": state,
+        "created_at": created,
+        "goal": goal.map(|(t, s)| json!({ "title": t, "state": s })),
+        "member_count": member_count,
+    }))
+}
+
 /// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
 ///
 /// A device invitation may be bound to a person (`user`) so the same person's
@@ -8495,6 +8543,68 @@ mod tests {
         let got = verified_rebroadcast_events(&conn, "m1", &real);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1["type"], "e1");
+    }
+}
+
+#[cfg(test)]
+mod public_meta_tests {
+    use super::*;
+
+    fn memdb() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_member_id TEXT,
+              goal_id TEXT, state TEXT NOT NULL DEFAULT 'forming', invite_token TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE goals (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, title TEXT NOT NULL,
+              body TEXT, state TEXT NOT NULL DEFAULT 'active', closed_at TEXT, created_at TEXT NOT NULL,
+              seq INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE members (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, session_key TEXT NOT NULL,
+              display_name TEXT NOT NULL, role TEXT, state TEXT NOT NULL DEFAULT 'active',
+              loopx_project TEXT, joined_at TEXT, left_at TEXT, is_lead INTEGER NOT NULL DEFAULT 0,
+              workspace TEXT, user_id TEXT NOT NULL DEFAULT '');",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn public_team_meta_never_leaks_secrets_or_bodies() {
+        let c = memdb();
+        c.execute(
+            "INSERT INTO teams (id,name,owner_member_id,goal_id,state,invite_token,created_at,updated_at)
+             VALUES ('t1','公开团队','m1','g1','active','SUPER-SECRET-TOKEN','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO goals (id,team_id,title,body,state,created_at,seq)
+             VALUES ('g1','t1','做一个东西','这是正文，绝不能外泄 BODY-SECRET','active','2026-01-01T00:00:00+00:00',1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO members (id,team_id,session_key,display_name,role,state,joined_at)
+             VALUES ('m1','t1','s1','alice','owner','active','2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        let v = public_team_meta(&c, "t1").unwrap();
+        let raw = v.to_string();
+        // 白名单字段在
+        assert_eq!(v["name"], json!("公开团队"));
+        assert_eq!(v["member_count"], json!(1));
+        assert_eq!(v["goal"]["title"], json!("做一个东西"));
+        assert_eq!(v["goal"]["state"], json!("active"));
+        // 敏感/正文一律不在（含嵌套字符串搜索，防"藏字段"）
+        assert!(!raw.contains("SUPER-SECRET-TOKEN"), "invite_token 泄漏: {raw}");
+        assert!(!raw.contains("BODY-SECRET"), "goal 正文泄漏: {raw}");
+        assert!(v.get("invite_token").is_none());
+        assert!(v.get("members").is_none());
+        assert!(!raw.contains("alice"), "成员名单泄漏: {raw}");
+        // destroyed 视为不存在
+        c.execute("UPDATE teams SET state='destroyed' WHERE id='t1'", []).unwrap();
+        assert!(public_team_meta(&c, "t1").is_err());
     }
 }
 

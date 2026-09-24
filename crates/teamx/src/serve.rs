@@ -1232,6 +1232,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "invite",         // 成员邀请
     "node.provision", // 触发 provision
     "team.approve",   // 审批座位（激活成员）
+    "public.team_meta", // 公开团队元数据（design/015 SD-15：租户侧白名单裁剪，无 invite_token/正文）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
     "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
 ];
@@ -1296,6 +1297,15 @@ fn dispatch_platform_console(
             conn, team_id, team_name, owner_name, owner_user_id, server_url,
         )
         .map_err(|e| e.to_string());
+    }
+    // 公开详情（design/015）：白名单字段，不需要 team 作用域解析（与 issued.list 同款：
+    // 认证靠租户 CA 签的 service 证书；可见性判定在平台侧）。
+    if method == "public.team_meta" {
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("");
+        if tid.is_empty() {
+            return Err("public.team_meta requires `team`".to_string());
+        }
+        return crate::commands::public_team_meta(conn, tid).map_err(|e| e.to_string());
     }
     if method == "issued.list" && args.get("team").is_none() {
         // 直接调台账（不进 dispatch）：该命令不需要 actor；虚构 member CN 反而会被
