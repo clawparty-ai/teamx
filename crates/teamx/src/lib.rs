@@ -40,6 +40,7 @@ pub mod nudge_tpl;
 pub mod pki;
 pub mod platform;
 pub mod issued;
+pub mod discovery;
 pub mod platform_console;
 pub mod procwatch;
 pub mod k8s;

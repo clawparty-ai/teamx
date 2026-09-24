@@ -101,7 +101,11 @@ CREATE TABLE IF NOT EXISTS teams (
   state           TEXT NOT NULL DEFAULT 'forming',
   invite_token    TEXT NOT NULL,
   created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL
+  updated_at      TEXT NOT NULL,
+  -- 团队发现（design/015 SD-8/SD-16）：可见性与加入策略正交；默认最保守。
+  visibility      TEXT NOT NULL DEFAULT 'private',
+  join_policy     TEXT NOT NULL DEFAULT 'invite_only',
+  public_summary  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS members (
@@ -1113,6 +1117,26 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     crate::im::whitelist::seed(conn)?;
 
+    // 加入申请（design/015 SD-11/SD-26）：平台库为申请落点；owner 审批；
+    // 同一 (team, user) 只允许一个 pending（部分唯一索引）；拒绝有冷却期。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS team_join_requests (
+           id          TEXT PRIMARY KEY,
+           team_id     TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+           user_id     TEXT NOT NULL,
+           status      TEXT NOT NULL DEFAULT 'pending',
+           message     TEXT,
+           created_at  TEXT NOT NULL,
+           decided_at  TEXT,
+           decided_by  TEXT,
+           cooldown_until TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_join_req_team ON team_join_requests(team_id, status);
+         CREATE INDEX IF NOT EXISTS idx_join_req_user ON team_join_requests(user_id, status);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_join_req_one_pending
+           ON team_join_requests(team_id, user_id) WHERE status = 'pending';",
+    )?;
+
     // Custom nudge templates (Issue #15): owner/lead-configurable message
     // text for the four nudge kinds, per team. Converged-style (brand-new
     // table, no legacy data — keeps user_version untouched; next free
@@ -1191,6 +1215,10 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "members", "workspace", "TEXT")?;
     // k8e 路径需要知道成员该连哪个 server（Pod 的 env / 隧道 / git clone）。
     ensure_column(conn, "nodes", "server_url", "TEXT")?;
+    // 团队发现（design/015）：可见性 / 加入策略 / 公开简介（列表与详情白名单用）。
+    ensure_column(conn, "teams", "visibility", "TEXT NOT NULL DEFAULT 'private'")?;
+    ensure_column(conn, "teams", "join_policy", "TEXT NOT NULL DEFAULT 'invite_only'")?;
+    ensure_column(conn, "teams", "public_summary", "TEXT")?;
     // The pre-multi-goal UNIQUE(team_id) index (created by the public line's
     // v3) rejects a team's second goal; dropping a missing index is a no-op.
     conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;
