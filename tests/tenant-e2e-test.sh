@@ -235,7 +235,7 @@ pass "N10 租户 server 可达性（Service + exec 探针，无 HTTPS 探针）"
 # N5/N6: destroy 清单 + 清空
 : > "$KUBECTL_LOG"
 D="$("$TEAMX" --json tenant destroy --team "$TEAM_ID" 2>&1)" || fail "N5: destroy 失败: $D"
-for s in inventory delete-namespace delete-tenant-row revoke-tenant-ca; do
+for s in inventory delete-namespace delete-tenant-row delete-tenant-owner revoke-tenant-ca; do
   echo "$D" | grep -q "\"step\": \"$s" || fail "N5: 清单缺 $s"
 done
 grep -q "delete namespace tenant-" "$KUBECTL_LOG" || fail "N5: 未删 namespace"

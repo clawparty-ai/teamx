@@ -998,6 +998,12 @@ pub fn destroy_tenant(
         .execute("DELETE FROM tenants WHERE team_id = ?1", params![team_id])
         .unwrap_or(0);
     steps.push(json!({"step": "delete-tenant-row", "target": team_id, "done": removed > 0}));
+    // 归属行必须一起删（真机踩到：删租户后 tenant_owners 残留 → 用户配额被幽灵占用，
+    // 自助页显示 used 比实际团队多）。
+    let unowned = conn
+        .execute("DELETE FROM tenant_owners WHERE team_id = ?1", params![team_id])
+        .unwrap_or(0);
+    steps.push(json!({"step": "delete-tenant-owner (释放用户配额)", "target": team_id, "done": unowned > 0}));
     steps.push(json!({
         "step": "revoke-tenant-ca", "target": tenant["ca_fingerprint"], "done": ok,
         "note": "CA 在 namespace Secret 内，随 namespace 删除即失效（吊销租户=废 CA，一次动作）",
