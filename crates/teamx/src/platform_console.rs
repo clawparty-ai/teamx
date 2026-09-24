@@ -863,11 +863,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <button class="btn" type="submit">登 录</button>
       </form>
       <div class="error" id="loginErr"></div>
-      <div class="divider">或</div>
-      <form id="tokForm">
-        <input class="input" id="token" placeholder="launch token（启动时打印，运维）">
-        <button class="btn btn-ghost" type="submit">运维登录</button>
-      </form>
       <div class="oauth-row"><a class="btn btn-ghost" id="oauthBtn" style="display:none;text-decoration:none;text-align:center" href="/api/oauth/start">GitHub 登录</a></div>
       <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
     </div>
@@ -939,8 +934,6 @@ async function boot(){
   await loadMine();await loadTenants();await loadPlatform();
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
-document.getElementById('tokForm').addEventListener('submit',e=>{e.preventDefault();login()});
-async function login(){const t=document.getElementById('token').value.trim();const r=await jpost('/api/login',{token:t});if(r.ok)boot();else loginFail(r.error)}
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
 async function loadMine(){try{const d=await jget('/api/my/teams');if(!d.ok){document.getElementById('quota').textContent='';document.getElementById('mine').innerHTML='';document.getElementById('mineCards').innerHTML='';return}
@@ -974,7 +967,7 @@ mod tests {
     fn index_html_has_platform_surfaces() {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
-            "pwForm", "tokForm",
+            "pwForm",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
