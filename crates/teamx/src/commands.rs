@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -525,6 +525,67 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "ok": true,
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
+        },
+        Command::Discovery(d) => match d {
+            DiscoveryCmd::Directory { query, sort, joinable, page, per_page } => {
+                crate::discovery::directory(
+                    conn,
+                    query.as_deref(),
+                    sort.as_deref(),
+                    *joinable,
+                    *page,
+                    *per_page,
+                )
+                .map_err(AppError)?
+            }
+            DiscoveryCmd::Set { team, visibility, join_policy, summary, session } => {
+                // 鉴权：仅团队归属用户（owner）或 lead 可改（用既有解析器拿 actor）
+                let (actor, ateam) = resolve_actor(conn, session, Some(team))?;
+                ensure_owner(conn, &actor, &ateam)?;
+                let mut out = json!({ "ok": true, "team_id": team });
+                if let Some(v) = visibility {
+                    out["visibility"] = crate::discovery::set_visibility(conn, team, v)
+                        .map_err(AppError)?["visibility"]
+                        .clone();
+                }
+                if let Some(p) = join_policy {
+                    out["join_policy"] = crate::discovery::set_join_policy(conn, team, p)
+                        .map_err(AppError)?["join_policy"]
+                        .clone();
+                }
+                if let Some(s) = summary {
+                    crate::discovery::set_public_summary(conn, team, s).map_err(AppError)?;
+                    out["public_summary"] = json!(s);
+                }
+                out
+            }
+            DiscoveryCmd::Apply { team, message, session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
+                crate::discovery::request_join(conn, team, &uid, message.as_deref())
+                    .map_err(AppError)?
+            }
+            DiscoveryCmd::Mine { session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
+                crate::discovery::my_requests(conn, &uid).map_err(AppError)?
+            }
+            DiscoveryCmd::Withdraw { request_id, session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
+                crate::discovery::withdraw_request(conn, request_id, &uid).map_err(AppError)?
+            }
+            DiscoveryCmd::Pending { session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
+                crate::discovery::pending_for_owner(conn, &uid).map_err(AppError)?
+            }
+            DiscoveryCmd::Decide { request_id, approve, session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
+                crate::discovery::decide_request(conn, request_id, &uid, *approve)
+                    .map_err(AppError)?
+            }
         },
         Command::Issued(i) => match i {
             IssuedCmd::List { team, ca } => json!({

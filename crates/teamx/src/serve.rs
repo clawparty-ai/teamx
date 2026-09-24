@@ -2092,6 +2092,36 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             kubeconfig: s("kubeconfig").map(std::path::PathBuf::from),
             context: s("context"),
         }),
+        "discovery.directory" => Command::Discovery(crate::cli::DiscoveryCmd::Directory {
+            query: o("query"),
+            sort: o("sort"),
+            joinable: b("joinable"),
+            page: args.get("page").and_then(Value::as_i64).unwrap_or(1),
+            per_page: args.get("per_page").and_then(Value::as_i64).unwrap_or(20),
+        }),
+        "discovery.set" => Command::Discovery(crate::cli::DiscoveryCmd::Set {
+            team: s("team").ok_or_else(|| "discovery.set requires `team`".to_string())?,
+            visibility: o("visibility"),
+            join_policy: o("join_policy"),
+            summary: o("summary"),
+            session: sess(args),
+        }),
+        "discovery.apply" => Command::Discovery(crate::cli::DiscoveryCmd::Apply {
+            team: s("team").ok_or_else(|| "discovery.apply requires `team`".to_string())?,
+            message: o("message"),
+            session: sess(args),
+        }),
+        "discovery.mine" => Command::Discovery(crate::cli::DiscoveryCmd::Mine { session: sess(args) }),
+        "discovery.withdraw" => Command::Discovery(crate::cli::DiscoveryCmd::Withdraw {
+            request_id: s("request_id").ok_or_else(|| "discovery.withdraw requires `request_id`".to_string())?,
+            session: sess(args),
+        }),
+        "discovery.pending" => Command::Discovery(crate::cli::DiscoveryCmd::Pending { session: sess(args) }),
+        "discovery.decide" => Command::Discovery(crate::cli::DiscoveryCmd::Decide {
+            request_id: s("request_id").ok_or_else(|| "discovery.decide requires `request_id`".to_string())?,
+            approve: b("approve"),
+            session: sess(args),
+        }),
         "issued.list" => Command::Issued(crate::cli::IssuedCmd::List {
             team: o("team"),
             ca: o("ca"),

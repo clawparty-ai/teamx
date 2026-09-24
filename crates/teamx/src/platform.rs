@@ -649,6 +649,39 @@ mod user_tests {
     }
 }
 
+/// 把 teamx 座位（member）映射到平台用户 id —— 云控制台的用户身份锚点。
+///
+/// 云路径下 `members.user_id` 存的就是 `platform_users.id`（邀请函 `user.id` 由
+/// 平台在 bootstrap/invite 时写入，认领时落库）。为空 = 纯本地团队，不是云用户。
+pub fn session_user_id(conn: &Connection, member_id: &str) -> Result<String, String> {
+    let uid: Option<String> = conn
+        .query_row(
+            "SELECT user_id FROM members WHERE id = ?1",
+            params![member_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    let uid = uid.unwrap_or_default();
+    if uid.trim().is_empty() {
+        return Err(
+            "this session is not bound to a platform user (use the cloud console flow)".to_string(),
+        );
+    }
+    let ok: Option<String> = conn
+        .query_row(
+            "SELECT id FROM platform_users WHERE id = ?1 AND disabled_at IS NULL",
+            params![uid],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    if ok.is_none() {
+        return Err("platform user not found or disabled".to_string());
+    }
+    Ok(uid)
+}
+
 /// GitHub 登录绑定/新建用户（Phase 3）：github_id 锚定。
 /// - 已存在 → 该用户（禁用则拒绝）。
 /// - 不存在 → 新建（无密码，不能走密码登录；display 取 GitHub login，重名加 -gh 后缀，

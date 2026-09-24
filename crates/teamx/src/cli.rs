@@ -72,6 +72,11 @@ pub enum Command {
     #[command(subcommand)]
     Issued(IssuedCmd),
 
+    /// Team discovery & joining (design/015): public directory, visibility/policy,
+    /// join requests (apply / withdraw / owner decide)
+    #[command(subcommand)]
+    Discovery(DiscoveryCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2422,6 +2427,76 @@ pub struct PlatformConsoleCmd {
 
 /// Multi-tenant platform (design/014): one tenant = one team + one namespace
 /// + one independent CA. Executor = the platform (kubectl + tenant CA).
+// 团队发现与加入（design/015）。
+#[derive(Subcommand, Debug)]
+pub enum DiscoveryCmd {
+    /// List public teams (platform DB only; no tenant server calls)
+    Directory {
+        /// fuzzy search on name / public summary
+        #[arg(long)]
+        query: Option<String>,
+        /// sort key: created (default) | members
+        #[arg(long)]
+        sort: Option<String>,
+        /// only teams accepting join requests
+        #[arg(long)]
+        joinable: bool,
+        #[arg(long, default_value_t = 1)]
+        page: i64,
+        #[arg(long, default_value_t = 20)]
+        per_page: i64,
+    },
+    /// Owner: set discovery settings for a team
+    Set {
+        #[arg(value_name = "TEAM_ID")]
+        team: String,
+        #[arg(long)]
+        visibility: Option<String>,
+        #[arg(long)]
+        join_policy: Option<String>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+    /// Apply to join a public, joinable team
+    Apply {
+        #[arg(value_name = "TEAM_ID")]
+        team: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+    /// Show my join requests (with letter when approved)
+    Mine {
+        #[arg(long)]
+        session: String,
+    },
+    /// Withdraw a pending request of mine
+    Withdraw {
+        #[arg(value_name = "REQUEST_ID")]
+        request_id: String,
+        #[arg(long)]
+        session: String,
+    },
+    /// Owner: pending join requests on my teams
+    Pending {
+        #[arg(long)]
+        session: String,
+    },
+    /// Owner: approve or reject a join request
+    Decide {
+        #[arg(value_name = "REQUEST_ID")]
+        request_id: String,
+        /// approve (default is reject)
+        #[arg(long)]
+        approve: bool,
+        #[arg(long)]
+        session: String,
+    },
+}
+
 // 签发台账 O-2（design/014 §4）。
 #[derive(Subcommand, Debug)]
 pub enum IssuedCmd {
