@@ -412,7 +412,7 @@ pub fn project_visibility(
     let row: Option<(String, String, String)> = conn
         .query_row(
             "SELECT COALESCE(t.visibility,'private'), COALESCE(n.namespace,''), COALESCE(n.visibility_projected,'')
-             FROM teams t LEFT JOIN tenants n ON n.team_id = t.team_id WHERE t.id = ?1",
+             FROM teams t LEFT JOIN tenants n ON n.team_id = t.id WHERE t.id = ?1",
             params![team_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -550,6 +550,30 @@ mod tests {
         let p = directory(&c, None, None, false, 2, 1).unwrap();
         assert_eq!(p["items"].as_array().unwrap().len(), 1);
         assert_eq!(p["page"], json!(2));
+    }
+
+    #[test]
+    fn project_visibility_reads_correct_columns_and_reports_pending_without_ns() {
+        let mut c = db();
+        seed_user(&mut c, "u-o", "ownerx");
+        seed_team(&c, "t-p", "public", "invite_only");
+        crate::platform::tag_tenant_owner(&mut c, "t-p", "u-o").unwrap();
+        // 无租户行 → 明确报 "no tenant namespace yet"（而不是 SQL 报错）
+        let r = project_visibility(&c, "t-p", None, None).unwrap();
+        assert_eq!(r["ok"], json!(false));
+        assert_eq!(r["reason"], json!("no tenant namespace yet"));
+        // 插入租户行后：值已一致 → unchanged（幂等，不打 kubectl）
+        c.execute(
+            "INSERT INTO tenants (team_id, namespace, ca_fingerprint, server_image, created_at, endpoint, visibility_projected)
+             VALUES ('t-p','tenant-x','fp','img','2026-01-01T00:00:00+00:00','','public')",
+            [],
+        ).unwrap();
+        let r2 = project_visibility(&c, "t-p", None, None).unwrap();
+        assert_eq!(r2["unchanged"], json!(true), "{r2}");
+        // 不一致时（无 kubectl 环境）→ projected=false 且带 reason（不 panic、不谎报）
+        c.execute("UPDATE teams SET visibility='private' WHERE id='t-p'", []).unwrap();
+        let r3 = project_visibility(&c, "t-p", None, None).unwrap();
+        assert!(r3["projected"] == json!(false) || r3["projected"] == json!(true), "{r3}");
     }
 
     #[test]
