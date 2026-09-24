@@ -194,8 +194,8 @@ BOB_TEAM="$(echo "$BOB_T" | python3 -c 'import sys,json;print(json.load(sys.stdi
 pass "D2 bob 自助建 team（配额内，bootstrap pending）"
 
 # D3: 归属隔离（bob 见自己的；alice 看不到；运维租户用户不可见）
-$C -b /tmp/teamx-platcon-bob "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and len(d['tenants'])==1 and d['used']==1 and d['quota']==3,d" || fail "D3: bob 的 my/teams 不对"
-$C -b /tmp/teamx-platcon-alice "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['tenants']==[],d" || fail "D3: alice 应为空"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and len(d['owned'])==1 and d['used']==1 and d['quota']==3,d" || fail "D3: bob 的 my/teams 不对"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/my/teams" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['owned']==[],d" || fail "D3: alice 应为空"
 $C -b /tmp/teamx-platcon-alice "$BASE/api/tenants" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['tenants']==[],d" || fail "D3: alice 在 /api/tenants 应看不到任何（含运维建的）"
 pass "D3 归属隔离（各看各的）"
 
@@ -335,6 +335,52 @@ assert r['status']=='rejected' and r['cooldown_until'], d" || fail "E9: 冷却�
 $C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/discovery/teams/$E_TEAM/apply" | python3 -c "
 import json,sys; d=json.load(sys.stdin); assert d.get('ok') is not True and 're-apply' in str(d.get('error','')), d" || fail "E9: 冷却期内不应能再申请"
 pass "E9 拒绝 + 7 天冷却生效"
+
+# F1-F6: 「我的团队」（design/016）
+echo "== F: 我的团队 =="
+# F1: 两组 + 统计
+MT="$($C -b /tmp/teamx-platcon-bob "$BASE/api/my/teams")"
+echo "$MT" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok'), d
+for k in ('owned','joined','used','quota','joined_count','running_workspaces'):
+    assert k in d, ('缺字段', k, d)
+assert isinstance(d['owned'], list) and isinstance(d['joined'], list), d
+print('  owned=%d joined=%d used/quota=%s/%s running=%s' % (len(d['owned']), len(d['joined']), d['used'], d['quota'], d['running_workspaces']))" || fail "F1: my/teams 结构异常"
+pass "F1 我的团队：两组 + 统计字段"
+
+# F2: 创建表单一步带发现设置（public + open_request）
+F_TEAM="$($C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"表单建队","visibility":"public","join_policy":"open_request","summary":"一步建好的公开团队"}' \
+  "$BASE/api/my/teams" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("team_id","") if d.get("ok") else "")')"
+[ -n "$F_TEAM" ] || fail "F2: 表单创建失败"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/teams/$F_TEAM" | python3 -c "
+import json,sys; t=json.load(sys.stdin)['team']
+assert t['joinable'] is True, t" || fail "F2: 创建时未带上发现设置"
+pass "F2 创建表单一步带发现设置（public + open_request）"
+
+# F3: Owner 邀请函取件页（未初始化 → available=false，不假装有）
+$C -b /tmp/teamx-platcon-alice "$BASE/api/my/letters" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') and isinstance(d['teams'], list), d
+m=[x for x in d['teams'] if x['team_id']=='$F_TEAM']
+assert m and m[0]['available'] is False, ('未初始化应 available=false', d)" || fail "F3: letters 异常"
+pass "F3 Owner 邀请函取件页（未初始化时如实不可用）"
+
+# F4/F5: 无租户端点时 roster/invite **明确失败**（不假装成功）
+$C -b /tmp/teamx-platcon-alice "$BASE/api/my/teams/$F_TEAM/roster" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is not True and 'endpoint' in str(d.get('error','')), d" || fail "F4: 无端点应明确失败"
+$C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$F_TEAM/invite" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is not True and 'endpoint' in str(d.get('error','')), d" || fail "F5: 无端点应明确失败"
+pass "F4/F5 无租户端点时 roster/invite 明确失败（不假装）"
+
+# F6: 非成员 leave → 明确失败；owner 自己 leave 也失败（不是加入者）
+$C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$F_TEAM/leave" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+assert d.get('ok') is not True and 'not a member' in str(d.get('error','')), d" || fail "F6: 非成员 leave 应失败"
+pass "F6 leave 仅限「我加入的」团队（owner/非成员被拒）"
 
 # G1-G5: GitHub OAuth 真流程（mock，不碰 github.com）
 echo "== G: GitHub OAuth（mock） =="
