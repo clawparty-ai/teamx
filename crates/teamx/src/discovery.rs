@@ -320,11 +320,30 @@ pub fn decide_request(
     }))
 }
 
-/// 「我的申请」（SD-26）：状态 + 冷却；approved 行由调用方补邀请函。
+/// 记录批准后的交付结果（SD-11/SD-23）：座位 id、邀请函、拉 pod 状态。
+pub fn record_delivery(
+    conn: &Connection,
+    request_id: &str,
+    member_id: &str,
+    letter: &str,
+    pod_state: &str,
+    pod_detail: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE team_join_requests SET member_id = ?1, letter = ?2, pod_state = ?3, pod_detail = ?4
+         WHERE id = ?5",
+        params![member_id, letter, pod_state, pod_detail, request_id],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    Ok(())
+}
+
+/// 「我的申请」（SD-26）：状态 + 冷却；approved 行带**邀请函**与 pod 状态。
 pub fn my_requests(conn: &Connection, user_id: &str) -> Result<Value, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT r.id, r.team_id, t.name, r.status, r.created_at, r.decided_at, r.cooldown_until
+            "SELECT r.id, r.team_id, t.name, r.status, r.created_at, r.decided_at, r.cooldown_until,
+                    COALESCE(r.member_id,''), COALESCE(r.letter,''), COALESCE(r.pod_state,''), COALESCE(r.pod_detail,'')
              FROM team_join_requests r LEFT JOIN teams t ON t.id = r.team_id
              WHERE r.user_id = ?1 ORDER BY r.created_at DESC",
         )
@@ -339,6 +358,10 @@ pub fn my_requests(conn: &Connection, user_id: &str) -> Result<Value, String> {
                 "created_at": r.get::<_, String>(4)?,
                 "decided_at": r.get::<_, Option<String>>(5)?,
                 "cooldown_until": r.get::<_, Option<String>>(6)?,
+                "member_id": r.get::<_, String>(7)?,
+                "letter": r.get::<_, String>(8)?,
+                "pod_state": r.get::<_, String>(9)?,
+                "pod_detail": r.get::<_, String>(10)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;
@@ -373,6 +396,92 @@ pub fn pending_for_owner(conn: &Connection, owner_user_id: &str) -> Result<Value
         .map_err(|e| format!("db: {e}"))?;
     let items: Vec<Value> = rows.collect::<rusqlite::Result<_>>().map_err(|e| format!("db: {e}"))?;
     Ok(json!({ "ok": true, "requests": items }))
+}
+
+/// 可见性**投影到 k8s namespace label**（design/015 SD-14 / SD-24）。
+///
+/// 平台库是唯一事实源；label 是投影。幂等：只在值不一致时打标，成功后记录
+/// `tenants.visibility_projected`。失败**不抛给调用方**（写库已成功），返回 `projected:false`
+/// 由对账补偿。
+pub fn project_visibility(
+    conn: &Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT COALESCE(t.visibility,'private'), COALESCE(n.namespace,''), COALESCE(n.visibility_projected,'')
+             FROM teams t LEFT JOIN tenants n ON n.team_id = t.team_id WHERE t.id = ?1",
+            params![team_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    let Some((visibility, ns, projected)) = row else {
+        return Ok(json!({ "ok": false, "reason": "team not found" }));
+    };
+    if ns.is_empty() {
+        return Ok(json!({ "ok": false, "reason": "no tenant namespace yet" }));
+    }
+    if projected == visibility {
+        return Ok(json!({ "ok": true, "projected": true, "unchanged": true, "visibility": visibility }));
+    }
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    match kubectl.label("namespace", &ns, "teamx.io/visibility", &visibility, "default") {
+        Ok(()) => {
+            conn.execute(
+                "UPDATE tenants SET visibility_projected = ?1 WHERE team_id = ?2",
+                params![visibility, team_id],
+            )
+            .map_err(|e| format!("db: {e}"))?;
+            Ok(json!({ "ok": true, "projected": true, "visibility": visibility, "namespace": ns }))
+        }
+        Err(e) => Ok(json!({
+            "ok": false, "projected": false, "visibility": visibility, "namespace": ns,
+            "reason": format!("kubectl label failed: {e}"),
+        })),
+    }
+}
+
+/// 对账（SD-24）：把**所有**与平台库不一致的租户 label 修回；返回逐条结果。
+pub fn reconcile_visibility(
+    conn: &Connection,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.team_id, COALESCE(t.visibility,'private'), COALESCE(n.visibility_projected,'')
+             FROM tenants n LEFT JOIN teams t ON t.id = n.team_id",
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| format!("db: {e}"))?;
+    let pending: Vec<(String, String, String)> = rows
+        .collect::<rusqlite::Result<Vec<(String, String, String)>>>()
+        .map_err(|e| format!("db: {e}"))?
+        .into_iter()
+        .filter(|(_, vis, proj)| vis != proj)
+        .collect();
+    let mut fixed = Vec::new();
+    let mut failed = Vec::new();
+    for (team_id, _, _) in &pending {
+        let r = project_visibility(conn, team_id, kubeconfig, context)?;
+        if r["projected"] == json!(true) {
+            fixed.push(json!({ "team_id": team_id, "visibility": r["visibility"] }));
+        } else {
+            failed.push(json!({ "team_id": team_id, "reason": r["reason"] }));
+        }
+    }
+    Ok(json!({
+        "ok": true, "checked": pending.len(), "pending": pending.len(),
+        "fixed": fixed, "failed": failed,
+    }))
 }
 
 #[cfg(test)]
@@ -508,5 +617,13 @@ mod tests {
         // 我的申请可见全部历史
         let mine = my_requests(&c, "u-app").unwrap();
         assert!(mine["requests"].as_array().unwrap().len() >= 3);
+        // 交付记录（座位/信/pod 状态）
+        record_delivery(&c, &rid3, "m-123", "teamx-inv:v1:AAA", "running", "ok").unwrap();
+        let m2 = my_requests(&c, "u-app").unwrap();
+        let row = m2["requests"].as_array().unwrap().iter()
+            .find(|x| x["request_id"] == json!(rid3)).unwrap();
+        assert_eq!(row["member_id"], json!("m-123"));
+        assert_eq!(row["letter"], json!("teamx-inv:v1:AAA"));
+        assert_eq!(row["pod_state"], json!("running"));
     }
 }

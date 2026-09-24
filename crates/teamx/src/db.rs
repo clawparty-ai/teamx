@@ -468,7 +468,10 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            namespace      TEXT NOT NULL,
            ca_fingerprint TEXT NOT NULL,
            server_image   TEXT NOT NULL DEFAULT '',
-           created_at     TEXT NOT NULL
+           created_at     TEXT NOT NULL,
+           -- 租户 server 的**可达端点**（operator 显式配置；O-5 未定案前靠它，
+           -- 例如同机 port-forward 的 https://127.0.0.1:5790）。空 = 未配置。
+           endpoint       TEXT NOT NULL DEFAULT ''
          );",
     )?;
     // 云控制台用户（Phase 1：密码登录；GitHub 见 Phase 3）。
@@ -1219,6 +1222,14 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "teams", "visibility", "TEXT NOT NULL DEFAULT 'private'")?;
     ensure_column(conn, "teams", "join_policy", "TEXT NOT NULL DEFAULT 'invite_only'")?;
     ensure_column(conn, "teams", "public_summary", "TEXT")?;
+    ensure_column(conn, "tenants", "endpoint", "TEXT NOT NULL DEFAULT ''")?;
+    // 可见性投影状态（SD-24）：上次投影到 k8s label 的值；与 teams.visibility 不一致 = 待补偿。
+    ensure_column(conn, "tenants", "visibility_projected", "TEXT NOT NULL DEFAULT ''")?;
+    // 加入申请的交付字段（SD-11/SD-23）：批准后在租户侧建的座位 + 邀请函 + 拉 pod 结果。
+    ensure_column(conn, "team_join_requests", "member_id", "TEXT")?;
+    ensure_column(conn, "team_join_requests", "letter", "TEXT")?;
+    ensure_column(conn, "team_join_requests", "pod_state", "TEXT")?;
+    ensure_column(conn, "team_join_requests", "pod_detail", "TEXT")?;
     // The pre-multi-goal UNIQUE(team_id) index (created by the public line's
     // v3) rejects a team's second goal; dropping a missing index is a no-op.
     conn.execute_batch("DROP INDEX IF EXISTS idx_goals_team;")?;

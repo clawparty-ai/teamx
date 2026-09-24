@@ -2485,6 +2485,15 @@ pub enum DiscoveryCmd {
         #[arg(long)]
         session: String,
     },
+    /// Reconcile visibility projections to k8s namespace labels (SD-24)
+    Reconcile {
+        /// kubeconfig (default: TEAMX_KUBECONFIG / ~/.kube/config)
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        /// kubectl context
+        #[arg(long)]
+        context: Option<String>,
+    },
     /// Owner: approve or reject a join request
     Decide {
         #[arg(value_name = "REQUEST_ID")]
@@ -2576,6 +2585,15 @@ pub enum TenantCmd {
         /// kubectl context (default: TEAMX_K8S_CONTEXT)
         #[arg(long)]
         context: Option<String>,
+    },
+    /// Set the tenant server's reachable endpoint (O-5: needed for detail/service-lane calls;
+    /// e.g. a same-host port-forward `https://127.0.0.1:5790`). Empty value clears it.
+    SetEndpoint {
+        #[arg(long)]
+        team: String,
+        /// endpoint URL (https://…); empty string clears
+        #[arg(long, default_value = "")]
+        endpoint: String,
     },
     /// List tenants
     List,

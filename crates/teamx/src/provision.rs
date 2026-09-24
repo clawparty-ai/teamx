@@ -644,6 +644,130 @@ pub fn rotation_letter(
     })
 }
 
+/// 设置租户 server 的可达端点（operator 操作；空 = 清除）。校验复用 M3 的锚定规则。
+pub fn set_tenant_endpoint(conn: &Connection, team_id: &str, endpoint: &str) -> Result<Value, String> {
+    let ep = endpoint.trim();
+    if !ep.is_empty() {
+        validate_tenant_endpoint(team_id, ep)?;
+    }
+    let n = conn
+        .execute("UPDATE tenants SET endpoint = ?1 WHERE team_id = ?2", params![ep, team_id])
+        .map_err(|e| format!("db: {e}"))?;
+    if n == 0 {
+        return Err(format!("tenant for team {team_id} not found"));
+    }
+    Ok(json!({ "ok": true, "team_id": team_id, "endpoint": ep }))
+}
+
+/// 批准加入后的执行链（design/015 SD-11 / SD-17 / SD-23）：
+/// ① 经 service 车道在**租户 server** 建座位（邀请函，auto_approve，绑定申请人平台用户）
+/// ② 平台侧立刻拉起 **member Pod**（k8e：PVC/Secret + Pod）——失败不回滚座位（SD-23）
+///
+/// 端点未配置（O-5）时**明确失败**，调用方把 pod_state 标为失败原因，不假装成功。
+pub fn materialize_member_seat(
+    conn: &mut Connection,
+    team_id: &str,
+    applicant_user_id: &str,
+    applicant_name: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    // ① 租户侧建座位 + 邀请函
+    let inv = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "invite",
+        json!({
+            "team": team_id,
+            "role_desc": "contributor: 通过公开申请加入",
+            "user": applicant_user_id,
+            "user_name": applicant_name,
+            "auto_approve": true,
+            "provision_node": false,
+        }),
+    )?;
+    let member_id = inv["member_id"].as_str().unwrap_or("").to_string();
+    let letter = inv["letter"].as_str().unwrap_or("").to_string();
+    if member_id.is_empty() || letter.is_empty() {
+        return Err(format!("tenant invite returned no seat/letter: {inv}"));
+    }
+
+    // ② 平台侧拉起 member Pod（同一 kubeconfig；失败不回滚座位）
+    let pod_state: String;
+    let pod_detail: String;
+    let req = CreateReq {
+        region: "k8e".to_string(),
+        size: String::new(),
+        name: format!("teamx-{}", &member_id[..8.min(member_id.len())]),
+        key_name: String::new(),
+        tags: vec![
+            ("member_id".to_string(), member_id.clone()),
+            ("team_id".to_string(), team_id.to_string()),
+            ("provider".to_string(), "k8e".to_string()),
+        ],
+        ttl_days: 0,
+        key_dir: String::new(),
+        server_ip: None,
+        disk_gib: 30,
+        letter: Some(letter.clone()),
+    };
+    let provider = crate::k8s::K8sProvider::new(crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    ));
+    match provider.provision(&req) {
+        Ok(()) => {
+            // 邀请函已在租户侧绑定 auto_approve；member Pod 直接起（同 k8e 真机路径）
+            let repo_url = crate::git_service::list_repos(conn, team_id)
+                .ok()
+                .and_then(|r| r.first().map(|x| x.name.clone()))
+                .map(|n| format!("{}/git/{team_id}/{n}", "https://teamx-serve.invalid"))
+                .unwrap_or_default();
+            let session = format!("net:{member_id}");
+            match provider.start_member(team_id, &member_id, "", &repo_url, &session) {
+                Ok(()) => {
+                    pod_state = "running".to_string();
+                    pod_detail = "member pod 已创建（拉镜像由 kubelet 完成）".to_string();
+                }
+                Err(e) => {
+                    pod_state = "failed".to_string();
+                    pod_detail = format!("start_member failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            pod_state = "failed".to_string();
+            pod_detail = format!("provision(PVC/Secret) failed: {e}");
+        }
+    }
+    Ok(json!({
+        "ok": true, "member_id": member_id, "letter": letter,
+        "pod_state": pod_state, "pod_detail": pod_detail,
+    }))
+}
+
+/// 便捷入口：用租户**已配置的端点**走 service 车道；未配置时明确报错（不猜端点）。
+pub fn tenant_service_post_via_endpoint(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+    method: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let t = tenant_get(conn, team_id)?.ok_or_else(|| format!("tenant {team_id} not found"))?;
+    let ep = t["endpoint"].as_str().unwrap_or("").to_string();
+    if ep.is_empty() {
+        return Err(
+            "tenant endpoint not configured (set it with `teamx tenant set-endpoint`; O-5 pending)"
+                .to_string(),
+        );
+    }
+    tenant_service_post(conn, team_id, &ep, kubeconfig, context, method, args)
+}
+
 /// 读租户 CA（namespace 的 Secret；平台建租户时写入，平台不保留副本 —— 必改①）。
 /// 返回 `(namespace, ca.crt, ca.key)`。签 service 证书 / 换发 / ca-audit 都走这里。
 pub fn read_tenant_ca(
@@ -1015,7 +1139,7 @@ pub fn destroy_tenant(
 pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, String> {
     conn.query_row(
          "SELECT t.team_id, tm.name, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
-                COALESCE(o.user_id, '') FROM tenants t
+                COALESCE(o.user_id, ''), COALESCE(t.endpoint,'') FROM tenants t
          LEFT JOIN teams tm ON tm.id = t.team_id
          LEFT JOIN tenant_owners o ON o.team_id = t.team_id WHERE t.team_id = ?1",
         params![team_id],
@@ -1028,6 +1152,7 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
                 "server_image": r.get::<_, String>(4)?,
                 "created_at": r.get::<_, String>(5)?,
                 "owner_user_id": r.get::<_, String>(6)?,
+                "endpoint": r.get::<_, String>(7)?,
             }))
         },
     )
@@ -1039,7 +1164,7 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
 pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare("SELECT t.team_id, tm.name, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
-                         COALESCE(o.user_id, '') FROM tenants t
+                         COALESCE(o.user_id, ''), COALESCE(t.endpoint,'') FROM tenants t
                   LEFT JOIN teams tm ON tm.id = t.team_id
                   LEFT JOIN tenant_owners o ON o.team_id = t.team_id ORDER BY t.created_at")
         .map_err(|e| format!("db: {e}"))?;
@@ -1053,6 +1178,7 @@ pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
                 "server_image": r.get::<_, String>(4)?,
                 "created_at": r.get::<_, String>(5)?,
                 "owner_user_id": r.get::<_, String>(6)?,
+                "endpoint": r.get::<_, String>(7)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;

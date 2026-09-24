@@ -96,6 +96,12 @@ impl Kubectl {
     }
 
     /// 删除一个资源；不存在视为成功（幂等）。
+    /// 打/覆盖一个 label（`kubectl label <kind> <name> k=v --overwrite -n <ns>`）。
+    pub fn label(&self, kind: &str, name: &str, key: &str, value: &str, namespace: &str) -> Result<(), String> {
+        let kv = format!("{key}={value}");
+        self.run(&["label", kind, name, &kv, "--overwrite", "-n", namespace]).map(|_| ())
+    }
+
     pub fn delete(&self, kind: &str, name: &str, namespace: &str) -> Result<(), String> {
         let _ = self.run(&["delete", kind, name, "-n", namespace, "--ignore-not-found=true"]);
         Ok(())

@@ -488,10 +488,26 @@ async fn api_dir_team(
         Ok(v) => v,
         Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "team not found"}))).into_response(),
     };
-    // 租户侧字段（可选）：端点未定（O-5）时诚实置空
+    // 租户侧字段：**端点已配置**时经 service 车道取白名单（SD-15 租户侧裁剪）；
+    // 未配置或不可达时如实说明（不假装有）。
     let mut out = base;
-    out["tenant_meta"] = Value::Null;
-    out["tenant_meta_note"] = json!("tenant-side fields pending endpoint decision (O-5)");
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let meta = with_conn(&ctx, |c| {
+        crate::provision::tenant_service_post_via_endpoint(
+            c, &team, kc.as_deref(), cx.as_deref(), "public.team_meta",
+            json!({ "team": team }),
+        )
+    });
+    match meta {
+        Ok(m) => {
+            out["tenant_meta"] = m;
+            out["tenant_meta_note"] = json!("from tenant server (whitelisted fields only)");
+        }
+        Err(e) => {
+            out["tenant_meta"] = Value::Null;
+            out["tenant_meta_note"] = json!(format!("tenant-side unavailable: {e}"));
+        }
+    }
     Json(json!({ "ok": true, "team": out })).into_response()
 }
 
@@ -529,8 +545,18 @@ async fn api_dir_settings(
         }
         crate::discovery::settings(c, &team)?.ok_or_else(|| "team not found".to_string())
     });
+    // k8s label 投影（SD-24：平台库为准 → 异步语义；这里同步试一次，失败由对账补偿）
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let projection = if out.is_ok() {
+        with_conn(&ctx, |c| {
+            crate::discovery::project_visibility(c, &team, kc.as_deref(), cx.as_deref())
+        })
+        .unwrap_or_else(|e| json!({ "ok": false, "reason": e }))
+    } else {
+        Value::Null
+    };
     match out {
-        Ok(v) => Json(json!({ "ok": true, "settings": v })).into_response(),
+        Ok(v) => Json(json!({ "ok": true, "settings": v, "projection": projection })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
 }
@@ -573,7 +599,41 @@ async fn api_dir_decide(
     if let Err(r) = guard(&ctx, &headers) { return r; }
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     let approve = body.get("approve").and_then(Value::as_bool).unwrap_or(false);
-    match with_conn(&ctx, |c| crate::discovery::decide_request(c, &id, &uid, approve)) {
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let out = with_conn(&ctx, |c| {
+        let d = crate::discovery::decide_request(c, &id, &uid, approve)?;
+        if !approve {
+            return Ok(d);
+        }
+        // 批准后的执行链（SD-11/17/23）：租户侧建座位+邀请函 → 平台侧拉 member pod。
+        // 任一步失败都**如实记录**（不假装成功），且不回滚座位（SD-23）。
+        let team = d["team_id"].as_str().unwrap_or("").to_string();
+        let applicant = d["applicant_user_id"].as_str().unwrap_or("").to_string();
+        let name = d["applicant_name"].as_str().unwrap_or("").to_string();
+        match crate::provision::materialize_member_seat(
+            c, &team, &applicant, &name, kc.as_deref(), cx.as_deref(),
+        ) {
+            Ok(m) => {
+                crate::discovery::record_delivery(
+                    c, &id,
+                    m["member_id"].as_str().unwrap_or(""),
+                    m["letter"].as_str().unwrap_or(""),
+                    m["pod_state"].as_str().unwrap_or(""),
+                    m["pod_detail"].as_str().unwrap_or(""),
+                )?;
+                let mut d2 = d.clone();
+                d2["delivery"] = m;
+                Ok(d2)
+            }
+            Err(e) => {
+                crate::discovery::record_delivery(c, &id, "", "", "failed", &e)?;
+                let mut d2 = d.clone();
+                d2["delivery"] = json!({ "ok": false, "pod_state": "failed", "pod_detail": e });
+                Ok(d2)
+            }
+        }
+    });
+    match out {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
@@ -1263,7 +1323,11 @@ function openReqDetail(id,el){
     box.innerHTML=`<div class="team-head"><h3>${esc(r.team_name||r.team_id)}</h3><span class="pill">${esc(REQ_ZH[r.status]||r.status)}</span></div>
       <div class="pc-meta"><span>申请于 ${esc((r.created_at||'').slice(0,16).replace('T',' '))}</span></div>
       ${r.status==='rejected'&&r.cooldown_until?`<div class="muted">冷却至 ${esc((r.cooldown_until||'').slice(0,10))}（到期后可再次申请）</div>`:''}
-      ${r.status==='approved'?'<div class="muted">已批准：邀请函与成员工作区交付见后续步骤。</div>':''}
+      ${r.status==='approved'?(r.letter?`
+        <div style="margin-top:8px"><b>邀请函</b>（导入本地即成为成员）<button class="btn btn-sm" style="margin-left:8px" onclick="copyText(${JSON.stringify(r.letter)})">复制邀请函</button></div>
+        <pre class="out" style="max-height:150px">${esc((r.letter||'').slice(0,300))}…</pre>
+        <div class="muted">成员工作区：${esc(r.pod_state||'pending')}${r.pod_detail?`（${esc(r.pod_detail)}）`:''}</div>`
+        :`<div class="muted">已批准，但邀请函未生成（可见 agent 侧交付状态）。</div>`):''}
       <div class="boot-row">${r.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="withdrawReq('${esc(r.request_id)}')">撤回申请</button>`:''}</div>`;
   }
 }
@@ -1274,6 +1338,7 @@ async function decideReq(id,approve){
   loadPendingReqs();loadMineReqs();
 }
 function showTab(name){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));document.querySelectorAll('.tabpage').forEach(p=>p.style.display=p.id==='tab-'+name?'block':'none')}
+async function copyText(t){try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 async function copyLetter(){const t=document.getElementById('letterOut').textContent;if(!t){alert('暂无邀请函，先点"初始化团队"');return}try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
 async function boot(){
@@ -1372,7 +1437,7 @@ mod tests {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
-            "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary",
+            "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }

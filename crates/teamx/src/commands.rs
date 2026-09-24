@@ -575,6 +575,14 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
                 crate::discovery::withdraw_request(conn, request_id, &uid).map_err(AppError)?
             }
+            DiscoveryCmd::Reconcile { kubeconfig, context } => {
+                crate::discovery::reconcile_visibility(
+                    conn,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
             DiscoveryCmd::Pending { session } => {
                 let (actor, _) = resolve_actor(conn, session, None)?;
                 let uid = crate::platform::session_user_id(conn, &actor.id).map_err(AppError)?;
@@ -644,6 +652,9 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     context.as_deref(),
                 )
                 .map_err(AppError)?
+            }
+            TenantCmd::SetEndpoint { team, endpoint } => {
+                crate::provision::set_tenant_endpoint(conn, team, endpoint).map_err(AppError)?
             }
             TenantCmd::List => json!({
                 "ok": true,

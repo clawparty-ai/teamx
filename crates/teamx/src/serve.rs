@@ -2122,6 +2122,14 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             session: sess(args),
         }),
         "discovery.mine" => Command::Discovery(crate::cli::DiscoveryCmd::Mine { session: sess(args) }),
+        "discovery.reconcile" => Command::Discovery(crate::cli::DiscoveryCmd::Reconcile {
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
+        }),
+        "tenant.set_endpoint" | "tenant.set-endpoint" => Command::Tenant(TenantCmd::SetEndpoint {
+            team: s("team").ok_or_else(|| "tenant.set_endpoint requires `team`".to_string())?,
+            endpoint: s("endpoint").unwrap_or_default(),
+        }),
         "discovery.withdraw" => Command::Discovery(crate::cli::DiscoveryCmd::Withdraw {
             request_id: s("request_id").ok_or_else(|| "discovery.withdraw requires `request_id`".to_string())?,
             session: sess(args),
