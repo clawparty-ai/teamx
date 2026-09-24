@@ -1104,6 +1104,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .tab:hover{color:#4A90E5}
  .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
  .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
+ /* 二级菜单（分段控件）：浅灰轨道 + 选中白卡阴影，与一级下划线 Tab 明显区分 */
+ .subtabs{display:inline-flex;gap:4px;padding:4px;background:#F2F6FC;border-radius:8px;margin:0 0 14px}
+ .subtab{border:none;background:none;padding:6px 16px;font-size:13px;color:#606266;cursor:pointer;border-radius:6px;font-family:inherit;transition:background 150ms,color 150ms}
+ .subtab:hover{color:#4A90E5}
+ .subtab.active{background:#fff;color:#4A90E5;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.10)}
+ .subwrap{border-bottom:1px solid #EBEEF5;margin-bottom:14px;padding-bottom:12px}
  .usermenu{position:relative;display:inline-block}
  .usermenu-panel{display:none;position:absolute;right:0;top:130%;background:#fff;border:1px solid #EBEEF5;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.12);min-width:190px;padding:6px 0;z-index:50}
  .usermenu-panel a{display:block;padding:8px 16px;font-size:13px;color:#333;text-decoration:none;cursor:pointer}
@@ -1233,18 +1239,18 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <div class="split">
       <section class="panel split-list">
         <h2 id="reqListTitle">我的申请</h2>
-        <div class="row" style="margin:0 0 8px"><button class="btn btn-sm" id="reqTabMine" onclick="reqMode('mine')">我的申请</button><button class="btn btn-sm" id="reqTabPend" onclick="reqMode('pend')">待我审批</button></div>
+        <div class="subtabs" style="margin:0 0 8px"><button class="subtab active" id="reqTabMine" onclick="reqMode('mine')">我的申请</button><button class="subtab" id="reqTabPend" onclick="reqMode('pend')">待我审批</button></div>
         <div id="reqList"></div>
       </section>
       <section class="panel split-detail" id="reqDetail"><div class="detail-empty">← 点击左侧条目查看详情</div></section>
     </div>
   </div>
   <div class="tabpage" id="tab-mine">
-  <nav class="tabs" style="margin-bottom:12px">
-    <button class="tab active" data-sub="list" onclick="mineTab('list')">我的团队</button>
-    <button class="tab" data-sub="create" onclick="mineTab('create')">创建团队</button>
-    <button class="tab" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</button>
-  </nav>
+  <div class="subwrap"><div class="subtabs" id="mineSubtabs">
+    <button class="subtab active" data-sub="list" onclick="mineTab('list')">我的团队</button>
+    <button class="subtab" data-sub="create" onclick="mineTab('create')">创建团队</button>
+    <button class="subtab" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</button>
+  </div></div>
   <div id="sub-list">
     <div class="cards" id="mineCards"></div>
     <div class="split">
@@ -1355,8 +1361,8 @@ async function applyJoin(id){
 const REQ_ZH={pending:'待审批',approved:'已批准',rejected:'已拒绝',withdrawn:'已撤回'};
 let REQ_MODE='mine';
 function reqMode(m){REQ_MODE=m;
-  document.getElementById('reqTabMine').className='btn btn-sm'+(m==='mine'?' btn-primary':'');
-  document.getElementById('reqTabPend').className='btn btn-sm'+(m==='pend'?' btn-primary':'');
+  document.getElementById('reqTabMine').className='subtab'+(m==='mine'?' active':'');
+  document.getElementById('reqTabPend').className='subtab'+(m==='pend'?' active':'');
   document.getElementById('reqListTitle').textContent=(m==='mine'?'我的申请':'待我审批');
   document.getElementById('reqDetail').innerHTML='<div class="detail-empty">← 点击左侧条目查看详情</div>';
   if(m==='mine')loadMineReqs();else loadPendingReqs();}
@@ -1434,7 +1440,7 @@ document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
 function mineTab(name){
-  document.querySelectorAll('#tab-mine > nav .tab').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
+  document.querySelectorAll('#mineSubtabs .subtab').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
   ['list','create','letters'].forEach(n=>{const el=document.getElementById('sub-'+n); if(el) el.style.display=(n===name?'block':'none')});
   if(name==='letters')loadLetters();
   if(name==='list')loadMine();
@@ -1599,6 +1605,7 @@ mod tests {
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
+            "subtabs", "subtab", "mineSubtabs", "subwrap",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
