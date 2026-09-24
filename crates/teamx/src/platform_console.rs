@@ -91,6 +91,10 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/discovery/pending", get(api_dir_pending))
         .route("/api/discovery/requests/{id}/decide", post(api_dir_decide))
         .route("/api/my/teams", get(api_my_teams).post(api_my_teams_create))
+        .route("/api/my/teams/{team}/roster", get(api_my_roster))
+        .route("/api/my/teams/{team}/invite", post(api_my_invite))
+        .route("/api/my/teams/{team}/leave", post(api_my_leave))
+        .route("/api/my/letters", get(api_my_letters))
         .route("/api/my/teams/{team}/bootstrap", post(api_my_teams_bootstrap))
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
         .route("/api/tenants/{team}/invite", post(api_tenant_invite))
@@ -652,23 +656,73 @@ async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
         )
             .into_response();
     };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| {
-        let owned = crate::platform::owned_teams(c, &uid).map_err(|e| e.to_string())?;
-        let all = crate::provision::tenant_list(c)?;
-        let mine: Vec<Value> = all
-            .into_iter()
-            .filter(|t| {
-                t.get("team_id")
-                    .and_then(Value::as_str)
-                    .map(|id| owned.contains(&id.to_string()))
-                    .unwrap_or(false)
-            })
-            .collect();
-        let quota = crate::platform::tenant_quota(c, &uid).map_err(|e| e.to_string())?;
-        Ok::<_, String>(json!({ "ok": true, "tenants": mine, "used": owned.len(), "quota": quota }))
+        crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 成员名册（design/016 SD-12）：owner 只读，租户侧裁剪（无凭据）。
+async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let out = with_conn(&ctx, |c| {
+        if !crate::platform::tenant_owned_by(c, &team, &uid).map_err(|e| e.to_string())? {
+            return Err("only the team owner may view the roster".to_string());
+        }
+        crate::provision::tenant_service_post_via_endpoint(
+            c, &team, kc.as_deref(), cx.as_deref(), "team.roster", json!({ "team": team }),
+        )
+    });
+    match out {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// owner 邀请成员（design/016 SD-12）：service 车道，返回邀请函供复制。
+async fn api_my_invite(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>, Json(body): Json<Value>) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let role_desc = body.get("role_desc").and_then(Value::as_str).unwrap_or("contributor: 成员").to_string();
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let out = with_conn(&ctx, |c| {
+        if !crate::platform::tenant_owned_by(c, &team, &uid).map_err(|e| e.to_string())? {
+            return Err("only the team owner may invite".to_string());
+        }
+        crate::provision::tenant_service_post_via_endpoint(
+            c, &team, kc.as_deref(), cx.as_deref(), "team.invite",
+            json!({ "team": team, "role_desc": role_desc, "auto_approve": false }),
+        )
+    });
+    match out {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 离开团队（design/016 SD-11 / ADR-0002）：双侧真释放。
+async fn api_my_leave(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| crate::provision::leave_team(c, &team, &uid, kc.as_deref(), cx.as_deref())) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// Owner 邀请函取件页（design/016 SD-10）。
+async fn api_my_letters(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) { return r; }
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
+    match with_conn(&ctx, |c| crate::provision::owner_letters(c, &uid)) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
 }
 
@@ -690,9 +744,15 @@ async fn api_my_teams_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Js
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "name is required"}))).into_response();
     }
+    // design/016 SD-10：创建表单一步带上发现设置
+    let vis = body.get("visibility").and_then(Value::as_str).map(str::to_string);
+    let jp = body.get("join_policy").and_then(Value::as_str).map(str::to_string);
+    let sum = body.get("summary").and_then(Value::as_str).map(str::to_string);
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| {
-        crate::provision::create_my_tenant(c, &uid, &name, kc.as_deref(), cx.as_deref())
+        crate::provision::create_my_tenant_with(
+            c, &uid, &name, vis.as_deref(), jp.as_deref(), sum.as_deref(), kc.as_deref(), cx.as_deref(),
+        )
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),

@@ -1225,6 +1225,8 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "tenants", "endpoint", "TEXT NOT NULL DEFAULT ''")?;
     // 可见性投影状态（SD-24）：上次投影到 k8s label 的值；与 teams.visibility 不一致 = 待补偿。
     ensure_column(conn, "tenants", "visibility_projected", "TEXT NOT NULL DEFAULT ''")?;
+    // owner 邀请函（bootstrap 时生成）——「Owner 邀请函」二级菜单要能**取回**它。
+    ensure_column(conn, "tenants", "owner_letter", "TEXT NOT NULL DEFAULT ''")?;
     // 加入申请的交付字段（SD-11/SD-23）：批准后在租户侧建的座位 + 邀请函 + 拉 pod 结果。
     ensure_column(conn, "team_join_requests", "member_id", "TEXT")?;
     ensure_column(conn, "team_join_requests", "letter", "TEXT")?;

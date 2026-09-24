@@ -1233,6 +1233,8 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "node.provision", // 触发 provision
     "team.approve",   // 审批座位（激活成员）
     "public.team_meta", // 公开团队元数据（design/015 SD-15：租户侧白名单裁剪，无 invite_token/正文）
+    "team.roster",    // 成员名册只读（design/016 SD-12：仅 名/角色/状态/lead，无凭据）
+    "team.release_seat", // 释放座位（design/016 SD-11：成员本人请求离开，平台窄接口代执行）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
     "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
 ];
@@ -1300,6 +1302,21 @@ fn dispatch_platform_console(
     }
     // 公开详情（design/015）：白名单字段，不需要 team 作用域解析（与 issued.list 同款：
     // 认证靠租户 CA 签的 service 证书；可见性判定在平台侧）。
+    if method == "team.release_seat" {
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("").to_string();
+        let mid = args.get("member_id").and_then(Value::as_str).unwrap_or("").to_string();
+        if tid.is_empty() || mid.is_empty() {
+            return Err("team.release_seat requires `team` and `member_id`".to_string());
+        }
+        return crate::commands::release_seat(conn, &tid, &mid).map_err(|e| e.to_string());
+    }
+    if method == "team.roster" {
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("");
+        if tid.is_empty() {
+            return Err("team.roster requires `team`".to_string());
+        }
+        return crate::commands::team_roster(conn, tid).map_err(|e| e.to_string());
+    }
     if method == "public.team_meta" {
         let tid = args.get("team").and_then(Value::as_str).unwrap_or("");
         if tid.is_empty() {

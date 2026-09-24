@@ -3516,6 +3516,74 @@ pub(crate) fn public_team_meta(
     }))
 }
 
+/// 释放座位（design/016 SD-11）：把指定座位置 `left`。**窄接口**——只做这一件事，
+/// 供平台在成员本人请求"离开团队"时代为执行（不暴露通用的状态机写入口）。
+pub(crate) fn release_seat(
+    conn: &mut Connection,
+    team_id: &str,
+    member_id: &str,
+) -> std::result::Result<Value, String> {
+    let (cur, name): (String, String) = match conn.query_row(
+        "SELECT COALESCE(state,''), display_name FROM members WHERE id = ?1 AND team_id = ?2",
+        params![member_id, team_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Ok(v) => v,
+        Err(_) => return Err(format!("seat {member_id} not found in team {team_id}")),
+    };
+    if cur == "left" {
+        return Ok(json!({ "ok": true, "member_id": member_id, "state": "left", "already": true }));
+    }
+    let now = db::now();
+    db::with_write(conn, |tx| {
+        tx.execute(
+            "UPDATE members SET state = 'left', left_at = ?1 WHERE id = ?2",
+            params![now, member_id],
+        )?;
+        emit_json(
+            tx,
+            team_id,
+            Some(member_id),
+            "member.left",
+            json!({ "display_name": name, "via": "seat.release" }),
+        )?;
+        Ok(())
+    })
+    .map_err(|e| format!("release failed: {e}"))?;
+    Ok(json!({ "ok": true, "member_id": member_id, "state": "left" }))
+}
+
+/// 成员名册（design/016 SD-12）：**只出** display_name / role / state / is_lead。
+/// 硬约束：不含 session_key、证书、user_id 详情（平台只读元数据）。
+pub(crate) fn team_roster(conn: &Connection, team_id: &str) -> std::result::Result<Value, String> {
+    let exists: Option<String> = conn
+        .query_row("SELECT id FROM teams WHERE id = ?1", params![team_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    if exists.is_none() {
+        return Err(format!("team {team_id} not found"));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT display_name, COALESCE(role,''), COALESCE(state,''), COALESCE(is_lead,0)
+             FROM members WHERE team_id = ?1 AND state NOT IN ('left','denied')
+             ORDER BY is_lead DESC, joined_at",
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map(params![team_id], |r| {
+            Ok(json!({
+                "display_name": r.get::<_, String>(0)?,
+                "role": r.get::<_, String>(1)?,
+                "state": r.get::<_, String>(2)?,
+                "is_lead": r.get::<_, i64>(3)? != 0,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+    let members: Vec<Value> = rows.collect::<rusqlite::Result<_>>().map_err(|e| format!("db: {e}"))?;
+    Ok(json!({ "ok": true, "team_id": team_id, "members": members, "count": members.len() }))
+}
+
 /// `team invite "<label>[: <desc>]"` — owner issues a member cert + letter.
 ///
 /// A device invitation may be bound to a person (`user`) so the same person's

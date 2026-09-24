@@ -96,6 +96,12 @@ impl Kubectl {
     }
 
     /// 删除一个资源；不存在视为成功（幂等）。
+    /// 跨命名空间列资源（`kubectl get <kind> -A -o json`）。
+    pub fn get_json_all_namespaces(&self, kind: &str) -> Result<Value, String> {
+        let out = self.run(&["get", kind, "-A", "-o", "json"])?;
+        serde_json::from_str(&out).map_err(|e| format!("kubectl json: {e}"))
+    }
+
     /// 打/覆盖一个 label（`kubectl label <kind> <name> k=v --overwrite -n <ns>`）。
     pub fn label(&self, kind: &str, name: &str, key: &str, value: &str, namespace: &str) -> Result<(), String> {
         let kv = format!("{key}={value}");

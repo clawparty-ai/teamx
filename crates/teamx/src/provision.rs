@@ -984,6 +984,21 @@ pub fn create_my_tenant(
     kubeconfig: Option<&str>,
     context: Option<&str>,
 ) -> Result<Value, String> {
+    create_my_tenant_with(conn, user_id, team_name, None, None, None, kubeconfig, context)
+}
+
+/// 带发现的创建（design/016 SD-10：创建表单一步带上可见性/加入策略/简介）。
+#[allow(clippy::too_many_arguments)]
+pub fn create_my_tenant_with(
+    conn: &mut Connection,
+    user_id: &str,
+    team_name: &str,
+    visibility: Option<&str>,
+    join_policy: Option<&str>,
+    summary: Option<&str>,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
     crate::platform::check_tenant_quota(conn, user_id)?;
     let name = team_name.trim();
     if name.is_empty() || name.len() > 64 {
@@ -1010,6 +1025,16 @@ pub fn create_my_tenant(
     // 镜像**不接受用户输入**（weiye-mini task-103 M2）：用户面不可指定 server_image，
     // 否则任意租户用户可让平台集群拉起任意镜像 —— 一律走平台 pin 的默认镜像。
     // 失败补偿：infra 建不起来时删掉刚建的空壳 team（否则残留无租户的孤儿 team 行）。
+    // 发现设置（先写库；投影在 infra 建好后由调用方/对账处理）
+    if let Some(v) = visibility {
+        crate::discovery::set_visibility(conn, &team_id, v)?;
+    }
+    if let Some(p) = join_policy {
+        crate::discovery::set_join_policy(conn, &team_id, p)?;
+    }
+    if let Some(s) = summary {
+        crate::discovery::set_public_summary(conn, &team_id, s)?;
+    }
     let tenant = match create_tenant(conn, &team_id, None, kubeconfig, context) {
         Ok(t) => t,
         Err(e) => {
@@ -1023,6 +1048,177 @@ pub fn create_my_tenant(
         "owner": uname, "tenant": tenant["tenant"],
         "bootstrap": "pending",
         "note": "空账本（O-1(a) 全新开始）。租户 server 启动后调 bootstrap 初始化团队，owner 用返回的信认领。",
+    }))
+}
+
+/// **离开团队**（design/016 SD-11 → ADR-0002）：**双侧真释放**。
+///
+/// 顺序（任一关键步失败即整体失败，**不留幽灵占用**）：
+/// ① 租户侧座位 → `left`（service 车道 `team.release_seat`，窄接口）
+/// ② 删除 member Pod（PVC 保留，待 7 天回收）
+/// ③ 平台侧申请置 `left`
+pub fn leave_team(
+    conn: &mut Connection,
+    team_id: &str,
+    user_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    // 找到我的已批准申请（必须是我加入的团队）
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT id, COALESCE(member_id,'') FROM team_join_requests
+             WHERE team_id = ?1 AND user_id = ?2 AND status = 'approved'
+             ORDER BY created_at DESC LIMIT 1",
+            params![team_id, user_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    let Some((req_id, member_id)) = row else {
+        return Err("you are not a member of this team (no approved request)".to_string());
+    };
+    if member_id.is_empty() {
+        return Err("seat id missing; the approval did not materialize a seat".to_string());
+    }
+    // ① 租户侧释放座位（失败即整体失败 —— 不制造"平台说走了、租户还在"的不一致）
+    tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "team.release_seat",
+        json!({ "team": team_id, "member_id": member_id }),
+    )?;
+    // ② 删 member Pod（PVC 保留；失败不阻断 —— 座位已释放，Pod 由后续清理）
+    let mut pod_deleted = false;
+    let mut pod_detail = String::new();
+    let ns = crate::k8s::namespace_for(team_id);
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    let pod = crate::k8s::pod_name(&member_id);
+    match kubectl.delete("pod", &pod, &ns) {
+        Ok(()) => pod_deleted = true,
+        Err(e) => pod_detail = format!("pod delete failed: {e}"),
+    }
+    // ③ 平台侧申请置 left（保留历史）
+    conn.execute(
+        "UPDATE team_join_requests SET status = 'left', decided_at = ?1 WHERE id = ?2",
+        params![db::now(), req_id],
+    )
+    .map_err(|e| format!("db: {e}"))?;
+    Ok(json!({
+        "ok": true, "team_id": team_id, "member_id": member_id,
+        "seat_released": true, "pod_deleted": pod_deleted, "pod_detail": pod_detail,
+        "note": "PVC 保留（7 天后回收）；可再次申请加入",
+    }))
+}
+
+/// 我拥有的团队的 **owner 邀请函**（design/016 SD-10：取件页）。
+pub fn owner_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.team_id, tm.name, COALESCE(t.owner_letter,'')
+             FROM tenants t
+             JOIN tenant_owners o ON o.team_id = t.team_id AND o.user_id = ?1
+             LEFT JOIN teams tm ON tm.id = t.team_id
+             ORDER BY t.created_at DESC",
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map(params![user_id], |r| {
+            let letter: String = r.get(2)?;
+            Ok(json!({
+                "team_id": r.get::<_, String>(0)?,
+                "team_name": r.get::<_, String>(1)?,
+                "available": !letter.is_empty(),
+                "letter": letter,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+    let items: Vec<Value> = rows.collect::<rusqlite::Result<_>>().map_err(|e| format!("db: {e}"))?;
+    Ok(json!({ "ok": true, "teams": items }))
+}
+
+/// 「我的团队」（design/016 SD-4/SD-8/SD-14）：两组 + 统计 + 工作区状态。
+pub fn my_teams(conn: &mut Connection, user_id: &str, kubeconfig: Option<&str>, context: Option<&str>) -> Result<Value, String> {
+    let owned_ids = crate::platform::owned_teams(conn, user_id)?;
+    let all = tenant_list(conn)?;
+    let mut owned: Vec<Value> = all
+        .into_iter()
+        .filter(|t| t["team_id"].as_str().map(|id| owned_ids.contains(&id.to_string())).unwrap_or(false))
+        .collect();
+    // 我加入的（design/016 SD-4）：由已批准的申请识别
+    let mut joined = crate::discovery::joined_teams(conn, user_id)?;
+
+    // 工作区状态（SD-14）：以实时 k8s 为准，不可达回落快照并标注
+    let mut pod_states: std::collections::HashMap<String, (String, bool)> = std::collections::HashMap::new();
+    let want_k8s = !owned.is_empty() || !joined.is_empty();
+    if want_k8s {
+        let kubectl = crate::k8s::Kubectl::new(
+            kubeconfig.map(str::to_string),
+            context.map(str::to_string),
+        );
+        // 一次列出所有受管 member Pod（跨 namespace）
+        if let Ok(Some(list)) = kubectl.get_json("pods", "", "default").or_else(|_| {
+            // -A 形式
+            kubectl.get_json_all_namespaces("pods").map(Some)
+        }) {
+            if let Some(items) = list["items"].as_array() {
+                for p in items {
+                    let labels = &p["metadata"]["labels"];
+                    if labels["teamx.io/managed"] != json!("true") {
+                        continue;
+                    }
+                    let Some(mid) = labels["teamx.io/member"].as_str() else { continue };
+                    let phase = p["status"]["phase"].as_str().unwrap_or("Unknown").to_string();
+                    pod_states.insert(mid.to_string(), (phase, true));
+                }
+            }
+        }
+    }
+    let annotate = |v: &mut Value, member_id: &str| {
+        if let Some((phase, live)) = pod_states.get(member_id) {
+            v["workspace_state"] = json!(phase);
+            v["workspace_live"] = json!(live);
+        } else {
+            v["workspace_state"] = json!("none");
+            v["workspace_live"] = json!(false);
+        }
+    };
+    for t in owned.iter_mut() {
+        let id = t["team_id"].as_str().unwrap_or("").to_string();
+        let has_ns = t["namespace"].as_str().map(|n| !n.is_empty()).unwrap_or(false);
+        let has_letter = t["owner_letter"].as_str().map(|l| !l.is_empty()).unwrap_or(false);
+        t["bootstrapped"] = json!(has_letter || has_ns);
+        t["owner_letter_available"] = json!(has_letter);
+        // owner 自己的工作区状态（来自批准执行链的座位）
+        let mid: String = conn
+            .query_row(
+                "SELECT COALESCE(member_id,'') FROM team_join_requests WHERE team_id = ?1 AND user_id = ?2 AND status = 'approved' ORDER BY created_at DESC LIMIT 1",
+                params![id, user_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        annotate(t, &mid);
+    }
+    for j in joined.iter_mut() {
+        let mid = j["member_id"].as_str().unwrap_or("").to_string();
+        annotate(j, &mid);
+    }
+    let quota = crate::platform::tenant_quota(conn, user_id)?;
+    let running = owned
+        .iter()
+        .chain(joined.iter())
+        .filter(|t| t["workspace_state"] == json!("Running"))
+        .count();
+    Ok(json!({
+        "ok": true,
+        "owned": owned, "joined": joined,
+        "used": owned_ids.len(), "quota": quota,
+        "joined_count": joined.len(), "running_workspaces": running,
     }))
 }
 
@@ -1084,6 +1280,14 @@ pub fn bootstrap_my_team(
             "server_url": server_url,
         }),
     )?;
+    // 保存 owner 邀请函（design/016：Owner 邀请函二级菜单要能**取回**）
+    if let Some(letter) = out["letter"].as_str() {
+        conn.execute(
+            "UPDATE tenants SET owner_letter = ?1 WHERE team_id = ?2",
+            params![letter, team_id],
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    }
     Ok(json!({ "ok": true, "team_id": team_id, "bootstrap": out }))
 }
 

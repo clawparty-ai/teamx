@@ -320,6 +320,34 @@ pub fn decide_request(
     }))
 }
 
+/// 我加入的团队（design/016 SD-4）：已批准的申请（含团队名、我的角色来源=申请、首次加入时间）。
+pub fn joined_teams(conn: &Connection, user_id: &str) -> Result<Vec<Value>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.team_id, COALESCE(t.name,''), COALESCE(r.member_id,''), COALESCE(r.letter,''),
+                    COALESCE(r.pod_state,''), r.created_at, r.decided_at
+             FROM team_join_requests r LEFT JOIN teams t ON t.id = r.team_id
+             WHERE r.user_id = ?1 AND r.status = 'approved'
+             ORDER BY r.decided_at DESC, r.created_at DESC",
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map(params![user_id], |r| {
+            Ok(json!({
+                "team_id": r.get::<_, String>(0)?,
+                "team_name": r.get::<_, String>(1)?,
+                "member_id": r.get::<_, String>(2)?,
+                "letter_available": !r.get::<_, String>(3)?.is_empty(),
+                "letter": r.get::<_, String>(3)?,
+                "pod_state_snapshot": r.get::<_, String>(4)?,
+                "requested_at": r.get::<_, String>(5)?,
+                "joined_at": r.get::<_, Option<String>>(6)?,
+            }))
+        })
+        .map_err(|e| format!("db: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("db: {e}"))
+}
+
 /// 记录批准后的交付结果（SD-11/SD-23）：座位 id、邀请函、拉 pod 状态。
 pub fn record_delivery(
     conn: &Connection,
