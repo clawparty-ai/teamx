@@ -215,9 +215,9 @@ R="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d
 echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True and 'quota' in str(d.get('error','')),d" || fail "D5: 超配额应明确拒绝"
 pass "D5 配额生效（1/1 后再建被拒）"
 
-# D6: bootstrap 入口校验（缺 server_url → 400；不可达 → 明确失败不假装）
-CODE="$($C -b /tmp/teamx-platcon-bob -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap")"
-[ "$CODE" = "400" ] || fail "D6: 缺 server_url 应 400，实际 $CODE"
+# D6: bootstrap 入口校验（**server_url 可留空 = 平台自建通道**；指定不可达端点 → 明确失败）
+CODE="$($C -b /tmp/teamx-platcon-bob -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 40)"
+[ "$CODE" = "400" ] || fail "D6: 留空时平台自建通道失败（stub 无集群）应 400，实际 $CODE"
 R="$($C -b /tmp/teamx-platcon-bob -X POST -H 'Content-Type: application/json' -d '{"server_url":"https://127.0.0.1:9"}' "$BASE/api/my/teams/$BOB_TEAM/bootstrap" --max-time 30)"
 echo "$R" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') is not True,d" || fail "D6: 不可达应明确失败"
 # alice 替 bob bootstrap → 403
@@ -368,13 +368,16 @@ assert m and m[0]['available'] is False, ('未初始化应 available=false', d)"
 pass "F3 Owner 邀请函取件页（未初始化时如实不可用）"
 
 # F4/F5: 无租户端点时 roster/invite **明确失败**（不假装成功）
+# 现在会自动建立通道（同机 port-forward）；stub 环境无真实集群 → 必须**明确失败**且给出排查提示
 $C -b /tmp/teamx-platcon-alice "$BASE/api/my/teams/$F_TEAM/roster" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
-assert d.get('ok') is not True and 'endpoint' in str(d.get('error','')), d" || fail "F4: 无端点应明确失败"
+e=str(d.get('error',''))
+assert d.get('ok') is not True and ('tenant server' in e or 'port-forward' in e), d" || fail "F4: 应明确失败并提示通道问题"
 $C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$F_TEAM/invite" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
-assert d.get('ok') is not True and 'endpoint' in str(d.get('error','')), d" || fail "F5: 无端点应明确失败"
-pass "F4/F5 无租户端点时 roster/invite 明确失败（不假装）"
+e=str(d.get('error',''))
+assert d.get('ok') is not True and ('tenant server' in e or 'port-forward' in e), d" || fail "F5: 应明确失败并提示通道问题"
+pass "F4/F5 自动通道不可达时 roster/invite 明确失败（含排查提示，不假装）"
 
 # F5b: 详情带访问者关系；owner 看自己的团队 → 不出现"可申请"
 $C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/teams/$F_TEAM" | python3 -c "

@@ -96,6 +96,41 @@ impl Kubectl {
     }
 
     /// 删除一个资源；不存在视为成功（幂等）。
+    /// 起一个**临时端口转发**（console 与集群同机时，用它直连租户 server；
+    /// 调用方负责在完成后 drop（kill）子进程）。`--address 127.0.0.1` 保证只本机可达。
+    pub fn port_forward(
+        &self,
+        namespace: &str,
+        service: &str,
+        local_port: u16,
+        remote_port: u16,
+    ) -> Result<std::process::Child, String> {
+        let mut cmd = std::process::Command::new("kubectl");
+        cmd.args(self.base_args());
+        cmd.args([
+            "port-forward",
+            "--address",
+            "127.0.0.1",
+            "-n",
+            namespace,
+            &format!("svc/{service}"),
+            &format!("{local_port}:{remote_port}"),
+        ]);
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null());
+        cmd.spawn().map_err(|e| format!("kubectl port-forward spawn failed: {e}"))
+    }
+
+    /// 取一个空闲的本地 TCP 端口（先 bind :0 再释放，交给 port-forward 用）。
+    pub fn free_port() -> Result<u16, String> {
+        let l = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("no free port: {e}"))?;
+        let p = l.local_addr().map_err(|e| e.to_string())?.port();
+        drop(l);
+        Ok(p)
+    }
+
     /// 跨命名空间列资源（`kubectl get <kind> -A -o json`）。
     pub fn get_json_all_namespaces(&self, kind: &str) -> Result<Value, String> {
         let out = self.run(&["get", kind, "-A", "-o", "json"])?;

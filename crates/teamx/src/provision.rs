@@ -748,7 +748,11 @@ pub fn materialize_member_seat(
     }))
 }
 
-/// 便捷入口：用租户**已配置的端点**走 service 车道；未配置时明确报错（不猜端点）。
+/// 便捷入口：优先用租户**已配置的端点**；未配置时**自动**建立到租户 server 的通道 ——
+/// 与集群同机时起一个临时 `kubectl port-forward`（127.0.0.1，用完即收），
+/// 因此不需要 operator 手动开端口（O-5 的"同机"场景由此闭环）。
+///
+/// 两端都不可用（无端点且集群不可达）时**明确报错**，不静默。
 pub fn tenant_service_post_via_endpoint(
     conn: &mut Connection,
     team_id: &str,
@@ -758,14 +762,95 @@ pub fn tenant_service_post_via_endpoint(
     args: Value,
 ) -> Result<Value, String> {
     let t = tenant_get(conn, team_id)?.ok_or_else(|| format!("tenant {team_id} not found"))?;
-    let ep = t["endpoint"].as_str().unwrap_or("").to_string();
-    if ep.is_empty() {
-        return Err(
-            "tenant endpoint not configured (set it with `teamx tenant set-endpoint`; O-5 pending)"
-                .to_string(),
-        );
+    let configured = t["endpoint"].as_str().unwrap_or("").to_string();
+    if !configured.is_empty() {
+        return tenant_service_post(conn, team_id, &configured, kubeconfig, context, method, args);
     }
+    // 自动通道：**按租户复用**一条临时 port-forward（端口稳定，letter 里的地址才可用），
+    // 进程退出即回收。
+    let ep = ensure_forward(team_id, kubeconfig, context)?;
     tenant_service_post(conn, team_id, &ep, kubeconfig, context, method, args)
+}
+
+/// 进程级 port-forward 注册表：team_id → (child, port)。稳定端口 = letter 里的 URL 可用。
+static FORWARDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (std::process::Child, u16)>>,
+> = std::sync::OnceLock::new();
+
+/// 确保到租户 server 的本地通道可用，返回 `https://127.0.0.1:<port>`。
+///
+/// 与集群同机时由 console/CLI 自行建立（无需 operator 手动开端口）；
+/// 集群不可达时**明确报错**（含排查提示），不静默。
+pub fn ensure_forward(
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<String, String> {
+    let reg = FORWARDS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    {
+        let mut g = reg.lock().map_err(|_| "forward registry poisoned".to_string())?;
+        if let Some((child, port)) = g.get_mut(team_id) {
+            // 探活：TCP 可连即复用；否则清掉重来
+            if std::net::TcpStream::connect_timeout(
+                &format!("127.0.0.1:{port}")
+                    .parse()
+                    .map_err(|e| format!("addr: {e}"))?,
+                std::time::Duration::from_millis(400),
+            )
+            .is_ok()
+            {
+                return Ok(format!("https://127.0.0.1:{port}"));
+            }
+            let _ = child.kill();
+            g.remove(team_id);
+        }
+    }
+    let ns = crate::k8s::namespace_for(team_id);
+    let svc = format!("teamx-serve-{}", crate::k8s::short_id(team_id));
+    let port = crate::k8s::Kubectl::free_port()?;
+    let kubectl = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    let mut child = kubectl.port_forward(&ns, &svc, port, crate::k8s::SERVER_PORT)?;
+    // 就绪探测：TCP 可连即成功；**子进程已退出 → 立即失败**（不傻等满窗口，
+    // 例如 kubectl 不可用/无权限/服务不存在时，stub 与真机都能快速报错）。
+    let mut ok = false;
+    let mut early_exit = false;
+    for _ in 0..40 {
+        if let Ok(Some(st)) = child.try_wait() {
+            early_exit = true;
+            let _ = st;
+            break;
+        }
+        if std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}")
+                .parse()
+                .map_err(|e| format!("addr: {e}"))?,
+            std::time::Duration::from_millis(400),
+        )
+        .is_ok()
+        {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    if !ok {
+        let _ = child.kill();
+        return Err(if early_exit {
+            format!("kubectl port-forward to {ns}/svc/{svc} exited immediately (check kubectl/kubeconfig/service)")
+        } else {
+            format!(
+                "cannot reach tenant server (auto port-forward to {ns}/svc/{svc} not ready; \
+                 is the tenant server Pod running and kubeconfig valid?)"
+            )
+        });
+    }
+    reg.lock()
+        .map_err(|_| "forward registry poisoned".to_string())?
+        .insert(team_id.to_string(), (child, port));
+    Ok(format!("https://127.0.0.1:{port}"))
 }
 
 /// 读租户 CA（namespace 的 Secret；平台建租户时写入，平台不保留副本 —— 必改①）。
@@ -1303,6 +1388,15 @@ pub fn bootstrap_my_team(
     kubeconfig: Option<&str>,
     context: Option<&str>,
 ) -> Result<Value, String> {
+    // server_url 留空 = 由平台自动建立通道（同机 port-forward），并把它写进 letter
+    // （本地导入后 CLI 能直连）。O-5 定案后可换成正式端点。
+    let auto_url;
+    let server_url = if server_url.trim().is_empty() {
+        auto_url = ensure_forward(team_id, kubeconfig, context)?;
+        auto_url.as_str()
+    } else {
+        server_url
+    };
     // 归属鉴权（operator 不走这里，走 operator 路由）。
     if !crate::platform::tenant_owned_by(conn, team_id, user_id)? {
         return Err("not your tenant (403)".to_string());

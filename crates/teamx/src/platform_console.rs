@@ -802,14 +802,8 @@ async fn api_my_teams_bootstrap(
     if let Err(r) = own_guard(&ctx, &headers, &team) {
         return r;
     }
+    // server_url 可选：留空时由平台自动建立通道（同机 port-forward），并把可用地址写进 letter
     let server_url = body.get("server_url").and_then(Value::as_str).unwrap_or("").to_string();
-    if server_url.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "server_url is required (tenant endpoint, O-5)"})),
-        )
-            .into_response();
-    }
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| {
         crate::provision::bootstrap_my_team(c, &team, &uid, &server_url, kc.as_deref(), cx.as_deref())
@@ -1519,7 +1513,8 @@ async function openMineDetail(id,kind,el){
       <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
       <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
       <h2 style="margin-top:12px">初始化（若尚未）</h2>
-      <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，如 https://127.0.0.1:5790）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+      <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（留空 = 平台自动连接）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+      <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>
       <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
       <div id="ownerLetter_${short}"></div>
       <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
@@ -1605,7 +1600,7 @@ async function saveDiscover(team){
   alert('已保存：'+(visibility==='public'?'公开':'私有')+' / '+(join_policy==='open_request'?'允许申请':'仅邀请'));
   loadDir(1);
 }
-async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team||!server_url){alert('填该团队卡片上的 endpoint');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
+async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team){alert('缺少 team id');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
 async function loadTenants(){const d=await jget('/api/tenants');
  window.__tenants=d.tenants||[];
  const tb=document.getElementById('tenants');
