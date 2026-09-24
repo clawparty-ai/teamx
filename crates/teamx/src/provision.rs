@@ -1244,6 +1244,63 @@ pub fn my_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
     Ok(json!({ "ok": true, "letters": letters }))
 }
 
+/// TCoin 结算编排（design/017 SD-14）：经 service 车道让**租户侧**结算其未用消耗，
+/// 再把批次摘要记入**平台总账**（两级账本的对账动作，ADR-0003）。
+pub fn settle_team_tcoin(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let usage = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "tcoin.settle",
+        json!({ "team": team_id }),
+    )?;
+    let consumed = usage["consumed"].as_i64().unwrap_or(0);
+    let batch = usage["batch"].as_str().unwrap_or("").to_string();
+    if consumed == 0 || batch.is_empty() {
+        return Ok(json!({
+            "ok": true, "consumed": 0,
+            "balance": crate::tcoin::balance(conn, team_id, "tenant")?,
+            "note": "租户侧无未结算消耗",
+        }));
+    }
+    let out = crate::tcoin::settle(conn, team_id, consumed, &batch, "platform")?;
+    Ok(json!({
+        "ok": true, "consumed": consumed, "batch": batch,
+        "entry": out, "members": usage["members"],
+    }))
+}
+
+/// 某租户的 TCoin 概览（平台总账 + 租户侧未结算用量，供展示）。
+pub fn tcoin_overview(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let balance = crate::tcoin::balance(conn, team_id, "tenant")?;
+    let entries = crate::tcoin::entries(conn, team_id, None, 50)?;
+    let usage = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "tcoin.usage",
+        json!({ "team": team_id }),
+    )
+    .unwrap_or_else(|e| json!({ "ok": false, "error": e, "pending_tcoin": Value::Null, "members": [] }));
+    Ok(json!({
+        "ok": true, "team_id": team_id, "balance": balance,
+        "entries": entries, "usage": usage,
+        "warning": if balance < 0 { "余额为负（欠费，v1 不阻断）" } else if balance == 0 { "余额为 0" } else { "" },
+    }))
+}
+
 /// 我拥有的团队的 **owner 邀请函**（保留：内部复用）。
 pub fn owner_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
     let mut stmt = conn

@@ -1120,6 +1120,22 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     crate::im::whitelist::seed(conn)?;
 
+    // TCoin 平台侧账本（design/017 ADR-0003）：**append-only 流水**，余额 = SUM(delta)。
+    // account = 'tenant'（租户总账）或 'member:<id>'（owner 分配给某成员）。
+    // 币的发行方是平台（grant）；消耗由租户侧结算（settle）；错误用反向分录（reverse）。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tcoin_entries (
+           seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+           at       TEXT NOT NULL,
+           team_id  TEXT NOT NULL,
+           account  TEXT NOT NULL DEFAULT 'tenant',
+           delta    INTEGER NOT NULL,
+           reason   TEXT NOT NULL,
+           ref      TEXT,
+           actor    TEXT NOT NULL DEFAULT ''
+         );
+         CREATE INDEX IF NOT EXISTS idx_tcoin_team ON tcoin_entries(team_id, account);",
+    )?;
     // 加入申请（design/015 SD-11/SD-26）：平台库为申请落点；owner 审批；
     // 同一 (team, user) 只允许一个 pending（部分唯一索引）；拒绝有冷却期。
     conn.execute_batch(
@@ -1218,6 +1234,8 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "members", "workspace", "TEXT")?;
     // k8e 路径需要知道成员该连哪个 server（Pod 的 env / 隧道 / git clone）。
     ensure_column(conn, "nodes", "server_url", "TEXT")?;
+    // TCoin 结算标记（design/017 SD-14）：已结算的 activity 行打时间戳，保证**幂等不重复计**。
+    ensure_column(conn, "activity", "tcoin_settled_at", "TEXT")?;
     // 团队发现（design/015）：可见性 / 加入策略 / 公开简介（列表与详情白名单用）。
     ensure_column(conn, "teams", "visibility", "TEXT NOT NULL DEFAULT 'private'")?;
     ensure_column(conn, "teams", "join_policy", "TEXT NOT NULL DEFAULT 'invite_only'")?;

@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TcoinCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -525,6 +525,46 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "ok": true,
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
+        },
+        Command::Tcoin(t) => match t {
+            TcoinCmd::Grant { team, amount, reason, session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                // 发行是平台动作：要求 actor 是团队归属用户或本地 owner 座位
+                let uid = crate::platform::session_user_id(conn, &actor.id).unwrap_or_default();
+                let by = if uid.is_empty() { actor.id.clone() } else { format!("user:{uid}") };
+                crate::tcoin::grant(conn, team, *amount, reason, &by).map_err(AppError)?
+            }
+            TcoinCmd::Allocate { team, member, amount, session } => {
+                let (actor, ateam) = resolve_actor(conn, session, Some(team))?;
+                ensure_owner(conn, &actor, &ateam)?;
+                crate::tcoin::allocate(conn, team, member, *amount, &format!("member:{}", actor.id))
+                    .map_err(AppError)?
+            }
+            TcoinCmd::Settle { team, kubeconfig, context, session } => {
+                let _ = resolve_actor(conn, session, None)?;
+                crate::provision::settle_team_tcoin(
+                    conn,
+                    team,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
+            TcoinCmd::Reverse { seq, reason, session } => {
+                let (actor, _) = resolve_actor(conn, session, None)?;
+                crate::tcoin::reverse(conn, *seq, reason, &format!("member:{}", actor.id))
+                    .map_err(AppError)?
+            }
+            TcoinCmd::Show { team, kubeconfig, context, session } => {
+                let _ = resolve_actor(conn, session, None)?;
+                crate::provision::tcoin_overview(
+                    conn,
+                    team,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
         },
         Command::Discovery(d) => match d {
             DiscoveryCmd::Directory { query, sort, joinable, page, per_page } => {

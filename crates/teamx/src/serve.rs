@@ -1235,6 +1235,8 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "public.team_meta", // 公开团队元数据（design/015 SD-15：租户侧白名单裁剪，无 invite_token/正文）
     "team.roster",    // 成员名册只读（design/016 SD-12：仅 名/角色/状态/lead，无凭据）
     "team.release_seat", // 释放座位（design/016 SD-11：成员本人请求离开，平台窄接口代执行）
+    "tcoin.usage",    // TCoin 租户侧用量只读（design/017 SD-14：未结算的成员消耗明细）
+    "tcoin.settle",   // TCoin 租户侧结算（标记已结算并返回批次摘要，供平台落总账）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
     "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
 ];
@@ -1309,6 +1311,21 @@ fn dispatch_platform_console(
             return Err("team.release_seat requires `team` and `member_id`".to_string());
         }
         return crate::commands::release_seat(conn, &tid, &mid).map_err(|e| e.to_string());
+    }
+    if method == "tcoin.usage" {
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("").to_string();
+        if tid.is_empty() {
+            return Err("tcoin.usage requires `team`".to_string());
+        }
+        let (_max, members, total) = crate::tcoin::pending_usage(conn, &tid).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({ "ok": true, "members": members, "pending_tcoin": total }));
+    }
+    if method == "tcoin.settle" {
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("").to_string();
+        if tid.is_empty() {
+            return Err("tcoin.settle requires `team`".to_string());
+        }
+        return crate::tcoin::settle_usage(conn, &tid).map_err(|e| e.to_string());
     }
     if method == "team.roster" {
         let tid = args.get("team").and_then(Value::as_str).unwrap_or("");
@@ -2140,6 +2157,35 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "discovery.apply" => Command::Discovery(crate::cli::DiscoveryCmd::Apply {
             team: s("team").ok_or_else(|| "discovery.apply requires `team`".to_string())?,
             message: o("message"),
+            session: sess(args),
+        }),
+        "tcoin.grant" => Command::Tcoin(crate::cli::TcoinCmd::Grant {
+            team: s("team").ok_or_else(|| "tcoin.grant requires `team`".to_string())?,
+            amount: args.get("amount").and_then(Value::as_i64).unwrap_or(0),
+            reason: o("reason").unwrap_or_else(|| "platform grant".to_string()),
+            session: sess(args),
+        }),
+        "tcoin.allocate" => Command::Tcoin(crate::cli::TcoinCmd::Allocate {
+            team: s("team").ok_or_else(|| "tcoin.allocate requires `team`".to_string())?,
+            member: s("member").ok_or_else(|| "tcoin.allocate requires `member`".to_string())?,
+            amount: args.get("amount").and_then(Value::as_i64).unwrap_or(0),
+            session: sess(args),
+        }),
+        "tcoin.settle" => Command::Tcoin(crate::cli::TcoinCmd::Settle {
+            team: s("team").ok_or_else(|| "tcoin.settle requires `team`".to_string())?,
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
+            session: sess(args),
+        }),
+        "tcoin.reverse" => Command::Tcoin(crate::cli::TcoinCmd::Reverse {
+            seq: args.get("seq").and_then(Value::as_i64).unwrap_or(0),
+            reason: s("reason").ok_or_else(|| "tcoin.reverse requires `reason`".to_string())?,
+            session: sess(args),
+        }),
+        "tcoin.show" => Command::Tcoin(crate::cli::TcoinCmd::Show {
+            team: s("team").ok_or_else(|| "tcoin.show requires `team`".to_string())?,
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
             session: sess(args),
         }),
         "discovery.mine" => Command::Discovery(crate::cli::DiscoveryCmd::Mine { session: sess(args) }),

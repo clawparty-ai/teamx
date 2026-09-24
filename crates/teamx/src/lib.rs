@@ -41,6 +41,7 @@ pub mod pki;
 pub mod platform;
 pub mod issued;
 pub mod discovery;
+pub mod tcoin;
 pub mod platform_console;
 pub mod procwatch;
 pub mod k8s;

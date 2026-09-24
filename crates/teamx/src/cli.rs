@@ -77,6 +77,11 @@ pub enum Command {
     #[command(subcommand)]
     Discovery(DiscoveryCmd),
 
+    /// TCoin (design/017): platform ledger (grant / allocate / settle / reverse),
+    /// balances and entries
+    #[command(subcommand)]
+    Tcoin(TcoinCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2427,6 +2432,66 @@ pub struct PlatformConsoleCmd {
 
 /// Multi-tenant platform (design/014): one tenant = one team + one namespace
 /// + one independent CA. Executor = the platform (kubectl + tenant CA).
+// TCoin（design/017）。
+#[derive(Subcommand, Debug)]
+pub enum TcoinCmd {
+    /// Grant (issue) TCoin to a tenant account — platform only (v1: no payment)
+    Grant {
+        #[arg(long)]
+        team: String,
+        /// amount in TCoin (integer)
+        #[arg(long)]
+        amount: i64,
+        #[arg(long, default_value = "platform grant")]
+        reason: String,
+        #[arg(long)]
+        session: String,
+    },
+    /// Owner: allocate TCoin from the tenant account to a member account
+    Allocate {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        amount: i64,
+        #[arg(long)]
+        session: String,
+    },
+    /// Settle: pull the tenant's unsettled consumption into the platform ledger
+    Settle {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+    /// Reverse an entry (append a mirror entry; never delete)
+    Reverse {
+        /// entry seq to reverse
+        #[arg(long)]
+        seq: i64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        session: String,
+    },
+    /// Show balance + entries + tenant-side pending usage
+    Show {
+        #[arg(long)]
+        team: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+}
+
 // 团队发现与加入（design/015）。
 #[derive(Subcommand, Debug)]
 pub enum DiscoveryCmd {
