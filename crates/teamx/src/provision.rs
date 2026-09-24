@@ -1334,6 +1334,16 @@ pub fn destroy_tenant(
         .execute("DELETE FROM tenant_owners WHERE team_id = ?1", params![team_id])
         .unwrap_or(0);
     steps.push(json!({"step": "delete-tenant-owner (释放用户配额)", "target": team_id, "done": unowned > 0}));
+    // 回收 = 成员失联（design/016 SD-16）：把该团队所有**未离开**的加入申请置 left，
+    // 否则成员的「我加入的」会一直显示一个已不存在的团队。
+    let orphaned = conn
+        .execute(
+            "UPDATE team_join_requests SET status = 'left', decided_at = ?1
+             WHERE team_id = ?2 AND status IN ('pending','approved')",
+            params![db::now(), team_id],
+        )
+        .unwrap_or(0);
+    steps.push(json!({"step": "invalidate-join-requests (成员失联)", "target": team_id, "done": true, "affected": orphaned}));
     steps.push(json!({
         "step": "revoke-tenant-ca", "target": tenant["ca_fingerprint"], "done": ok,
         "note": "CA 在 namespace Secret 内，随 namespace 删除即失效（吊销租户=废 CA，一次动作）",
