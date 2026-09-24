@@ -1104,12 +1104,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .tab:hover{color:#4A90E5}
  .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
  .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
- /* 二级菜单（分段控件）：浅灰轨道 + 选中白卡阴影，与一级下划线 Tab 明显区分 */
- .subtabs{display:inline-flex;gap:4px;padding:4px;background:#F2F6FC;border-radius:8px;margin:0 0 14px}
+ /* 二级菜单：**左侧竖排**导航（与一级下划线 Tab 明显分层） */
+ .subnav-layout{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:start}
+ .subnav{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:8px;position:sticky;top:16px}
+ .subnav-title{font-size:12px;color:#909399;padding:4px 10px 8px;letter-spacing:.04em}
+ .subnav-item{display:block;padding:9px 12px;border-radius:6px;font-size:13px;color:#606266;cursor:pointer;transition:background 150ms,color 150ms;border-left:3px solid transparent}
+ .subnav-item:hover{background:#F2F6FC;color:#4A90E5}
+ .subnav-item.active{background:#EBF3FC;color:#4A90E5;font-weight:600;border-left-color:#4A90E5}
+ @media (max-width:900px){.subnav-layout{grid-template-columns:1fr}.subnav{position:static;display:flex;gap:4px;overflow:auto;padding:6px}
+   .subnav-title{display:none}.subnav-item{border-left:none;white-space:nowrap}}
+ /* 轻量分段控件（用于「我的申请/待我审批」这类**视图切换**，不是章节导航） */
+ .subtabs{display:inline-flex;gap:4px;padding:4px;background:#F2F6FC;border-radius:8px;margin:0 0 8px}
  .subtab{border:none;background:none;padding:6px 16px;font-size:13px;color:#606266;cursor:pointer;border-radius:6px;font-family:inherit;transition:background 150ms,color 150ms}
  .subtab:hover{color:#4A90E5}
  .subtab.active{background:#fff;color:#4A90E5;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.10)}
- .subwrap{border-bottom:1px solid #EBEEF5;margin-bottom:14px;padding-bottom:12px}
  .usermenu{position:relative;display:inline-block}
  .usermenu-panel{display:none;position:absolute;right:0;top:130%;background:#fff;border:1px solid #EBEEF5;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.12);min-width:190px;padding:6px 0;z-index:50}
  .usermenu-panel a{display:block;padding:8px 16px;font-size:13px;color:#333;text-decoration:none;cursor:pointer}
@@ -1246,11 +1254,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
   </div>
   <div class="tabpage" id="tab-mine">
-  <div class="subwrap"><div class="subtabs" id="mineSubtabs">
-    <button class="subtab active" data-sub="list" onclick="mineTab('list')">我的团队</button>
-    <button class="subtab" data-sub="create" onclick="mineTab('create')">创建团队</button>
-    <button class="subtab" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</button>
-  </div></div>
+  <div class="subnav-layout">
+  <nav class="subnav" id="mineSubtabs">
+    <div class="subnav-title">我的团队</div>
+    <a class="subnav-item active" data-sub="list" onclick="mineTab('list')">团队列表</a>
+    <a class="subnav-item" data-sub="create" onclick="mineTab('create')">创建团队</a>
+    <a class="subnav-item" data-sub="letters" onclick="mineTab('letters')">Owner 邀请函</a>
+  </nav>
+  <div>
   <div id="sub-list">
     <div class="cards" id="mineCards"></div>
     <div class="split">
@@ -1276,6 +1287,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="muted">把邀请函导入本地（<code>teamx team import</code>）即成为该团队 owner。</div>
       <div id="lettersList"></div>
     </div>
+  </div>
+  </div>
   </div>
   </div>
   <div class="tabpage" id="tab-tenants" style="display:none">
@@ -1440,7 +1453,7 @@ document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
 function mineTab(name){
-  document.querySelectorAll('#mineSubtabs .subtab').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
+  document.querySelectorAll('#mineSubtabs .subnav-item').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
   ['list','create','letters'].forEach(n=>{const el=document.getElementById('sub-'+n); if(el) el.style.display=(n===name?'block':'none')});
   if(name==='letters')loadLetters();
   if(name==='list')loadMine();
@@ -1605,7 +1618,7 @@ mod tests {
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
-            "subtabs", "subtab", "mineSubtabs", "subwrap",
+            "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
