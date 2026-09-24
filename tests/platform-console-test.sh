@@ -492,4 +492,62 @@ pass "G5 坏请求 400（state/code）"
 kill "$PID2" "$MPID" 2>/dev/null || true
 unset TEAMX_GITHUB_CLIENT_ID TEAMX_GITHUB_CLIENT_SECRET TEAMX_GITHUB_BASE TEAMX_GITHUB_API_BASE
 
+# ---------------------------------------------------------------------------
+# H: TCoin（design/017 + ADR-0003）——两级账本 / append-only / 幂等 / 权限
+# ---------------------------------------------------------------------------
+
+# H0: 给 bob 的团队种一个成员（grant 的 actor 来源；E2E 无真租户，invite 走不通 → 直接种行）
+SS="h-sess-bob"
+sqlite3 "$TEAMX_DB" "INSERT OR IGNORE INTO members (id,team_id,session_key,display_name,role,state,joined_at,user_id)
+  VALUES ('h-member-1','$BOB_TEAM','$SS','bob-dev','contributor','active','2026-01-01T00:00:00+00:00','$(sqlite3 "$TEAMX_DB" "SELECT user_id FROM tenant_owners WHERE team_id='$BOB_TEAM' LIMIT 1;" || true)');"
+[ -n "$(sqlite3 "$TEAMX_DB" "SELECT session_key FROM members WHERE team_id='$BOB_TEAM' LIMIT 1;")" ] || fail "H0: 种成员行失败"
+
+# H1: 初始余额 0 + 软告警（v1 只记账不阻断）
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/tcoin" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d['ok'],d
+t=[x for x in d['teams'] if x['team_id']=='$BOB_TEAM']
+assert len(t)==1,d
+assert t[0]['balance']==0,d
+assert t[0]['warning'],'余额 0 应有软告警: %r'%t[0]
+assert t[0]['relation']=='owner',d
+assert d['rate']==1000,d" || fail "H1: 初始 TCoin 概览不对"
+pass "H1 初始余额 0 + 软告警（不阻断）"
+
+# H2: 平台发放（发行方=平台）→ 余额 + 流水
+"$TEAMX" --json tcoin grant --team "$BOB_TEAM" --amount 5000 --reason "试用额度" --session "$SS" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['balance']==5000,d" || fail "H2: grant 失败"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/tcoin" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+t=[x for x in d['teams'] if x['team_id']=='$BOB_TEAM'][0]
+assert t['balance']==5000 and not t['warning'],t
+assert any(e['reason']=='试用额度' and e['delta']==5000 for e in d['recent']),d['recent'][:3]" || fail "H2: 用户面未反映发放"
+pass "H2 平台发放 5000 TCoin 并在用户面可见"
+
+# H3: 归属隔离 —— 非成员看不了明细
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' "$BASE/api/my/tcoin/$BOB_TEAM")"
+[ "$CODE" = "400" ] || fail "H3: 非成员应 400，实际 $CODE"
+pass "H3 非成员访问团队 TCoin 明细 → 400"
+
+# H4: 冲正（append-only：条数只增 + 余额回补）
+N_BEFORE="$(sqlite3 "$TEAMX_DB" "SELECT COUNT(*) FROM tcoin_entries WHERE team_id='$BOB_TEAM';")"
+SEQ="$(sqlite3 "$TEAMX_DB" "SELECT seq FROM tcoin_entries WHERE team_id='$BOB_TEAM' AND reason='试用额度' ORDER BY seq LIMIT 1;")"
+"$TEAMX" --json tcoin reverse --seq "$SEQ" --reason "误发" --session "$SS" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['ok'] and d['balance']==0,d" || fail "H4: reverse 失败"
+N_AFTER="$(sqlite3 "$TEAMX_DB" "SELECT COUNT(*) FROM tcoin_entries WHERE team_id='$BOB_TEAM';")"
+[ "$N_AFTER" -gt "$N_BEFORE" ] || fail "H4: 冲正应追加而非删除（$N_BEFORE → ${N_AFTER}）"
+# 重复冲正不重复回补
+"$TEAMX" --json tcoin reverse --seq "$SEQ" --reason "误发" --session "$SS" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);assert d['balance']==0,d" || fail "H4: 重复冲正重复回补"
+pass "H4 冲正=反向分录（append-only，条数 ${N_BEFORE}→${N_AFTER}，不重复回补）"
+
+# H5: 结算权限 + 通道不可达必须明确失败（不假装成功）
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X POST "$BASE/api/my/tcoin/$BOB_TEAM/settle")"
+[ "$CODE" = "400" ] || fail "H5: 非 owner 结算应 400，实际 $CODE"
+$C -b /tmp/teamx-platcon-bob -X POST "$BASE/api/my/tcoin/$BOB_TEAM/settle" --max-time 40 | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d.get('ok') is not True,d
+print('  ',str(d.get('error'))[:70])" || fail "H5: 租户不可达时应明确失败"
+pass "H5 结算 owner-only + 租户不可达明确失败"
+
 printf '\nALL PASSED (platform console E2E)\n'

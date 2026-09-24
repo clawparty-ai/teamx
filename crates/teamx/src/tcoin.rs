@@ -157,7 +157,19 @@ pub fn reverse(
         )
         .ok();
     if let Some(s) = dup {
-        return Ok(json!({ "ok": true, "already": true, "seq": s }));
+        // 幂等分支也要回余额（调用方据此断言；不重复回补）
+        let team_id2: String = conn
+            .query_row(
+                "SELECT team_id FROM tcoin_entries WHERE seq = ?1",
+                params![s],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("db: {e}"))?;
+        let account2: String = conn
+            .query_row("SELECT account FROM tcoin_entries WHERE seq = ?1", params![s], |r| r.get(0))
+            .map_err(|e| format!("db: {e}"))?;
+        let bal = balance(conn, &team_id2, &account2)?;
+        return Ok(json!({ "ok": true, "already": true, "seq": s, "balance": bal }));
     }
     let new_seq = append(
         conn,
@@ -203,6 +215,17 @@ pub fn entries(
         })
         .map_err(|e| format!("db: {e}"))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("db: {e}"))
+}
+
+/// 本团队**累计已计消耗**（= 历次 `consume` 分录之和的绝对值），用于团队详情展示（SD-15）。
+pub fn consumed_total(conn: &Connection, team_id: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(-SUM(delta), 0) FROM tcoin_entries
+         WHERE team_id = ?1 AND reason = 'consume'",
+        params![team_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| format!("db: {e}"))
 }
 
 /// 租户侧：**未结算**的成员消耗（design/017 SD-14）。

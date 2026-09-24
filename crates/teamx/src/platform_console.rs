@@ -95,6 +95,9 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/my/teams/{team}/invite", post(api_my_invite))
         .route("/api/my/teams/{team}/leave", post(api_my_leave))
         .route("/api/my/letters", get(api_my_letters))
+        .route("/api/my/tcoin", get(api_my_tcoin))
+        .route("/api/my/tcoin/{team}", get(api_my_tcoin_team))
+        .route("/api/my/tcoin/{team}/settle", post(api_my_tcoin_settle))
         .route("/api/my/teams/{team}/bootstrap", post(api_my_teams_bootstrap))
         .route("/api/tenants/{team}", delete(api_tenant_destroy))
         .route("/api/tenants/{team}/invite", post(api_tenant_invite))
@@ -687,6 +690,167 @@ async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
     }
 }
 
+// ---------------------------------------------------------------------------
+// TCoin（design/017 SD-15）：余额 + 流水实页；成员看自己 / owner 看全租户
+// ---------------------------------------------------------------------------
+
+/// 我的 TCoin 概览：我参与的每个团队的**平台余额**、**我自己的分配余额**、**累计消耗**。
+async fn api_my_tcoin(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        let mine = crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())?;
+        let mut teams: Vec<Value> = Vec::new();
+        for group in ["owned", "joined"] {
+            let relation = if group == "owned" { "owner" } else { "member" };
+            for t in mine.get(group).and_then(Value::as_array).cloned().unwrap_or_default() {
+                let tid = t["team_id"].as_str().unwrap_or("").to_string();
+                if tid.is_empty() {
+                    continue;
+                }
+                let mid = t["member_id"].as_str().unwrap_or("").to_string();
+                let balance = crate::tcoin::balance(c, &tid, "tenant")?;
+                let my_balance = if mid.is_empty() {
+                    Value::Null
+                } else {
+                    json!(crate::tcoin::balance(c, &tid, &format!("member:{mid}"))?)
+                };
+                teams.push(json!({
+                    "team_id": tid,
+                    "team_name": t["team_name"].clone(),
+                    "relation": relation,
+                    "member_id": mid,
+                    "balance": balance,
+                    "my_balance": my_balance,
+                    "consumed_total": crate::tcoin::consumed_total(c, &tid)?,
+                    "warning": if balance < 0 { "余额为负（欠费，v1 不阻断）" }
+                               else if balance == 0 { "余额为 0" } else { "" },
+                }));
+            }
+        }
+        // 全局流水（跨我的团队），供实页顶部「最近动态」
+        let mut recent: Vec<Value> = Vec::new();
+        for t in &teams {
+            let tid = t["team_id"].as_str().unwrap_or("");
+            for mut e in crate::tcoin::entries(c, tid, None, 20)? {
+                e["team_id"] = json!(tid);
+                e["team_name"] = t["team_name"].clone();
+                recent.push(e);
+            }
+        }
+        recent.sort_by(|a, b| b["seq"].as_i64().cmp(&a["seq"].as_i64()));
+        recent.truncate(30);
+        Ok(json!({ "ok": true, "rate": crate::tcoin::TCOIN_PER_USD, "teams": teams, "recent": recent }))
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 单团队 TCoin 明细：平台总账流水 + 成员余额 + 租户侧未结算用量（经自动通道）。
+async fn api_my_tcoin_team(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        // 归属校验：只能看自己参与的团队（成员看自己 / owner 看全租户 SD-15）
+        let mine = crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())?;
+        let mut relation = "";
+        for (g, r) in [("owned", "owner"), ("joined", "member")] {
+            if mine
+                .get(g)
+                .and_then(Value::as_array)
+                .map(|xs| xs.iter().any(|x| x["team_id"].as_str() == Some(team.as_str())))
+                .unwrap_or(false)
+            {
+                relation = r;
+            }
+        }
+        if relation.is_empty() {
+            return Err("not a member of this team".to_string());
+        }
+        let mut ov = crate::provision::tcoin_overview(c, &team, kc.as_deref(), cx.as_deref())?;
+        ov["relation"] = json!(relation);
+        ov["consumed_total"] = json!(crate::tcoin::consumed_total(c, &team)?);
+        ov["rate"] = json!(crate::tcoin::TCOIN_PER_USD);
+        // owner：附各成员分配余额
+        if relation == "owner" {
+            let mut alloc: Vec<Value> = Vec::new();
+            let mut stmt = c
+                .prepare(
+                    "SELECT account, COALESCE(SUM(delta),0) bal FROM tcoin_entries
+                     WHERE team_id = ?1 AND account LIKE 'member:%' GROUP BY account ORDER BY bal DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![team], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for row in rows {
+                let (acct, bal) = row.map_err(|e| e.to_string())?;
+                alloc.push(json!({ "member_id": acct.trim_start_matches("member:"), "balance": bal }));
+            }
+            ov["allocations"] = json!(alloc);
+        }
+        Ok(ov)
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// owner 结算：拉取租户侧未结算消耗，写入平台总账（两级账本对账动作 SD-14）。
+async fn api_my_tcoin_settle(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        // owner-only
+        let owned = crate::platform::owned_teams(c, &uid).unwrap_or_default();
+        if !owned.iter().any(|t| t == &team) {
+            return Err("only the owner can settle this team".to_string());
+        }
+        crate::provision::settle_team_tcoin(c, &team, kc.as_deref(), cx.as_deref())
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
 /// 成员名册（design/016 SD-12）：owner 只读，租户侧裁剪（无凭据）。
 async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
     if let Err(r) = guard(&ctx, &headers) { return r; }
@@ -1201,7 +1365,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <a onclick="openMyRequests()">我的申请</a>
         <a id="miPending" onclick="openPending()" style="display:none">待我审批</a>
         <div class="sep"></div>
-        <a class="dim" title="未启用">TCoin（未启用）</a>
+        <a id="miTcoin" onclick="openTcoin()">TCoin</a>
         <a class="dim" title="未启用">credit（未启用）</a>
         <a onclick="alert('当前改密请用 CLI：teamx platform user set-password --user-id <id>')">设置</a>
         <div class="sep"></div>
@@ -1325,6 +1489,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <pre class="out muted" id="svcOut"></pre>
   </div>
 
+  </div>
+  <div class="tabpage" id="tab-tcoin" style="display:none">
+  <div class="panel">
+    <h2>TCoin 余额 <span class="tag">1 TCoin = 0.001 USD</span></h2>
+    <div class="pc-meta" style="margin-bottom:8px"><span>平台赠送额度；消耗按 LLM tokens 折算（唯一计量源）。<b>v1 只记账不阻断</b> —— 余额不足仅提示。</span></div>
+    <div id="tcWarn"></div>
+    <div class="split">
+      <div class="split-list" id="tcList"><div class="detail-empty">加载中…</div></div>
+      <div class="split-detail" id="tcDetail"><div class="detail-empty">← 选择左侧团队查看流水</div></div>
+    </div>
+  </div>
+  <div class="panel"><h2>我的最近动态</h2>
+    <table><thead><tr><th>时间</th><th>团队</th><th>变动</th><th>原因</th></tr></thead><tbody id="tcRecent"></tbody></table>
+  </div>
   </div>
   <div class="tabpage" id="tab-platform" style="display:none">
   <div class="panel"><h2>平台 token</h2><table><thead><tr><th>id</th><th>state</th><th>created</th><th>redeemed_by</th></tr></thead><tbody id="tokens"></tbody></table></div>
@@ -1517,6 +1695,8 @@ async function openMineDetail(id,kind,el){
       <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>
       <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
       <div id="ownerLetter_${short}"></div>
+      <h2 style="margin-top:12px">TCoin <span class="tag">本团队累计消耗</span></h2>
+      <div id="tcTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
       <div id="roster_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">邀请成员</h2>
@@ -1529,6 +1709,7 @@ async function openMineDetail(id,kind,el){
       <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}','${esc(t.team_name||'')}')">回收租户</button></div>`;
     loadOwnerLetter(id);
     loadRoster(id);
+    loadTeamTcoin(id);
   }else{
     box.innerHTML=`
       <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
@@ -1541,6 +1722,66 @@ async function openMineDetail(id,kind,el){
         <span class="muted">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</span></div>`;
   }
 }
+// ---- TCoin（design/017 SD-15：用户名菜单实页 + 团队详情累计） ----
+function openTcoin(){showTab('tcoin');loadTcoin()}
+async function loadTcoin(){
+  const list=document.getElementById('tcList'), warn=document.getElementById('tcWarn');
+  const d=await jget('/api/my/tcoin');
+  if(!d.ok){list.innerHTML='<div class="detail-empty">'+esc(d.error||'')+'</div>';return}
+  const xs=d.teams||[];
+  warn.innerHTML=xs.filter(t=>t.warning).length?('<div class="panel" style="border-left:3px solid #E6A23C;background:#fdf3e7"><b>提示</b>：'+
+    xs.filter(t=>t.warning).map(t=>esc(t.team_name||t.team_id)+' — '+esc(t.warning)).join('；')+
+    '<div class="muted">v1 只记账不阻断：余额不足不会停止任何操作。</div></div>'):'';
+  list.innerHTML=xs.length?xs.map(t=>`<div class="row-item" onclick="openTcoinTeam('${esc(t.team_id)}',this)">
+    <div style="flex:1"><div><b>${esc(t.team_name||t.team_id)}</b> <span class="tag-i">${t.relation==='owner'?'Owner':'成员'}</span></div>
+      <div class="muted">余额 <b>${t.balance}</b> TCoin · 累计消耗 ${t.consumed_total}${t.my_balance==null?'':' · 我的分配 '+t.my_balance}</div></div>
+    ${t.warning?'<span class="pill orange">'+esc(t.warning)+'</span>':''}</div>`).join(''):
+    '<div class="detail-empty">还没有参与任何团队<br><br><button class="btn btn-sm" onclick="showTab(\'mine\')">去我的团队</button></div>';
+  const rec=d.recent||[];
+  document.getElementById('tcRecent').innerHTML=rec.length?rec.map(e=>`<tr><td>${esc((e.at||'').slice(0,16).replace('T',' '))}</td><td>${esc(e.team_name||e.team_id||'')}</td>
+    <td style="color:${e.delta<0?'#F56C6C':'#4e9a2e'}">${e.delta>0?'+':''}${e.delta}</td><td>${esc(e.reason)}${e.ref?' <code>'+esc(e.ref)+'</code>':''}</td></tr>`).join(''):
+    '<tr><td colspan="4" class="muted">暂无流水</td></tr>';
+}
+async function openTcoinTeam(id,el){
+  if(typeof markSel==='function')markSel(el);
+  const box=document.getElementById('tcDetail');
+  box.innerHTML='<div class="detail-empty">加载中…</div>';
+  const d=await jget('/api/my/tcoin/'+encodeURIComponent(id));
+  if(!d.ok){box.innerHTML='<div class="detail-empty">'+esc(d.error||'')+'</div>';return}
+  const us=d.usage||{}; const ms=us.members||[];
+  box.innerHTML=`<div class="team-head"><h3>${esc(id)}</h3><span class="pill">${esc(d.relation||'')}</span></div>
+    <div class="pc-meta"><span>余额 <b>${d.balance}</b> TCoin</span><span>累计消耗 <b>${d.consumed_total}</b></span></div>
+    ${d.warning?'<div class="pill orange">'+esc(d.warning)+'</div>':''}
+    <h2 style="margin-top:12px">未结算用量 <span class="tag">来自租户 activity（唯一计量源）</span></h2>
+    ${us.ok===false?'<div class="muted">租户侧不可达：'+esc(us.error||'')+'</div>':
+      (ms.length?('<table><thead><tr><th>成员</th><th>消耗 TCoin</th><th>行数</th></tr></thead><tbody>'+
+        ms.map(m=>`<tr><td>${esc(m.member_name||m.member_id)}</td><td>${m.tcoin}</td><td>${m.rows}</td></tr>`).join('')+
+        '</tbody></table><div class="muted">合计 '+us.pending_tcoin+' TCoin（未结算，结算后计入平台总账）</div>'):'<div class="muted">无未结算消耗</div>')}
+    <div class="row" style="margin-top:8px"><button class="btn btn-sm" onclick="settleTcoin('${esc(id)}')">结算（写入平台总账）</button></div>
+    <h2 style="margin-top:12px">平台总账流水</h2>
+    <table><thead><tr><th>seq</th><th>时间</th><th>账户</th><th>变动</th><th>原因</th></tr></thead><tbody>
+    ${(d.entries||[]).map(e=>`<tr><td>${e.seq}</td><td>${esc((e.at||'').slice(0,16).replace('T',' '))}</td><td>${esc(e.account)}</td>
+      <td style="color:${e.delta<0?'#F56C6C':'#4e9a2e'}">${e.delta>0?'+':''}${e.delta}</td><td>${esc(e.reason)}${e.ref?' <code>'+esc(e.ref)+'</code>':''}</td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无流水</td></tr>'}
+    </tbody></table>
+    ${d.allocations?('<h2 style="margin-top:12px">成员分配余额</h2><table><thead><tr><th>成员</th><th>余额</th></tr></thead><tbody>'+
+      (d.allocations||[]).map(a=>`<tr><td><code>${esc((a.member_id||'').slice(0,12))}</code></td><td>${a.balance}</td></tr>`).join('')+'</tbody></table>'):''}`;
+}
+async function settleTcoin(id){
+  const r=await jpost('/api/my/tcoin/'+encodeURIComponent(id)+'/settle',{});
+  if(!r.ok){alert('结算失败：'+(r.error||''));return}
+  alert(r.consumed?('已结算 '+r.consumed+' TCoin（批次 '+r.batch+'）'):'无未结算消耗');
+  openTcoinTeam(id,null); loadTcoin();
+}
+async function loadTeamTcoin(id){
+  const short=id.slice(0,8); const el=document.getElementById('tcTeam_'+short); if(!el)return;
+  const d=await jget('/api/my/tcoin/'+encodeURIComponent(id));
+  if(!d.ok){el.innerHTML='<span class="muted">不可用：'+esc(d.error||'')+'</span>';return}
+  const us=d.usage||{};
+  el.innerHTML=`<div class="pc-meta"><span>余额 <b>${d.balance}</b> TCoin</span><span>本团队累计消耗 <b>${d.consumed_total}</b></span>
+    ${us.ok===false?'<span class="muted">租户侧不可达</span>':'<span>未结算 '+us.pending_tcoin+'</span>'}</div>
+    <div class="row"><button class="btn btn-sm" onclick="settleTcoin('${esc(id)}').then(()=>loadTeamTcoin('${esc(id)}'))">结算未用消耗</button></div>`;
+}
+
 async function loadOwnerLetter(id){
   const short=id.slice(0,8); const el=document.getElementById('ownerLetter_'+short);
   const d=await jget('/api/my/letters');
@@ -1648,6 +1889,7 @@ mod tests {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
+            "openTcoin", "loadTcoin", "settleTcoin", "tab-tcoin", "tcList", "tcDetail",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
             "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表", "加入团队",
