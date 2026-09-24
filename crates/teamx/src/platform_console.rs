@@ -446,8 +446,25 @@ async fn api_dir(
     let joinable = q.get("joinable").map(|v| v == "1" || v == "true").unwrap_or(false);
     let page = q.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1);
     let per_page = q.get("per_page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(20);
+    let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     match with_conn(&ctx, |c| {
-        crate::discovery::directory(c, query.as_deref(), sort.as_deref(), joinable, page, per_page)
+        let mut d = crate::discovery::directory(c, query.as_deref(), sort.as_deref(), joinable, page, per_page)?;
+        // 列表也要带**访问者关系**（否则列表标"可加入"、详情却没按钮 —— 用户看到自相矛盾）
+        let owned = crate::platform::owned_teams(c, &uid).map_err(|e| e.to_string())?;
+        let joined: Vec<String> = crate::discovery::joined_teams(c, &uid)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|j| j["team_id"].as_str().map(str::to_string))
+            .collect();
+        if let Some(items) = d["items"].as_array_mut() {
+            for it in items.iter_mut() {
+                let id = it["team_id"].as_str().unwrap_or("").to_string();
+                let rel = if owned.contains(&id) { "owner" } else if joined.contains(&id) { "member" } else { "none" };
+                it["relation"] = json!(rel);
+                it["can_apply"] = json!(it["joinable"] == json!(true) && rel == "none");
+            }
+        }
+        Ok::<_, String>(d)
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
@@ -1345,7 +1362,9 @@ async function loadDir(page){
   document.getElementById('dirList').innerHTML=items.length?items.map(t=>`
     <div class="row-item" data-id="${esc(t.team_id)}" onclick="openDirDetail('${esc(t.team_id)}',this)">
       <span class="ri-title">${esc(t.name)}</span>
-      ${t.joinable?'<span class="tag-j">可加入</span>':'<span class="tag-i">仅邀请</span>'}
+      ${t.relation==='owner'?'<span class="tag-i">我创建的</span>'
+        :(t.relation==='member'?'<span class="tag-i">我加入的</span>'
+          :(t.can_apply?'<span class="tag-j">可加入</span>':'<span class="tag-i">仅邀请</span>'))}
       <span class="ri-meta">${esc(t.member_count)} 人</span>
     </div>`).join('')
     : '<div class="detail-empty">没有匹配的公开团队</div>';

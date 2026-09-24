@@ -385,6 +385,17 @@ assert t.get('can_apply') is False, ('owner 不应可申请', t)" || fail "F5b: 
 $C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/teams/$F_TEAM" | python3 -c "
 import json,sys; t=json.load(sys.stdin)['team']
 assert t.get('relation')=='none' and t.get('can_apply') is True, t" || fail "F5b: 非成员应可申请"
+# F5c: 列表也带关系（owner 的团队在列表里不应标"可加入"）
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/directory" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+m=[i for i in d['items'] if i['team_id']=='$F_TEAM']
+assert m and m[0].get('relation')=='owner' and m[0].get('can_apply') is False, ('列表 owner 关系缺失', m)" || fail "F5c: 列表未带访问者关系"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/directory" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+m=[i for i in d['items'] if i['team_id']=='$F_TEAM']
+assert m and m[0].get('can_apply') is True, m" || fail "F5c: 列表非成员应可申请"
+pass "F5c 列表带访问者关系（owner 不标可加入）"
+
 pass "F5b 访问者关系：owner 不可申请、非成员可申请"
 
 # F6: 非成员 leave → 明确失败；owner 自己 leave 也失败（不是加入者）
