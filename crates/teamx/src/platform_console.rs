@@ -1282,7 +1282,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </div>
   <div id="sub-letters" style="display:none">
     <div class="panel"><h2>加入团队 <span class="tag">取件页</span></h2>
-      <div class="muted">把邀请函导入本地（<code>teamx team import</code>）即加入该团队：<b>我创建的</b>团队 → 你是 owner；<b>我加入的</b>团队 → 你是成员。</div>
+      <div class="muted">这里是你**已加入**的团队的成员邀请函（换机器/没保存时可重新取回）。<br>
+        想加入新团队 → 去「全部团队」发现并申请；你自己创建的团队不需要"加入"（见团队详情里的 owner 邀请函）。</div>
       <div id="lettersList"></div>
     </div>
   </div>
@@ -1492,6 +1493,8 @@ async function openMineDetail(id,kind,el){
       <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
       <h2 style="margin-top:12px">初始化（若尚未）</h2>
       <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，如 https://127.0.0.1:5790）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+      <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
+      <div id="ownerLetter_${short}"></div>
       <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
       <div id="roster_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">邀请成员</h2>
@@ -1502,6 +1505,7 @@ async function openMineDetail(id,kind,el){
         <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select>
         <input class="input wide" id="sum_${short}" placeholder="公开简介" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
       <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}','${esc(t.team_name||'')}')">回收租户</button></div>`;
+    loadOwnerLetter(id);
     loadRoster(id);
   }else{
     box.innerHTML=`
@@ -1514,6 +1518,14 @@ async function openMineDetail(id,kind,el){
         <button class="btn btn-sm btn-danger" onclick="leaveTeam('${esc(id)}','${esc(t.team_name||'')}')">离开团队</button>
         <span class="muted">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</span></div>`;
   }
+}
+async function loadOwnerLetter(id){
+  const short=id.slice(0,8); const el=document.getElementById('ownerLetter_'+short);
+  const d=await jget('/api/my/letters');
+  const x=(d.letters||[]).find(v=>v.team_id===id&&v.kind==='owner');
+  if(!x||!x.available){el.innerHTML='<span class="muted">尚未生成（先点上面的「初始化团队」）</span>';return}
+  el.innerHTML=`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(x.letter||'')})">复制 owner 邀请函</button>
+    <div class="muted" style="margin-top:6px">在本地执行 <code>teamx team import</code> 导入，即认领该团队的 owner 座位。</div>`;
 }
 async function loadRoster(id){
   const short=id.slice(0,8); const el=document.getElementById('roster_'+short);
@@ -1542,15 +1554,10 @@ async function leaveTeam(id,name){
 async function loadLetters(){
   const d=await jget('/api/my/letters'); const el=document.getElementById('lettersList');
   if(!d.ok){el.innerHTML='<span class="muted">'+esc(d.error||'')+'</span>';return}
-  const ls=d.letters||[];
-  const grp=(kind,title)=>{
-    const xs=ls.filter(x=>x.kind===kind);
-    if(!xs.length)return '';
-    return `<h2 style="margin-top:12px">${title}</h2><table><thead><tr><th>团队</th><th>邀请函</th></tr></thead><tbody>`+
-      xs.map(t=>`<tr><td>${esc(t.team_name||t.team_id)}</td><td>${t.available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<span class="muted">尚未生成（先初始化/等待审批生效）</span>'}</td></tr>`).join('')+
-      '</tbody></table>';
-  };
-  el.innerHTML=(grp('owner','我创建的团队（你将是 owner）')+grp('member','我加入的团队（你是成员）'))||'<div class="muted">暂无可用的邀请函</div>';
+  const xs=(d.letters||[]).filter(x=>x.kind==='member');
+  el.innerHTML=xs.length?('<table><thead><tr><th>团队</th><th>成员邀请函</th></tr></thead><tbody>'+
+    xs.map(t=>`<tr><td>${esc(t.team_name||t.team_id)}</td><td>${t.available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<span class="muted">尚未生成（等待审批生效）</span>'}</td></tr>`).join('')+
+    '</tbody></table>'):'<div class="muted">还没有加入任何团队<br><br><button class="btn btn-sm" onclick="showTab(\'all\')">去全部团队发现</button></div>';
 }
 async function createMyTeam(){
   const name=document.getElementById('ncName').value.trim(); if(!name)return;
@@ -1622,6 +1629,7 @@ mod tests {
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
             "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表", "加入团队",
+            "loadOwnerLetter", "ownerLetter_",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
