@@ -200,6 +200,24 @@ pub fn visible_to(conn: &Connection, team_id: &str, viewer_user_id: Option<&str>
     }
 }
 
+/// 访问者与该团队的关系（design/015 详情用）：`owner` / `member` / `none`。
+/// 用于前端决定是否显示「申请加入」——**已经是 owner 或成员就不该出现"加入"**。
+pub fn viewer_relation(conn: &Connection, team_id: &str, user_id: &str) -> Result<&'static str, String> {
+    if crate::platform::tenant_owned_by(conn, team_id, user_id)? {
+        return Ok("owner");
+    }
+    let approved: Option<String> = conn
+        .query_row(
+            "SELECT id FROM team_join_requests
+             WHERE team_id = ?1 AND user_id = ?2 AND status = 'approved' LIMIT 1",
+            params![team_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("db: {e}"))?;
+    Ok(if approved.is_some() { "member" } else { "none" })
+}
+
 /// 发起加入申请（SD-11）。
 ///
 /// 前置：团队 public + `join_policy=open_request` + 非成员 + 无 pending + 不在冷却期。
@@ -586,6 +604,27 @@ mod tests {
         let p = directory(&c, None, None, false, 2, 1).unwrap();
         assert_eq!(p["items"].as_array().unwrap().len(), 1);
         assert_eq!(p["page"], json!(2));
+    }
+
+    #[test]
+    fn viewer_relation_distinguishes_owner_member_none() {
+        let mut c = db();
+        seed_user(&mut c, "u-o", "ownerz");
+        seed_user(&mut c, "u-m", "memberz");
+        seed_user(&mut c, "u-n", "nonez");
+        seed_team(&c, "t-r", "public", "open_request");
+        crate::platform::tag_tenant_owner(&mut c, "t-r", "u-o").unwrap();
+        assert_eq!(viewer_relation(&c, "t-r", "u-o").unwrap(), "owner");
+        assert_eq!(viewer_relation(&c, "t-r", "u-n").unwrap(), "none");
+        c.execute(
+            "INSERT INTO team_join_requests (id, team_id, user_id, status, message, created_at, member_id)
+             VALUES ('r9','t-r','u-m','approved',NULL,'2026-01-01T00:00:00+00:00','m9')",
+            [],
+        ).unwrap();
+        assert_eq!(viewer_relation(&c, "t-r", "u-m").unwrap(), "member");
+        // pending 不算 member（仍可视为可申请？—— 由 request_join 的重复检查兜底）
+        c.execute("UPDATE team_join_requests SET status='pending' WHERE id='r9'", []).unwrap();
+        assert_eq!(viewer_relation(&c, "t-r", "u-m").unwrap(), "none");
     }
 
     #[test]

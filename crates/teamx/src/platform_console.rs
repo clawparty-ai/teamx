@@ -495,6 +495,11 @@ async fn api_dir_team(
     // 租户侧字段：**端点已配置**时经 service 车道取白名单（SD-15 租户侧裁剪）；
     // 未配置或不可达时如实说明（不假装有）。
     let mut out = base;
+    // 访问者关系（design/015：owner/member 不该看到"申请加入"）
+    let relation = with_conn(&ctx, |c| crate::discovery::viewer_relation(c, &team, &uid))
+        .unwrap_or("none");
+    out["relation"] = json!(relation);
+    out["can_apply"] = json!(out["joinable"] == json!(true) && relation == "none");
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     let meta = with_conn(&ctx, |c| {
         crate::provision::tenant_service_post_via_endpoint(
@@ -1361,7 +1366,10 @@ async function openDirDetail(id,el){
    <div class="pc-sum">${esc(t.public_summary||'（未填写简介）')}</div>
    <div class="pc-meta"><span>owner ${esc(t.owner_name||'—')}</span><span>成员 ${esc(t.member_count)}</span><span>状态 ${esc(t.state||'')}</span><span>team ${esc((t.team_id||'').slice(0,8))}</span></div>
    <div class="muted" style="margin-bottom:10px">${esc(t.tenant_meta_note||'')}</div>
-   ${t.joinable?`<div class="boot-row"><input class="input wide" id="applyMsg" placeholder="申请留言（可选）"><button class="btn btn-sm" onclick="applyJoin('${esc(t.team_id)}')">申请加入</button></div>`:'<div class="muted">该团队仅接受邀请。</div>'}`;
+   ${t.can_apply?`<div class="boot-row"><input class="input wide" id="applyMsg" placeholder="申请留言（可选）"><button class="btn btn-sm" onclick="applyJoin('${esc(t.team_id)}')">申请加入</button></div>`
+     : (t.relation==='owner'?'<div class="muted">你是该团队的 owner。</div>'
+        : (t.relation==='member'?'<div class="muted">你已加入该团队。</div>'
+           : '<div class="muted">该团队仅接受邀请。</div>'))}`;
 }
 async function applyJoin(id){
   const message=(document.getElementById('applyMsg')||{}).value||'';

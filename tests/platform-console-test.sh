@@ -359,11 +359,11 @@ import json,sys; t=json.load(sys.stdin)['team']
 assert t['joinable'] is True, t" || fail "F2: 创建时未带上发现设置"
 pass "F2 创建表单一步带发现设置（public + open_request）"
 
-# F3: Owner 邀请函取件页（未初始化 → available=false，不假装有）
+# F3: 加入团队取件页（两类信：owner / member；未初始化 → available=false，不假装有）
 $C -b /tmp/teamx-platcon-alice "$BASE/api/my/letters" | python3 -c "
 import json,sys; d=json.load(sys.stdin)
-assert d.get('ok') and isinstance(d['teams'], list), d
-m=[x for x in d['teams'] if x['team_id']=='$F_TEAM']
+assert d.get('ok') and isinstance(d['letters'], list), d
+m=[x for x in d['letters'] if x['team_id']=='$F_TEAM' and x['kind']=='owner']
 assert m and m[0]['available'] is False, ('未初始化应 available=false', d)" || fail "F3: letters 异常"
 pass "F3 Owner 邀请函取件页（未初始化时如实不可用）"
 
@@ -375,6 +375,17 @@ $C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{
 import json,sys; d=json.load(sys.stdin)
 assert d.get('ok') is not True and 'endpoint' in str(d.get('error','')), d" || fail "F5: 无端点应明确失败"
 pass "F4/F5 无租户端点时 roster/invite 明确失败（不假装）"
+
+# F5b: 详情带访问者关系；owner 看自己的团队 → 不出现"可申请"
+$C -b /tmp/teamx-platcon-alice "$BASE/api/discovery/teams/$F_TEAM" | python3 -c "
+import json,sys; t=json.load(sys.stdin)['team']
+assert t.get('relation')=='owner', ('owner 团队应 relation=owner', t)
+assert t.get('can_apply') is False, ('owner 不应可申请', t)" || fail "F5b: owner 仍显示可申请"
+# 非成员看同一团队 → relation=none 且 can_apply=true
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/teams/$F_TEAM" | python3 -c "
+import json,sys; t=json.load(sys.stdin)['team']
+assert t.get('relation')=='none' and t.get('can_apply') is True, t" || fail "F5b: 非成员应可申请"
+pass "F5b 访问者关系：owner 不可申请、非成员可申请"
 
 # F6: 非成员 leave → 明确失败；owner 自己 leave 也失败（不是加入者）
 $C -b /tmp/teamx-platcon-alice -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/my/teams/$F_TEAM/leave" | python3 -c "
