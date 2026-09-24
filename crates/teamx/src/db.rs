@@ -1227,6 +1227,8 @@ fn converge_columns(conn: &Connection) -> rusqlite::Result<()> {
     ensure_column(conn, "tenants", "visibility_projected", "TEXT NOT NULL DEFAULT ''")?;
     // owner 邀请函（bootstrap 时生成）——「Owner 邀请函」二级菜单要能**取回**它。
     ensure_column(conn, "tenants", "owner_letter", "TEXT NOT NULL DEFAULT ''")?;
+    // owner 在租户侧的座位 id（bootstrap 时确定）—— owner 自己的工作区状态要用它。
+    ensure_column(conn, "tenants", "owner_member_id", "TEXT NOT NULL DEFAULT ''")?;
     // 加入申请的交付字段（SD-11/SD-23）：批准后在租户侧建的座位 + 邀请函 + 拉 pod 结果。
     ensure_column(conn, "team_join_requests", "member_id", "TEXT")?;
     ensure_column(conn, "team_join_requests", "letter", "TEXT")?;

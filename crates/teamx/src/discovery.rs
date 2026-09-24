@@ -322,12 +322,20 @@ pub fn decide_request(
 
 /// 我加入的团队（design/016 SD-4）：已批准的申请（含团队名、我的角色来源=申请、首次加入时间）。
 pub fn joined_teams(conn: &Connection, user_id: &str) -> Result<Vec<Value>, String> {
+    // **按团队去重**（design/016 SD-4：这是"当前参与的团队"，不是申请历史）——
+    // 真机踩到：反复申请/离开会在同一团队留多条 approved，导致列表重复。
+    // 取每个团队**最新**的一条（离开后状态变 left，就不再出现）。
     let mut stmt = conn
         .prepare(
             "SELECT r.team_id, COALESCE(t.name,''), COALESCE(r.member_id,''), COALESCE(r.letter,''),
                     COALESCE(r.pod_state,''), r.created_at, r.decided_at
-             FROM team_join_requests r LEFT JOIN teams t ON t.id = r.team_id
+             FROM team_join_requests r
+             LEFT JOIN teams t ON t.id = r.team_id
              WHERE r.user_id = ?1 AND r.status = 'approved'
+               AND r.created_at = (
+                 SELECT MAX(r2.created_at) FROM team_join_requests r2
+                 WHERE r2.team_id = r.team_id AND r2.user_id = r.user_id
+               )
              ORDER BY r.decided_at DESC, r.created_at DESC",
         )
         .map_err(|e| format!("db: {e}"))?;
@@ -578,6 +586,34 @@ mod tests {
         let p = directory(&c, None, None, false, 2, 1).unwrap();
         assert_eq!(p["items"].as_array().unwrap().len(), 1);
         assert_eq!(p["page"], json!(2));
+    }
+
+    #[test]
+    fn joined_teams_dedupes_by_team_and_excludes_left() {
+        let mut c = db();
+        seed_user(&mut c, "u-j", "joiner");
+        seed_team(&c, "t-a", "public", "open_request");
+        seed_team(&c, "t-b", "public", "open_request");
+        let ins = |c: &Connection, id: &str, team: &str, status: &str, at: &str| {
+            c.execute(
+                "INSERT INTO team_join_requests (id, team_id, user_id, status, message, created_at, decided_at, decided_by, cooldown_until, member_id, letter, pod_state, pod_detail)
+                 VALUES (?1, ?2, 'u-j', ?3, NULL, ?4, ?4, NULL, NULL, ?5, NULL, NULL, NULL)",
+                params![id, team, status, at, format!("m-{id}")],
+            ).unwrap();
+        };
+        // 同一团队两条 approved（模拟反复申请）+ 另一团队一条
+        ins(&c, "r1", "t-a", "approved", "2026-01-01T00:00:00+00:00");
+        ins(&c, "r2", "t-a", "approved", "2026-02-01T00:00:00+00:00");
+        ins(&c, "r3", "t-b", "approved", "2026-01-15T00:00:00+00:00");
+        let j = joined_teams(&c, "u-j").unwrap();
+        assert_eq!(j.len(), 2, "按团队去重: {j:?}");
+        let a = j.iter().find(|x| x["team_id"] == json!("t-a")).unwrap();
+        assert_eq!(a["member_id"], json!("m-r2"), "取最新一条");
+        // 离开后（最新一条为 left）不再出现
+        ins(&c, "r4", "t-a", "left", "2026-03-01T00:00:00+00:00");
+        let j2 = joined_teams(&c, "u-j").unwrap();
+        assert_eq!(j2.len(), 1, "离开后不再出现: {j2:?}");
+        assert_eq!(j2[0]["team_id"], json!("t-b"));
     }
 
     #[test]

@@ -1194,11 +1194,12 @@ pub fn my_teams(conn: &mut Connection, user_id: &str, kubeconfig: Option<&str>, 
         let has_letter = t["owner_letter"].as_str().map(|l| !l.is_empty()).unwrap_or(false);
         t["bootstrapped"] = json!(has_letter || has_ns);
         t["owner_letter_available"] = json!(has_letter);
-        // owner 自己的工作区状态（来自批准执行链的座位）
+        // owner 自己的工作区状态：用 tenants.owner_member_id（bootstrap 座位），
+        // 回落批准执行链的座位（owner 也可能是通过申请加入别人的团队 —— 那种情况在 joined 组）
         let mid: String = conn
             .query_row(
-                "SELECT COALESCE(member_id,'') FROM team_join_requests WHERE team_id = ?1 AND user_id = ?2 AND status = 'approved' ORDER BY created_at DESC LIMIT 1",
-                params![id, user_id],
+                "SELECT COALESCE(owner_member_id,'') FROM tenants WHERE team_id = ?1",
+                params![id],
                 |r| r.get(0),
             )
             .unwrap_or_default();
@@ -1280,11 +1281,12 @@ pub fn bootstrap_my_team(
             "server_url": server_url,
         }),
     )?;
-    // 保存 owner 邀请函（design/016：Owner 邀请函二级菜单要能**取回**）
+    // 保存 owner 邀请函 + owner 座位 id（design/016：取件页 + owner 自己的工作区状态）
+    let owner_mid = out["member_id"].as_str().unwrap_or("").to_string();
     if let Some(letter) = out["letter"].as_str() {
         conn.execute(
-            "UPDATE tenants SET owner_letter = ?1 WHERE team_id = ?2",
-            params![letter, team_id],
+            "UPDATE tenants SET owner_letter = ?1, owner_member_id = ?2 WHERE team_id = ?3",
+            params![letter, owner_mid, team_id],
         )
         .map_err(|e| format!("db: {e}"))?;
     }
