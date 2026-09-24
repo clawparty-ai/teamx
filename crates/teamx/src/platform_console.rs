@@ -983,6 +983,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .tab:hover{color:#4A90E5}
  .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
  .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
+ .usermenu{position:relative;display:inline-block}
+ .usermenu-panel{display:none;position:absolute;right:0;top:130%;background:#fff;border:1px solid #EBEEF5;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.12);min-width:190px;padding:6px 0;z-index:50}
+ .usermenu-panel a{display:block;padding:8px 16px;font-size:13px;color:#333;text-decoration:none;cursor:pointer}
+ .usermenu-panel a:hover{background:#F2F6FC;color:#4A90E5}
+ .usermenu-panel .sep{border-top:1px solid #EBEEF5;margin:4px 0}
+ .usermenu-panel .dim{color:#C0C4CC;cursor:default}
+ .pubcard{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:16px 18px;margin-bottom:12px;display:flex;gap:14px;align-items:flex-start}
+ .pubcard .pc-main{flex:1;min-width:0}
+ .pubcard h3{margin:0 0 4px;font-size:14px}
+ .pubcard .pc-sum{color:#909399;font-size:13px;margin-bottom:6px;word-break:break-word}
+ .pubcard .pc-meta{font-size:12px;color:#909399;display:flex;gap:14px;flex-wrap:wrap}
+ .tag-j{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12px;background:#E8F8E8;color:#67C23A;margin-left:6px}
+ .tag-i{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12px;background:#F2F6FC;color:#909399;margin-left:6px}
+ .pager{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px;color:#909399}
  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px}
  @media (max-width:900px){.cards{grid-template-columns:1fr}}
  .stat-card{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:18px 20px;display:flex;align-items:center;gap:16px}
@@ -1020,7 +1034,23 @@ const INDEX_HTML: &str = r#"<!doctype html>
  a.link:hover{text-decoration:underline}
 </style></head>
 <body>
-<header><div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Cloud</span><span class="logo-sub">平台控制台</span></div><div class="head-right"><span id="who"></span><button class="btn btn-sm" id="logoutBtn" style="display:none" onclick="logout()">退出</button></div></header>
+<header><div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Cloud</span><span class="logo-sub">平台控制台</span></div>
+  <div class="head-right">
+    <div class="usermenu" id="usermenu" style="display:none">
+      <button class="btn btn-sm" onclick="toggleMenu(event)"><span id="who"></span> ▾</button>
+      <div class="usermenu-panel" id="usermenuPanel">
+        <a onclick="openMyRequests()">我的申请</a>
+        <a id="miPending" onclick="openPending()" style="display:none">待我审批</a>
+        <div class="sep"></div>
+        <a class="dim" title="未启用">TCoin（未启用）</a>
+        <a class="dim" title="未启用">credit（未启用）</a>
+        <a onclick="alert('当前改密请用 CLI：teamx platform user set-password --user-id <id>')">设置</a>
+        <div class="sep"></div>
+        <a onclick="logout()">退出</a>
+      </div>
+    </div>
+  </div>
+</header>
 <div class="main" id="loginWrap">
   <div class="card" id="login">
     <div class="icon">☁️</div>
@@ -1042,11 +1072,32 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
 <div class="app" id="app" style="display:none">
   <nav class="tabs">
-    <button class="tab active" data-tab="mine" onclick="showTab('mine')">我的团队</button>
+    <button class="tab active" data-tab="all" onclick="showTab('all')">全部团队</button>
+    <button class="tab" data-tab="mine" onclick="showTab('mine')">我的团队</button>
     <button class="tab op-only" data-tab="tenants" onclick="showTab('tenants')">租户管理</button>
     <button class="tab" data-tab="members" onclick="showTab('members')">成员操作</button>
     <button class="tab op-only" data-tab="platform" onclick="showTab('platform')">平台管理</button>
   </nav>
+  <div class="tabpage" id="tab-all">
+    <div class="panel"><h2>全部团队 <span class="tag">公开 · 可发现</span></h2>
+      <div class="row">
+        <input class="input" id="dQuery" placeholder="搜索团队名或简介" onkeydown="if(event.key==='Enter'){loadDir(1)}">
+        <select class="input" id="dSort" onchange="loadDir(1)">
+          <option value="created">最新创建</option>
+          <option value="members">成员最多</option>
+        </select>
+        <label class="muted"><input type="checkbox" id="dJoinable" onchange="loadDir(1)"> 只看可加入</label>
+        <button class="btn btn-sm" onclick="loadDir(1)">搜索</button>
+      </div>
+      <div id="dirList"></div>
+      <div class="pager" id="dirPager"></div>
+    </div>
+    <div class="panel" id="dirDetail" style="display:none"><div id="dirDetailBody"></div></div>
+  </div>
+  <div class="tabpage" id="tab-reqs" style="display:none">
+    <div class="panel" id="pendPanel" style="display:none"><h2>待我审批 <span class="tag">owner</span></h2><div id="pendBody"></div></div>
+    <div class="panel"><h2>我的申请</h2><div id="mineBody"></div></div>
+  </div>
   <div class="tabpage" id="tab-mine">
   <div class="cards" id="mineCards"></div>
   <div class="panel"><h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
@@ -1090,6 +1141,79 @@ async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function toggleMenu(e){e.stopPropagation();const p=document.getElementById('usermenuPanel');p.style.display=p.style.display==='block'?'none':'block'}
+document.addEventListener('click',()=>{const p=document.getElementById('usermenuPanel');if(p)p.style.display='none'});
+function openMyRequests(){showTab('reqs');loadMineReqs();loadPendingReqs()}
+function openPending(){showTab('reqs');loadPendingReqs();loadMineReqs()}
+async function loadDir(page){
+  const q=encodeURIComponent(document.getElementById('dQuery').value.trim());
+  const sort=document.getElementById('dSort').value;
+  const j=document.getElementById('dJoinable').checked?'1':'0';
+  const d=await jget(`/api/discovery/directory?query=${q}&sort=${sort}&joinable=${j}&page=${page||1}&per_page=20`);
+  if(!d.ok){document.getElementById('dirList').innerHTML=`<div class="muted">加载失败：${esc(d.error||'')}</div>`;return}
+  const items=d.items||[];
+  document.getElementById('dirList').innerHTML=items.length?items.map(t=>`
+    <div class="pubcard"><div class="pc-main">
+      <h3>${esc(t.name)}${t.joinable?'<span class="tag-j">可申请加入</span>':'<span class="tag-i">仅邀请</span>'}</h3>
+      <div class="pc-sum">${esc(t.public_summary||'（未填写简介）')}</div>
+      <div class="pc-meta"><span>成员 ${esc(t.member_count)}</span><span>创建 ${esc((t.created_at||'').slice(0,10))}</span></div>
+    </div><div><button class="btn btn-sm" onclick="openDirDetail('${esc(t.team_id)}')">查看</button></div></div>`).join('')
+    : '<div class="pubcard"><div class="muted">没有匹配的公开团队</div></div>';
+  const total=d.total||0, per=d.per_page||20, cur=d.page||1, pages=Math.max(1,Math.ceil(total/per));
+  document.getElementById('dirPager').innerHTML=`共 ${total} 个 · 第 ${cur}/${pages} 页
+    <button class="btn btn-sm" ${cur<=1?'disabled':''} onclick="loadDir(${cur-1})">上一页</button>
+    <button class="btn btn-sm" ${cur>=pages?'disabled':''} onclick="loadDir(${cur+1})">下一页</button>`;
+}
+async function openDirDetail(id){
+  const d=await jget('/api/discovery/teams/'+encodeURIComponent(id));
+  const el=document.getElementById('dirDetail'), body=document.getElementById('dirDetailBody');
+  el.style.display='block';
+  if(!d.ok){body.innerHTML=`<div class="muted">${esc(d.error||'不可见')}</div>`;return}
+  const t=d.team||{};
+  body.innerHTML=`<div class="team-head"><h3>${esc(t.name)}</h3>${t.joinable?'<span class="tag-j">可申请加入</span>':'<span class="tag-i">仅邀请</span>'}<span class="team-actions"><button class="btn btn-sm" onclick="document.getElementById('dirDetail').style.display='none'">关闭</button></span></div>
+   <div class="pc-sum">${esc(t.public_summary||'（未填写简介）')}</div>
+   <div class="pc-meta"><span>owner ${esc(t.owner_name||'—')}</span><span>成员 ${esc(t.member_count)}</span><span>状态 ${esc(t.state||'')}</span></div>
+   <div class="muted" style="margin-top:8px">${esc(t.tenant_meta_note||'')}</div>
+   ${t.joinable?`<div class="boot-row"><input class="input wide" id="applyMsg" placeholder="申请留言（可选）"><button class="btn btn-sm" onclick="applyJoin('${esc(t.team_id)}')">申请加入</button></div>`:''}`;
+}
+async function applyJoin(id){
+  const message=(document.getElementById('applyMsg')||{}).value||'';
+  const r=await jpost('/api/discovery/teams/'+encodeURIComponent(id)+'/apply',{message});
+  if(!r.ok){alert(r.error);return}
+  alert('申请已提交，等待团队 owner 审批。可在「我的申请」查看状态。');
+  document.getElementById('dirDetail').style.display='none';
+}
+async function loadMineReqs(){
+  const d=await jget('/api/discovery/mine');
+  const rows=(d.requests||[]);
+  const zh={pending:'待审批',approved:'已批准',rejected:'已拒绝',withdrawn:'已撤回'};
+  document.getElementById('mineBody').innerHTML=rows.length?`<table><thead><tr><th>团队</th><th>状态</th><th>申请时间</th><th></th></tr></thead><tbody>`+
+    rows.map(r=>`<tr><td>${esc(r.team_name||r.team_id)}</td><td><span class="pill">${esc(zh[r.status]||r.status)}</span>${r.status==='rejected'&&r.cooldown_until?`<div class="muted" style="font-size:12px">冷却至 ${esc((r.cooldown_until||'').slice(0,10))}</div>`:''}</td><td class="muted">${esc((r.created_at||'').slice(0,16).replace('T',' '))}</td><td>${r.status==='pending'?`<button class="btn btn-sm" onclick="withdrawReq('${esc(r.request_id)}')">撤回</button>`:''}${r.status==='approved'?'<span class="muted">邀请函由 owner 侧交付</span>':''}</td></tr>`).join('')+`</tbody></table>`
+    :'<div class="muted">还没有申请记录</div>';
+}
+async function withdrawReq(id){
+  const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/withdraw',{});
+  if(!r.ok){alert(r.error);return}
+  loadMineReqs();
+}
+async function loadPendingReqs(){
+  const d=await jget('/api/discovery/pending');
+  const rows=(d.requests||[]);
+  const panel=document.getElementById('pendPanel'), body=document.getElementById('pendBody');
+  document.getElementById('miPending').style.display=rows.length?'block':'none';
+  if(!rows.length){panel.style.display='none';return}
+  panel.style.display='block';
+  body.innerHTML=`<table><thead><tr><th>团队</th><th>申请人</th><th>留言</th><th></th></tr></thead><tbody>`+
+    rows.map(r=>`<tr><td>${esc(r.team_name||r.team_id)}</td><td>${esc(r.applicant_name||r.applicant_user_id)}</td><td class="muted">${esc(r.message||'—')}</td>
+      <td><button class="btn btn-sm" onclick="decideReq('${esc(r.request_id)}',true)">批准</button>
+          <button class="btn btn-sm btn-danger" onclick="decideReq('${esc(r.request_id)}',false)">拒绝</button></td></tr>`).join('')+`</tbody></table>`;
+}
+async function decideReq(id,approve){
+  const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/decide',{approve});
+  if(!r.ok){alert(r.error);return}
+  alert(approve?'已批准（邀请函与成员工作区见后续步骤）':'已拒绝（申请人 7 天后可再次申请）');
+  loadPendingReqs();loadMineReqs();
+}
 function showTab(name){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));document.querySelectorAll('.tabpage').forEach(p=>p.style.display=p.id==='tab-'+name?'block':'none')}
 async function copyLetter(){const t=document.getElementById('letterOut').textContent;if(!t){alert('暂无邀请函，先点"初始化团队"');return}try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
@@ -1097,11 +1221,11 @@ async function boot(){
   const me=await jget('/api/me');
   if(!me.ok){document.getElementById('loginWrap').style.display='flex';document.getElementById('app').style.display='none';document.getElementById('oauthState').textContent=me.github_oauth?'可用':'未配置（TEAMX_GITHUB_CLIENT_ID/SECRET）';document.getElementById('oauthBtn').style.display=me.github_oauth?'block':'none';return}
   document.getElementById('loginWrap').style.display='none';document.getElementById('app').style.display='block';
-  document.getElementById('who').textContent=me.who||'';
-  document.getElementById('logoutBtn').style.display='inline-block';
+  document.getElementById('who').textContent=(me.who||'').replace('user:','');
+  document.getElementById('usermenu').style.display='inline-block';
   const isOp=(me.who||'').indexOf('operator')===0;
   document.querySelectorAll('.tab.op-only').forEach(b=>b.style.display=isOp?'':'none');
-  showTab('mine');
+  showTab('all');await loadDir(1);
   await loadMine();await loadTenants();await loadPlatform();
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
@@ -1114,8 +1238,21 @@ document.getElementById('mineCards').innerHTML=
 `<div class="stat-card"><div class="stat-icon orange">📊</div><div><div class="stat-label">租户配额</div><div class="stat-value">${d.used}/${d.quota}</div></div></div>`+
 `<div class="stat-card"><div class="stat-icon green">👤</div><div><div class="stat-label">当前身份</div><div class="stat-value" style="font-size:15px">${esc(me)}</div></div></div>`;
 document.getElementById('quota').textContent=`配额 ${d.used}/${d.quota}`;
-document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${esc(t.team_id)}</code></span><span>ns <code>${esc(t.namespace)}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span><span>${esc(t.server_image||'')}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
+document.getElementById('mine').innerHTML=ts.map(t=>{const short=t.team_id.slice(0,8);return `<div class="team-card"><div class="team-head"><h3>${esc(t.team_name||'未命名团队')}</h3><span class="pill">自助租户</span><span class="team-actions"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></span></div><div class="team-meta"><span>team <code>${esc(t.team_id)}</code></span><span>ns <code>${esc(t.namespace)}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span><span>${esc(t.server_image||'')}</span></div><div class="boot-row"><input class="input" id="bsUrl_${short}" placeholder="租户 endpoint（O-5，形如 https://host:5783）"><button class="btn btn-sm" onclick="bootstrapTeam('${t.team_id}')">初始化团队</button></div>
+      <div class="boot-row"><select class="input" id="vis_${short}"><option value="private">私有（不可发现）</option><option value="public">公开（可被发现在全部团队）</option></select>
+        <select class="input" id="jp_${short}"><option value="invite_only">仅邀请</option><option value="open_request">允许申请加入</option></select>
+        <input class="input wide" id="sum_${short}" placeholder="公开简介（≤200 字）"><button class="btn btn-sm" onclick="saveDiscover('${t.team_id}')">保存发现设置</button></div></div>`}).join('')||'<div class="team-card"><div class="empty"><div class="big">🌱</div>还没有团队，在上面创建一个吧<div class="muted">配额内免费建，server 由平台自动拉起</div></div></div>'}catch(e){}}
 async function createMyTeam(){const name=document.getElementById('myName').value.trim();if(!name)return;const r=await jpost('/api/my/teams',{name});if(!r.ok){alert(r.error);return}await loadMine();await loadTenants();await loadPlatform();alert('团队已创建（空账本）。server 启动后填 endpoint 点"初始化团队"。')}
+async function saveDiscover(team){
+  const short=team.slice(0,8);
+  const visibility=document.getElementById('vis_'+short).value;
+  const join_policy=document.getElementById('jp_'+short).value;
+  const summary=document.getElementById('sum_'+short).value;
+  const r=await jpost('/api/discovery/teams/'+encodeURIComponent(team)+'/settings',{visibility,join_policy,summary});
+  if(!r.ok){alert(r.error);return}
+  alert('已保存：'+(visibility==='public'?'公开':'私有')+' / '+(join_policy==='open_request'?'允许申请':'仅邀请'));
+  loadDir(1);
+}
 async function bootstrapTeam(team){team=team||'';const short=team.slice(0,8);const urlEl=document.getElementById('bsUrl_'+short);const server_url=(urlEl?urlEl.value:'').trim();if(!team||!server_url){alert('填该团队卡片上的 endpoint');return}const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});if(!r.ok){alert(r.error);return}const b=r.bootstrap||{};document.getElementById('letterOut').textContent=b.letter||JSON.stringify(r,null,2);await loadMine()}
 async function loadTenants(){const d=await jget('/api/tenants');const tb=document.getElementById('tenants');tb.innerHTML=(d.tenants||[]).map(t=>`<tr><td><code>${esc(t.team_id)}</code></td><td><code>${esc(t.namespace)}</code></td><td><code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></td><td>${esc(t.server_image||'—')}</td><td><button class="btn btn-sm btn-danger" onclick="destroyTenant('${t.team_id}')">回收</button></td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无租户</td></tr>'}
 async function loadPlatform(){const [t,a,au]=await Promise.all([jget('/api/tokens'),jget('/api/admins'),jget('/api/audit')]);
@@ -1138,7 +1275,7 @@ mod tests {
     fn index_html_has_platform_surfaces() {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
-            "pwForm",
+            "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }
