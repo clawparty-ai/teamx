@@ -125,3 +125,34 @@ updated_at: 2026-09-24（Shared Understanding 已确认，session 完成）
 - `design/014`（§5 控制台分层；§9.6 实现状态）
 - `docs/04-design-team-invite.cn.md`（邀请制现状）
 - `docs/goal-v1.cn.md`（join/approve 状态机）
+
+## 实现状态（2026-09-24，真机验证）
+
+范围：design/015 定稿的「全部团队」+ 加入机制 + 可见性投影。**已实现并真集群验证**。
+
+| 能力 | 实现 | 真机验证 |
+|---|---|---|
+| 可见性/加入策略/公开简介 | `teams.visibility\|join_policy\|public_summary`（SCHEMA + converge 幂等补列，默认 private/invite_only） | ✅ 封闭枚举拒绝非法值 |
+| 「全部团队」名录 | `discovery::directory`（**只读平台库**，ADR-0001）：搜索/排序/筛选/分页 | ✅ 34 断言 E2E + 活体 |
+| 详情 | 平台元数据 + 经 service 车道取租户侧 **`public.team_meta` 白名单** | ✅ 真集群返回 name/state/created/member_count/goal；**无 invite_token/session_key/goal 正文** |
+| 申请加入 | `team_join_requests`（单 pending 部分唯一索引）+ 申请/撤回/审批 + 7 天冷却 | ✅ E2E E1–E9 |
+| **批准执行链** | 租户侧建座位（`team.invite`, auto_approve, 绑定申请人平台用户）→ 平台侧拉 member Pod | ✅ **真集群全链**：批准 → member `f8665a19…` + 邀请函(2801B) → 集群内 member Pod(Init) + **PVC Bound 30Gi** + **letter Secret** → 申请人「我的申请」可见并复制 |
+| 可见性投影 | `project_visibility`（平台库为准 → k8s `teamx.io/visibility` label，幂等）+ `reconcile_visibility` | ✅ 真集群 private/public 双向打标一致，`visibility_projected` 同步 |
+| 租户端点 | `tenants.endpoint` + `tenant set-endpoint`（M3 锚定校验）+ `tenant_service_post_via_endpoint`（未配置明确报错） | ✅ 使能详情与执行链；O-5 未定案下的 operator 显式路径 |
+| UI | 「全部团队」Tab（**list→detail 分栏**，对齐成员端 discussion/documents）+ 详情/申请 + 用户名菜单（我的申请/待审批/占位/退出）+ 团队发现设置 | ✅ 页面活体 |
+
+### 真机踩到并修掉的 4 个问题（均已在 main）
+
+1. **service 车道白名单必须用完整 RPC 方法名**：白名单写短名 `invite`，dispatch 认
+   `team.invite` → 平台邀请永远 `unknown rpc method 'invite'`。此前 C7 负例只断言"失败"，
+   掩盖了该 bug（`c4f939e`）。
+2. **租户侧须接受平台用户 id 作为引用**（D8）：`team.invite --user <平台用户id>` 要求租户库
+   有该 users 行 → 批准执行链被 "user not found" 卡住。改为按引用登记（幂等）（`e6dfeaa`）。
+3. **投影 SQL 列名错误**：`n.team_id = t.team_id`（teams 无 team_id 列）→ 投影永远失败
+   （`501fc3c`）。
+4. **CLI 的 kubeconfig 只认 flag、不读 env**（与平台控制台同类问题）：真机需显式
+   `--kubeconfig`。控制台侧已支持 env 回退（`1f11aa6`）；CLI 侧沿用 flag（未改，记录在案）。
+
+另：**租户 server 镜像必须随二进制重建**才能生效（Pod 跑旧镜像 → 白名单/引用修复不生效），
+真机每一步都需 `rollout restart`；控制台与集群同机时靠 **loopback port-forward** 提供
+`tenants.endpoint`（O-5 未定案前的可行路径）。
