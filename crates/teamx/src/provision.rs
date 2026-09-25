@@ -1336,6 +1336,43 @@ pub fn credit_view(conn: &mut Connection, team_id: &str) -> Result<Value, String
     }))
 }
 
+/// 为**既有租户**补发/刷新 owner 邀请函并存进平台库（`tenants.owner_letter`）。
+///
+/// 用途：① 迁移来的租户（历史上没有 owner 信）② 信丢失/需要换端点。
+/// 经 service 车道让租户为**指定 owner 席位**重发（同 CA、不新建席位）。
+pub fn refresh_owner_letter(
+    conn: &mut Connection,
+    team_id: &str,
+    owner_member_id: &str,
+    server_url: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let resp = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "team.reissue-letter",
+        json!({ "team": team_id, "member": owner_member_id, "server_url": server_url }),
+    )?;
+    let letter = resp
+        .get("letter")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tenant returned no letter".to_string())?
+        .to_string();
+    let n = conn
+        .execute(
+            "UPDATE tenants SET owner_letter = ?1, owner_member_id = ?2 WHERE team_id = ?3",
+            rusqlite::params![letter, owner_member_id, team_id],
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    Ok(json!({
+        "ok": true, "team_id": team_id, "owner_member_id": owner_member_id,
+        "server_url": server_url, "letter_len": letter.len(), "updated_rows": n,
+    }))
+}
+
 /// **云 member** 编排（design/021 §D/A）：把既有席位变成云上 member Pod。
 ///
 /// 1. 经 service 车道让**租户 server**为该席位重发邀请函（同一 CA，**不新建席位**）；
@@ -1548,7 +1585,11 @@ pub fn my_teams(conn: &mut Connection, user_id: &str, kubeconfig: Option<&str>, 
         let id = t["team_id"].as_str().unwrap_or("").to_string();
         let has_ns = t["namespace"].as_str().map(|n| !n.is_empty()).unwrap_or(false);
         let has_letter = t["owner_letter"].as_str().map(|l| !l.is_empty()).unwrap_or(false);
-        t["bootstrapped"] = json!(has_letter || has_ns);
+        // 「已初始化」= **owner 邀请函已生成**（首队自举完成）。
+        // 不能用 has_ns：自助建团队时 namespace 先建好、但还没自举 → 会误判为已初始化、
+        // 从而把「初始化团队」按钮藏掉，新团队就永远进不去。
+        t["bootstrapped"] = json!(has_letter);
+        t["namespace_ready"] = json!(has_ns);
         t["owner_letter_available"] = json!(has_letter);
         // owner 自己的工作区状态：用 tenants.owner_member_id（bootstrap 座位），
         // 回落批准执行链的座位（owner 也可能是通过申请加入别人的团队 —— 那种情况在 joined 组）

@@ -2712,6 +2712,22 @@ pub enum TenantCmd {
         #[arg(long)]
         context: Option<String>,
     },
+    /// Re-issue + store the **owner invitation letter** for an existing tenant
+    /// (用于迁移来的租户或信丢失；同 CA、不新建席位)
+    OwnerLetter {
+        #[arg(long)]
+        team: String,
+        /// owner 席位 id（该团队 members 里的 owner）
+        #[arg(long)]
+        member: String,
+        /// 写进信的端点（如 https://yongyan.teamx.beer）
+        #[arg(long)]
+        server_url: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
     /// Set the tenant server's reachable endpoint (O-5: needed for detail/service-lane calls;
     /// e.g. a same-host port-forward `https://127.0.0.1:5790`). Empty value clears it.
     SetEndpoint {

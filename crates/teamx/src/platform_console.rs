@@ -2496,9 +2496,12 @@ async function openMineDetail(id,kind,el){
       <div class="team-head"><h3>${esc(t.team_name||id)}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
       <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
       <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
+      ${t.bootstrapped ? `
+      <h2 style="margin-top:12px">初始化</h2>
+      <div class="muted">✅ 已初始化（团队数据就绪，owner 邀请函见下）——迁移继承或已自举的团队无需再初始化。</div>` : `
       <h2 style="margin-top:12px">初始化（若尚未）</h2>
       <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（留空 = 平台自动连接）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
-      <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>
+      <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>`}
       <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
       <div id="ownerLetter_${short}"></div>
       <h2 style="margin-top:12px">Credit <span class="tag">团队信用（派生）</span></h2>

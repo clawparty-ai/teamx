@@ -749,6 +749,17 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 )
                 .map_err(AppError)?
             }
+            TenantCmd::OwnerLetter { team, member, server_url, kubeconfig, context } => {
+                crate::provision::refresh_owner_letter(
+                    conn,
+                    team,
+                    member,
+                    server_url,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                )
+                .map_err(AppError)?
+            }
             TenantCmd::SetEndpoint { team, endpoint } => {
                 crate::provision::set_tenant_endpoint(conn, team, endpoint).map_err(AppError)?
             }
