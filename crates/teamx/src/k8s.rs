@@ -238,6 +238,11 @@ pub fn pvc_name(member_id: &str) -> String {
     format!("teamx-ws-{}", short_id(member_id))
 }
 
+/// 平台统一模型凭据的 Secret 名（namespace 内共享；由 `provision_cloud_member` 预置）。
+pub fn llm_secret_name() -> String {
+    "teamx-llm".to_string()
+}
+
 pub fn secret_name(member_id: &str) -> String {
     format!("teamx-letter-{}", short_id(member_id))
 }
@@ -342,6 +347,8 @@ pub fn member_pod_manifest(
     let rot = rotation_secret_name(member_id);
     let image = member_image();
     let (cpu_req, cpu_lim) = default_resources();
+    // 平台统一的模型凭据（opencode zen / muse free），由 provision_cloud_member 预置到该 namespace
+    let llm_secret = llm_secret_name();
     format!(
         r#"apiVersion: v1
 kind: Pod
@@ -382,6 +389,15 @@ spec:
           # 换发信（design/014 §8）：租户 CA 签发的成员证书 + 租户 server URL。
           # import 会把证书落到 .teamx/letters/<id>/，CLI 的 mTLS 发现按 host 精确匹配，
           # 因此切到租户 server 后会选到这一份（旧的平台 CA 信仍在但不匹配该 host）。
+          # 模型凭据（design/021 §I：平台统一提供；muse free = opencode zen 免费模型）
+          if [ -f /etc/teamx/llm/auth.json ]; then
+            mkdir -p /workspace/.local/share/opencode /workspace/.config/opencode
+            cp /etc/teamx/llm/auth.json /workspace/.local/share/opencode/auth.json
+            chmod 600 /workspace/.local/share/opencode/auth.json
+            if [ -f /etc/teamx/llm/opencode.json ]; then
+              cp /etc/teamx/llm/opencode.json /workspace/.config/opencode/opencode.json
+            fi
+          fi
           if [ -f /etc/teamx/rotation/letter ]; then
             teamx team import "$(cat /etc/teamx/rotation/letter)" --session {session} || true
           fi
@@ -400,6 +416,7 @@ spec:
         - {{ name: workspace, mountPath: /workspace }}
         - {{ name: letter, mountPath: /etc/teamx/letter, readOnly: true }}
         - {{ name: rotation, mountPath: /etc/teamx/rotation, readOnly: true }}
+        - {{ name: llm, mountPath: /etc/teamx/llm, readOnly: true }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
@@ -410,6 +427,10 @@ spec:
       command: ["/bin/bash", "-lc"]
       args: ["teamx worker --interval 60 --cooldown 600 --opencode /usr/local/bin/opencode --opencode-url http://127.0.0.1:4201"]
       env: &teamx_env
+        # HOME 指到可写工作区（readOnlyRootFilesystem 下 /home/teamx 不可写）：
+        # opencode 的数据/配置因此落在 PVC —— /workspace/.local/share/opencode、/workspace/.config/opencode
+        - name: HOME
+          value: /workspace
         - name: TEAMX_HOME
           value: /workspace/.teamx
         - name: TEAMX_SERVER_URL
@@ -491,6 +512,8 @@ spec:
       secret:
         secretName: {rot}
         optional: true
+    - name: llm
+      secret: {{ secretName: {llm_secret} }}
     - name: tmp
       emptyDir: {{}}
 "#
@@ -1088,6 +1111,11 @@ mod tests {
         // ① 四个容器都应挂 workspace（main/ttyd/fs/expose）
         let mounts = pod.matches("name: workspace, mountPath: /workspace").count();
         assert!(mounts >= 4, "应至少有 4 处 workspace 挂载（含 expose），实际 {mounts}");
+        // ③ 模型凭据（muse free）：HOME 指到可写工作区 + setup 注入 auth.json/opencode.json
+        assert!(pod.contains("name: HOME\n          value: /workspace"), "HOME 必须指到可写工作区（否则 opencode 建不了数据目录）: {pod}");
+        assert!(pod.contains("name: llm, mountPath: /etc/teamx/llm"), "setup 必须挂载模型凭据 Secret");
+        assert!(pod.contains("/workspace/.local/share/opencode/auth.json"), "setup 必须注入 opencode 凭据");
+        assert!(pod.contains("secretName: teamx-llm"), "必须引用平台统一凭据 Secret");
 
         // ② egress：空白名单也必须有基线放行
         let np = network_policy_manifest("t1", "m1", &[]);

@@ -1373,6 +1373,33 @@ pub fn provision_cloud_member(
         kubeconfig.map(str::to_string),
         context.map(str::to_string),
     );
+
+    // **平台统一模型凭据**（design/021 §I：muse free @ opencode zen）：
+    // 从平台侧文件读入 → 写入租户 namespace 的 Secret（member Pod 的 setup 会拷进工作区）。
+    let auth_path = std::env::var("TEAMX_LLM_AUTH")
+        .unwrap_or_else(|_| "/etc/teamx/llm/auth.json".to_string());
+    let cfg_path = std::env::var("TEAMX_LLM_CONFIG")
+        .unwrap_or_else(|_| "/etc/teamx/llm/opencode.json".to_string());
+    let auth = std::fs::read_to_string(&auth_path).map_err(|e| {
+        format!("read LLM auth `{auth_path}`: {e} —— 云 member 需要平台模型凭据（muse free）")
+    })?;
+    let cfg = std::fs::read_to_string(&cfg_path).ok();
+    let mut sec_yaml = format!(
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: {}\n  namespace: {}\ntype: Opaque\nstringData:\n  auth.json: |\n",
+        crate::k8s::llm_secret_name(),
+        ns
+    );
+    for line in auth.lines() {
+        sec_yaml.push_str(&format!("    {line}\n"));
+    }
+    if let Some(c) = &cfg {
+        sec_yaml.push_str("  opencode.json: |\n");
+        for line in c.lines() {
+            sec_yaml.push_str(&format!("    {line}\n"));
+        }
+    }
+    kube.apply(&sec_yaml)?;
+
     // ns + PVC + Secret（信）
     kube.apply(&crate::k8s::provision_manifests(team_id, member_id, &letter, workspace_gib, None))?;
     // Pod + NetworkPolicy
