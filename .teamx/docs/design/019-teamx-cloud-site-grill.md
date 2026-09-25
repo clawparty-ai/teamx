@@ -106,7 +106,20 @@ owner 明确的需求（已定，见 SD-1…SD-3）：做一个 **single page �
   这才是「**性价比之道**」。
 - **SD-25（Round 4）谚语放进轮播，与插画交替**：**中日韩等有书法的谚语用书法呈现**；
   多条谚语**全部可用**，但**必须穿插开——同语言不得相邻**。
-- **SD-26（Round 4）插画用 AI 生成**（owner 指示"试下用 AI 画"）。**实测可行**：
+- **SD-26（Round 4）插画用 AI 生成**（owner 指示"试下用 AI 画"）。**实测通道结论（2026-09-25）**：
+  - ✅ **OpenRouter `google/gemini-2.5-flash-image`** 可用 —— 已产出 3 张（分享目标 / 人机混合成员 /
+    多种合作模式），风格统一、贴合 `#4A90E5` 系配色；随后 **402 余额不足**中途失败。
+    ⚠️ owner 表示**没有 OpenRouter 账号** → 该 key 非本人所有，不宜继续消耗。
+  - ❌ **Google 直连（owner 的 `google` key）**：`429`，`generate_content_free_tier_requests, limit: 0`
+    —— 图像模型**免费额度为 0**，需在 Google AI Studio **开通计费**。
+  - ❌ **zen（`opencode` / `opencode-go`）**：**无图像端点**（`/v1/images/generations` 与
+    `/v1/images` 均 404），当前不能生图。
+  - ❌ **MiniMax**：`insufficient balance`。
+  - ⚠️ **本地 ollama**：已装且有 `x/flux2-klein`（5.7GB），但**运行即崩** ——
+    `mlx-runner` 在 `Decoding VAE...` 阶段 `unexpected EOF`，子进程退出，响应为空。
+  - **结论**：**要用 Gemini 全量生图，须为 Gemini 通道开通计费**（Google 直连开通 billing，
+    或给走 Gemini 的 OpenRouter 充值）；本地路径需先修 MLX 崩溃。
+- **SD-26 待补结论（下方"测量结论"）**：
   - 通道：**OpenRouter `google/gemini-2.5-flash-image`**（Google 直连 key 配额 429；zen 无图像模型）
   - 产物 1024×1024 PNG ≈ **775KB** → 站点需**压缩**（`sips` 降采样 + JPEG/WebP，目标 ~50–80KB/张）
   - 风格：扁平卡通、圆角几何、统一描边、主色 `#4A90E5` + 珊瑚 + 薄荷、白底、**图内不写字**
