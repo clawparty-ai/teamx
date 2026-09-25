@@ -815,7 +815,7 @@ pub fn network_policy_manifest(team_id: &str, member_id: &str, allow_hosts: &[St
     // 因此这里**永不生成"全拒"策略**：始终放行 kube-system DNS 与同 namespace，白名单仅作为**额外**放行。
     // 仍然拒绝公网任意目标与 IMDS（169.254.169.254 绝不入白名单）。
     let mut egress = String::from(
-        "    - to:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: kube-system\n      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n    - to:\n        - podSelector: {}\n",
+        "    - to:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: kube-system\n      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n    - to:\n        - podSelector: {}\n    # 公网 HTTPS/HTTP：member 需要访问 LLM API（如 opencode zen / muse free）与包源。\n    # 排除 IMDS（169.254/16）与全部私网段（10/8、172.16/12、192.168/16）——租户间东西向仍被隔离。\n    - to:\n        - ipBlock:\n            cidr: 0.0.0.0/0\n            except:\n              - 169.254.0.0/16\n              - 10.0.0.0/8\n              - 172.16.0.0/12\n              - 192.168.0.0/16\n      ports:\n        - protocol: TCP\n          port: 443\n        - protocol: TCP\n          port: 80\n",
     );
     for h in allow_hosts {
         egress.push_str(&format!(
@@ -1092,7 +1092,8 @@ mod tests {
         assert!(!y.contains("egress: []"), "不得生成全拒策略: {y}");
         assert!(y.contains("egress:\n"), "必须给出显式 egress 规则");
         assert!(y.contains("kubernetes.io/metadata.name: kube-system"), "必须放行 DNS");
-        assert!(!y.contains("cidr: 169.254"), "IMDS 不得放行");
+        assert!(y.contains("- 169.254.0.0/16"), "IMDS 必须被 except 排除");
+        assert!(y.contains("port: 443"), "公网 HTTPS 必须放行（LLM API）");
     }
 
     /// 回归（真机试点暴露的两个 bug）：
@@ -1122,8 +1123,9 @@ mod tests {
         assert!(np.contains("kubernetes.io/metadata.name: kube-system"), "必须放行 DNS: {np}");
         assert!(np.contains("podSelector: {}"), "必须放行同 namespace 的租户 server");
         assert!(!np.contains("egress: []"), "不得生成全拒策略");
-        assert!(!np.contains("cidr: 169.254"), "IMDS 绝不能被放行");
-        assert!(!np.contains("cidr: 0.0.0.0/0"), "不得放行任意公网目标");
+        assert!(np.contains("except:"), "公网放行必须用 except 排除 IMDS/私网");
+        assert!(np.contains("- 169.254.0.0/16"), "必须显式排除 IMDS");
+        assert!(np.contains("- 10.0.0.0/8"), "必须排除集群/私网段（隔离东西向）");
         // 白名单仍可追加
         let np2 = network_policy_manifest("t1", "m1", &["10.0.0.0/8".to_string()]);
         assert!(np2.contains("cidr: 10.0.0.0/8"));
