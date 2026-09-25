@@ -467,6 +467,7 @@ spec:
           wait
       env: *teamx_env
       volumeMounts:
+        - {{ name: workspace, mountPath: /workspace }}
         - {{ name: tmp, mountPath: /tmp }}
       livenessProbe:
         exec: {{ command: ["/bin/bash", "-lc", "pgrep -f 'tunnel expose' >/dev/null"] }}
@@ -786,19 +787,19 @@ fn indent(s: &str, n: usize) -> String {
 pub fn network_policy_manifest(team_id: &str, member_id: &str, allow_hosts: &[String]) -> String {
     let ns = namespace_for(team_id);
     let pod = pod_name(member_id);
-    // 空白名单必须写成 `egress: []`（显式空列表 = 全部拒绝）；写成空值 `egress:`
-    // 会被 API 当成 null 而拒（真集群踩到：NetworkPolicy 创建失败、静默缺失）。
-    let mut egress = String::new();
+    // **基线 egress**：member 必须能解析 DNS 并访问**同 namespace 的租户 server**，
+    // 否则成员根本无法工作（真机踩到：空白名单 → `egress: []` 全拒 → worker RPC 全部超时）。
+    // 因此这里**永不生成"全拒"策略**：始终放行 kube-system DNS 与同 namespace，白名单仅作为**额外**放行。
+    // 仍然拒绝公网任意目标与 IMDS（169.254.169.254 绝不入白名单）。
+    let mut egress = String::from(
+        "    - to:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: kube-system\n      ports:\n        - protocol: UDP\n          port: 53\n        - protocol: TCP\n          port: 53\n    - to:\n        - podSelector: {}\n",
+    );
     for h in allow_hosts {
         egress.push_str(&format!(
             "    - to:\n        - ipBlock:\n            cidr: {h}\n"
         ));
     }
-    let egress_block = if egress.is_empty() {
-        "  egress: []\n".to_string()
-    } else {
-        format!("  egress:\n{egress}")
-    };
+    let egress_block = format!("  egress:\n{egress}");
     format!(
         r#"apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -1061,11 +1062,43 @@ mod tests {
     }
 
     #[test]
-    fn empty_allowlist_emits_explicit_empty_egress() {
-        // 空白名单必须是 `egress: []`（不是空值，否则 API 拒绝）
+    fn empty_allowlist_still_gets_baseline_egress() {
+        // 语义已修正（真机试点）：空白名单**不再是全拒** —— 必须保留 DNS + 同 namespace 基线，
+        // 否则成员无法工作（worker RPC 全超时）。仍然拒绝公网任意目标与 IMDS。
         let y = network_policy_manifest("t1", "m1", &[]);
-        assert!(y.contains("egress: []"), "empty allowlist must be an explicit empty list: {y}");
-        assert!(!y.contains("egress:\n"), "must not emit a bare `egress:` key");
+        assert!(!y.contains("egress: []"), "不得生成全拒策略: {y}");
+        assert!(y.contains("egress:\n"), "必须给出显式 egress 规则");
+        assert!(y.contains("kubernetes.io/metadata.name: kube-system"), "必须放行 DNS");
+        assert!(!y.contains("cidr: 169.254"), "IMDS 不得放行");
+    }
+
+    /// 回归（真机试点暴露的两个 bug）：
+    /// ① expose 容器必须挂 workspace（否则打不开 .teamx/teamx.db → CrashLoop）
+    /// ② egress 策略必须有**基线放行**（DNS + 同 namespace 租户 server），
+    ///    绝不能在白名单为空时生成"全拒"策略；且永不含 IMDS
+    #[test]
+    fn member_pod_and_egress_have_baseline_connectivity() {
+        let pod = member_pod_manifest(
+            "t1",
+            "m1",
+            "https://teamx-serve-t1.tenant-t1.svc:5783",
+            "",
+            "sess",
+        );
+        // ① 四个容器都应挂 workspace（main/ttyd/fs/expose）
+        let mounts = pod.matches("name: workspace, mountPath: /workspace").count();
+        assert!(mounts >= 4, "应至少有 4 处 workspace 挂载（含 expose），实际 {mounts}");
+
+        // ② egress：空白名单也必须有基线放行
+        let np = network_policy_manifest("t1", "m1", &[]);
+        assert!(np.contains("kubernetes.io/metadata.name: kube-system"), "必须放行 DNS: {np}");
+        assert!(np.contains("podSelector: {}"), "必须放行同 namespace 的租户 server");
+        assert!(!np.contains("egress: []"), "不得生成全拒策略");
+        assert!(!np.contains("cidr: 169.254"), "IMDS 绝不能被放行");
+        assert!(!np.contains("cidr: 0.0.0.0/0"), "不得放行任意公网目标");
+        // 白名单仍可追加
+        let np2 = network_policy_manifest("t1", "m1", &["10.0.0.0/8".to_string()]);
+        assert!(np2.contains("cidr: 10.0.0.0/8"));
     }
 
     #[test]
