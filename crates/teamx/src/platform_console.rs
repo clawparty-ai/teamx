@@ -514,29 +514,45 @@ async fn run_site_async(cmd: &crate::cli::SiteCmd) -> Result<(), String> {
 // 认证
 // ---------------------------------------------------------------------------
 
+/// **所有** `teamx_platform_token` cookie 值（保持出现顺序，去重）。
+///
+/// 真机踩到两回：
+/// ① HTTP/2 下浏览器（Firefox）会把 cookie 拆成多个 `cookie` 字段 —— 只读第一个会丢 token；
+/// ② 浏览器可能**同时存在多个同名 cookie**（例如旧版本代码用别的 Path 写过，或先经 `?token=`
+///    登录过再改密码登录）—— 若取到的第一个是**失效**的那个，用户就会"登录成功却停在登录页"。
+/// 因此这里返回**全部**候选值，由鉴权逻辑逐个尝试，任一有效即通过。
+fn cookie_tokens(headers: &HeaderMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()) {
+        for kv in raw.split(';').map(str::trim) {
+            if let Some(t) = kv.strip_prefix("teamx_platform_token=") {
+                if !t.is_empty() && !out.iter().any(|x| x == t) {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 兼容旧调用：取第一个候选值（鉴权请用 `cookie_tokens` 逐个尝试）。
 fn cookie_token(headers: &HeaderMap) -> Option<String> {
-    // 注意：HTTP/2 下浏览器（Firefox）可能把 cookie 拆成多个 `cookie` 字段发送；
-    // 只读第一个（headers.get）会丢 token → 已登录用户被踢 401。必须遍历全部。
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|raw| raw.split(';').map(str::trim))
-        .find_map(|kv| kv.strip_prefix("teamx_platform_token=").map(str::to_string))
+    cookie_tokens(headers).into_iter().next()
 }
 
 /// 平台面鉴权（fail-closed）：cookie 是 launch token（运维）**或**有效的用户会话（Phase 1）。
 /// 先比 launch token（无 DB 开销），再验会话（查库 + 过期/禁用检查）。
 #[allow(clippy::result_large_err)] // Response 作为错误值直接返回，避免多层包装
 fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
-    match cookie_token(headers) {
-        Some(t) if t == ctx.launch_token => Ok(()),
-        Some(t) => match with_conn(ctx, |c| crate::platform::verify_session(c, &t)) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(unauth()),
-        },
-        None => Err(unauth()),
+    for t in cookie_tokens(headers) {
+        if t == ctx.launch_token {
+            return Ok(());
+        }
+        if with_conn(ctx, |c| crate::platform::verify_session(c, &t)).is_ok() {
+            return Ok(());
+        }
     }
+    Err(unauth())
 }
 
 fn unauth() -> Response {
@@ -545,22 +561,26 @@ fn unauth() -> Response {
 
 /// 会话对应的平台用户（None = 运维 launch-token 或未登录）。
 fn session_user(ctx: &Ctx, headers: &HeaderMap) -> Option<(String, String)> {
-    let t = cookie_token(headers)?;
-    if t == ctx.launch_token {
-        return None;
+    // 逐个候选值尝试：任一能验成会话即认该用户（多 cookie 场景下不被失效 cookie 挡住）
+    for t in cookie_tokens(headers) {
+        if t == ctx.launch_token {
+            continue;
+        }
+        if let Ok(v) = with_conn(ctx, |c| crate::platform::verify_session(c, &t)) {
+            let uid = v["user_id"].as_str().unwrap_or("").to_string();
+            if !uid.is_empty() {
+                return Some((uid, v["display_name"].as_str().unwrap_or("").to_string()));
+            }
+        }
     }
-    with_conn(ctx, |c| crate::platform::verify_session(c, &t))
-        .ok()
-        .map(|v| {
-            (
-                v["user_id"].as_str().unwrap_or("").to_string(),
-                v["display_name"].as_str().unwrap_or("").to_string(),
-            )
-        })
+    None
 }
 
 /// 当前身份（展示 + 审计用）：运维 launch token 或已登录用户。
 fn identity(ctx: &Ctx, headers: &HeaderMap) -> String {
+    if let Some((uid, name)) = session_user(ctx, headers) {
+        return format!("user:{name}({uid})");
+    }
     match cookie_token(headers) {
         Some(t) if t == ctx.launch_token => "operator(launch-token)".to_string(),
         Some(t) => with_conn(ctx, |c| crate::platform::verify_session(c, &t))
@@ -684,7 +704,7 @@ async fn api_login_password(
 
 /// 登出：吊销会话（若是）+ 清 cookie（幂等）。
 async fn api_logout(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
-    if let Some(t) = cookie_token(&headers) {
+    for t in cookie_tokens(&headers) {
         if t != ctx.launch_token {
             let _ = with_conn(&ctx, |c| crate::platform::revoke_session(c, &t));
         }
@@ -2959,6 +2979,16 @@ mod tests {
         let mut h3 = HeaderMap::new();
         h3.insert(header::COOKIE, HeaderValue::from_static("a=1"));
         assert_eq!(cookie_token(&h3), None);
+        // 多 cookie 场景：必须返回**全部**候选（顺序保持、去重），鉴权逐个尝试
+        let mut multi = HeaderMap::new();
+        multi.insert(
+            header::COOKIE,
+            HeaderValue::from_static("teamx_platform_token=STALE; other=1; teamx_platform_token=GOOD"),
+        );
+        assert_eq!(cookie_tokens(&multi), vec!["STALE".to_string(), "GOOD".to_string()]);
+        let mut dup = HeaderMap::new();
+        dup.insert(header::COOKIE, HeaderValue::from_static("teamx_platform_token=X; teamx_platform_token=X"));
+        assert_eq!(cookie_tokens(&dup), vec!["X".to_string()], "同名同值应去重");
     }
 
     #[test]
