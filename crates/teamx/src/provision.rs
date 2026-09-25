@@ -1313,7 +1313,10 @@ pub fn refresh_credit(
     };
     let platform = crate::credit::platform_signals(conn, team_id)?;
     let merged = crate::credit::merge(tenant, platform);
-    crate::credit::materialize(conn, team_id, &merged)
+    let mut out = crate::credit::materialize(conn, team_id, &merged)?;
+    // 与其他 API 一致：显式 ok（POST 端点调用方据此判断）
+    out["ok"] = json!(true);
+    Ok(out)
 }
 
 /// 读团队 credit（快照 + 成员可见的构成明细）。

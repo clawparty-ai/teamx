@@ -135,6 +135,57 @@ TCoin 定稿后（017）：
 - credit 影响目录排序与加入审批（若 DQ-0012 选"有后果"）
 - credit ↔ 支付链（等 TCoin 有支付入口后，"如期支付"才可计量）
 
+## 实现状态（2026-09-25）
+
+**已实现**（代码仓 `main`，3 个提交）：
+
+| 层 | 内容 |
+|---|---|
+| 打分核心 `credit.rs` | **纯函数** `score()`：事件加权累计 → 0–100 + S/A/B/C/D + **构成明细**；基线 60；**滚动 90 天线性衰减**；`doc.*` 按 **doc id 去重**；**单日正向封顶**（防刷）；`<5` 事件 → `insufficient`；权重表 `W` + `MODEL_VERSION`（调参须升版本） |
+| 租户侧 | `tenant_signals`（只读租户库）：verified/done 去重计数、`doc.rejected`、长期 `blocked`（>14 天）、在册成员数与平均在册时长 |
+| 平台侧 | `platform_signals`：加入申请批准/拒绝、**TCoin 余额（欠费，单向读）**；`merge` 合并两侧 |
+| 物化 | 平台库 `team_credit`（团队级快照）→ 满足 **ADR-0001「目录只读平台库」**；`public_grade` 在 `insufficient` 时返回 null |
+| service 车道 | `credit.stats`（白名单，**只回原始计数**——评分唯一发生在平台侧，SD-12） |
+| 平台编排 | `refresh_credit`（租户 stats → 平台信号 → 打分 → 物化）、`credit_view` |
+| CLI | `teamx credit refresh [--team|--all]` / `credit show [--team|--all]` + RPC `credit.*` |
+| 控制台 | `GET /api/my/credit`（成员可见精确分+构成）、`GET /api/my/credit/{team}`（归属校验）、`POST /api/my/credit/{team}/refresh`（owner-only）；目录列表/详情带 **`credit_grade`（只给分档）** |
+| UI | 用户名菜单 **credit 实页**（列表→构成明细分栏 + 刷新）、团队详情 **credit 块**、目录卡 **信用徽章** |
+| 测试 | 单测 **11 组**（分档阈值/基线+insufficient/正信号与转化率/分类封顶/欠费差/确定性与下限/去重与事件总数/窗口衰减/物化与公开分档/平台信号与欠费/merge 入场率）；E2E **I0–I5**（52 断言） |
+
+### 实现中发现并修正的问题
+
+**负向全局封顶导致 D 档不可达**：初版把负向扣分统一封顶 30，配合基线 60 → 分数下限 30，
+**D 档（<40）几乎不可达**。改为**按类封顶**（欠费 10 / 拒绝 12 / 驳回 9 / 阻塞 12，合计 −43）
+→ 极端可到 **17 分 = D 档**，同时不至于一次失误把团队打到谷底。
+
+### 真机验证（k8e 单节点，`teamx-server:dev` 重建导入）
+
+建团队 → 自动通道 bootstrap（等待 Pod 就绪）→ 导入 owner 信认领座位 → 租户侧注入 6 个
+`doc.verified`（去重）+ 8 个 `doc.done` + 1 个 `doc.rejected` + 1 个 14 天前 `blocked` 目标
+→ TCoin `grant 100` + `settle 250`（**余额 −150 = 欠费**）→ 控制台 `credit refresh`：
+
+```
+score 59 · grade C · insufficient false · events 18
+  完成（doc.verified） 6 个            +10.0   （被单日正向封顶 10 截断 → 防刷生效）
+  完成转化率          6/8 = 75%        +7.5
+  成员留存            1 人 · 平均 0 天  +0.0   （刚加入，正确）
+  欠费                余额 −150        −10.0
+  任务被驳回          1 次             −3.0
+  长期阻塞            1 个目标         −6.0
+```
+
+- **TCoin 单向影响**得证：补款 500（余额 350）后刷新 → **59 → 73（C → B）**，负向「欠费 −10」
+  变为正向「无欠费 +4」；**重复刷新同分（幂等）**。
+- 目录列表与详情 **公开徽章 = C**（`insufficient=0`）；`insufficient=1` 时徽章为 null（不贴标签）。
+
+### 遗留 / 未决
+
+- **权重与阈值是拍出来的**（基线 60、<5 事件、90 天、各类封顶、单日 +10）：属**可调参数**，
+  需按真实数据回看；调整时必须升 `MODEL_VERSION`，否则历史分数不可解释。
+- **credit 目前只由 owner 手动刷新**（v1 无定时任务）；目录徽章可能是**陈旧快照**，
+  UI 已显示「上次刷新时间」。自动刷新周期待定（可复用 worker）。
+- 成员级/用户级 credit、申诉通道、credit 用于排序/审批 → 均为 Remaining Branches。
+
 ## Related Artifacts
 
 - `adr/ADR-0004-credit-derived-score.md`（本 session 产出）
