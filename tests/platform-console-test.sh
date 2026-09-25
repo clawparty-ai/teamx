@@ -86,7 +86,9 @@ echo "== platform console E2E (design/014 §5/§6.5) =="
 "$TEAMX" --json team create "PlatCon" --session s1 >/dev/null
 TEAM_ID="$(sqlite3 "$TEAMX_DB" "SELECT id FROM teams LIMIT 1;")"
 
-"$TEAMX" platform console --addr 127.0.0.1 --port "$PORT" > "$WORK/pc.log" 2>&1 &
+# TEAMX_LOGIN_*：把防爆破阈值调小，便于在测试里快速验证（默认 5/10/900s）
+TEAMX_LOGIN_SOFT=3 TEAMX_LOGIN_HARD=5 TEAMX_LOGIN_LOCK_SECS=2 \
+  "$TEAMX" platform console --addr 127.0.0.1 --port "$PORT" > "$WORK/pc.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 40); do grep -q "token=" "$WORK/pc.log" 2>/dev/null && break; sleep 0.3; done
 TOKEN="$(sed -n 's/.*token=\([A-Za-z0-9]*\).*/\1/p' "$WORK/pc.log" | head -1)"
@@ -607,5 +609,52 @@ import json,sys;d=json.load(sys.stdin)
 assert d.get('ok') is not True,d
 print('  ',str(d.get('error'))[:70])" || fail "I5: 租户不可达应明确失败"
 pass "I5 刷新在租户不可达时明确失败"
+
+# ---------------------------------------------------------------------------
+# J: 登录防爆破（design/019 SD-13）—— 软阈值退避 / 硬阈值锁定 / 到期解除 / 审计 / IP 维度
+# ---------------------------------------------------------------------------
+# 造一个已知密码的用户（bob 已存在，用错密码打它）
+# J1: 连续错密码到软阈值 → 429 + retry_after
+SC=""
+for i in 1 2 3 4 5; do
+  SC="$($C -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"name":"bob","password":"WRONG-pw"}' "$BASE/api/login/password")"
+  [ "$SC" = "429" ] && break
+done
+[ "$SC" = "429" ] || fail "J1: 超软阈值应 429，实际 $SC"
+pass "J1 连续错密码触发退避（429）"
+
+# J2: 拦截生效 —— 即使密码正确也被拒（防止爆破者碰运气）
+$C -X POST -H 'Content-Type: application/json' -d '{"name":"bob","password":"pw-12345!"}' \
+   "$BASE/api/login/password" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d.get('ok') is not True,d
+assert d.get('error')=='too_many_attempts',d
+assert int(d.get('retry_after') or 0) >= 1,d" || fail "J2: 拦截期间正确密码也必须被拒"
+pass "J2 拦截期间即使密码正确也被拒（含 retry_after）"
+
+# J3: IP 维度 —— 同一 IP 换账号同样被拦（单元测试覆盖账号维度，这里验证 IP 维度）
+$C -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+   -d '{"name":"another-user","password":"x"}' "$BASE/api/login/password" | grep -q 429 \
+   || fail "J3: 同一 IP 换账号也应被 IP 维度拦住"
+pass "J3 IP 维度独立生效（换账号仍被拦）"
+
+# J4: 审计留痕
+[ "$(sqlite3 "$TEAMX_DB" "SELECT COUNT(*) FROM platform_audit WHERE action IN ('platform_user.login_failed','platform_user.login_locked');")" -ge 1 ] \
+  || fail "J4: 失败登录应写平台审计"
+pass "J4 失败/锁定写入平台审计"
+
+# J5: 锁定 + 退避都到期后自动放行（退避随窗口内失败数增长，故轮询等待而非固定 sleep）
+OKJ=0
+for i in $(seq 1 25); do
+  if $C -c /tmp/teamx-platcon-bob2 -X POST -H 'Content-Type: application/json' \
+      -d '{"name":"bob","password":"pw-12345!"}' "$BASE/api/login/password" \
+      | python3 -c "import json,sys;sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
+    OKJ=1; echo "  (等待 ${i}s 后放行)"; break
+  fi
+  sleep 1
+done
+[ "$OKJ" = "1" ] || fail "J5: 锁定/退避到期后应可登录"
+pass "J5 锁定与退避到期后自动解除"
 
 printf '\nALL PASSED (platform console E2E)\n'

@@ -23,10 +23,182 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use axum::extract::ConnectInfo;
 use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
 
 use crate::cli::PlatformConsoleCmd;
+
+// ---------------------------------------------------------------------------
+// 登录防爆破（design/019 SD-13）
+// ---------------------------------------------------------------------------
+
+/// 双维度登录保护：**per-IP** 与 **per-账号** 分别计数。
+///
+/// - 软阈值（默认 15 分钟 ≥5 次失败）→ **指数退避**（1s、2s、4s…上限 60s），期间登录返回 429；
+/// - 硬阈值（默认 1 小时 ≥10 次失败）→ **锁定 15 分钟**（IP 与账号同时锁）；
+/// - 登录成功 → 清零该维度计数。
+///
+/// 阈值可用环境变量覆盖：`TEAMX_LOGIN_SOFT/HARD/WINDOW_SECS/LOCK_SECS`（运维可调）。
+/// 内存态：单进程控制台足够；重启即复位（可接受——爆破者也会被重启打断）。
+pub(crate) struct LoginGuard {
+    soft: usize,
+    hard: usize,
+    window: std::time::Duration,
+    hard_window: std::time::Duration,
+    lock: std::time::Duration,
+    /// key（`ip:…` / `user:…`）→ 失败时间戳
+    fails: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    /// key → 解锁时刻
+    locked: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl LoginGuard {
+    pub(crate) fn new() -> Self {
+        let n = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        Self {
+            soft: n("TEAMX_LOGIN_SOFT", 5) as usize,
+            hard: n("TEAMX_LOGIN_HARD", 10) as usize,
+            window: std::time::Duration::from_secs(n("TEAMX_LOGIN_WINDOW_SECS", 15 * 60)),
+            hard_window: std::time::Duration::from_secs(n("TEAMX_LOGIN_WINDOW_SECS", 15 * 60) * 4),
+            lock: std::time::Duration::from_secs(n("TEAMX_LOGIN_LOCK_SECS", 15 * 60)),
+            fails: std::collections::HashMap::new(),
+            locked: std::collections::HashMap::new(),
+        }
+    }
+
+    fn prune(&mut self, now: std::time::Instant) {
+        let w = self.hard_window;
+        self.fails.retain(|_, v| {
+            v.retain(|t| now.duration_since(*t) < w);
+            !v.is_empty()
+        });
+        self.locked.retain(|_, until| *until > now);
+    }
+
+    /// 是否被拦（返回需等待秒数）。
+    pub(crate) fn blocked_for(&self, keys: &[String], now: std::time::Instant) -> Option<u64> {
+        let debug_on = std::env::var("TEAMX_LOGIN_DEBUG").is_ok();
+        let mut worst: Option<u64> = None;
+        for k in keys {
+            if let Some(until) = self.locked.get(k) {
+                if *until > now {
+                    // 向上取整（Retry-After 是秒；截断会让剩余 0.9s 变成 0 → 提前解除）
+                    let secs = until.duration_since(now).as_secs() + 1;
+                    worst = Some(worst.map_or(secs, |w: u64| w.max(secs)));
+                }
+            }
+            if let Some(v) = self.fails.get(k) {
+                let recent: Vec<std::time::Instant> =
+                    v.iter().filter(|t| now.duration_since(**t) < self.window).copied().collect();
+                if recent.len() >= self.soft {
+                    // 退避 = 从**最后一次失败**起算的截止时间（不是常量，否则失败留在窗口内就永不解除）
+                    let last = recent.iter().max().copied().unwrap_or(now);
+                    let backoff = backoff_secs(recent.len() - self.soft);
+                    let until = last + std::time::Duration::from_secs(backoff);
+                    if until > now {
+                        let remain = until.duration_since(now).as_secs() + 1;
+                        worst = Some(worst.map_or(remain, |w: u64| w.max(remain)));
+                    }
+                }
+            }
+        }
+        if debug_on {
+            let counts: Vec<(String, usize)> = keys
+                .iter()
+                .map(|k| (k.clone(), self.fails.get(k).map(|v| v.len()).unwrap_or(0)))
+                .collect();
+            eprintln!("[lg] blocked_for -> {worst:?} | soft={} fails={counts:?}", self.soft);
+        }
+        worst
+    }
+
+    /// 记一次失败；返回 `(需等待秒数, 是否刚触发锁定)`。
+    pub(crate) fn fail(&mut self, keys: &[String], now: std::time::Instant) -> (u64, bool) {
+        let debug_on = std::env::var("TEAMX_LOGIN_DEBUG").is_ok();
+        self.prune(now);
+        let mut locked_now = false;
+        let mut worst = 0u64;
+        for k in keys {
+            let e = self.fails.entry(k.clone()).or_default();
+            e.push(now);
+            let in_window = e.iter().filter(|t| now.duration_since(**t) < self.window).count();
+            if in_window >= self.soft {
+                worst = worst.max(backoff_secs(in_window - self.soft));
+            }
+            if e.len() >= self.hard {
+                self.locked.insert(k.clone(), now + self.lock);
+                locked_now = true;
+                worst = worst.max(self.lock.as_secs());
+            }
+        }
+        if debug_on {
+            eprintln!("[lg] fail -> wait={worst} locked={locked_now}");
+        }
+        (worst, locked_now)
+    }
+
+    /// 登录成功 → 清零。
+    pub(crate) fn ok(&mut self, keys: &[String]) {
+        for k in keys {
+            self.fails.remove(k);
+            self.locked.remove(k);
+        }
+    }
+}
+
+/// 指数退避秒数：**首步 2s**，其后翻倍（2/4/8/16/32），上限 60s。
+/// `over` = 窗口内失败数 − 软阈值。
+fn backoff_secs(over: usize) -> u64 {
+    let e = (over + 1).min(6) as u32;
+    (1u64 << e).min(60)
+}
+
+/// 客户端 IP：优先 `X-Forwarded-For` 首段（反向代理场景），否则取对端地址。
+fn client_ip(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            let t = first.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+    }
+    peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 是否被拦（含等待秒数）。
+fn guard_blocked(ctx: &Arc<Ctx>, keys: &[String], now: std::time::Instant) -> Option<u64> {
+    ctx.login_guard.lock().ok().and_then(|g| g.blocked_for(keys, now))
+}
+/// 记一次失败 → `(需等待秒数, 是否锁定)`。
+fn guard_fail(ctx: &Arc<Ctx>, keys: &[String], now: std::time::Instant) -> (u64, bool) {
+    ctx.login_guard.lock().map(|mut g| g.fail(keys, now)).unwrap_or((0, false))
+}
+/// 登录成功 → 清零。
+fn guard_ok(ctx: &Arc<Ctx>, keys: &[String]) {
+    if let Ok(mut g) = ctx.login_guard.lock() {
+        g.ok(keys);
+    }
+}
+/// 429 + `Retry-After`（防爆破统一响应；文案由前端按 error code 渲染，SD-14）。
+fn too_many(secs: u64) -> Response {
+    let mut r = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({"ok": false, "error": "too_many_attempts", "retry_after": secs})),
+    )
+        .into_response();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&secs.max(1).to_string()) {
+        r.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+    }
+    r
+}
+/// 失败/锁定写平台审计（NFR-9：审计独立于租户台账）。
+fn audit_blocked(ctx: &Arc<Ctx>, ip: &str, account: &str, locked: bool, wait: u64) {
+    let action = if locked { "platform_user.login_locked" } else { "platform_user.login_failed" };
+    let detail = format!("account={account} {ip} retry_after={wait}s");
+    let _ = with_conn(ctx, |c| crate::platform::audit(c, "anonymous", action, Some(&detail)));
+}
 
 /// 平台控制台状态：平台 DB 句柄 + launch token + K8s 访问参数 + OAuth state 表。
 #[derive(Clone)]
@@ -35,6 +207,8 @@ struct Ctx {
     launch_token: String,
     kubeconfig: Option<String>,
     context: Option<String>,
+    /// 登录防爆破（design/019 SD-13）：双维度（IP + 账号）计数、指数退避、锁定。
+    login_guard: std::sync::Arc<std::sync::Mutex<LoginGuard>>,
     /// OAuth state（CSRF）：state → 发起时间；单次有效，10 分钟过期。
     /// 内存态（单进程控制台；重启后未完成的登录作废，需重走 start）。
     oauth_states: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
@@ -72,6 +246,7 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         launch_token: launch_token.clone(),
         kubeconfig,
         context,
+        login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
@@ -203,7 +378,7 @@ async fn serve_https(
     }
 
     axum_server::bind_rustls(sock, config)
-        .serve(app.into_make_service())
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .map_err(|e| format!("serve: {e}"))
 }
@@ -277,6 +452,7 @@ async fn run_site_async(cmd: &crate::cli::SiteCmd) -> Result<(), String> {
         launch_token: launch_token.clone(),
         kubeconfig,
         context,
+        login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
         oauth_states: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
@@ -358,11 +534,29 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn api_login(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Response {
+async fn api_login(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<Value>,
+) -> Response {
+    let ip = client_ip(&headers, Some(peer));
     let token = body.get("token").and_then(Value::as_str).unwrap_or("");
+    let ipkey = vec![format!("ip:{ip}")];
+    let now = std::time::Instant::now();
+    if let Some(secs) = guard_blocked(&ctx, &ipkey, now) {
+        return too_many(secs);
+    }
     if token != ctx.launch_token {
+        // launch token 爆破同样计数（只按 IP，无账号维度）
+        let (wait, locked) = guard_fail(&ctx, &ipkey, now);
+        audit_blocked(&ctx, &format!("ip:{ip}"), "launch", locked, wait);
+        if locked || wait > 0 {
+            return too_many(wait.max(1));
+        }
         return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "bad token"}))).into_response();
     }
+    guard_ok(&ctx, &ipkey);
     let mut resp = Json(json!({"ok": true})).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
@@ -374,16 +568,37 @@ async fn api_login(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Resp
 }
 
 /// 密码登录（Phase 1）：成功发会话 cookie（7 天），失败统一 401（防枚举，不写库）。
-async fn api_login_password(State(ctx): State<Arc<Ctx>>, Json(body): Json<Value>) -> Response {
+async fn api_login_password(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<Value>,
+) -> Response {
     let name = body.get("name").and_then(Value::as_str).unwrap_or("");
     let password = body.get("password").and_then(Value::as_str).unwrap_or("");
+    // 防爆破（SD-13）：**双维度** —— IP 与账号分别计数，任一超限即拦
+    let ip = client_ip(&headers, Some(peer));
+    let keys = vec![
+        format!("ip:{ip}"),
+        format!("user:{}", name.trim().to_lowercase()),
+    ];
+    let now = std::time::Instant::now();
+    if let Some(secs) = guard_blocked(&ctx, &keys, now) {
+        return too_many(secs);
+    }
     let user = match with_conn(&ctx, |c| crate::platform::authenticate(c, name, password)) {
         Ok(u) => u,
         Err(_) => {
+            let (wait, locked) = guard_fail(&ctx, &keys, now);
+            audit_blocked(&ctx, &format!("ip:{ip}"), name, locked, wait);
+            if locked || wait > 0 {
+                return too_many(wait.max(1));
+            }
             return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "invalid credentials"})))
-                .into_response()
+                .into_response();
         }
     };
+    guard_ok(&ctx, &keys);
     let uid = user["user_id"].as_str().unwrap_or("").to_string();
     let uname = user["display_name"].as_str().unwrap_or("").to_string();
     let sess = match with_conn(&ctx, |c| crate::platform::issue_session(c, &uid)) {
@@ -2242,6 +2457,83 @@ async function destroyTenant(t,teamName){
 mod tests {
     use super::*;
 
+    #[test]
+    fn login_guard_soft_backoff_then_hard_lock_then_clear() {
+        use std::time::{Duration, Instant};
+        let mut g = LoginGuard::new();
+        let t0 = Instant::now();
+        let keys = vec!["ip:1.2.3.4".to_string(), "user:bob".to_string()];
+
+        // 4 次失败：未到软阈值 → 不拦
+        for _ in 0..4 {
+            let (w, locked) = g.fail(&keys, t0);
+            assert_eq!(w, 0);
+            assert!(!locked);
+        }
+        assert!(g.blocked_for(&keys, t0).is_none(), "4 次不应拦");
+
+        // 第 5 次 → 指数退避
+        let (w, locked) = g.fail(&keys, t0);
+        assert!(!locked);
+        assert!(w >= 1, "第 5 次应有退避: {w}");
+        assert!(g.blocked_for(&keys, t0).is_some(), "超软阈值应拦");
+
+        // 成功登录 → 清零
+        g.ok(&keys);
+        assert!(g.blocked_for(&keys, t0).is_none(), "成功应清零");
+
+        // 连打 10 次 → 锁定
+        let mut locked_any = false;
+        for _ in 0..10 {
+            let (_, l) = g.fail(&keys, t0);
+            locked_any |= l;
+        }
+        assert!(locked_any, "10 次失败应触发锁定");
+        let wait = g.blocked_for(&keys, t0).expect("锁定中应拦");
+        assert!(wait >= 800, "锁定等待应接近 900s: {wait}");
+
+        // 账号维度独立：换个 IP 仍被同一账号挡住
+        let keys2 = vec!["ip:9.9.9.9".to_string(), "user:bob".to_string()];
+        assert!(g.blocked_for(&keys2, t0).is_some(), "账号维度须独立生效");
+
+        // 时间推进过锁定期 → 放行（窗口外的失败也被 prune）
+        let t1 = t0 + Duration::from_secs(16 * 60);
+        assert!(g.blocked_for(&keys, t1).is_none(), "锁定期过后应放行");
+
+        // 退避是**从最后一次失败起算的截止时间**（回归：曾写成常量 → 失败留在窗口内永不解除）
+        let mut g2 = LoginGuard::new();
+        for _ in 0..5 {
+            g2.fail(&keys, t0);
+        }
+        assert!(g2.blocked_for(&keys, t0).is_some(), "刚失败应拦");
+        let t_backoff = t0 + Duration::from_secs(backoff_secs(5 - 3) + 1);
+        assert!(
+            g2.blocked_for(&keys, t_backoff).is_none(),
+            "退避到期即应解除（仍在 15 分钟失败窗口内）"
+        );
+    }
+
+    #[test]
+    fn login_guard_blocks_right_after_soft_threshold() {
+        use std::time::{Duration, Instant};
+        let mut g = LoginGuard::new(); // soft=3? 默认 soft=5；显式设 3 以模拟 E2E 配置
+        g.soft = 3;
+        let t0 = Instant::now();
+        let keys = vec!["ip:127.0.0.1".to_string(), "user:bob".to_string()];
+        for i in 0..3 {
+            let (w, locked) = g.fail(&keys, t0 + Duration::from_millis(i * 10));
+            eprintln!("fail #{i}: wait={w} locked={locked}");
+        }
+        // 第 3 次失败之后 ~100ms 再来一次（正确密码）→ 必须仍被拦
+        let b = g.blocked_for(&keys, t0 + Duration::from_millis(100));
+        assert!(b.is_some(), "超软阈值后 100ms 应仍被拦（首步退避 2s）");
+        // 退避到期（2s + 余量）→ 放行
+        assert!(
+            g.blocked_for(&keys, t0 + Duration::from_millis(2500)).is_none(),
+            "退避到期应放行"
+        );
+    }
+
     /// 防回归：静态 `getElementById('x')` 必须有对应的 `id="x"`。
     ///
     /// 历史踩坑：`logout()` 里的 `logoutBtn`、`bootstrapTeam()` 里的 `letterOut` 都是
@@ -2306,6 +2598,7 @@ mod tests {
             launch_token: "launch".to_string(),
             kubeconfig: None,
             context: None,
+            login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
             oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
