@@ -19,7 +19,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -444,13 +444,13 @@ async fn site_asset(axum::extract::Path(file): axum::extract::Path<String>) -> R
 }
 
 /// 官网首页（design/019）。
-async fn site_index() -> Html<&'static str> {
-    Html(crate::site::INDEX_HTML)
+async fn site_index() -> Response {
+    html_no_store(crate::site::INDEX_HTML)
 }
 
 /// 控制台首页（挂在 `/console`，供 `teamx site` 使用）。
-async fn console_index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn console_index() -> Response {
+    html_no_store(INDEX_HTML)
 }
 
 /// 启动 `teamx site`（design/019）：一个进程同时服务官网 `/` 与控制台 `/console`。
@@ -576,8 +576,22 @@ fn with_conn<T>(ctx: &Ctx, f: impl FnOnce(&mut rusqlite::Connection) -> Result<T
     f(&mut conn)
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+/// HTML 响应统一 **no-store**：控制台随版本频繁变化，缓存旧页会与新接口不匹配
+/// （表现：登录后仍停在登录页 / 按钮无反应）。
+fn html_no_store(body: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn index() -> Response {
+    html_no_store(INDEX_HTML)
 }
 
 async fn api_login(
@@ -2219,6 +2233,24 @@ function initTheme(){
   if(!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
   THEME = t; applyTheme();
 }
+/* 前端错误可见化：任何未捕获异常/被拒 Promise 都直接显示在页面上（否则表现为"点了没反应"） */
+function showFatal(msg){
+  try{
+    var el = document.getElementById('fatalErr');
+    if(!el){
+      el = document.createElement('div'); el.id='fatalErr';
+      el.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#F56C6C;color:#fff;'+
+        'font-size:13px;padding:10px 16px;white-space:pre-wrap;max-height:40vh;overflow:auto';
+      document.body.appendChild(el);
+      el.onclick=function(){ el.remove(); };
+    }
+    el.textContent = '页面脚本错误（点此关闭）：' + msg;
+  }catch(e){}
+}
+window.addEventListener('error', function(e){ showFatal((e && e.message) || 'unknown'); });
+window.addEventListener('unhandledrejection', function(e){
+  var r=e && e.reason; showFatal((r && (r.message||r)) || 'unhandled rejection');
+});
 function toggleMenu(e){e.stopPropagation();const p=document.getElementById('usermenuPanel');p.style.display=p.style.display==='block'?'none':'block'}
 document.addEventListener('click',()=>{const p=document.getElementById('usermenuPanel');if(p)p.style.display='none'});
 function openMyRequests(){showTab('reqs');loadMineReqs();loadPendingReqs()}
@@ -2345,11 +2377,24 @@ async function boot(){
   document.getElementById('usermenu').style.display='inline-block';
   const isOp=(me.who||'').indexOf('operator')===0;
   document.querySelectorAll('.tab.op-only').forEach(b=>b.style.display=isOp?'':'none');
-  showTab('all');reqMode('mine');await loadDir(1);
-  await loadMine();await loadTenants();await loadPlatform();
+  showTab('all');reqMode('mine');
+  // 首屏各块各自容错：某一块失败不应把整个已登录界面拖垮
+  for(const step of [loadDir(1),loadMine(),loadTenants(),loadPlatform()]){ try{ await step; }catch(e){ showFatal('加载失败：'+(e&&e.message||e)); } }
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
-async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(errText(r))}
+async function loginPassword(){
+  const name=document.getElementById('uname').value.trim();
+  const password=document.getElementById('password').value;
+  const btn=document.querySelector('#pwForm button[type=submit]');
+  const old=btn?btn.textContent:null;
+  if(btn){ btn.disabled=true; btn.textContent='登录中…'; }
+  try{
+    const r=await jpost('/api/login/password',{name,password});
+    if(r.ok){ await boot(); return; }
+    loginFail(errText(r));
+  }catch(e){ loginFail('请求失败：'+(e&&e.message||e)); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent=old; } }
+}
 async function logout(){
   const r=await jpost('/api/logout',{});
   if(!r.ok){alert(T('退出失败：')+errText(r));return}
@@ -2834,6 +2879,15 @@ mod tests {
                 ids.insert(tail[..q].to_string());
             }
             rest = &rest[p + 4..];
+        }
+        // 运行时创建的 id（如 showFatal 里的 createElement + el.id='fatalErr'）也算已知
+        let mut rest = html;
+        while let Some(p) = rest.find(".id='") {
+            let tail = &rest[p + 5..];
+            if let Some(q) = tail.find('\'') {
+                ids.insert(tail[..q].to_string());
+            }
+            rest = &rest[p + 5..];
         }
         let mut missing: Vec<String> = Vec::new();
         let mut rest = html;
