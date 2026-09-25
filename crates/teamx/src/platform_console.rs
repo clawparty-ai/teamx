@@ -1490,7 +1490,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <a id="miPending" onclick="openPending()" style="display:none">待我审批</a>
         <div class="sep"></div>
         <a id="miTcoin" onclick="openTcoin()">TCoin</a>
-        <a id="miCredit" onclick="openCredit()">credit</a>
+        <a id="miCredit" onclick="openCredit()">Credit</a>
         <a onclick="alert('当前改密请用 CLI：teamx platform user set-password --user-id <id>')">设置</a>
         <div class="sep"></div>
         <a onclick="logout()">退出</a>
@@ -1597,7 +1597,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </div>
   <div class="tabpage" id="tab-credit" style="display:none">
   <div class="panel">
-    <h2>团队信用 <span class="tag">credit · 由履约行为自动派生</span></h2>
+    <h2>团队信用 <span class="tag">Credit · 由履约行为自动派生</span></h2>
     <div class="pc-meta" style="margin-bottom:8px"><span>对外只显示 <b>分档徽章</b>；精确分与构成明细仅团队成员/owner 可见。
       基线 <b id="crBaseline">60</b> · 窗口 <b id="crWindow">90</b> 天 · 有效事件 &lt; <b id="crMin">5</b> 时显示「数据不足」。<b>v1 只展示、不影响任何操作。</b></span></div>
     <div class="split">
@@ -1828,7 +1828,7 @@ async function openMineDetail(id,kind,el){
       <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>
       <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
       <div id="ownerLetter_${short}"></div>
-      <h2 style="margin-top:12px">credit <span class="tag">团队信用（派生）</span></h2>
+      <h2 style="margin-top:12px">Credit <span class="tag">团队信用（派生）</span></h2>
       <div id="crTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">TCoin <span class="tag">本团队累计消耗</span></h2>
       <div id="tcTeam_${short}" class="muted">加载中…</div>
@@ -1851,7 +1851,7 @@ async function openMineDetail(id,kind,el){
       <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
       <div class="pc-meta"><span>加入于 ${esc((t.joined_at||'').slice(0,10)||'—')}</span><span>席位 <code>${esc((t.member_id||'').slice(0,12))}</code></span>${t.workspace_live?'':'<span class="tag-i">状态为快照</span>'}</div>
       <div class="pc-sum">${esc(det.public_summary||'')}</div>
-      <h2 style="margin-top:12px">credit <span class="tag">团队信用（派生）</span></h2>
+      <h2 style="margin-top:12px">Credit <span class="tag">团队信用（派生）</span></h2>
       <div id="crTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">我的邀请函</h2>
       ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
