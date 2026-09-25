@@ -149,3 +149,50 @@ updated_at: 2026-09-25
 - 不迁移 owner 本机 Mac 上的运行时 server（`127.0.0.1:5781`，团队 `yongyan-backend`）—— 如需一并迁移，另开子任务
 - 不动企业版 server（`120.27.222.33:5783`）
 - 不迁移 3 台成员云主机本身（它们只是客户端；切换 = 改端点）
+
+---
+
+## 10. 执行记录（2026-09-25，实际迁移）
+
+### 已完成（源端 HK **零改动**，仅只读查询 + 快照副本）
+
+| 阶段 | 动作 | 结果 |
+|---|---|---|
+| P0 | 源端一致性快照（`.backup`）+ 基线 | 100MB 快照；基线 **teams 9 / events 13578 / members 28 / user_version 20** |
+| P1a | 平台侧写入两个团队行（**id 与源端一致**）| `yongyan-dev` f2adafd3…、`powernano-v2` 1da9a7f0… |
+| P1b | 建租户（归属 **caishu**，PVC **20Gi**）| ns `tenant-f2adafd3b3d74a84`；Pod Running |
+| P1c | **把源 CA 写进租户 Secret** + **用源 CA 重签 server 证书**（SAN 含 `yongyan.teamx.beer`）| 集群内/公网均验证：客户端证书验证 `Verify return code: 0 (ok)` |
+| P2 | DB 复制（**先清 WAL/SHM**）+ repos(11G) + letters | 与基线一致；`git.list` 可读仓库 |
+| P2 | **HK→云端直传通道**（临时密钥，事后清理）| 11G @ 10.2MB/s，17 分钟 |
+| P3 | nginx `stream` **SNI 直通** + 80（ACME webroot + 301）；`teamx site` 退到 127.0.0.1:9443 | `https://teamx.beer`（LE 证书）与 `https://yongyan.teamx.beer`（源 CA 证书）**并存** |
+| P3 | certbot 续期改 **webroot**（nginx 占 80）| ACME 路径实测可达 |
+| P4 | 平台用户 4 个 + `caishu` 配额 20；**9 个席位 `user_id` 重新指向**；**8 条 approved `team_join_requests`** | caishu 控制台见 2 个团队；zhongm 见 2 个团队（席位正确到条）|
+
+### 真机踩到的坑（已解决，值得记）
+
+1. **覆盖 DB 前必须清 `-wal`/`-shm`**：Pod 启动过会留下 WAL，直接覆盖主库 → WAL 重放把空库页盖回，表现为"数据没了"。**顺序：停 Pod → 删 WAL/SHM → 覆盖主库 → chown 1000 → 起 Pod**。
+2. **Ubuntu nginx 的 `stream` 是动态模块**：需装 `libnginx-mod-stream`；且 `conf.d/*.conf` 被 include 在 **http 块内** → `stream{}` 必须放顶层（`/etc/nginx/teamx-stream.conf` + nginx.conf 顶层 include）。
+3. **`set-endpoint` 拒绝公网域名**（O-5 守卫只允许回环/集群内名）→ 平台控制台与租户**同机**，走 `ensure_forward` 自动通道即可，无需配置公网端点。
+4. **租户 Pod 重启后，平台侧缓存 port-forward 失效**：第一次调用可能失败，重试即自愈（如需根治：探活应校验上游而非仅监听）。
+5. 租户库 `members.user_id` 是**上一代平台 id** → 已按 E1 全部重新指向（9 行）。
+
+### 成员切换（P4 收尾，待各成员各做一步）
+
+**CA 未变 → 成员现有证书继续有效**，只需把 URL 指到新端点：
+
+```bash
+# 方式 A（推荐，持久）：把本地信里的 server.url 换成新端点
+sed -i 's#https://95.40.221.159#https://yongyan.teamx.beer#' ~/.teamx/letters/*/letter.json
+# 方式 B（临时）：环境变量覆盖
+export TEAMX_SERVER_URL=https://yongyan.teamx.beer
+# 验证
+teamx status        # 应连到 yongyan.teamx.beer 且数据完整
+```
+
+顺序：**zhaoz → zhongm → caicai → caishu（最后）**；回滚 = 把 URL 改回 `https://95.40.221.159`（源端仍在跑）。
+
+### 遗留
+
+- `powernano-v2` 无独立 `tenants` 行 → 其**控制台侧** roster/credit 不可用（成员客户端不受影响）。可选补齐：插一行指向同一 namespace（注意 destroy 语义）。
+- O-5：`set-endpoint` 支持公网域名的校验扩展（小改动）。
+- 收尾待办：删除 HK 上的临时迁移密钥与 `/tmp/migrate*`；**源主机销毁需 owner 书面同意**（本手册硬约束）。
