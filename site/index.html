@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>teamx — teamx = 人 × AI</title>
+<meta name="description" content="teamx = 人 × AI。人做判断，AI 做产出，teamx 让他们成为一支团队：更快、更强、可控、持续优化性价比。">
+<meta property="og:title" content="teamx = 人 × AI">
+<meta property="og:description" content="人做判断，AI 做产出。加号让它们在一起，乘号让它们彼此放大。">
+<meta property="og:type" content="website">
+<style>
+  :root{
+    --blue:#4A90E5; --blue-d:#357ABD; --blue-l:#EBF3FC; --blue-bg:#EBF5FF;
+    --coral:#F58E7A; --mint:#6FCF97; --sand:#F2C879;
+    --ink:#2B3138; --ink-2:#5A6472; --muted:#909399; --line:#EBEEF5;
+    --bg:#FFFFFF; --bg-2:#F7F9FC;
+    --serif-cn:"Kaiti SC","STKaiti","KaiTi","楷体","Noto Serif CJK SC",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",
+           "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --wrap:1080px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:var(--sans);color:var(--ink);background:var(--bg);line-height:1.65;
+       -webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px}
+  .muted{color:var(--muted)}
+  .btn{display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;font:inherit;
+       border-radius:8px;padding:11px 20px;font-size:15px;font-weight:600;transition:.18s}
+  .btn-primary{background:var(--blue);color:#fff}
+  .btn-primary:hover{background:var(--blue-d)}
+  .btn-ghost{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+  .btn-ghost:hover{background:var(--blue-bg)}
+  .btn-sm{padding:7px 14px;font-size:13.5px;font-weight:500}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px;
+       background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  section{padding:72px 0}
+  h2.sec{font-size:26px;line-height:1.35;margin-bottom:10px;letter-spacing:.2px}
+  .sec-sub{color:var(--ink-2);margin-bottom:34px;font-size:16px}
+
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:40;background:rgba(255,255,255,.88);
+         backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:14px;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+  .brand .mark{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;
+       justify-content:center;color:#fff;font-weight:800;font-size:16px;
+       background:linear-gradient(135deg,var(--blue),var(--blue-d))}
+  .nav .spacer{flex:1}
+  .lang{display:inline-flex;background:var(--bg-2);border-radius:999px;padding:3px}
+  .lang button{border:none;background:none;font:inherit;font-size:13px;color:var(--ink-2);
+       padding:5px 13px;border-radius:999px;cursor:pointer}
+  .lang button.on{background:#fff;color:var(--blue);font-weight:600;
+       box-shadow:0 1px 3px rgba(0,0,0,.08)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:84px 0 64px;text-align:center}
+  .hero h1{font-size:clamp(34px,6.2vw,62px);line-height:1.15;letter-spacing:-.5px;font-weight:800}
+  .hero h1 .x{color:var(--blue)}
+  .hero .sub{max-width:660px;margin:20px auto 0;font-size:clamp(15px,2.1vw,19px);color:var(--ink-2)}
+  .hero .sub b{color:var(--ink)}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:32px}
+  .install{display:inline-flex;align-items:center;gap:10px;background:var(--bg-2);
+       border:1px solid var(--line);border-radius:10px;padding:11px 14px;margin-top:18px}
+  .install code{background:none;border:none;padding:0;font-size:13.5px}
+  .install button{border:none;background:none;color:var(--blue);cursor:pointer;font:inherit;
+       font-size:13px;font-weight:600}
+
+  /* ---------- proverbs ---------- */
+  .proverbs{background:var(--bg-2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+       padding:56px 0}
+  .proverbs .lead{text-align:center;color:var(--muted);font-size:14px;margin-bottom:26px;
+       letter-spacing:.4px}
+  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+  .pcard{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px}
+  .pcard .txt{font-size:17px;line-height:1.5}
+  .pcard .txt.cn{font-family:var(--serif-cn);font-size:20px}
+  .pcard .txt.jp{font-family:var(--serif-cn);font-size:19px}
+  .pcard .txt.kr{font-family:var(--serif-cn);font-size:19px}
+  .pcard .mean{color:var(--ink-2);font-size:13.5px;margin-top:8px}
+  .pcard .from{color:var(--muted);font-size:12px;margin-top:10px;letter-spacing:.3px}
+
+  /* ---------- carousel ---------- */
+  .carousel{position:relative;border:1px solid var(--line);border-radius:16px;overflow:hidden;
+       background:#fff;box-shadow:0 10px 30px rgba(74,144,229,.07)}
+  .slides{position:relative;min-height:430px}
+  .slide{position:absolute;inset:0;opacity:0;transition:opacity .5s ease;display:flex;
+       align-items:center;justify-content:center;padding:36px 30px}
+  .slide.on{opacity:1}
+  .slide.img img{max-width:min(520px,84%);max-height:340px;border-radius:10px}
+  .slide.quote{text-align:center;flex-direction:column;gap:16px}
+  .slide.quote .q{font-size:clamp(22px,3.6vw,34px);line-height:1.45;font-family:var(--serif-cn)}
+  .slide.quote .q.plain{font-family:var(--sans);font-weight:700;font-size:clamp(20px,3.2vw,30px)}
+  .slide.quote .m{color:var(--ink-2);font-size:15px;max-width:600px}
+  .slide.quote .f{color:var(--muted);font-size:13px}
+  .slide.final{background:linear-gradient(135deg,var(--blue),var(--blue-d));color:#fff;text-align:center;
+       flex-direction:column;gap:12px}
+  .slide.final .big{font-size:clamp(26px,4.6vw,44px);font-weight:800;letter-spacing:-.5px}
+  .slide.final .small{opacity:.92;font-size:15px}
+  .cbtn{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:40px;height:40px;
+       border-radius:50%;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:17px;
+       color:var(--ink-2);display:flex;align-items:center;justify-content:center}
+  .cbtn:hover{color:var(--blue);border-color:var(--blue)}
+  .cbtn.prev{left:12px} .cbtn.next{right:12px}
+  .dots{display:flex;gap:7px;justify-content:center;padding:0 0 18px}
+  .dots i{width:7px;height:7px;border-radius:50%;background:#D7DEE8;cursor:pointer}
+  .dots i.on{background:var(--blue);width:18px;border-radius:4px}
+
+  /* ---------- values ---------- */
+  .vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
+  .vcard{border:1px solid var(--line);border-radius:14px;padding:24px 22px;background:#fff;transition:.2s}
+  .vcard:hover{border-color:#CFE1F7;box-shadow:0 8px 24px rgba(74,144,229,.09);transform:translateY(-2px)}
+  .vcard .k{font-size:12px;font-weight:700;letter-spacing:.8px;color:var(--blue)}
+  .vcard h3{font-size:19px;margin:8px 0 8px}
+  .vcard p{color:var(--ink-2);font-size:14.5px}
+
+  /* ---------- start ---------- */
+  .start{background:var(--bg-2);border-top:1px solid var(--line)}
+  .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+  .scard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px 22px}
+  .scard .n{width:26px;height:26px;border-radius:8px;background:var(--blue-bg);color:var(--blue);
+       font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+  .scard h3{font-size:17px;margin-bottom:8px}
+  .scard p{color:var(--ink-2);font-size:14px}
+  .scard .cmd{margin-top:12px}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:13.5px}
+  .fgrid{display:flex;gap:20px;flex-wrap:wrap;align-items:center}
+  .fgrid a:hover{color:var(--blue)}
+  .fgrid .spacer{flex:1}
+  @media (max-width:640px){ section{padding:52px 0} .hero{padding:56px 0 44px}
+    .slides{min-height:380px} .slide{padding:26px 18px} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top"><span class="mark">x</span><span>teamx</span></a>
+    <span class="spacer"></span>
+    <span class="lang" role="group" aria-label="language">
+      <button id="lg-zh" class="on" onclick="setLang('zh')">中文</button>
+      <button id="lg-en" onclick="setLang('en')">EN</button>
+    </span>
+    <a class="btn btn-primary btn-sm" id="loginBtn" href="/console">Login</a>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="hero">
+    <div class="wrap">
+      <h1>teamx <span class="x">=</span> <span id="h1a">人</span> <span class="x">×</span> <span id="h1b">AI</span></h1>
+      <p class="sub" id="sub"></p>
+      <div class="cta">
+        <a class="btn btn-primary" id="ctaLogin" href="/console"></a>
+        <a class="btn btn-ghost" href="#start" id="ctaStart"></a>
+      </div>
+      <div class="install">
+        <code id="brewCmd">brew install caishu97/tap/teamx</code>
+        <button onclick="copyBrew()" id="brewCopy"></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="proverbs">
+    <div class="wrap">
+      <div class="lead" id="pvLead"></div>
+      <div class="pgrid" id="pvGrid"></div>
+    </div>
+  </section>
+
+  <section id="gallery">
+    <div class="wrap">
+      <h2 class="sec" id="gTitle"></h2>
+      <p class="sec-sub" id="gSub"></p>
+      <div class="carousel">
+        <button class="cbtn prev" onclick="slide(-1)" aria-label="previous">‹</button>
+        <div class="slides" id="slides"></div>
+        <button class="cbtn next" onclick="slide(1)" aria-label="next">›</button>
+        <div class="dots" id="dots"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2 class="sec" id="vTitle"></h2>
+      <p class="sec-sub" id="vSub"></p>
+      <div class="vgrid" id="vGrid"></div>
+    </div>
+  </section>
+
+  <section class="start" id="start">
+    <div class="wrap">
+      <h2 class="sec" id="sTitle"></h2>
+      <p class="sec-sub" id="sSub"></p>
+      <div class="sgrid" id="sGrid"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap fgrid">
+    <span>© teamx</span>
+    <span class="spacer"></span>
+    <!-- TODO(links): 公开文档站与 GitHub 地址定稿后替换（design/019 Remaining Branches） -->
+    <a id="fDocs" href="https://github.com/caishu97/homebrew-tap" target="_blank" rel="noopener"></a>
+    <a id="fMeth" href="https://github.com/caishu97/homebrew-tap" target="_blank" rel="noopener"></a>
+    <a id="fGit" href="https://github.com/caishu97/homebrew-tap" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</footer>
+
+<script>
+/* ============================ i18n ============================ */
+const I18N = {
+  zh:{
+    sub:"人做判断，AI 做产出。<b>teamx 让他们成为一支团队</b> —— 更快、更强、可控，并把性价比一直调到最优。",
+    login:"登录 cloud", start:"怎么开始",
+    brewCopy:"复制", brewCopied:"已复制 ✓",
+    pvLead:"从东方到西方，所有文化都懂同一个道理 —— 人在一起，才更强。",
+    gTitle:"人和 AI 结合的团队，长什么样",
+    gSub:"下面几张图，也是这支队伍在做的事（每次打开，顺序都不一样）。",
+    vTitle:"它带来什么",
+    vSub:"不是把一个助手放到你身边，而是让「人 + AI」成为一支真正的团队。",
+    sTitle:"怎么开始",
+    sSub:"三种入口，挑一个最顺手的。",
+    fDocs:"文档", fMeth:"方法论",
+    login_:"浏览器登录",
+    login_d:"直接进入 teamx cloud，创建团队、发现团队、邀请成员。",
+    install_t:"装客户端",
+    install_d:"一条命令装好 teamx，让它作为 opencode 的协作层。",
+    invite_t:"收到邀请函",
+    invite_d:"把邀请函导入本地，即成为某个团队的成员。",
+    means:[
+      "三个普通人合力，顶一个天才",
+      "同心协力，锋利可断金属",
+      "两个脑袋胜过一个",
+      "人手多，活儿就轻",
+      "三个人相聚，便有文殊的智慧",
+      "一张纸，两个人抬也更省力",
+      "一加一，等于十一",
+      "一个头脑好，两个更好"
+    ],
+    values:[
+      ["更快","人做判断，AI 做产出 —— 两边同时动，同一个目标并行推进，不必排队。"],
+      ["更强","不论普通模型还是强大模型，多个放在一起，都会更强。"],
+      ["可控","不是事事审批：人在必要环节参与。管得住，也不拖慢。"],
+      ["性价比之道","AI 时代新技术层出不穷，最快用上「低成本 + 高能力」的技术与产品，才是真正的性价比。"]
+    ],
+    illo:["分享目标，共同努力","人和 AI 混合的成员","多种合作模式：分工 · 议会 · 讨论"],
+    finalBig:"team with AI = win", finalSmall:"AI 时代，会组队者胜"
+  },
+  en:{
+    sub:"Humans decide, AIs deliver. <b>teamx turns them into a team</b> — faster, stronger, under control, and always optimizing value.",
+    login:"Sign in", start:"Get started",
+    brewCopy:"Copy", brewCopied:"Copied ✓",
+    pvLead:"From East to West, every culture knows the same truth — people are stronger together.",
+    gTitle:"What a human + AI team looks like",
+    gSub:"The slides below are what that team is doing (the order changes on every visit).",
+    vTitle:"What it gives you",
+    vSub:"Not an assistant beside you — humans and AIs as one real team.",
+    sTitle:"Get started",
+    sSub:"Three ways in. Pick whichever fits.",
+    fDocs:"Docs", fMeth:"Methodology",
+    login_:"Sign in in the browser",
+    login_d:"Go straight into teamx cloud: create teams, discover teams, invite members.",
+    install_t:"Install the client",
+    install_d:"One command installs teamx as the collaboration layer for opencode.",
+    invite_t:"Import an invitation",
+    invite_d:"Import an invitation letter and you are a member of that team.",
+    means:[
+      "Three ordinary minds match a genius",
+      "Two hearts in accord can cut through metal",
+      "Two heads are better than one",
+      "Many hands make light work",
+      "Three people together have the wisdom of Monju",
+      "Even lifting a sheet of paper is easier together",
+      "One and one make eleven",
+      "One mind is good, two are better"
+    ],
+    values:[
+      ["Faster","Humans decide, AIs deliver — both move at once, parallel toward one goal."],
+      ["Stronger","Ordinary or frontier, models get stronger when several work together."],
+      ["Under control","Not gatekeeping everything: humans step in at the moments that matter."],
+      ["Value by design","New tech never stops coming; the real win is being fastest to use what is cheap and capable."]
+    ],
+    illo:["A shared goal, pursued together","Mixed membership: humans and AIs","Many modes: division, council, discussion"],
+    finalBig:"team with AI = win", finalSmall:"In the AI era, those who team up with AI win"
+  }
+};
+
+/* ============================ 谚语 ============================ */
+const PROVERBS = [
+  {txt:"三个臭皮匠，顶个诸葛亮", cls:"cn", from:"中国 · 汉语"},
+  {txt:"二人同心，其利断金",       cls:"cn", from:"中国 · 汉语"},
+  {txt:"Two heads are better than one", cls:"plain", from:"English"},
+  {txt:"Many hands make light work",    cls:"plain", from:"English"},
+  {txt:"三人寄れば文殊の知恵",     cls:"jp", from:"日本 · 日本語"},
+  {txt:"백지장도 맞들면 낫다",      cls:"kr", from:"한국어"},
+  {txt:"एक और एक ग्यारह होते हैं",  cls:"plain", from:"हिन्दी"},
+  {txt:"Ум хорошо, а два лучше",    cls:"plain", from:"Русский"}
+];
+/* 插画（首屏固定 = 分享目标；其余参与乱序） */
+const ILLOS = [
+  {img:"/assets/goal.jpg",    i:0},
+  {img:"/assets/members.jpg", i:1},
+  {img:"/assets/modes.jpg",   i:2}
+];
+
+let LANG = "zh";
+function t(){ return I18N[LANG]; }
+function setLang(l){
+  LANG = l;
+  document.documentElement.lang = (l === "zh" ? "zh-CN" : "en");
+  document.getElementById("lg-zh").classList.toggle("on", l === "zh");
+  document.getElementById("lg-en").classList.toggle("on", l === "en");
+  try{ localStorage.setItem("teamx_lang", l); }catch(e){}
+  render();
+}
+function copyBrew(){
+  const cmd = document.getElementById("brewCmd").textContent;
+  const done = () => { const b=document.getElementById("brewCopy");
+                       b.textContent = t().brewCopied; setTimeout(()=>b.textContent=t().brewCopy, 1600); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(cmd).then(done, () => fallbackCopy(cmd, done));
+  } else fallbackCopy(cmd, done);
+}
+function fallbackCopy(text, done){
+  const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta);
+  ta.select(); try{ document.execCommand("copy"); done(); }catch(e){} ta.remove();
+}
+
+/* ================= 轮播（乱序：谚语 ↔ 插画交替；首末固定） ================= */
+let slides=[], cur=0, timer=null;
+function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+
+function buildSlides(){
+  const p = shuffle(PROVERBS);
+  const illos = shuffle(ILLOS.slice(1));      // 首屏「分享目标」固定，不参与乱序
+  const mid = [];
+  // 交替编排：谚语 → 插画 → 谚语 …（同语言谚语因此永不相邻，满足 SD-25）
+  while(p.length || illos.length){
+    if(p.length)     mid.push({kind:"quote", p:p.shift()});
+    if(illos.length) mid.push({kind:"img",   illo:illos.shift()});
+  }
+  return [{kind:"img", illo:ILLOS[0]}, ...mid, {kind:"final"}];
+}
+function renderSlides(){
+  const box=document.getElementById("slides"), dots=document.getElementById("dots");
+  box.innerHTML = slides.map((s,i)=>{
+    if(s.kind==="img")
+      return `<div class="slide img ${i===0?'on':''}" data-i="${i}">
+        <img src="${s.illo.img}" alt="${t().illo[s.illo.i]}"><div class="slide-cap">${t().illo[s.illo.i]}</div>
+      </div>`;
+    if(s.kind==="quote")
+      return `<div class="slide quote ${i===0?'on':''}" data-i="${i}">
+        <div class="q ${s.p.cls}">${s.p.txt}</div>
+        <div class="m">${t().means[PROVERBS.indexOf(s.p)]}</div>
+        <div class="f">${s.p.from}</div></div>`;
+    return `<div class="slide final ${i===0?'on':''}" data-i="${i}">
+        <div class="big">${t().finalBig}</div><div class="small">${t().finalSmall}</div></div>`;
+  }).join("");
+  dots.innerHTML = slides.map((_,i)=>`<i class="${i===0?'on':''}" onclick="go(${i})"></i>`).join("");
+  cur = 0;
+}
+function go(i){
+  const list=document.querySelectorAll("#slides .slide"), ds=document.querySelectorAll("#dots i");
+  if(!list.length) return;
+  cur = (i + list.length) % list.length;
+  list.forEach((el,k)=>el.classList.toggle("on", k===cur));
+  ds.forEach((el,k)=>el.classList.toggle("on", k===cur));
+}
+function slide(d){ go(cur + d); restart(); }
+function restart(){ if(timer) clearInterval(timer); timer = setInterval(()=>go(cur+1), 5200); }
+
+function render(){
+  const s=t();
+  document.getElementById("sub").innerHTML = s.sub;
+  document.getElementById("ctaLogin").textContent = s.login;
+  document.getElementById("ctaStart").textContent = s.start;
+  document.getElementById("brewCopy").textContent = s.brewCopy;
+  document.getElementById("pvLead").textContent = s.pvLead;
+  document.getElementById("pvGrid").innerHTML = PROVERBS.map((p,i)=>
+    `<div class="pcard"><div class="txt ${p.cls}">${p.txt}</div>
+     <div class="mean">${s.means[i]}</div><div class="from">${p.from}</div></div>`).join("");
+  document.getElementById("gTitle").textContent = s.gTitle;
+  document.getElementById("gSub").textContent = s.gSub;
+  document.getElementById("vTitle").textContent = s.vTitle;
+  document.getElementById("vSub").textContent = s.vSub;
+  document.getElementById("vGrid").innerHTML = s.values.map((v,i)=>
+    `<div class="vcard"><div class="k">0${i+1}</div><h3>${v[0]}</h3><p>${v[1]}</p></div>`).join("");
+  document.getElementById("sTitle").textContent = s.sTitle;
+  document.getElementById("sSub").textContent = s.sSub;
+  document.getElementById("sGrid").innerHTML = `
+    <div class="scard"><div class="n">1</div><h3>${s.login_}</h3><p>${s.login_d}</p>
+      <div class="cmd"><a class="btn btn-primary btn-sm" href="/console">${s.login}</a></div></div>
+    <div class="scard"><div class="n">2</div><h3>${s.install_t}</h3><p>${s.install_d}</p>
+      <div class="cmd"><code>brew install caishu97/tap/teamx</code></div></div>
+    <div class="scard"><div class="n">3</div><h3>${s.invite_t}</h3><p>${s.invite_d}</p>
+      <div class="cmd"><code>teamx team import &lt;letter&gt;</code></div></div>`;
+  document.getElementById("fDocs").textContent = s.fDocs;
+  document.getElementById("fMeth").textContent = s.fMeth;
+  renderSlides();
+}
+
+/* 语言：优先 localStorage，其次浏览器 Accept-Language（SD-14 精神） */
+(function init(){
+  let l = null;
+  try{ l = localStorage.getItem("teamx_lang"); }catch(e){}
+  if(!l) l = (navigator.language || "zh").toLowerCase().startsWith("zh") ? "zh" : "en";
+  slides = buildSlides();
+  setLang(l);
+  restart();
+  const c=document.querySelector(".carousel");
+  if(c){ c.addEventListener("mouseenter",()=>{ if(timer) clearInterval(timer); });
+         c.addEventListener("mouseleave", restart); }
+})();
+</script>
+</body>
+</html>

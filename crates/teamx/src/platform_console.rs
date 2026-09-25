@@ -75,8 +75,18 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
-    let app = Router::new()
-        .route("/", get(index))
+    let app = build_router(ctx.clone(), true);
+    serve_https(app, &cmd.addr, cmd.port, launch_token, None, None, None).await
+}
+
+/// 组装路由：控制台全部 `/api/*` + 可选 `/`（`root_console=true` 时 `/` 是控制台首页）。
+///
+/// `teamx site` 用 `root_console=false`，把 `/` 让给官网、控制台首页挂到 `/console`；
+/// 控制台前端用的是**绝对路径** `/api/...`，所以嵌套与否都不影响它自己工作（Login 即站内相对路径）。
+fn build_router(ctx: Arc<Ctx>, root_console: bool) -> Router {
+    let base = Router::new();
+    let base = if root_console { base.route("/", get(index)) } else { base };
+    base
         .route("/api/login", post(api_login))
         .route("/api/login/password", post(api_login_password))
         .route("/api/logout", post(api_logout))
@@ -111,28 +121,171 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/audit", get(api_audit))
         .route("/api/oauth/start", get(api_oauth_start))
         .route("/api/oauth/callback", get(api_oauth_callback))
-        .with_state(ctx.clone());
+        .with_state(ctx)
+}
 
-    // TLS：用平台自身 instance 证书（`<teamx_home>/ca/server.*`），与另外两个 console 同源
-    let home = crate::db::teamx_home();
-    let pk = crate::pki::ensure_pki(&home).map_err(|e| format!("pki: {e}"))?;
-    let cert_pem = std::fs::read(&pk.server_cert).map_err(|e| format!("read cert: {e}"))?;
-    let key_pem = std::fs::read(&pk.server_key).map_err(|e| format!("read key: {e}"))?;
+/// 启动 HTTPS 服务：`cert/key` 给定则用外部证书（Let's Encrypt 等），
+/// 否则回退平台自签 instance 证书。可选在 `http_port` 上并行起一个 **HTTP→HTTPS 301** 跳转监听。
+#[allow(clippy::too_many_arguments)]
+async fn serve_https(
+    app: Router,
+    addr: &str,
+    port: u16,
+    launch_token: String,
+    cert: Option<std::path::PathBuf>,
+    key: Option<std::path::PathBuf>,
+    http_port: Option<u16>,
+) -> Result<(), String> {
+    let (cert_pem, key_pem, self_signed) = match (cert, key) {
+        (Some(c), Some(k)) => (
+            std::fs::read(&c).map_err(|e| format!("read cert {}: {e}", c.display()))?,
+            std::fs::read(&k).map_err(|e| format!("read key {}: {e}", k.display()))?,
+            false,
+        ),
+        (None, None) => {
+            // 平台自身 instance 证书（与另外两个 console 同源）
+            let home = crate::db::teamx_home();
+            let pk = crate::pki::ensure_pki(&home).map_err(|e| format!("pki: {e}"))?;
+            (
+                std::fs::read(&pk.server_cert).map_err(|e| format!("read cert: {e}"))?,
+                std::fs::read(&pk.server_key).map_err(|e| format!("read key: {e}"))?,
+                true,
+            )
+        }
+        _ => return Err("--tls-cert 与 --tls-key 必须成对提供".to_string()),
+    };
     let config = RustlsConfig::from_pem(cert_pem, key_pem)
         .await
         .map_err(|e| format!("tls config: {e}"))?;
-
-    let addr: std::net::SocketAddr = format!("{}:{}", cmd.addr, cmd.port)
+    let sock: std::net::SocketAddr = format!("{addr}:{port}")
         .parse()
         .map_err(|e| format!("bad bind addr: {e}"))?;
-    eprintln!("teamx platform console (platform plane)");
-    eprintln!("  open: https://{addr}/?token={launch_token}");
-    eprintln!("  (self-signed cert; your browser will warn about it once)");
-    eprintln!("  GitHub OAuth: {}", if github_configured() { "enabled" } else { "disabled (set TEAMX_GITHUB_CLIENT_ID/SECRET)" });
-    axum_server::bind_rustls(addr, config)
+    eprintln!("teamx site (website + console)");
+    eprintln!("  site   : https://{sock}/");
+    eprintln!("  console: https://{sock}/console?token={launch_token}");
+    if self_signed {
+        eprintln!("  (self-signed cert; your browser will warn about it once)");
+    }
+    eprintln!(
+        "  GitHub OAuth: {}",
+        if github_configured() { "enabled" } else { "disabled (set TEAMX_GITHUB_CLIENT_ID/SECRET)" }
+    );
+
+    // HTTP → HTTPS 301（design/019 SD-12「强制 HTTPS」）
+    if let Some(hp) = http_port {
+        let host = sock.ip().to_string();
+        let target_port = sock.port();
+        let haddr: std::net::SocketAddr = format!("{host}:{hp}")
+            .parse()
+            .map_err(|e| format!("bad http bind addr: {e}"))?;
+        let redirect = Router::new().fallback(move |req: axum::extract::Request| {
+            let path = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/".to_string());
+            let host = req
+                .headers()
+                .get(axum::http::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(|h| h.split(':').next().unwrap_or("").to_string())
+                .unwrap_or_else(|| "localhost".to_string());
+            async move {
+                let url = format!("https://{host}:{target_port}{path}");
+                (StatusCode::MOVED_PERMANENTLY, [(axum::http::header::LOCATION, url)])
+            }
+        });
+        let rhost = haddr.ip().to_string();
+        tokio::spawn(async move {
+            if let Ok(l) = tokio::net::TcpListener::bind(haddr).await {
+                eprintln!("  http   : http://{rhost}:{hp}/ → 301 https");
+                let _ = axum::serve(l, redirect).await;
+            } else {
+                eprintln!("  http   : 绑定 {haddr} 失败（301 跳转未启用）");
+            }
+        });
+    }
+
+    axum_server::bind_rustls(sock, config)
         .serve(app.into_make_service())
         .await
         .map_err(|e| format!("serve: {e}"))
+}
+
+/// 官网静态资源（`/assets/{file}`）：只从内嵌表取，天然免疫路径穿越。
+async fn site_asset(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    match crate::site::asset(&file) {
+        Some((bytes, ct)) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, ct),
+             (axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+/// 官网首页（design/019）。
+async fn site_index() -> Html<&'static str> {
+    Html(crate::site::INDEX_HTML)
+}
+
+/// 控制台首页（挂在 `/console`，供 `teamx site` 使用）。
+async fn console_index() -> Html<&'static str> {
+    Html(INDEX_HTML)
+}
+
+/// 启动 `teamx site`（design/019）：一个进程同时服务官网 `/` 与控制台 `/console`。
+///
+/// **强制 HTTPS（SD-12）**：提供 `--tls-cert/--tls-key` 时用外部证书（Let's Encrypt 等）
+/// 并允许对外监听；**未提供证书时只监听 127.0.0.1**（自签证书，仅供本机预览，绝不明文对外）。
+pub fn run_site(cmd: &crate::cli::SiteCmd) -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
+    rt.block_on(run_site_async(cmd))
+}
+
+async fn run_site_async(cmd: &crate::cli::SiteCmd) -> Result<(), String> {
+    // 证书：CLI flag 优先，其次环境变量（部署时便于走密钥管理，避免写进命令行）
+    let flag = |v: &Option<std::path::PathBuf>, k: &str| {
+        v.clone().or_else(|| std::env::var(k).ok().filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from))
+    };
+    let cert = flag(&cmd.tls_cert, "TEAMX_TLS_CERT");
+    let key = flag(&cmd.tls_key, "TEAMX_TLS_KEY");
+    let has_cert = cert.is_some() && key.is_some();
+
+    // 未配证书 → 强制回环（SD-12）
+    let mut addr = cmd.addr.clone();
+    if !has_cert && addr != "127.0.0.1" && addr != "localhost" && addr != "::1" {
+        eprintln!("teamx: 未提供 --tls-cert/--tls-key，强制只监听 127.0.0.1（对外必须配证书）");
+        addr = "127.0.0.1".to_string();
+    }
+
+    let db_path = crate::db::default_db_path();
+    {
+        let conn = crate::db::open(&db_path).map_err(|e| format!("open db: {e}"))?;
+        crate::db::migrate(&conn).map_err(|e| format!("migrate: {e}"))?;
+    }
+    let launch_token = crate::util::gen_access_token(16);
+    let flag_kc = cmd.kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+    let kubeconfig = flag_kc.or_else(|| std::env::var("TEAMX_KUBECONFIG").ok().filter(|s| !s.trim().is_empty()));
+    let context = cmd
+        .context
+        .clone()
+        .or_else(|| std::env::var("TEAMX_K8S_CONTEXT").ok().filter(|s| !s.trim().is_empty()));
+    let ctx = Arc::new(Ctx {
+        db_path,
+        launch_token: launch_token.clone(),
+        kubeconfig,
+        context,
+        oauth_states: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    });
+
+    let app = build_router(ctx, false)
+        .route("/", get(site_index))
+        .route("/assets/{file}", get(site_asset))
+        .route("/console", get(console_index));
+
+    serve_https(app, &addr, cmd.port, launch_token, cert, key, cmd.http_port).await
 }
 
 // ---------------------------------------------------------------------------

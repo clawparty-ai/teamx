@@ -64,6 +64,16 @@ fn main() {
         }
         return;
     }
+    if let Command::Site(sc) = &cli.command {
+        match teamx::platform_console::run_site(sc) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("teamx error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Command::Console(cc) = &cli.command {
         match teamx::console::run(cc) {
             Ok(()) => {}

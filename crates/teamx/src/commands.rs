@@ -540,6 +540,10 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
         },
+        Command::Site(_) => {
+            // `teamx site` 自带服务器（同 platform console），不进 DB 分发器。
+            return err("`site` runs its own server; it must not reach the DB dispatcher");
+        }
         Command::Credit(c) => match c {
             CreditCmd::Refresh { team, all, kubeconfig, context, session } => {
                 let _ = tcoin_actor(conn, session)?;

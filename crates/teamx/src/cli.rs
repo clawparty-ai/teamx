@@ -86,6 +86,11 @@ pub enum Command {
     #[command(subcommand)]
     Credit(CreditCmd),
 
+    /// Teamx Cloud website (design/019): single-page site + platform console, embedded in
+    /// this binary. Serves `/` (site), `/assets/*`, and `/console` (console; its /api/* stays
+    /// at the root so Login is an in-site relative path).
+    Site(SiteCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2423,6 +2428,29 @@ pub enum PlatformCmd {
         #[arg(long)]
         context: Option<String>,
     },
+}
+
+/// Teamx Cloud 官网（design/019）：静态站点内嵌二进制，`teamx site` 启动。
+#[derive(Args, Debug, Clone)]
+pub struct SiteCmd {
+    /// bind address；**未提供证书时强制只监听 127.0.0.1**（SD-12）
+    #[arg(long, default_value = "127.0.0.1")]
+    pub addr: String,
+    #[arg(long, default_value_t = 8443)]
+    pub port: u16,
+    /// TLS 证书（Let's Encrypt 等外部签发的 fullchain.pem）；与 --tls-key 成对
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+    /// TLS 私钥（privkey.pem）
+    #[arg(long)]
+    pub tls_key: Option<PathBuf>,
+    /// 额外监听该端口做 **HTTP → HTTPS 301** 跳转（常配 80）
+    #[arg(long)]
+    pub http_port: Option<u16>,
+    #[arg(long)]
+    pub kubeconfig: Option<PathBuf>,
+    #[arg(long)]
+    pub context: Option<String>,
 }
 
 /// 平台控制台参数（`teamx platform console`）。
