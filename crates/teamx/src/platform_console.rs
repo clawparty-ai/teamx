@@ -1522,7 +1522,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <button class="tab active" data-tab="all" onclick="showTab('all')">全部团队</button>
     <button class="tab" data-tab="mine" onclick="showTab('mine')">我的团队</button>
     <button class="tab op-only" data-tab="tenants" onclick="showTab('tenants')">租户管理</button>
-    <button class="tab" data-tab="members" onclick="showTab('members')">成员操作</button>
     <button class="tab op-only" data-tab="platform" onclick="showTab('platform')">平台管理</button>
   </nav>
   <div class="tabpage" id="tab-all">
@@ -1579,15 +1578,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
   <div class="split">
     <section class="panel split-list"><div id="tenants"></div></section>
     <section class="panel split-detail" id="tenantDetail"><div class="detail-empty">← 点击左侧租户查看详情</div></section>
-  </div>
-
-  </div>
-  <div class="tabpage" id="tab-members" style="display:none">
-  <div class="panel"><h2>租户内成员操作 <span class="tag">经 service 车道 §6.5</span></h2>
-    <div class="muted">普通用户填自己名下租户的 team id 即可（归属鉴权）；运维可操作全部。</div>
-    <div class="row"><input class="input" id="invTeam" placeholder="team id"><input class="input" id="invRole" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="invite()">邀请成员</button></div>
-    <div class="row"><input class="input" id="pvTeam" placeholder="team id"><input class="input" id="pvMember" placeholder="member id"><button class="btn btn-sm" onclick="provision()">一键 provision</button></div>
-    <pre class="out muted" id="svcOut"></pre>
   </div>
 
   </div>
@@ -2091,8 +2081,6 @@ async function destroyTenant(t,teamName){
   if(!r.ok){alert(r.error);return}
   loadMine();loadTenants();loadPlatform();
 }
-async function invite(){const team=document.getElementById('invTeam').value.trim();const role_desc=document.getElementById('invRole').value.trim();const r=await jpost('/api/tenants/'+encodeURIComponent(team)+'/invite',{role_desc});document.getElementById('svcOut').textContent=JSON.stringify(r,null,2)}
-async function provision(){const team=document.getElementById('pvTeam').value.trim();const member=document.getElementById('pvMember').value.trim();const r=await jpost('/api/tenants/'+encodeURIComponent(team)+'/provision',{member});document.getElementById('svcOut').textContent=JSON.stringify(r,null,2)}
 </script>
 </body></html>
 "#;
@@ -2145,7 +2133,7 @@ mod tests {
 
     #[test]
     fn index_html_has_platform_surfaces() {
-        for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
+        for needle in ["平台控制台", "/api/tenants", "/invite", "平台审计", "GitHub OAuth",
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "openTcoin", "loadTcoin", "settleTcoin", "tab-tcoin", "tcList", "tcDetail",
