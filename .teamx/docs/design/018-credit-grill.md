@@ -1,9 +1,9 @@
 ---
-status: active
+status: completed
 protocol_version: 1
 owner: caishu
 created_at: 2026-09-25
-updated_at: 2026-09-25
+updated_at: 2026-09-25（Shared Understanding 已确认）
 ---
 
 # 018 — credit 评分模型（grill 设计访谈）
@@ -123,7 +123,7 @@ TCoin 定稿后（017）：
 
 ## Open Questions
 
-（空 —— Round 2 后 Frontier 已清空；待 owner 确认 Shared Understanding）
+（空 —— Round 2 后 Frontier 已清空；owner 已确认 Shared Understanding）
 
 ## Fact Requests and Reports
 
