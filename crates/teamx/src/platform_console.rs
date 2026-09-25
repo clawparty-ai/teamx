@@ -1414,13 +1414,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .tab.active{color:#4A90E5;font-weight:600;border-bottom-color:#4A90E5}
  .quota-pill{display:inline-block;border-radius:999px;padding:2px 12px;font-size:12px;background:#EBF5FF;color:#4A90E5;margin-left:8px}
  /* 二级菜单：**左侧竖排**导航（与一级下划线 Tab 明显分层） */
- .subnav-layout{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:start}
- .subnav{background:#fff;border-radius:4px;box-shadow:0 2px 4px 0 rgba(214,228,241,0.7);padding:8px;position:sticky;top:16px}
- .subnav-item{display:block;padding:9px 12px;border-radius:6px;font-size:13px;color:#606266;cursor:pointer;transition:background 150ms,color 150ms;border-left:3px solid transparent}
- .subnav-item:hover{background:#F2F6FC;color:#4A90E5}
- .subnav-item.active{background:#EBF3FC;color:#4A90E5;font-weight:600;border-left-color:#4A90E5}
- @media (max-width:900px){.subnav-layout{grid-template-columns:1fr}.subnav{position:static;display:flex;gap:4px;overflow:auto;padding:6px}
-.subnav-item{border-left:none;white-space:nowrap}}
+ .list-head{display:flex;align-items:center;gap:8px;margin:2px 0 10px}
+ .back-row{margin:0 0 10px}
  /* 轻量分段控件（用于「我的申请/待我审批」这类**视图切换**，不是章节导航） */
  .subtabs{display:inline-flex;gap:4px;padding:4px;background:#F2F6FC;border-radius:8px;margin:0 0 8px}
  .subtab{border:none;background:none;padding:6px 16px;font-size:13px;color:#606266;cursor:pointer;border-radius:6px;font-family:inherit;transition:background 150ms,color 150ms}
@@ -1562,21 +1557,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
   </div>
   <div class="tabpage" id="tab-mine">
-  <div class="subnav-layout">
-  <nav class="subnav" id="mineSubtabs">
-    <a class="subnav-item active" data-sub="list" onclick="mineTab('list')">团队列表</a>
-    <a class="subnav-item" data-sub="create" onclick="mineTab('create')">创建团队</a>
-    <a class="subnav-item" data-sub="letters" onclick="mineTab('letters')">加入团队</a>
-  </nav>
-  <div>
   <div id="sub-list">
     <div class="cards" id="mineCards"></div>
     <div class="split">
-      <section class="panel split-list"><h2>我的团队</h2><div id="mine"></div></section>
+      <section class="panel split-list">
+        <div class="list-head">
+          <button class="btn btn-sm" onclick="mineTab('create')">＋ 创建团队</button>
+          <button class="btn btn-sm btn-ghost" onclick="mineTab('letters')">加入团队</button>
+          <span class="muted" id="mineCount" style="margin-left:auto"></span>
+        </div>
+        <div id="mine"></div></section>
       <section class="panel split-detail" id="mineDetail"><div class="detail-empty">← 点击左侧团队查看/管理</div></section>
     </div>
   </div>
   <div id="sub-create" style="display:none">
+    <div class="back-row"><button class="btn btn-sm btn-ghost" onclick="mineTab('list')">← 返回团队列表</button></div>
     <div class="panel" style="max-width:640px">
       <h2>创建团队 <span class="tag">O-1(a) 全新开始 · 空账本</span></h2>
       <div class="form" style="gap:14px">
@@ -1590,13 +1585,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
   </div>
   <div id="sub-letters" style="display:none">
+    <div class="back-row"><button class="btn btn-sm btn-ghost" onclick="mineTab('list')">← 返回团队列表</button></div>
     <div class="panel"><h2>加入团队 <span class="tag">取件页</span></h2>
       <div class="muted">这里是你**已加入**的团队的成员邀请函（换机器/没保存时可重新取回）。<br>
         想加入新团队 → 去「全部团队」发现并申请；你自己创建的团队不需要"加入"（见团队详情里的 owner 邀请函）。</div>
       <div id="lettersList"></div>
     </div>
-  </div>
-  </div>
   </div>
   </div>
   <div class="tabpage" id="tab-tenants" style="display:none">
@@ -1792,8 +1786,9 @@ document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
 async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
 function mineTab(name){
-  document.querySelectorAll('#mineSubtabs .subnav-item').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
+  // 无二级菜单：列表页头部用「创建团队 / 加入团队」两个按钮切换视图（owner 反馈）
   ['list','create','letters'].forEach(n=>{const el=document.getElementById('sub-'+n); if(el) el.style.display=(n===name?'block':'none')});
+  window.scrollTo({top:0,behavior:'smooth'});
   if(name==='letters')loadLetters();
   if(name==='list')loadMine();
 }
@@ -2097,7 +2092,7 @@ mod tests {
             "openCredit", "loadCredit", "refreshCredit", "tab-credit", "crList", "crDetail", "credit_grade",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
-            "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表", "加入团队",
+            "list-head", "mineCount", "back-row", "创建团队", "加入团队",
             "loadOwnerLetter", "ownerLetter_",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
