@@ -2006,7 +2006,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <div class="subtitle">Teamx Cloud · 平台控制台</div>
     <div class="form">
       <!-- 用户名/密码用真 <form>：回车即提交（此前是 div，回车无反应） -->
-      <form id="pwForm" autocomplete="on">
+      <!-- 内联 onsubmit：即使页面脚本某处异常，登录也不会退化成"表单原生提交" -->
+      <form id="pwForm" autocomplete="on" onsubmit="return tlogin(event)">
         <input class="input" id="uname" placeholder="用户名" autocomplete="username">
         <input class="input" id="password" type="password" placeholder="密码" autocomplete="current-password">
         <button class="btn" type="submit">登 录</button>
@@ -2014,6 +2015,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <div class="error" id="loginErr"></div>
       <div class="oauth-row"><a class="btn btn-ghost" id="oauthBtn" style="display:none;text-decoration:none;text-align:center" href="/api/oauth/start">GitHub 登录</a></div>
       <div class="muted">GitHub OAuth：<span id="oauthState">检查中…</span></div>
+      <div class="muted" id="scriptState" style="font-size:12px"></div>
     </div>
   </div>
 </div>
@@ -2114,11 +2116,15 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </div>
 </div>
 <script>
-initLang();
-initTheme();
-const q=new URLSearchParams(location.search);
-if(q.get('token')){fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:q.get('token')})}).then(()=>{history.replaceState({},'',location.pathname);boot()})}
-else boot();
+// 登录入口（内联 onsubmit 调用；脚本异常也能用）
+function tlogin(e){
+  try{ if(e && e.preventDefault) e.preventDefault(); loginPassword(); }
+  catch(err){ showFatal('login: ' + (err && err.message || err)); }
+  return false;   // 阻止表单原生提交（原生提交会 GET /console? 且不写会话 cookie）
+}
+// 启动块已移到脚本**末尾**（见文件末尾）：那里 DICT/ERR 才已赋值。
+// 历史 bug：启动放开头 → initLang() 时 DICT 仍 undefined（var 提升未赋值）→ 抛错 →
+// 后续（含登录表单处理器）全不执行 → 表单原生提交 GET /console? → 没有会话 cookie → 停在登录页。
 async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.json()}
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
@@ -2200,6 +2206,8 @@ function errText(d){
 function getCookie(n){ var m=document.cookie.match('(^|; )'+n+'=([^;]*)'); return m?decodeURIComponent(m[2]):null; }
 function setCookieLang(l){ document.cookie = 'teamx_lang='+l+'; Path=/; SameSite=Strict; Max-Age=31536000'; }
 function applyLangNode(root){
+  // 防御：DICT 未赋值/未定义时直接返回（顺序错误也不拖垮整页）
+  if (typeof DICT === 'undefined' || !DICT) return;
   root = root || document.body;
   var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
   var n;
@@ -2401,7 +2409,8 @@ async function boot(){
   // 首屏各块各自容错：某一块失败不应把整个已登录界面拖垮
   for(const step of [loadDir(1),loadMine(),loadTenants(),loadPlatform()]){ try{ await step; }catch(e){ showFatal('加载失败：'+(e&&e.message||e)); } }
 }
-document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
+try{ document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()}); }
+catch(e){ showFatal('form bind: ' + (e && e.message || e)); }
 async function loginPassword(){
   const name=document.getElementById('uname').value.trim();
   const password=document.getElementById('password').value;
@@ -2745,6 +2754,22 @@ async function destroyTenant(t,teamName){
   if(!r.ok){alert(errText(r));return}
   loadMine();loadTenants();loadPlatform();
 }
+/* ===== 启动（放最后：DICT/ERR 等已赋值）===== */
+try{
+  initLang();
+  initTheme();
+  var scriptEl=document.getElementById('scriptState');
+  if(scriptEl) scriptEl.textContent='脚本已就绪';
+}catch(e){ showFatal('init: ' + (e && e.message || e)); }
+try{
+  const q=new URLSearchParams(location.search);
+  if(q.get('token')){
+    fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:q.get('token')})})
+      .then(()=>{history.replaceState({},'',location.pathname);boot()});
+  } else {
+    boot();
+  }
+}catch(e){ showFatal('boot: ' + (e && e.message || e)); }
 </script>
 </body></html>
 "#;
@@ -2844,6 +2869,9 @@ mod tests {
             "function errText(",    // 服务端 code → 文案
             "lg-zh", "lg-en",       // 切换器
             "initLang();",          // 启动即生效
+            "function tlogin(",     // 登录入口（内联 onsubmit；脚本局部失败也能登录）
+            "onsubmit=\"return tlogin(event)\"",
+            "id=\"scriptState\"",       // 「脚本已就绪」可见标记（诊断）
         ] {
             assert!(INDEX_HTML.contains(needle), "双语基建缺少: {needle}");
         }
