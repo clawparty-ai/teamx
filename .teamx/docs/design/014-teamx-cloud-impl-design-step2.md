@@ -157,6 +157,7 @@
 | **删除「成员操作」Tab**（owner 裁决） | 该页是「我的团队」之前的**底层运维入口**（手填 team id/member id 调 `team.invite`/`node.provision`，输出原始 JSON）。能力已被用户面覆盖（团队详情邀请成员、批准/初始化自动拉 Pod）→ 整体移除 UI。**HTTP 端点保留**（`/api/tenants/{team}/invite`、`/provision`、`/reissue-members`；service 车道 §6.5 运维/排障面，E2E C7/C8 依赖） |
 | **修复 `logout()` 无反应** | 该函数写向**不存在**的元素 `logoutBtn` → 抛 TypeError → `boot()` 不执行（服务端已注销但界面不变，刷新才见登录页）。已修 + 清会话界面残留。同类死引用 `letterOut`（导致「初始化团队成功却不刷新」）同批修复 |
 | **新增防回归单测** | `index_html_get_element_by_id_targets_exist`：断言每个静态 `getElementById('x')` 都有对应 `id="x"`（跳过运行时拼接）。上述两处死引用先前只能靠人肉点出来 |
+| **修「登录成功却停在登录页」（2026-09-25）** | 根因：浏览器同时存在**多个同名 `teamx_platform_token`**（旧版本别的 Path 写过 / 先 `?token=` 登录过再改密码登录）时，服务端**只取第一个**；第一个失效 → `/api/me` 401 → `boot()` 判定未登录 → 停在登录页。修：`cookie_tokens()` 返回全部候选，**任一有效即通过**（guard/session_user 逐值尝试；identity 优先按用户；logout 吊销全部候选）。curl 复现三态：单 cookie ✓ / 失效在前+有效在后 ✓ / 全失效 401 ✓ |
 
 一级 Tab 现为：**全部团队 / 我的团队 / 租户管理(运维) / 平台管理(运维)**。
 
