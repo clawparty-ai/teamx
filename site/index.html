@@ -158,7 +158,7 @@
       <div class="cta">
         <a class="btn btn-primary" id="ctaLogin" href="/console"></a>
       </div>
-      <div class="muted" id="heroNoInstall" style="margin-top:16px;font-size:14px"></div>
+      <div class="muted" id="heroNote" style="margin-top:16px;font-size:14px"></div>
     </div>
   </section>
 
@@ -215,7 +215,7 @@ const I18N = {
     login_d:"直接进入 teamx cloud，创建团队、发现团队、邀请成员。",
     install_t:"本地（云边协作）",
     install_d:"把本机的 opencode、文件与模型接进同一个团队 —— 云端与本地共享同一个目标、同一本台账。",
-    heroNoInstall:"浏览器即可开始，无需任何本地安装；本机安装是为「云边协作」。",
+    heroNote:"随时开始、随处开始，你的 AI 团队旅程。",
     invite_t:"收到邀请函",
     invite_d:"把邀请函导入本地，即成为某个团队的成员。",
     means:[
@@ -249,7 +249,7 @@ const I18N = {
     login_d:"Go straight into teamx cloud: create teams, discover teams, invite members.",
     install_t:"Local (cloud ↔ edge)",
     install_d:"Bring your local opencode, files and models into the same team — one shared goal and one ledger across cloud and edge.",
-    heroNoInstall:"Start in the browser — no local install needed. Install locally when you want cloud ↔ edge collaboration.",
+    heroNote:"Start anytime, anywhere — your AI team journey.",
     invite_t:"Import an invitation",
     invite_d:"Import an invitation letter and you are a member of that team.",
     means:[
@@ -386,7 +386,7 @@ function render(){
   const s=t();
   setHTML("sub", s.sub);
   setText("ctaLogin", s.login);
-  setText("heroNoInstall", s.heroNoInstall);
+  setText("heroNote", s.heroNote);
   setHTML("vGrid", s.values.map((v,i)=>
     `<div class="vcard"><div class="k">0${i+1}</div><h3>${v[0]}</h3><p>${v[1]}</p></div>`).join(""));
   setText("sTitle", s.sTitle);
