@@ -1490,6 +1490,17 @@ fn my_seat_id(conn: &rusqlite::Connection, uid: &str, team: &str) -> Result<Opti
     Ok(seat.filter(|s| !s.is_empty()))
 }
 
+/// 我的席位显示名（平台侧权威；租户 roster 不返回 member_id，只能用名字配）。
+fn my_seat_name(conn: &rusqlite::Connection, uid: &str, team: &str) -> Option<String> {
+    let seat = my_seat_id(conn, uid, team).ok().flatten()?;
+    conn.query_row(
+        "SELECT display_name FROM members WHERE id = ?1",
+        rusqlite::params![seat],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// 成员名册（design/016 SD-12）：owner 只读，租户侧裁剪（无凭据）。
 async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
     if let Err(r) = guard(&ctx, &headers) { return r; }
@@ -1504,13 +1515,18 @@ async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(tea
         )?;
         // 标出"哪一行是我" → 该行渲染「Teamx Console」链接（云 member 的 console）
         let mine = my_seat_id(c, &uid, &team)?;
+        let my_name = my_seat_name(c, &uid, &team);
         if let Some(rows) = v["members"].as_array_mut() {
             for r in rows.iter_mut() {
-                let is_me = mine
+                let by_id = mine
                     .as_deref()
-                    .map(|m| r["member_id"].as_str() == Some(m))
+                    .map(|m| !m.is_empty() && r["member_id"].as_str() == Some(m))
                     .unwrap_or(false);
-                r["is_me"] = json!(is_me);
+                let by_name = my_name
+                    .as_deref()
+                    .map(|n| !n.is_empty() && r["display_name"].as_str() == Some(n))
+                    .unwrap_or(false);
+                r["is_me"] = json!(by_id || by_name);
             }
         }
         Ok::<Value, String>(v)
