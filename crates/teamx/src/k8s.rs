@@ -571,6 +571,17 @@ pub fn server_image() -> String {
 /// 租户 server 的 Service/端口约定（与现网一致）。
 pub const SERVER_PORT: u16 = 5783;
 
+/// 租户 server PVC 默认容量。**可用 `TEAMX_TENANT_PVC_SIZE` 覆盖**（如 `20Gi`）——
+/// 真机踩到：迁移的团队 git 仓库可达 10G+，默认 5Gi 装不下（local-path 不支持扩容，
+/// 所以必须在**创建时**给够）。
+pub fn tenant_pvc_size() -> String {
+    std::env::var("TEAMX_TENANT_PVC_SIZE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "5Gi".to_string())
+}
+
 /// 租户基础设施清单（design/014 §3/§4）：namespace（PSA）+ CA Secret + server PVC + Deployment。
 ///
 /// **CA 由平台在建租户时生成**并写入 Secret（租户 server 只读挂载；它需要 CA key 才能
@@ -587,6 +598,7 @@ pub fn tenant_manifests(
     let pvc = format!("teamx-serve-data-{}", short_id(team_id));
     let deploy = format!("teamx-serve-{}", short_id(team_id));
     let image = server_image();
+    let pvc_size = tenant_pvc_size();
     format!(
         r#"apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
@@ -643,7 +655,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 5Gi
+      storage: {pvc_size}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -755,6 +767,7 @@ spec:
         ca_key = indent(ca_key_pem, 4),
         srv_crt = indent(server_cert_pem, 4),
         srv_key = indent(server_key_pem, 4),
+        pvc_size = pvc_size,
     )
 }
 
@@ -1053,6 +1066,19 @@ mod tests {
         let y = network_policy_manifest("t1", "m1", &[]);
         assert!(y.contains("egress: []"), "empty allowlist must be an explicit empty list: {y}");
         assert!(!y.contains("egress:\n"), "must not emit a bare `egress:` key");
+    }
+
+    #[test]
+    fn tenant_pvc_size_is_configurable() {
+        // 默认 5Gi；环境变量可覆盖（迁移 11G 仓库的真实需求）
+        assert_eq!(tenant_pvc_size(), "5Gi");
+        std::env::set_var("TEAMX_TENANT_PVC_SIZE", "20Gi");
+        assert_eq!(tenant_pvc_size(), "20Gi");
+        let y = tenant_manifests("t1", "ca", "cak", "crt", "key");
+        assert!(y.contains("storage: 20Gi"), "清单应带上配置的容量");
+        std::env::set_var("TEAMX_TENANT_PVC_SIZE", "  ");
+        assert_eq!(tenant_pvc_size(), "5Gi", "空白应回退默认");
+        std::env::remove_var("TEAMX_TENANT_PVC_SIZE");
     }
 
     #[test]
