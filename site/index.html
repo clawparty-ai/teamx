@@ -25,6 +25,7 @@
        -webkit-font-smoothing:antialiased}
   a{color:inherit;text-decoration:none}
   .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px}
+  .wrap-wide{max-width:1240px}
   .muted{color:var(--muted)}
   .btn{display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;font:inherit;
        border-radius:8px;padding:11px 20px;font-size:15px;font-weight:600;transition:.18s}
@@ -67,33 +68,22 @@
   .install button{border:none;background:none;color:var(--blue);cursor:pointer;font:inherit;
        font-size:13px;font-weight:600}
 
-  /* ---------- proverbs ---------- */
-  .proverbs{background:var(--bg-2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
-       padding:56px 0}
-  .proverbs .lead{text-align:center;color:var(--muted);font-size:14px;margin-bottom:26px;
-       letter-spacing:.4px}
-  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
-  .pcard{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px}
-  .pcard .txt{font-size:17px;line-height:1.5}
-  .pcard .txt.cn{font-family:var(--serif-cn);font-size:20px}
-  .pcard .txt.jp{font-family:var(--serif-cn);font-size:19px}
-  .pcard .txt.kr{font-family:var(--serif-cn);font-size:19px}
-  .pcard .mean{color:var(--ink-2);font-size:13.5px;margin-top:8px}
-  .pcard .from{color:var(--muted);font-size:12px;margin-top:10px;letter-spacing:.3px}
-
   /* ---------- carousel ---------- */
-  .carousel{position:relative;border:1px solid var(--line);border-radius:16px;overflow:hidden;
-       background:#fff;box-shadow:0 10px 30px rgba(74,144,229,.07)}
-  .slides{position:relative;min-height:430px}
+  .carousel{position:relative;border:1px solid var(--line);border-radius:18px;overflow:hidden;
+       background:#fff;box-shadow:0 14px 40px rgba(74,144,229,.10)}
+  .slides{position:relative;min-height:600px}
   .slide{position:absolute;inset:0;opacity:0;transition:opacity .5s ease;display:flex;
-       align-items:center;justify-content:center;padding:36px 30px}
+       align-items:center;justify-content:center;padding:44px 40px}
   .slide.on{opacity:1}
-  .slide.img img{max-width:min(520px,84%);max-height:340px;border-radius:10px}
-  .slide.quote{text-align:center;flex-direction:column;gap:16px}
-  .slide.quote .q{font-size:clamp(22px,3.6vw,34px);line-height:1.45;font-family:var(--serif-cn)}
-  .slide.quote .q.plain{font-family:var(--sans);font-weight:700;font-size:clamp(20px,3.2vw,30px)}
-  .slide.quote .m{color:var(--ink-2);font-size:15px;max-width:600px}
-  .slide.quote .f{color:var(--muted);font-size:13px}
+  .slide.img{flex-direction:column;gap:18px}
+  .slide.img img{max-width:min(820px,94%);max-height:500px;border-radius:12px}
+  .slide-cap{color:var(--ink-2);font-size:15px;text-align:center;max-width:720px}
+  .slide.quote{text-align:center;flex-direction:column;gap:20px}
+  .slide.quote .q{font-size:clamp(28px,4.6vw,46px);line-height:1.4;font-family:var(--serif-cn)}
+  .slide.quote .q.plain{font-family:var(--sans);font-weight:700;font-size:clamp(24px,4vw,40px)}
+  .slide.quote .m{color:var(--ink-2);font-size:17px;max-width:720px}
+  .slide.quote .f{color:var(--muted);font-size:14px}
+  .slide.final .big{font-size:clamp(34px,6vw,58px)}
   .slide.final{background:linear-gradient(135deg,var(--blue),var(--blue-d));color:#fff;text-align:center;
        flex-direction:column;gap:12px}
   .slide.final .big{font-size:clamp(26px,4.6vw,44px);font-weight:800;letter-spacing:-.5px}
@@ -131,7 +121,8 @@
   .fgrid a:hover{color:var(--blue)}
   .fgrid .spacer{flex:1}
   @media (max-width:640px){ section{padding:52px 0} .hero{padding:56px 0 44px}
-    .slides{min-height:380px} .slide{padding:26px 18px} }
+    .slides{min-height:440px} .slide{padding:26px 18px}
+    .slide.img img{max-height:300px} .slide.quote .q{font-size:26px} }
 </style>
 </head>
 <body>
@@ -165,17 +156,8 @@
     </div>
   </section>
 
-  <section class="proverbs">
-    <div class="wrap">
-      <div class="lead" id="pvLead"></div>
-      <div class="pgrid" id="pvGrid"></div>
-    </div>
-  </section>
-
-  <section id="gallery">
-    <div class="wrap">
-      <h2 class="sec" id="gTitle"></h2>
-      <p class="sec-sub" id="gSub"></p>
+  <section id="gallery" style="padding-top:44px">
+    <div class="wrap wrap-wide">
       <div class="carousel">
         <button class="cbtn prev" onclick="slide(-1)" aria-label="previous">‹</button>
         <div class="slides" id="slides"></div>
@@ -187,8 +169,7 @@
 
   <section>
     <div class="wrap">
-      <h2 class="sec" id="vTitle"></h2>
-      <p class="sec-sub" id="vSub"></p>
+      <h2 class="sec">Values</h2>
       <div class="vgrid" id="vGrid"></div>
     </div>
   </section>
@@ -221,11 +202,6 @@ const I18N = {
     sub:"人做判断，AI 做产出。<b>teamx 让他们成为一支团队</b> —— 更快、更强、可控，并把性价比一直调到最优。",
     login:"登录 cloud", start:"怎么开始",
     brewCopy:"复制", brewCopied:"已复制 ✓",
-    pvLead:"从东方到西方，所有文化都懂同一个道理 —— 人在一起，才更强。",
-    gTitle:"人和 AI 结合的团队，长什么样",
-    gSub:"下面几张图，也是这支队伍在做的事（每次打开，顺序都不一样）。",
-    vTitle:"它带来什么",
-    vSub:"不是把一个助手放到你身边，而是让「人 + AI」成为一支真正的团队。",
     sTitle:"怎么开始",
     sSub:"三种入口，挑一个最顺手的。",
     fDocs:"文档", fMeth:"方法论",
@@ -258,11 +234,6 @@ const I18N = {
     sub:"Humans decide, AIs deliver. <b>teamx turns them into a team</b> — faster, stronger, under control, and always optimizing value.",
     login:"Sign in", start:"Get started",
     brewCopy:"Copy", brewCopied:"Copied ✓",
-    pvLead:"From East to West, every culture knows the same truth — people are stronger together.",
-    gTitle:"What a human + AI team looks like",
-    gSub:"The slides below are what that team is doing (the order changes on every visit).",
-    vTitle:"What it gives you",
-    vSub:"Not an assistant beside you — humans and AIs as one real team.",
     sTitle:"Get started",
     sSub:"Three ways in. Pick whichever fits.",
     fDocs:"Docs", fMeth:"Methodology",
@@ -383,14 +354,6 @@ function render(){
   document.getElementById("ctaLogin").textContent = s.login;
   document.getElementById("ctaStart").textContent = s.start;
   document.getElementById("brewCopy").textContent = s.brewCopy;
-  document.getElementById("pvLead").textContent = s.pvLead;
-  document.getElementById("pvGrid").innerHTML = PROVERBS.map((p,i)=>
-    `<div class="pcard"><div class="txt ${p.cls}">${p.txt}</div>
-     <div class="mean">${s.means[i]}</div><div class="from">${p.from}</div></div>`).join("");
-  document.getElementById("gTitle").textContent = s.gTitle;
-  document.getElementById("gSub").textContent = s.gSub;
-  document.getElementById("vTitle").textContent = s.vTitle;
-  document.getElementById("vSub").textContent = s.vSub;
   document.getElementById("vGrid").innerHTML = s.values.map((v,i)=>
     `<div class="vcard"><div class="k">0${i+1}</div><h3>${v[0]}</h3><p>${v[1]}</p></div>`).join("");
   document.getElementById("sTitle").textContent = s.sTitle;
