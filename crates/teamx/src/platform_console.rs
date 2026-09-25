@@ -2493,48 +2493,85 @@ async function openMineDetail(id,kind,el){
   if(kind==='owned'){
     const vis=det.visibility||'private', jp=det.join_policy||'invite_only', sum=det.public_summary||'';
     box.innerHTML=`
-      <div class="team-head"><h3>${esc(t.team_name||id)}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
-      <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
-      <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
-      ${t.bootstrapped ? `
-      <h2 style="margin-top:12px">初始化</h2>
-      <div class="muted">✅ 已初始化（团队数据就绪，owner 邀请函见下）——迁移继承或已自举的团队无需再初始化。</div>` : `
-      <h2 style="margin-top:12px">初始化（若尚未）</h2>
-      <div class="boot-row"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（留空 = 平台自动连接）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
-      <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>`}
-      <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
-      <div id="ownerLetter_${short}"></div>
-      <h2 style="margin-top:12px">Credit <span class="tag">团队信用（派生）</span></h2>
-      <div id="crTeam_${short}" class="muted">加载中…</div>
-      <h2 style="margin-top:12px">TCoin <span class="tag">本团队累计消耗</span></h2>
-      <div id="tcTeam_${short}" class="muted">加载中…</div>
-      <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
-      <div id="roster_${short}" class="muted">加载中…</div>
-      <h2 style="margin-top:12px">邀请成员</h2>
-      <div class="boot-row"><input class="input" id="invRole_${short}" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="inviteMember('${esc(id)}')">生成邀请函</button></div>
-      <pre class="out" id="invOut_${short}" style="display:none"></pre>
-      <h2 style="margin-top:12px">发现设置</h2>
-      <div class="boot-row"><select class="input" id="vis_${short}"><option value="private"${vis==='private'?' selected':''}>私有</option><option value="public"${vis==='public'?' selected':''}>公开</option></select>
-        <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select>
-        <input class="input wide" id="sum_${short}" placeholder="公开简介" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
-      <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px"><button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}','${esc(t.team_name||'')}')">回收租户</button></div>`;
+      <!-- 概览卡 -->
+      <div class="panel">
+        <div class="team-head"><h3>${esc(t.team_name||id)}</h3><span class="pill">${vis==='public'?'公开':'私有'}</span>${jp==='open_request'?'<span class="tag-j">允许申请</span>':'<span class="tag-i">仅邀请</span>'}</div>
+        <div class="pc-meta"><span>team <code>${esc(id)}</code></span><span>ns <code>${esc(t.namespace||'')}</code></span><span>CA <code>${esc((t.ca_fingerprint||'').slice(0,16))}…</code></span></div>
+        <div class="pc-sum">${esc(sum||'（未填写公开简介）')}</div>
+        ${t.bootstrapped ? `
+        <div class="muted" style="margin-top:10px">✅ 已初始化（团队数据就绪）</div>` : `
+        <div class="boot-row" style="margin-top:10px"><input class="input wide" id="bsUrl_${short}" placeholder="租户 endpoint（留空 = 平台自动连接）"><button class="btn btn-sm" onclick="bootstrapTeam('${esc(id)}')">初始化团队</button></div>
+        <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>`}
+      </div>
+      <!-- Owner 邀请函 -->
+      <div class="panel">
+        <h2>Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
+        <div id="ownerLetter_${short}"></div>
+      </div>
+      <!-- 成员（含「邀请成员」按钮） -->
+      <div class="panel">
+        <h2>成员 <span class="tag">只读</span></h2>
+        <div class="row" style="margin-bottom:10px"><button class="btn btn-sm" onclick="toggleInvite('${short}')">＋ 邀请成员</button></div>
+        <div id="invBox_${short}" style="display:none;border-top:1px solid #EBEEF5;padding-top:10px;margin-bottom:10px">
+          <div class="boot-row"><input class="input" id="invRole_${short}" placeholder="role: 描述" value="contributor: 成员"><button class="btn btn-sm" onclick="inviteMember('${esc(id)}')">生成邀请函</button></div>
+          <pre class="out" id="invOut_${short}" style="display:none"></pre>
+        </div>
+        <div id="roster_${short}" class="muted">加载中…</div>
+      </div>
+      <!-- Credit -->
+      <div class="panel">
+        <h2>Credit <span class="tag">团队信用（派生）</span></h2>
+        <div id="crTeam_${short}" class="muted">加载中…</div>
+      </div>
+      <!-- TCoin -->
+      <div class="panel">
+        <h2>TCoin <span class="tag">本团队累计消耗</span></h2>
+        <div id="tcTeam_${short}" class="muted">加载中…</div>
+      </div>
+      <!-- 发现设置 -->
+      <div class="panel">
+        <h2>发现设置 <span class="tag">公开可见性与加入策略</span></h2>
+        <div class="row"><select class="input" id="vis_${short}"><option value="private"${vis==='private'?' selected':''}>私有</option><option value="public"${vis==='public'?' selected':''}>公开</option></select>
+          <select class="input" id="jp_${short}"><option value="invite_only"${jp==='invite_only'?' selected':''}>仅邀请</option><option value="open_request"${jp==='open_request'?' selected':''}>允许申请加入</option></select>
+          <input class="input wide" id="sum_${short}" placeholder="公开简介" value="${esc(sum)}"><button class="btn btn-sm" onclick="saveDiscover('${esc(id)}')">保存</button></div>
+      </div>
+      <!-- 危险操作 -->
+      <div class="panel">
+        <h2>危险操作 <span class="tag">不可恢复</span></h2>
+        <button class="btn btn-sm btn-danger" onclick="destroyTenant('${esc(id)}','${esc(t.team_name||'')}')">回收租户</button>
+      </div>`;
     loadOwnerLetter(id);
     loadRoster(id);
     loadTeamTcoin(id);
     loadTeamCredit(id);
   }else{
     box.innerHTML=`
-      <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
-      <div class="pc-meta"><span>加入于 ${esc((t.joined_at||'').slice(0,10)||'—')}</span><span>席位 <code>${esc((t.member_id||'').slice(0,12))}</code></span>${t.workspace_live?'':'<span class="tag-i">状态为快照</span>'}</div>
-      <div class="pc-sum">${esc(det.public_summary||'')}</div>
-      <h2 style="margin-top:12px">Credit <span class="tag">团队信用（派生）</span></h2>
-      <div id="crTeam_${short}" class="muted">加载中…</div>
-      <h2 style="margin-top:12px">我的邀请函</h2>
-      ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
-      <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px">
+      <div class="panel">
+        <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
+        <div class="pc-meta"><span>加入于 ${esc((t.joined_at||'').slice(0,10)||'—')}</span><span>席位 <code>${esc((t.member_id||'').slice(0,12))}</code></span>${t.workspace_live?'':'<span class="tag-i">状态为快照</span>'}</div>
+        <div class="pc-sum">${esc(det.public_summary||'')}</div>
+      </div>
+      <div class="panel">
+        <h2>我的邀请函 <span class="tag">导入本地即成为成员</span></h2>
+        ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
+      </div>
+      <div class="panel">
+        <h2>Credit <span class="tag">团队信用（派生）</span></h2>
+        <div id="crTeam_${short}" class="muted">加载中…</div>
+      </div>
+      <div class="panel">
+        <h2>危险操作</h2>
         <button class="btn btn-sm btn-danger" onclick="leaveTeam('${esc(id)}','${esc(t.team_name||'')}')">离开团队</button>
-        <span class="muted">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</span></div>`;
+        <div class="muted" style="margin-top:6px">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</div>
+      </div>`;
   }
+}
+
+// 成员卡上的「邀请成员」开关（owner 反馈：邀请入口应挂在成员卡上）
+function toggleInvite(short){
+  const b=document.getElementById('invBox_'+short);
+  if(!b) return;
+  b.style.display = (b.style.display==='block') ? 'none' : 'block';
 }
 // ---- credit（design/018 SD-16：用户名菜单实页 + 团队详情 + 目录徽章） ----
 const CR_DESC={S:'极可信（90+）',A:'可信（80-89）',B:'正常（60-79）',C:'需关注（40-59）',D:'高风险（<40）'};
@@ -2675,9 +2712,10 @@ async function inviteMember(id){
   const role_desc=document.getElementById('invRole_'+short).value.trim()||'contributor: 成员';
   const r=await jpost('/api/my/teams/'+encodeURIComponent(id)+'/invite',{role_desc});
   const out=document.getElementById('invOut_'+short); out.style.display='block';
-  if(!r.ok){out.textContent='失败：'+(r.error||'');return}
+  if(!r.ok){out.textContent='失败：'+errText(r);return}
   out.textContent=r.letter||JSON.stringify(r,null,2);
   alert('邀请函已生成，可复制发给成员');
+  loadRoster(id);   // 新席位可能已建，刷新名册
 }
 async function leaveTeam(id,name){
   if(!confirm('离开团队「'+name+'」？\n\n会释放我的座位、回收我的工作区（PVC 保留 7 天），之后可再次申请。'))return;
@@ -2974,6 +3012,7 @@ mod tests {
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
             "list-head", "mineCount", "openCreateForm", "openLetters", "mineDetail", "创建团队", "加入团队",
+            "toggleInvite", "invBox_",  // 团队成员卡上的「邀请成员」入口
             "loadOwnerLetter", "ownerLetter_",
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
