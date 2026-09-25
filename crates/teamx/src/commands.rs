@@ -766,7 +766,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         },
         Command::Node(n) => match n {
             NodeCmd::ProvisionCloud { team, member, workspace_gib, kubeconfig, context, session } => {
-                let _ = resolve_actor(conn, session, None)?;
+                // 平台会话优先（平台库没有 member 行）；与 tcoin/credit 同款解析
+                let _ = tcoin_actor(conn, session)?;
                 crate::provision::provision_cloud_member(
                     conn,
                     team,
