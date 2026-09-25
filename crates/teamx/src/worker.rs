@@ -285,8 +285,19 @@ fn poll_once(
         }
     };
     let stdout = String::from_utf8_lossy(&run.stdout);
+    // 诊断缺口修复：原先**只打印 stdout**，opencode 的错误全在 stderr 上 → 真机排查时"exit 1 且无输出"。
+    // 现在失败时同时给出 stdout 与 stderr 的尾部（各 12 行）。
     let tail: String = stdout.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-    eprintln!("teamx worker: opencode run exited={}:\n{}", run.status, tail);
+    if run.status.success() {
+        eprintln!("teamx worker: opencode run exited={}:\n{}", run.status, tail);
+    } else {
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        let etail: String = stderr.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        eprintln!(
+            "teamx worker: opencode run exited={}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            run.status, tail, etail
+        );
+    }
     if !run.status.success() {
         *last_run_at = Instant::now(); // do not retry every poll after a failure
         return Err("opencode run failed; items kept for retry".to_string());
