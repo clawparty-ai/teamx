@@ -1896,6 +1896,51 @@ const INDEX_HTML: &str = r#"<!doctype html>
  pre.out{background:#F2F6FC;border-radius:4px;padding:12px;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto}
  a.link{color:#4A90E5;text-decoration:none}
  a.link:hover{text-decoration:underline}
+ /* ---------- 深浅色（design/019：与官网一致，按钮在语言选择旁） ---------- */
+ html[data-theme="dark"]{color-scheme:dark}
+ html[data-theme="dark"] body{background:#12161C;color:#E6EAF0}
+ html[data-theme="dark"] header{background:#171C23;border-bottom-color:#2A323B;box-shadow:none}
+ html[data-theme="dark"] .logo-text{color:#7FB0EE}
+ html[data-theme="dark"] .panel,html[data-theme="dark"] .card,html[data-theme="dark"] .stat-card,
+ html[data-theme="dark"] .tabs,html[data-theme="dark"] .subnav{background:#1A2029;box-shadow:none;border-color:#2A323B}
+ html[data-theme="dark"] .tabs{border-bottom-color:#2A323B}
+ html[data-theme="dark"] .tab{color:#98A3B2}
+ html[data-theme="dark"] .tab.active,html[data-theme="dark"] .tab:hover{color:#7FB0EE}
+ html[data-theme="dark"] h1,html[data-theme="dark"] h2,html[data-theme="dark"] h3,html[data-theme="dark"] b{color:#E6EAF0}
+ html[data-theme="dark"] .subtitle,html[data-theme="dark"] .muted,html[data-theme="dark"] .sec-sub{color:#8B96A5}
+ html[data-theme="dark"] table th{background:#1F2630;color:#98A3B2;border-bottom-color:#2A323B}
+ html[data-theme="dark"] table td{border-bottom-color:#242B34;color:#D8DEE7}
+ html[data-theme="dark"] code,html[data-theme="dark"] pre.out{background:#1F2630;color:#C9D4E2;border-color:#2A323B}
+ html[data-theme="dark"] .input,html[data-theme="dark"] select.input,html[data-theme="dark"] textarea{
+   background:#151A21;border-color:#2A323B;color:#E6EAF0}
+ html[data-theme="dark"] .input::placeholder{color:#6B7686}
+ html[data-theme="dark"] .btn-ghost{background:#1A2029;color:#7FB0EE;border-color:#33507A}
+ html[data-theme="dark"] .btn-ghost:hover{background:#1E2733}
+ html[data-theme="dark"] .row-item{border-bottom-color:#242B34}
+ html[data-theme="dark"] .row-item:hover{background:#1E2733}
+ html[data-theme="dark"] .row-item.sel{background:#1E2A3A;box-shadow:inset 3px 0 0 #4A90E5}
+ html[data-theme="dark"] .detail-empty{color:#8B96A5}
+ html[data-theme="dark"] .usermenu-panel{background:#1A2029;border-color:#2A323B;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+ html[data-theme="dark"] .usermenu-panel a{color:#D8DEE7}
+ html[data-theme="dark"] .usermenu-panel a:hover{background:#1E2733;color:#7FB0EE}
+ html[data-theme="dark"] .usermenu-panel .sep{border-top-color:#2A323B}
+ html[data-theme="dark"] .lang{background:#1F2630}
+ html[data-theme="dark"] .lang button{color:#98A3B2}
+ html[data-theme="dark"] .lang button.on{background:#2A3340;color:#7FB0EE;box-shadow:none}
+ html[data-theme="dark"] .subtabs{background:#1F2630}
+ html[data-theme="dark"] .subtab{color:#98A3B2}
+ html[data-theme="dark"] .subtab.on{background:#2A3340;color:#7FB0EE}
+ html[data-theme="dark"] .subnav-item{color:#98A3B2}
+ html[data-theme="dark"] .subnav-item:hover{background:#1E2733;color:#7FB0EE}
+ html[data-theme="dark"] .subnav-item.active{background:#1E2A3A;color:#7FB0EE}
+ html[data-theme="dark"] .pill{background:#1D2A3A;color:#7FB0EE}
+ html[data-theme="dark"] .tag,html[data-theme="dark"] .tag-i,html[data-theme="dark"] .tag-j{background:#1F2630;color:#98A3B2}
+ html[data-theme="dark"] .boot-row,html[data-theme="dark"] .row{border-color:#2A323B}
+ html[data-theme="dark"] .divider::before,html[data-theme="dark"] .divider::after{border-top-color:#2A323B}
+ .themebtn{border:1px solid #EBEEF5;background:#fff;color:#606266;cursor:pointer;width:32px;height:32px;
+   border-radius:999px;font-size:14px;line-height:1;margin-right:6px;display:inline-flex;align-items:center;justify-content:center}
+ .themebtn:hover{color:#4A90E5;border-color:#4A90E5}
+ html[data-theme="dark"] .themebtn{background:#1A2029;border-color:#2A323B;color:#98A3B2}
 </style></head>
 <body>
 <header><div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Cloud</span><span class="logo-sub">平台控制台</span></div>
@@ -1904,6 +1949,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <button id="lg-zh" class="on" onclick="setLang('zh')">中文</button>
       <button id="lg-en" onclick="setLang('en')">EN</button>
     </span>
+    <button class="themebtn" id="themeBtn" onclick="toggleTheme()" aria-label="theme">☾</button>
     <div class="usermenu" id="usermenu" style="display:none">
       <button class="btn btn-sm" onclick="toggleMenu(event)"><span id="who"></span> ▾</button>
       <div class="usermenu-panel" id="usermenuPanel">
@@ -2035,6 +2081,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
 </div>
 <script>
 initLang();
+initTheme();
 const q=new URLSearchParams(location.search);
 if(q.get('token')){fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:q.get('token')})}).then(()=>{history.replaceState({},'',location.pathname);boot()})}
 else boot();
@@ -2156,6 +2203,21 @@ function watchLang(){
 function initLang(){
   var l = getCookie('teamx_lang') || ((navigator.language||'zh').toLowerCase().indexOf('zh')===0 ? 'zh' : 'en');
   setLang(l); watchLang();
+}
+/* 深浅色（与官网一致）：localStorage 记忆，默认跟随系统 */
+var THEME = 'light';
+function applyTheme(){
+  document.documentElement.dataset.theme = THEME;
+  var b = document.getElementById('themeBtn');
+  if(b) b.textContent = (THEME === 'dark') ? '☀' : '☾';
+  try{ localStorage.setItem('teamx_theme', THEME); }catch(e){}
+}
+function toggleTheme(){ THEME = (THEME === 'dark') ? 'light' : 'dark'; applyTheme(); }
+function initTheme(){
+  var t = null;
+  try{ t = localStorage.getItem('teamx_theme'); }catch(e){}
+  if(!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  THEME = t; applyTheme();
 }
 function toggleMenu(e){e.stopPropagation();const p=document.getElementById('usermenuPanel');p.style.display=p.style.display==='block'?'none':'block'}
 document.addEventListener('click',()=>{const p=document.getElementById('usermenuPanel');if(p)p.style.display='none'});

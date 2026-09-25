@@ -19,19 +19,24 @@
            "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
     --wrap:1080px;
   }
+  html[data-theme="dark"]{
+    --ink:#E7ECF3; --ink-2:#AEB9C7; --muted:#7E8A9A; --line:#2A323B;
+    --bg:#141922; --bg-2:#1B2129; --card:#1B2129; --blue-l:#1D2A3A; --blue-bg:#1A2534;
+  }
+  html{--card:#fff}
   *{box-sizing:border-box;margin:0;padding:0}
   html{scroll-behavior:smooth}
   body{font-family:var(--sans);color:var(--ink);background:var(--bg);line-height:1.65;
        -webkit-font-smoothing:antialiased}
   a{color:inherit;text-decoration:none}
   .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px}
-  .wrap-wide{max-width:1680px}
+  .wrap-wide{max-width:1240px}
   .muted{color:var(--muted)}
   .btn{display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;font:inherit;
        border-radius:8px;padding:11px 20px;font-size:15px;font-weight:600;transition:.18s}
   .btn-primary{background:var(--blue);color:#fff}
   .btn-primary:hover{background:var(--blue-d)}
-  .btn-ghost{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+  .btn-ghost{background:var(--card);color:var(--blue);border:1px solid var(--blue)}
   .btn-ghost:hover{background:var(--blue-bg)}
   .btn-sm{padding:7px 14px;font-size:13.5px;font-weight:500}
   code,kbd{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px;
@@ -41,7 +46,7 @@
   .sec-sub{color:var(--ink-2);margin-bottom:34px;font-size:16px}
 
   /* ---------- header ---------- */
-  header{position:sticky;top:0;z-index:40;background:rgba(255,255,255,.88);
+  header{position:sticky;top:0;z-index:40;background:var(--bg);opacity:.98;
          backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line)}
   .nav{display:flex;align-items:center;gap:14px;height:64px}
   .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
@@ -52,8 +57,12 @@
   .lang{display:inline-flex;background:var(--bg-2);border-radius:999px;padding:3px}
   .lang button{border:none;background:none;font:inherit;font-size:13px;color:var(--ink-2);
        padding:5px 13px;border-radius:999px;cursor:pointer}
-  .lang button.on{background:#fff;color:var(--blue);font-weight:600;
+  .lang button.on{background:var(--card);color:var(--blue);font-weight:600;
        box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .themebtn{border:1px solid var(--line);background:var(--card);color:var(--ink-2);cursor:pointer;
+       width:34px;height:34px;border-radius:999px;font-size:15px;line-height:1;display:inline-flex;
+       align-items:center;justify-content:center;transition:.18s}
+  .themebtn:hover{color:var(--blue);border-color:var(--blue)}
 
   /* ---------- hero ---------- */
   .hero{padding:84px 0 64px;text-align:center}
@@ -70,14 +79,14 @@
 
   /* ---------- carousel ---------- */
   .carousel{position:relative;border:1px solid var(--line);border-radius:18px;overflow:hidden;
-       background:#fff;box-shadow:0 14px 40px rgba(74,144,229,.10)}
-  .slides{position:relative;min-height:880px}
+       background:var(--card);box-shadow:0 14px 40px rgba(74,144,229,.10)}
+  .slides{position:relative;min-height:600px}
   .slide{position:absolute;inset:0;opacity:0;transition:opacity .5s ease;display:flex;
-       align-items:center;justify-content:center;padding:56px 52px}
+       align-items:center;justify-content:center;padding:14px 18px}
   .slide.on{opacity:1}
-  .slide.img{flex-direction:column;gap:18px}
-  .slide.img img{max-width:min(1160px,96%);max-height:700px;border-radius:14px}
-  .slide-cap{color:var(--ink-2);font-size:17px;text-align:center;max-width:900px}
+  .slide.img{flex-direction:column;gap:10px}
+  .slide.img img{max-width:min(1080px,100%);max-height:560px;border-radius:12px}
+  .slide-cap{color:var(--ink-2);font-size:15px;text-align:center;max-width:900px}
   .slide.quote{text-align:center;flex-direction:column;gap:20px}
   .slide.quote .q{font-size:clamp(40px,6.4vw,66px);line-height:1.35;font-family:var(--serif-cn)}
   .slide.quote .q.plain{font-family:var(--sans);font-weight:700;font-size:clamp(34px,5.6vw,58px)}
@@ -99,7 +108,7 @@
 
   /* ---------- values ---------- */
   .vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
-  .vcard{border:1px solid var(--line);border-radius:14px;padding:24px 22px;background:#fff;transition:.2s}
+  .vcard{border:1px solid var(--line);border-radius:14px;padding:24px 22px;background:var(--card);transition:.2s}
   .vcard:hover{border-color:#CFE1F7;box-shadow:0 8px 24px rgba(74,144,229,.09);transform:translateY(-2px)}
   .vcard .k{font-size:12px;font-weight:700;letter-spacing:.8px;color:var(--blue)}
   .vcard h3{font-size:19px;margin:8px 0 8px}
@@ -108,7 +117,7 @@
   /* ---------- start ---------- */
   .start{background:var(--bg-2);border-top:1px solid var(--line)}
   .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
-  .scard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px 22px}
+  .scard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 22px}
   .scard .n{width:26px;height:26px;border-radius:8px;background:var(--blue-bg);color:var(--blue);
        font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
   .scard h3{font-size:17px;margin-bottom:8px}
@@ -121,8 +130,8 @@
   .fgrid a:hover{color:var(--blue)}
   .fgrid .spacer{flex:1}
   @media (max-width:640px){ section{padding:52px 0} .hero{padding:56px 0 44px}
-    .slides{min-height:560px} .slide{padding:30px 20px}
-    .slide.img img{max-height:360px} .slide.quote .q{font-size:32px} }
+    .slides{min-height:460px} .slide{padding:12px 14px}
+    .slide.img img{max-height:340px} .slide.quote .q{font-size:30px} }
 </style>
 </head>
 <body>
@@ -135,6 +144,7 @@
       <button id="lg-zh" class="on" onclick="setLang('zh')">中文</button>
       <button id="lg-en" onclick="setLang('en')">EN</button>
     </span>
+    <button class="themebtn" id="themeBtn" onclick="toggleTheme()" aria-label="theme">☾</button>
     <a class="btn btn-primary btn-sm" id="loginBtn" href="/console">Login</a>
   </div>
 </header>
@@ -227,7 +237,7 @@ const I18N = {
       ["可控","不是事事审批：人在必要环节参与。管得住，也不拖慢。"],
       ["性价比之道","AI 时代新技术层出不穷，最快用上「低成本 + 高能力」的技术与产品，才是真正的性价比。"]
     ],
-    illo:["分享目标，共同努力","人和 AI 混合的成员","多种合作模式：分工 · 议会 · 讨论","成本、用量、审计"],
+    illo:["分享目标，共同努力","人和 AI 混合的成员","多种合作模式：分工 · 议会 · 讨论","成本、用量、审计","治理、信用、效率"],
     finalBig:"team with AI = win", finalSmall:"AI 时代，会组队者胜"
   },
   en:{
@@ -259,7 +269,7 @@ const I18N = {
       ["Under control","Not gatekeeping everything: humans step in at the moments that matter."],
       ["Value by design","New tech never stops coming; the real win is being fastest to use what is cheap and capable."]
     ],
-    illo:["A shared goal, pursued together","Mixed membership: humans and AIs","Many modes: division, council, discussion","Cost, usage, auditability"],
+    illo:["A shared goal, pursued together","Mixed membership: humans and AIs","Many modes: division, council, discussion","Cost, usage, auditability","Governance, credit, efficiency"],
     finalBig:"team with AI = win", finalSmall:"In the AI era, those who team up with AI win"
   }
 };
@@ -275,15 +285,18 @@ const PROVERBS = [
   {txt:"एक और एक ग्यारह होते हैं",  cls:"plain", from:"हिन्दी"},
   {txt:"Ум хорошо, а два лучше",    cls:"plain", from:"Русский"}
 ];
-/* 谚语幻灯片背景（每条固定配色，彼此不同） */
-const QBG = ["#F2F7FE","#FEF3F0","#F1FBF5","#FEF9EE","#F5F3FE","#EFF9FC"];
+/* 谚语幻灯片背景（每条固定配色，彼此不同；深浅色各一套） */
+const QBG      = ["#F2F7FE","#FEF3F0","#F1FBF5","#FEF9EE","#F5F3FE","#EFF9FC"];
+const QBG_DARK = ["#1B2634","#2A1F1C","#16241D","#2A2416","#201E2E","#152429"];
+let THEME = "light";
 
 /* 插画（首屏固定 = 分享目标；其余参与乱序） */
 const ILLOS = [
   {img:"/assets/goal.jpg",    i:0},
   {img:"/assets/members.jpg", i:1},
   {img:"/assets/modes.jpg",   i:2},
-  {img:"/assets/cost.jpg",    i:3}
+  {img:"/assets/cost.jpg",    i:3},
+  {img:"/assets/governance.jpg", i:4}
 ];
 
 let LANG = "zh";
@@ -296,6 +309,14 @@ function setLang(l){
   try{ localStorage.setItem("teamx_lang", l); }catch(e){}
   render();
 }
+function applyTheme(){
+  document.documentElement.dataset.theme = THEME;
+  const b = document.getElementById("themeBtn");
+  if(b) b.textContent = (THEME === "dark") ? "☀" : "☾";
+  try{ localStorage.setItem("teamx_theme", THEME); }catch(e){}
+  renderSlides();   // 谚语底色随主题切换
+}
+function toggleTheme(){ THEME = (THEME === "dark") ? "light" : "dark"; applyTheme(); }
 function copyBrew(){
   const cmd = document.getElementById("brewCmd").textContent;
   const done = () => { const b=document.getElementById("brewCopy");
@@ -332,7 +353,8 @@ function renderSlides(){
         <img src="${s.illo.img}" alt="${t().illo[s.illo.i]}"><div class="slide-cap">${t().illo[s.illo.i]}</div>
       </div>`;
     if(s.kind==="quote"){
-      const bg = QBG[PROVERBS.indexOf(s.p) % QBG.length];
+      const pal = (THEME === "dark") ? QBG_DARK : QBG;
+      const bg = pal[PROVERBS.indexOf(s.p) % pal.length];
       return `<div class="slide quote ${i===0?'on':''}" data-i="${i}" style="background:${bg}">
         <div class="q ${s.p.cls}">${s.p.txt}</div>
         <div class="m">${t().means[PROVERBS.indexOf(s.p)]}</div>
@@ -381,8 +403,13 @@ function render(){
   let l = null;
   try{ l = localStorage.getItem("teamx_lang"); }catch(e){}
   if(!l) l = (navigator.language || "zh").toLowerCase().startsWith("zh") ? "zh" : "en";
+  let th = null;
+  try{ th = localStorage.getItem("teamx_theme"); }catch(e){}
+  if(!th) th = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  THEME = th;
   slides = buildSlides();
   setLang(l);
+  applyTheme();
   restart();
   const c=document.querySelector(".carousel");
   if(c){ c.addEventListener("mouseenter",()=>{ if(timer) clearInterval(timer); });
