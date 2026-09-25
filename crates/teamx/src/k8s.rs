@@ -447,6 +447,23 @@ spec:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false
         capabilities: {{ drop: ["ALL"] }}
+    # opencode 引擎（真机踩到：worker 用 `opencode run --attach 127.0.0.1:4201`，
+    # 但 Pod 里原先**没有** opencode serve → worker 全部 exit 1、无输出。旧 EC2 成员机上是 systemd 常驻。）
+    - name: opencode
+      image: {image}
+      command: ["/bin/bash", "-lc"]
+      args: ["opencode serve --hostname 127.0.0.1 --port 4201"]
+      env: *teamx_env
+      volumeMounts:
+        - {{ name: workspace, mountPath: /workspace }}
+        - {{ name: tmp, mountPath: /tmp }}
+      resources:
+        requests: {{ cpu: "100m", memory: "256Mi" }}
+        limits: {{ cpu: "{cpu_lim}", memory: "2Gi" }}
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities: {{ drop: ["ALL"] }}
     - name: ttyd
       image: {image}
       command: ["/bin/bash", "-lc"]
@@ -1117,6 +1134,9 @@ mod tests {
         assert!(pod.contains("name: llm, mountPath: /etc/teamx/llm"), "setup 必须挂载模型凭据 Secret");
         assert!(pod.contains("/workspace/.local/share/opencode/auth.json"), "setup 必须注入 opencode 凭据");
         assert!(pod.contains("secretName: teamx-llm"), "必须引用平台统一凭据 Secret");
+        // ④ worker 依赖 opencode serve（--attach 127.0.0.1:4201），Pod 里必须有这个容器
+        assert!(pod.contains("name: opencode"), "Pod 必须有 opencode serve 容器");
+        assert!(pod.contains("opencode serve --hostname 127.0.0.1 --port 4201"), "opencode serve 必须监听 4201");
 
         // ② egress：空白名单也必须有基线放行
         let np = network_policy_manifest("t1", "m1", &[]);
