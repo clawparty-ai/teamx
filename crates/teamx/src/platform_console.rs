@@ -1747,7 +1747,6 @@ async function decideReq(id,approve){
 }
 function showTab(name){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));document.querySelectorAll('.tabpage').forEach(p=>p.style.display=p.id==='tab-'+name?'block':'none')}
 async function copyText(t){try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
-async function copyLetter(){const el=document.getElementById('letterOut');const t=el?el.textContent:'';if(!t){alert('暂无邀请函，先点"初始化团队"');return}try{await navigator.clipboard.writeText(t);alert('已复制')}catch(e){const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();alert('已复制')}}
 function loginFail(msg){const e=document.getElementById('loginErr');e.textContent=msg||'登录失败';e.style.display='block'}
 async function boot(){
   const me=await jget('/api/me');
@@ -1762,7 +1761,15 @@ async function boot(){
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
 async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
-async function logout(){await jpost('/api/logout',{});document.getElementById('logoutBtn').style.display='none';boot()}
+async function logout(){
+  const r=await jpost('/api/logout',{});
+  if(!r.ok){alert('退出失败：'+(r.error||''));return}
+  const um=document.getElementById('usermenu'); if(um) um.style.display='none';
+  const up=document.getElementById('usermenuPanel'); if(up) up.style.display='none';
+  // 清空上一会话的界面残留（团队/租户/平台三块）
+  ['mine','mineCards','mineDetail','tenants','tenantDetail','tokens','admins','audit','dirList','reqList'].forEach(id=>{const el=document.getElementById(id); if(el) el.innerHTML=''});
+  await boot();
+}
 // 「创建团队 / 加入团队」的表单与取件页都渲染到**右侧详情区**（保持左侧列表可见，owner 反馈）
 function openCreateForm(){
   if(typeof markSel==='function')markSel(null);
@@ -2094,10 +2101,52 @@ async function provision(){const team=document.getElementById('pvTeam').value.tr
 mod tests {
     use super::*;
 
+    /// 防回归：静态 `getElementById('x')` 必须有对应的 `id="x"`。
+    ///
+    /// 历史踩坑：`logout()` 里的 `logoutBtn`、`bootstrapTeam()` 里的 `letterOut` 都是
+    /// **指向不存在元素**的死引用 —— 静默抛 TypeError，表现为「点退出没反应」
+    /// 「初始化成功却不刷新」。这类 bug 只有真机点出来才发现，故用测试兜住。
+    #[test]
+    fn index_html_get_element_by_id_targets_exist() {
+        use std::collections::HashSet;
+        let html = INDEX_HTML;
+        let mut ids: HashSet<String> = HashSet::new();
+        let mut rest = html;
+        while let Some(p) = rest.find("id=\"") {
+            let tail = &rest[p + 4..];
+            if let Some(q) = tail.find('"') {
+                ids.insert(tail[..q].to_string());
+            }
+            rest = &rest[p + 4..];
+        }
+        let mut missing: Vec<String> = Vec::new();
+        let mut rest = html;
+        while let Some(p) = rest.find("getElementById('") {
+            let tail = &rest[p + 16..];
+            if let Some(q) = tail.find('\'') {
+                let name = &tail[..q];
+                let after = tail.get(q + 1..).unwrap_or("");
+                // 跳过拼接/模板引用（如 getElementById('sub-'+n)）：
+                // 名字里含 +/${ 属于运行时拼出来；名字后紧跟 + 也是拼接。
+                if !name.contains('+')
+                    && !name.contains("${")
+                    && !after.starts_with('+')
+                    && !ids.contains(name)
+                {
+                    missing.push(name.to_string());
+                }
+            }
+            rest = &rest[p + 16..];
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(missing.is_empty(), "getElementById 指向不存在的 id: {missing:?}");
+    }
+
     #[test]
     fn index_html_has_platform_surfaces() {
         for needle in ["平台控制台", "/api/tenants", "/invite", "/provision", "平台审计", "GitHub OAuth",
-            "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
+            "/api/my/teams", "bootstrapTeam", "createMyTeam", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "openTcoin", "loadTcoin", "settleTcoin", "tab-tcoin", "tcList", "tcDetail",
             "openCredit", "loadCredit", "refreshCredit", "tab-credit", "crList", "crDetail", "credit_grade",
