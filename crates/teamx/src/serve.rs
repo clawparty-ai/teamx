@@ -1235,6 +1235,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "public.team_meta", // 公开团队元数据（design/015 SD-15：租户侧白名单裁剪，无 invite_token/正文）
     "team.roster",    // 成员名册只读（design/016 SD-12：仅 名/角色/状态/lead，无凭据）
     "team.release_seat", // 释放座位（design/016 SD-11：成员本人请求离开，平台窄接口代执行）
+    "credit.stats",   // credit 租户侧信号只读（design/018 SD-17：credit 只读、不写账）
     "tcoin.usage",    // TCoin 租户侧用量只读（design/017 SD-14：未结算的成员消耗明细）
     "tcoin.settle",   // TCoin 租户侧结算（标记已结算并返回批次摘要，供平台落总账）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
@@ -1311,6 +1312,26 @@ fn dispatch_platform_console(
             return Err("team.release_seat requires `team` and `member_id`".to_string());
         }
         return crate::commands::release_seat(conn, &tid, &mid).map_err(|e| e.to_string());
+    }
+    if method == "credit.stats" {
+        // 只回**原始行为计数**（不评分）：评分唯一发生在平台侧（系统唯一写者 SD-12）。
+        let tid = args.get("team").and_then(Value::as_str).unwrap_or("").to_string();
+        if tid.is_empty() {
+            return Err("credit.stats requires `team`".to_string());
+        }
+        let s = crate::credit::tenant_signals(conn, &tid).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({
+            "ok": true,
+            "verified_count": s.verified_count,
+            "verified_weighted": s.verified_weighted,
+            "done_count": s.done_count,
+            "doc_rejected_count": s.doc_rejected_count,
+            "doc_rejected_weighted": s.doc_rejected_weighted,
+            "stale_blocked_count": s.stale_blocked_count,
+            "members_active": s.members_active,
+            "avg_tenure_days": s.avg_tenure_days,
+            "event_count": s.event_count,
+        }));
     }
     if method == "tcoin.usage" {
         let tid = args.get("team").and_then(Value::as_str).unwrap_or("").to_string();
@@ -2157,6 +2178,18 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         "discovery.apply" => Command::Discovery(crate::cli::DiscoveryCmd::Apply {
             team: s("team").ok_or_else(|| "discovery.apply requires `team`".to_string())?,
             message: o("message"),
+            session: sess(args),
+        }),
+        "credit.show" => Command::Credit(crate::cli::CreditCmd::Show {
+            team: o("team"),
+            all: args.get("all").and_then(Value::as_bool).unwrap_or(false),
+            session: sess(args),
+        }),
+        "credit.refresh" => Command::Credit(crate::cli::CreditCmd::Refresh {
+            team: o("team"),
+            all: args.get("all").and_then(Value::as_bool).unwrap_or(false),
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
             session: sess(args),
         }),
         "tcoin.grant" => Command::Tcoin(crate::cli::TcoinCmd::Grant {

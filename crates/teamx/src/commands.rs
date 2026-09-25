@@ -1,4 +1,4 @@
-use crate::cli::{CertCmd, Cli, Command, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TcoinCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, CreditCmd, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TcoinCmd, TunnelCmd, UserCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -539,6 +539,45 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "ok": true,
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
+        },
+        Command::Credit(c) => match c {
+            CreditCmd::Refresh { team, all, kubeconfig, context, session } => {
+                let _ = tcoin_actor(conn, session)?;
+                let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+                let targets: Vec<String> = if *all {
+                    crate::provision::tenant_list(conn)
+                        .map_err(AppError)?
+                        .into_iter()
+                        .filter_map(|t| t.get("team_id").and_then(|v| v.as_str()).map(str::to_string))
+                        .collect()
+                } else {
+                    vec![team.clone().ok_or_else(|| {
+                        AppError("credit refresh requires --team or --all".into())
+                    })?]
+                };
+                let mut out = Vec::new();
+                let mut errors = Vec::new();
+                for tid in targets {
+                    match crate::provision::refresh_credit(conn, &tid, kc.as_deref(), context.as_deref())
+                    {
+                        Ok(v) => out.push(v),
+                        Err(e) => errors.push(json!({ "team_id": tid, "error": e })),
+                    }
+                }
+                json!({ "ok": errors.is_empty(), "refreshed": out, "errors": errors })
+            }
+            CreditCmd::Show { team, all, session } => {
+                let _ = tcoin_actor(conn, session)?;
+                if *all {
+                    json!({ "ok": true, "model_version": crate::credit::MODEL_VERSION,
+                            "credits": crate::credit::list(conn).map_err(AppError)? })
+                } else {
+                    let tid = team.clone().ok_or_else(|| {
+                        AppError("credit show requires --team or --all".into())
+                    })?;
+                    crate::provision::credit_view(conn, &tid).map_err(AppError)?
+                }
+            }
         },
         Command::Tcoin(t) => match t {
             TcoinCmd::Grant { team, amount, reason, session } => {

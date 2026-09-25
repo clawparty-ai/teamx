@@ -1136,6 +1136,20 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_tcoin_team ON tcoin_entries(team_id, account);",
     )?;
+    // credit 团队级快照（design/018 + ADR-0004）：**派生视图的物化**，
+    // 供「全部团队」目录只读平台库（ADR-0001）。成员级明细不入此表。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS team_credit (
+           team_id        TEXT PRIMARY KEY,
+           score          INTEGER NOT NULL,
+           grade          TEXT NOT NULL,
+           insufficient   INTEGER NOT NULL DEFAULT 0,
+           event_count    INTEGER NOT NULL DEFAULT 0,
+           breakdown_json TEXT NOT NULL DEFAULT '[]',
+           model_version  TEXT NOT NULL DEFAULT '',
+           computed_at    TEXT NOT NULL DEFAULT ''
+         );",
+    )?;
     // 加入申请（design/015 SD-11/SD-26）：平台库为申请落点；owner 审批；
     // 同一 (team, user) 只允许一个 pending（部分唯一索引）；拒绝有冷却期。
     conn.execute_batch(

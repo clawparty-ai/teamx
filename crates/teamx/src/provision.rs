@@ -1280,6 +1280,59 @@ pub fn my_letters(conn: &Connection, user_id: &str) -> Result<Value, String> {
     Ok(json!({ "ok": true, "letters": letters }))
 }
 
+/// credit 刷新编排（design/018 SD-12/SD-17）：租户侧取**行为计数** → 平台侧合并治理/财务信号
+/// → **评分（唯一写者 = 系统）** → 物化团队级快照进平台库（供目录只读，ADR-0001）。
+pub fn refresh_credit(
+    conn: &mut Connection,
+    team_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+) -> Result<Value, String> {
+    let stats = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "credit.stats",
+        json!({ "team": team_id }),
+    )?;
+    let num = |k: &str| stats.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+    let int = |k: &str| stats.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let tenant = crate::credit::Signals {
+        verified_count: int("verified_count"),
+        verified_doc_count: int("verified_count"),
+        verified_weighted: num("verified_weighted"),
+        done_count: int("done_count"),
+        doc_rejected_count: int("doc_rejected_count"),
+        doc_rejected_weighted: num("doc_rejected_weighted"),
+        stale_blocked_count: int("stale_blocked_count"),
+        members_active: int("members_active"),
+        avg_tenure_days: num("avg_tenure_days"),
+        event_count: int("event_count"),
+        ..Default::default()
+    };
+    let platform = crate::credit::platform_signals(conn, team_id)?;
+    let merged = crate::credit::merge(tenant, platform);
+    crate::credit::materialize(conn, team_id, &merged)
+}
+
+/// 读团队 credit（快照 + 成员可见的构成明细）。
+pub fn credit_view(conn: &mut Connection, team_id: &str) -> Result<Value, String> {
+    let snap = crate::credit::snapshot(conn, team_id)?;
+    let balance = crate::tcoin::balance(conn, team_id, "tenant")?;
+    Ok(json!({
+        "ok": true,
+        "team_id": team_id,
+        "credit": snap,
+        "tcoin_balance": balance,
+        "grade": snap.as_ref().map(|v| v["grade"].clone()).unwrap_or(Value::Null),
+        "insufficient": snap.as_ref().map(|v| v["insufficient"].clone()).unwrap_or(json!(true)),
+        "model_version": crate::credit::MODEL_VERSION,
+        "window_days": crate::credit::WINDOW_DAYS,
+        "min_events": crate::credit::MIN_EVENTS,
+    }))
+}
+
 /// TCoin 结算编排（design/017 SD-14）：经 service 车道让**租户侧**结算其未用消耗，
 /// 再把批次摘要记入**平台总账**（两级账本的对账动作，ADR-0003）。
 pub fn settle_team_tcoin(

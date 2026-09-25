@@ -82,6 +82,10 @@ pub enum Command {
     #[command(subcommand)]
     Tcoin(TcoinCmd),
 
+    /// credit (design/018): derived team credit score (refresh / show)
+    #[command(subcommand)]
+    Credit(CreditCmd),
+
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
     #[command(subcommand)]
     Node(NodeCmd),
@@ -2432,6 +2436,35 @@ pub struct PlatformConsoleCmd {
 
 /// Multi-tenant platform (design/014): one tenant = one team + one namespace
 /// + one independent CA. Executor = the platform (kubectl + tenant CA).
+// credit（design/018）。
+#[derive(Subcommand, Debug)]
+pub enum CreditCmd {
+    /// Refresh the materialized team-credit snapshot (pulls tenant stats over the service lane)
+    Refresh {
+        #[arg(long)]
+        team: Option<String>,
+        /// refresh every tenant the caller can see (operator view)
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+    /// Show the credit snapshot (score + grade + breakdown) for a team
+    Show {
+        #[arg(long)]
+        team: Option<String>,
+        /// list all materialized snapshots
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        session: String,
+    },
+}
+
 // TCoin（design/017）。
 #[derive(Subcommand, Debug)]
 pub enum TcoinCmd {
