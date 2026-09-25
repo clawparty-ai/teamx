@@ -3502,6 +3502,7 @@ pub(crate) fn reissue_letter_for_member(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mint_invite(
     conn: &mut Connection,
     team_id: &str,
