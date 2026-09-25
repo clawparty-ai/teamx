@@ -1584,7 +1584,7 @@ pub fn my_teams(conn: &mut Connection, user_id: &str, kubeconfig: Option<&str>, 
     for t in owned.iter_mut() {
         let id = t["team_id"].as_str().unwrap_or("").to_string();
         let has_ns = t["namespace"].as_str().map(|n| !n.is_empty()).unwrap_or(false);
-        let has_letter = t["owner_letter"].as_str().map(|l| !l.is_empty()).unwrap_or(false);
+        let has_letter = t["owner_letter_available"].as_bool().unwrap_or(false);
         // 「已初始化」= **owner 邀请函已生成**（首队自举完成）。
         // 不能用 has_ns：自助建团队时 namespace 先建好、但还没自举 → 会误判为已初始化、
         // 从而把「初始化团队」按钮藏掉，新团队就永远进不去。
@@ -1797,7 +1797,8 @@ pub fn tenant_get(conn: &Connection, team_id: &str) -> Result<Option<Value>, Str
 pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare("SELECT t.team_id, tm.name, t.namespace, t.ca_fingerprint, t.server_image, t.created_at,
-                         COALESCE(o.user_id, ''), COALESCE(t.endpoint,'') FROM tenants t
+                         COALESCE(o.user_id, ''), COALESCE(t.endpoint,''),
+                         (length(COALESCE(t.owner_letter,'')) > 0) FROM tenants t
                   LEFT JOIN teams tm ON tm.id = t.team_id
                   LEFT JOIN tenant_owners o ON o.team_id = t.team_id ORDER BY t.created_at")
         .map_err(|e| format!("db: {e}"))?;
@@ -1812,6 +1813,8 @@ pub fn tenant_list(conn: &Connection) -> Result<Vec<Value>, String> {
                 "created_at": r.get::<_, String>(5)?,
                 "owner_user_id": r.get::<_, String>(6)?,
                 "endpoint": r.get::<_, String>(7)?,
+                // 列表只给"有没有 owner 信"的布尔（整封信由 /api/my/letters 单独返回）
+                "owner_letter_available": r.get::<_, bool>(8)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;
