@@ -44,6 +44,8 @@ mod tests {
             "Many hands make light work",
             "brew install caishu97/tap/teamx", // 安装（SD-9）
             "/console",             // Login 站内相对路径（SD-11）
+            "function setText(",    // 空安全赋值：杜绝对"稍后才由模板创建的元素"直接赋值而抛错
+            "renderSlides();",      // 轮播必须渲染（曾因上一行抛错而整块空白）
         ] {
             assert!(INDEX_HTML.contains(needle), "官网缺少内容: {needle}");
         }

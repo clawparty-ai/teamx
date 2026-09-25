@@ -377,26 +377,31 @@ function go(i){
 function slide(d){ go(cur + d); restart(); }
 function restart(){ if(timer) clearInterval(timer); timer = setInterval(()=>go(cur+1), 5200); }
 
+// 空安全赋值：元素"尚未创建"（由模板稍后插入）时不抛错 ——
+// 历史事故：render() 先给 Hero 里已删除、且稍后才在快速开始模板里创建的 #brewCopy 赋值 →
+// TypeError → 其后的 renderSlides() 不执行 → 整块轮播空白。
+function setText(id, v){ const e=document.getElementById(id); if(e) e.textContent = v; }
+function setHTML(id, v){ const e=document.getElementById(id); if(e) e.innerHTML = v; }
 function render(){
   const s=t();
-  document.getElementById("sub").innerHTML = s.sub;
-  document.getElementById("ctaLogin").textContent = s.login;
-  document.getElementById("heroNoInstall").textContent = s.heroNoInstall;
-  document.getElementById("brewCopy").textContent = s.brewCopy;
-  document.getElementById("vGrid").innerHTML = s.values.map((v,i)=>
-    `<div class="vcard"><div class="k">0${i+1}</div><h3>${v[0]}</h3><p>${v[1]}</p></div>`).join("");
-  document.getElementById("sTitle").textContent = s.sTitle;
-  document.getElementById("sSub").textContent = s.sSub;
-  document.getElementById("sGrid").innerHTML = `
+  setHTML("sub", s.sub);
+  setText("ctaLogin", s.login);
+  setText("heroNoInstall", s.heroNoInstall);
+  setHTML("vGrid", s.values.map((v,i)=>
+    `<div class="vcard"><div class="k">0${i+1}</div><h3>${v[0]}</h3><p>${v[1]}</p></div>`).join(""));
+  setText("sTitle", s.sTitle);
+  setText("sSub", s.sSub);
+  setHTML("sGrid", `
     <div class="scard"><div class="n">1</div><h3>${s.login_}</h3><p>${s.login_d}</p>
       <div class="cmd"><a class="btn btn-primary btn-sm" href="/console">${s.login}</a></div></div>
     <div class="scard"><div class="n">2</div><h3>${s.install_t}</h3><p>${s.install_d}</p>
       <div class="cmd"><code id="brewCmd">brew install caishu97/tap/teamx</code>
         <button class="btn btn-sm btn-ghost" style="margin-left:8px" onclick="copyBrew()" id="brewCopy"></button></div></div>
     <div class="scard"><div class="n">3</div><h3>${s.invite_t}</h3><p>${s.invite_d}</p>
-      <div class="cmd"><code>teamx team import &lt;letter&gt;</code></div></div>`;
-  document.getElementById("fDocs").textContent = s.fDocs;
-  document.getElementById("fMeth").textContent = s.fMeth;
+      <div class="cmd"><code>teamx team import &lt;letter&gt;</code></div></div>`);
+  setText("brewCopy", s.brewCopy);   // 必须放在 sGrid 模板渲染之后
+  setText("fDocs", s.fDocs);
+  setText("fMeth", s.fMeth);
   renderSlides();
 }
 
