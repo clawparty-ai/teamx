@@ -146,3 +146,45 @@ updated_at: 2026-09-25
 > 建议：owner 收到后立即分发，并要求成员首登后改密；owner 自己的账号也建议改密。
 | — | 源端（HK 95.40.221.159）| **未做任何改动**（仅只读查询）|
 | — | 租户/迁移/成员挂接 | **未开始**（等 §G 确认）|
+
+---
+
+## I. 云 member 试点结果（2026-09-25，zhaoz @ yongyan-dev）
+
+### 已实现（方案 A）
+
+- **`teamx node provision-cloud --team <t> --member <seat>`**（+ RPC `node.provision_cloud`）：
+  ① 经 service 车道让租户为**既有席位**重发邀请函（`team.reissue-letter`，同 CA、**不新建席位**）
+  ② apply namespace+PVC+信 Secret ③ apply member Pod
+- **`commands::reissue_letter_for_member`**：单测锁定"不新建席位 / member_id 不变 / 信可解码 / 跨团队拒绝"。
+
+### 试点实测（zhaoz，`7e9291b1…`）
+
+| 项 | 结果 |
+|---|---|
+| member Pod | **4/4 Running**（main/ttyd/fs/expose），**0 重启** |
+| 信导入 | ✅ `status: stored`，server_url = 集群内服务名 |
+| mTLS 连接 | ✅ 隧道注册成功 `ok tunnel registered: fs-… / ttyd-…` |
+| PVC | `teamx-ws-7e9291b1c72144cf`（30Gi）|
+
+### 试点暴露并修掉的 **3 个真 bug**
+
+1. **`expose` 容器没挂 workspace** → 打不开 `.teamx/teamx.db` → CrashLoop。已补挂载（单测断言 ≥4 处）。
+2. **egress NetworkPolicy 空白名单 = 全拒** → DNS 与同 namespace 租户 server 一起被拒 → worker RPC 全超时。
+   改为**永不生成全拒策略**：始终放行 kube-system DNS(53) + 同 namespace；白名单仅追加；
+   IMDS/任意公网仍拒绝（单测锁定）。
+3. **server 证书 SAN 缺集群内服务名** → member（用集群内 URL）校验失败
+   `certificate not valid for name "teamx-serve-…svc"`。重签时加入
+   `<svc>.<ns>.svc` 与 `.svc.cluster.local`（公网域名/IP/回环保留）。
+
+### 剩余缺口（**待 owner 决策**）
+
+member Pod 的容器 env 只有 `TEAMX_HOME/TEAMX_SERVER_URL/TEAMX_WORKER_ENABLED` —— **没有模型凭据**，
+worker 跑 `opencode run` 必然 `exit status: 1`（"items kept for retry"）。需要决定**云 member 用谁的模型凭据**：
+
+- **A 平台统一提供**（如 zen/平台 key 注入 Secret）→ UX 最简，配合 TCoin 记账（平台计量）
+- **B 每租户一份**（owner 提供 key）→ 成本归属清晰
+- **C 每成员自带**（成员在控制台填自己的 key → 存 Secret）→ 最接近旧模式
+
+定了之后：在 `member_pod_manifest` 加凭据 Secret/env → 重跑试点 → 通过后按同样流程铺开到
+zhongm / caicai / caishu（每人一条命令）。
