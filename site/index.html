@@ -157,7 +157,6 @@
       <p class="sub" id="sub"></p>
       <div class="cta">
         <a class="btn btn-primary" id="ctaLogin" href="/console"></a>
-        <a class="btn btn-ghost" href="#start" id="ctaStart"></a>
       </div>
       <div class="muted" id="heroNoInstall" style="margin-top:16px;font-size:14px"></div>
     </div>
@@ -207,7 +206,7 @@
 const I18N = {
   zh:{
     sub:"人的力量，乘以 AI 的力量，就是 <b>teamx</b>。",
-    login:"登录 cloud", start:"怎么开始",
+    login:"登录 cloud",
     brewCopy:"复制", brewCopied:"已复制 ✓",
     sTitle:"怎么开始",
     sSub:"三种入口，挑一个最顺手的。",
@@ -241,7 +240,7 @@ const I18N = {
   },
   en:{
     sub:"Human strength, multiplied by AI strength — that is <b>teamx</b>.",
-    login:"Sign in", start:"Get started",
+    login:"Sign in",
     brewCopy:"Copy", brewCopied:"Copied ✓",
     sTitle:"Get started",
     sSub:"Three ways in. Pick whichever fits.",
@@ -382,7 +381,6 @@ function render(){
   const s=t();
   document.getElementById("sub").innerHTML = s.sub;
   document.getElementById("ctaLogin").textContent = s.login;
-  document.getElementById("ctaStart").textContent = s.start;
   document.getElementById("heroNoInstall").textContent = s.heroNoInstall;
   document.getElementById("brewCopy").textContent = s.brewCopy;
   document.getElementById("vGrid").innerHTML = s.values.map((v,i)=>
