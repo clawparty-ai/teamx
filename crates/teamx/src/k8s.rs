@@ -238,6 +238,15 @@ pub fn pvc_name(member_id: &str) -> String {
     format!("teamx-ws-{}", short_id(member_id))
 }
 
+/// 云 member 的 `teamx console` 启动 token（**确定性**：由 member_id + 平台实例 id 派生）。
+/// 平台据此生成可点击链接；同一个值也写进成员的信 Secret（供 Pod 内 console 使用），
+/// 因此**不需要额外存储**。
+pub fn console_token_for(member_id: &str) -> String {
+    let seed = format!("teamx-console:{member_id}:{}", crate::db::instance_id());
+    let d = ring::digest::digest(&ring::digest::SHA256, seed.as_bytes());
+    d.as_ref().iter().map(|b| format!("{b:02x}")).collect::<String>().chars().take(32).collect()
+}
+
 /// 平台统一模型凭据的 Secret 名（namespace 内共享；由 `provision_cloud_member` 预置）。
 pub fn llm_secret_name() -> String {
     "teamx-llm".to_string()
@@ -319,7 +328,9 @@ type: Opaque
 stringData:
   invitation.letter: |
 {letter_indented}
+  console.token: "{console_token}"
 "#,
+        console_token = console_token_for(member_id),
         letter_indented = letter
             .lines()
             .map(|l| format!("    {l}"))
@@ -460,6 +471,31 @@ spec:
       resources:
         requests: {{ cpu: "100m", memory: "256Mi" }}
         limits: {{ cpu: "{cpu_lim}", memory: "2Gi" }}
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities: {{ drop: ["ALL"] }}
+    # 云 member 的 **teamx console**（成员控制台 UI）：平台控制台里「Teamx Console」链接指向它
+    - name: console
+      image: {image}
+      command: ["/bin/bash", "-lc"]
+      args: ["teamx console --addr 0.0.0.0 --port 9528"]
+      env:
+        - name: TEAMX_HOME
+          value: /workspace/.teamx
+        - name: TEAMX_SERVER_URL
+          value: {server_url}
+        - name: TEAMX_CONSOLE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {sec}
+              key: console.token
+      volumeMounts:
+        - {{ name: workspace, mountPath: /workspace }}
+        - {{ name: tmp, mountPath: /tmp }}
+      resources:
+        requests: {{ cpu: "50m", memory: "128Mi" }}
+        limits: {{ cpu: "500m", memory: "512Mi" }}
       securityContext:
         readOnlyRootFilesystem: true
         allowPrivilegeEscalation: false

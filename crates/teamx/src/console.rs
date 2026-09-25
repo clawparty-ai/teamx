@@ -49,7 +49,13 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
     crate::procwatch::spawn_parent_monitor();
 
     let home = crate::db::teamx_home();
-    let token = crate::util::gen_access_token(16);
+    // 允许外部固定 token（云 member Pod 由平台下发 → 平台可据此生成可点击链接）；
+    // 未设置时按原逻辑随机生成（本地用法不变）。
+    let token = std::env::var("TEAMX_CONSOLE_TOKEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| crate::util::gen_access_token(16));
 
     // HTTPS with the workspace's instance server cert (same as `teamx ui`).
     let pk = pki::ensure_pki(&home)?;

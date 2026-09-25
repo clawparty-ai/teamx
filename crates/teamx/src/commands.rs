@@ -3734,7 +3734,7 @@ pub(crate) fn team_roster(conn: &Connection, team_id: &str) -> std::result::Resu
     }
     let mut stmt = conn
         .prepare(
-            "SELECT display_name, COALESCE(role,''), COALESCE(state,''), COALESCE(is_lead,0)
+            "SELECT display_name, COALESCE(role,''), COALESCE(state,''), COALESCE(is_lead,0), id
              FROM members WHERE team_id = ?1 AND state NOT IN ('left','denied')
              ORDER BY is_lead DESC, joined_at",
         )
@@ -3746,6 +3746,8 @@ pub(crate) fn team_roster(conn: &Connection, team_id: &str) -> std::result::Resu
                 "role": r.get::<_, String>(1)?,
                 "state": r.get::<_, String>(2)?,
                 "is_lead": r.get::<_, i64>(3)? != 0,
+                // 席位 id（不透明、非凭据）：平台据此标出"哪一行是我"，并生成我的 console 链接
+                "member_id": r.get::<_, String>(4)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;

@@ -323,6 +323,7 @@ fn build_router(ctx: Arc<Ctx>, root_console: bool) -> Router {
         .route("/api/discovery/requests/{id}/decide", post(api_dir_decide))
         .route("/api/my/teams", get(api_my_teams).post(api_my_teams_create))
         .route("/api/my/teams/{team}/roster", get(api_my_roster))
+        .route("/api/my/team-console/{team}", get(api_my_team_console))
         .route("/api/my/teams/{team}/invite", post(api_my_invite))
         .route("/api/my/teams/{team}/leave", post(api_my_leave))
         .route("/api/my/letters", get(api_my_letters))
@@ -1428,6 +1429,67 @@ async fn api_my_tcoin_settle(
     }
 }
 
+/// **我的**云 member console 地址（design/021 §J）：点开即进入**云上 member Pod 里的 `teamx console`**
+/// （本地 `teamx console` 是另一回事）。链接由平台生成：`https://c-<member16>.teamx.beer/?token=<确定性 token>`。
+async fn api_my_team_console(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    match with_conn(&ctx, |c| {
+        let seat = my_seat_id(c, &uid, &team)?;
+        let Some(seat) = seat else {
+            return Err("no member seat for this user in this team".to_string());
+        };
+        let short = crate::k8s::short_id(&seat);
+        let token = crate::k8s::console_token_for(&seat);
+        Ok(json!({
+            "ok": true, "team_id": team, "member_id": seat,
+            "url": format!("https://c-{short}.teamx.beer/?token={token}"),
+            "kind": "cloud-member-console",
+        }))
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 当前用户在某团队的**席位 id**（owner 看 `tenants.owner_member_id`；成员看已批准申请的 `member_id`）。
+fn my_seat_id(conn: &rusqlite::Connection, uid: &str, team: &str) -> Result<Option<String>, String> {
+    if crate::platform::tenant_owned_by(conn, team, uid).unwrap_or(false) {
+        let seat: Option<String> = conn
+            .query_row(
+                "SELECT COALESCE(owner_member_id,'') FROM tenants WHERE team_id = ?1",
+                rusqlite::params![team],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(s) = seat.filter(|s| !s.is_empty()) {
+            return Ok(Some(s));
+        }
+    }
+    let seat: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE(member_id,'') FROM team_join_requests
+             WHERE team_id = ?1 AND user_id = ?2 AND status = 'approved'
+             ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![team, uid],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(seat.filter(|s| !s.is_empty()))
+}
+
 /// 成员名册（design/016 SD-12）：owner 只读，租户侧裁剪（无凭据）。
 async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team): Path<String>) -> Response {
     if let Err(r) = guard(&ctx, &headers) { return r; }
@@ -1437,9 +1499,21 @@ async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(tea
         if !crate::platform::tenant_owned_by(c, &team, &uid).map_err(|e| e.to_string())? {
             return Err("only the team owner may view the roster".to_string());
         }
-        crate::provision::tenant_service_post_via_endpoint(
+        let mut v = crate::provision::tenant_service_post_via_endpoint(
             c, &team, kc.as_deref(), cx.as_deref(), "team.roster", json!({ "team": team }),
-        )
+        )?;
+        // 标出"哪一行是我" → 该行渲染「Teamx Console」链接（云 member 的 console）
+        let mine = my_seat_id(c, &uid, &team)?;
+        if let Some(rows) = v["members"].as_array_mut() {
+            for r in rows.iter_mut() {
+                let is_me = mine
+                    .as_deref()
+                    .map(|m| r["member_id"].as_str() == Some(m))
+                    .unwrap_or(false);
+                r["is_me"] = json!(is_me);
+            }
+        }
+        Ok::<Value, String>(v)
     });
     match out {
         Ok(v) => Json(v).into_response(),
@@ -2700,13 +2774,19 @@ async function loadOwnerLetter(id){
   el.innerHTML=`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(x.letter||'')})">复制 owner 邀请函</button>
     <div class="muted" style="margin-top:6px">在本地执行 <code>teamx team import</code> 导入，即认领该团队的 owner 座位。</div>`;
 }
+// 打开**云 member** 的 teamx console（本地跑的那个是另一回事）
+async function openMyConsole(team){
+  const r=await jget('/api/my/team-console/'+encodeURIComponent(team));
+  if(!r.ok){alert('无法打开：'+errText(r));return}
+  window.open(r.url,'_blank','noopener');
+}
 async function loadRoster(id){
   const short=id.slice(0,8); const el=document.getElementById('roster_'+short);
   const d=await jget('/api/my/teams/'+encodeURIComponent(id)+'/roster');
   if(!d.ok){el.innerHTML='<span class="muted">不可用：'+esc(d.error||'')+'</span>';return}
   const ms=d.members||[];
   el.innerHTML=ms.length?('<table><thead><tr><th>成员</th><th>角色</th><th>状态</th></tr></thead><tbody>'+
-    ms.map(m=>`<tr><td>${esc(m.display_name)}${m.is_lead?' <span class="tag-j">lead</span>':''}</td><td>${esc(m.role)}</td><td>${esc(m.state)}</td></tr>`).join('')+'</tbody></table>'):'<div class="muted">暂无成员</div>';
+    ms.map(m=>`<tr><td>${esc(m.display_name)}${m.is_lead?' <span class="tag-j">lead</span>':''}${m.is_me?` <a class="link" href="javascript:void(0)" onclick="openMyConsole('${esc(id)}')">Teamx Console ↗</a>`:''}</td><td>${esc(m.role)}</td><td>${esc(m.state)}</td></tr>`).join('')+'</tbody></table>'):'<div class="muted">暂无成员</div>';
 }
 async function inviteMember(id){
   const short=id.slice(0,8);
