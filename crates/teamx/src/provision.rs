@@ -1336,6 +1336,58 @@ pub fn credit_view(conn: &mut Connection, team_id: &str) -> Result<Value, String
     }))
 }
 
+/// **云 member** 编排（design/021 §D/A）：把既有席位变成云上 member Pod。
+///
+/// 1. 经 service 车道让**租户 server**为该席位重发邀请函（同一 CA，**不新建席位**）；
+/// 2. apply namespace + PVC + 信 Secret（`k8s::provision_manifests`）；
+/// 3. apply member Pod + NetworkPolicy（`K8sProvider::start_member`），
+///    端点用**集群内**服务名（`https://teamx-serve-<short>.<ns>.svc:5783`），天然 mTLS、无需 nginx。
+pub fn provision_cloud_member(
+    conn: &mut Connection,
+    team_id: &str,
+    member_id: &str,
+    kubeconfig: Option<&str>,
+    context: Option<&str>,
+    workspace_gib: u32,
+    session: &str,
+) -> Result<Value, String> {
+    let ns = crate::k8s::namespace_for(team_id);
+    let svc = format!("teamx-serve-{}", crate::k8s::short_id(team_id));
+    let server_url = format!("https://{svc}.{ns}.svc:{}", crate::k8s::SERVER_PORT);
+
+    let letter_resp = tenant_service_post_via_endpoint(
+        conn,
+        team_id,
+        kubeconfig,
+        context,
+        "team.reissue-letter",
+        json!({ "team": team_id, "member": member_id, "server_url": server_url }),
+    )?;
+    let letter = letter_resp
+        .get("letter")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "tenant returned no letter".to_string())?
+        .to_string();
+
+    let kube = crate::k8s::Kubectl::new(
+        kubeconfig.map(str::to_string),
+        context.map(str::to_string),
+    );
+    // ns + PVC + Secret（信）
+    kube.apply(&crate::k8s::provision_manifests(team_id, member_id, &letter, workspace_gib, None))?;
+    // Pod + NetworkPolicy
+    let provider = crate::k8s::K8sProvider::new(kube);
+    provider.start_member(team_id, member_id, &server_url, "", session)?;
+
+    Ok(json!({
+        "ok": true, "team_id": team_id, "member_id": member_id,
+        "namespace": ns, "server_url": server_url,
+        "pod": crate::k8s::pod_name(member_id),
+        "pvc": crate::k8s::pvc_name(member_id),
+        "note": "member Pod 已 apply；setup 容器会导入邀请函并连接租户 server",
+    }))
+}
+
 /// TCoin 结算编排（design/017 SD-14）：经 service 车道让**租户侧**结算其未用消耗，
 /// 再把批次摘要记入**平台总账**（两级账本的对账动作，ADR-0003）。
 pub fn settle_team_tcoin(

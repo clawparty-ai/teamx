@@ -765,6 +765,19 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Node(n) => match n {
+            NodeCmd::ProvisionCloud { team, member, workspace_gib, kubeconfig, context, session } => {
+                let _ = resolve_actor(conn, session, None)?;
+                crate::provision::provision_cloud_member(
+                    conn,
+                    team,
+                    member,
+                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
+                    context.as_deref(),
+                    *workspace_gib,
+                    session,
+                )
+                .map_err(AppError)?
+            }
             NodeCmd::Provision { member, provider, region, size, ttl, os_user, session, team } => {
                 cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, os_user.as_deref(), session, team.as_deref())?
             }
@@ -3442,6 +3455,53 @@ fn mint_invite_db(
 /// Core invite logic: mint a client cert + invitation letter + DB rows.
 /// Called by `cmd_team_invite` (normal flow) and `cmd_team_clone` (bulk clone).
 /// `member_id_override` lets clone pre-assign the owner seat uuid.
+/// 为**既有席位**重发邀请函（design/021 §D P4「云 member」）：
+/// 复用 `mint_invite` 的 `member_id_override`，**不新建成员席位**；返回 `teamx-inv:v1:…`。
+/// 在**租户 server** 内调用 → 用租户 CA 签发（= 成员的信任链不变）。
+pub(crate) fn reissue_letter_for_member(
+    conn: &mut Connection,
+    team_id: &str,
+    member_id: &str,
+    server_url: &str,
+    created_by: &str,
+) -> Result<Value> {
+    let m = member_by_id(conn, member_id)?;
+    if m.team_id != team_id {
+        return err(format!("member {member_id} is not in team {team_id}"));
+    }
+    if m.left_at.is_some() || m.state == "left" {
+        return err(format!("member {member_id} has left the team"));
+    }
+    let team_name: String = conn
+        .query_row("SELECT name FROM teams WHERE id = ?1", [team_id], |r| r.get(0))
+        .unwrap_or_else(|_| team_id.to_string());
+    let role_desc = m.role.clone().unwrap_or_else(|| "contributor".to_string());
+    let (label, desc) = match role_desc.split_once(':') {
+        Some((l, d)) => (l.trim().to_string(), Some(d.trim().to_string())),
+        None => (role_desc.trim().to_string(), None),
+    };
+    let role_key = role_key_from_label(&label);
+    let (mid, invitation_id, letter) = mint_invite(
+        conn,
+        team_id,
+        &team_name,
+        &role_key,
+        &label,
+        desc.as_deref(),
+        None,
+        Some(&m.display_name),
+        server_url,
+        m.is_lead,
+        true, // auto_approve：迁移/重发场景，席位已存在且已获批
+        created_by,
+        Some(member_id),
+    )?;
+    Ok(json!({
+        "ok": true, "team_id": team_id, "member_id": mid,
+        "invitation_id": invitation_id, "letter": letter,
+    }))
+}
+
 fn mint_invite(
     conn: &mut Connection,
     team_id: &str,
@@ -7248,6 +7308,50 @@ fn cmd_node_destroy(conn: &mut Connection, node_id: &str, session: &str, team_op
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reissue_letter_for_existing_member_does_not_create_seat() {
+        // design/021 §D/A：为既有席位重发邀请函 —— **不新建席位**、member_id 不变、信可解码
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&conn).unwrap();
+        let now = "2026-01-01T00:00:00+00:00";
+        conn.execute(
+            "INSERT INTO teams (id,name,owner_member_id,goal_id,state,invite_token,created_at,updated_at)
+             VALUES ('t1','Yongyan','m1',NULL,'active','tok',?1,?1)",
+            [now],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO members (id,team_id,session_key,display_name,role,state,joined_at,is_lead)
+             VALUES ('m1','t1','s1','zhongm','searcher','idle',?1,0)",
+            [now],
+        ).unwrap();
+        // 另建一个团队用于负例
+        conn.execute(
+            "INSERT INTO teams (id,name,owner_member_id,goal_id,state,invite_token,created_at,updated_at)
+             VALUES ('t2','Other',NULL,NULL,'active','tok2',?1,?1)",
+            [now],
+        ).unwrap();
+        let before: i64 = conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get(0)).unwrap();
+
+        let out = super::reissue_letter_for_member(
+            &mut conn, "t1", "m1", "https://yongyan.teamx.beer", "service:platform-console",
+        )
+        .expect("reissue 应成功");
+        let letter = out["letter"].as_str().unwrap();
+        assert!(letter.starts_with("teamx-inv:v1:"), "信格式错误: {}", &letter[..20.min(letter.len())]);
+        assert_eq!(out["member_id"], serde_json::json!("m1"), "member_id 必须保持不变");
+        // 席位数量不变（不新建成员）
+        let after: i64 = conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, before, "重发信不得新建成员席位");
+        // 信可解码，且 team/member/role 正确
+        let decoded = super::decode_letter(letter).expect("信应可解码");
+        assert_eq!(decoded["teamx_invitation"]["team"]["id"], serde_json::json!("t1"));
+        assert_eq!(decoded["teamx_invitation"]["server"]["url"], serde_json::json!("https://yongyan.teamx.beer"));
+        assert_eq!(decoded["teamx_invitation"]["role"]["key"], serde_json::json!("searcher"));
+        assert!(decoded["certificates"]["client_cert"].as_str().unwrap().contains("BEGIN CERTIFICATE"));
+        // 负例：跨团队席位必须拒绝
+        assert!(super::reissue_letter_for_member(&mut conn, "t2", "m1", "https://x", "svc").is_err());
+    }
+
     use super::*;
     use std::path::Path;
 

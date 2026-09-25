@@ -1240,6 +1240,7 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "tcoin.settle",   // TCoin 租户侧结算（标记已结算并返回批次摘要，供平台落总账）
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
     "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
+    "team.reissue-letter", // 为**既有席位**重发邀请函（design/021 P4 云 member：不新建席位）
 ];
 
 /// 平台 console 车道是否允许该方法（fail-closed：不在白名单即拒绝）。
@@ -1283,6 +1284,31 @@ fn dispatch_platform_console(
     // 其余方法仍强制 team（下不变）。
     // 租户 team 自举 O-1(a)：只在空 server 上一次性建首 team + owner 邀请。
     // 认证靠租户 CA 签的 service 证书（仅平台持有签发能力）；一次性由 core 保证。
+    if method == "team.reissue-letter" {
+        let team_id = args.get("team").and_then(Value::as_str).unwrap_or("");
+        let member_id = args.get("member").and_then(Value::as_str).unwrap_or("");
+        let server_url = args.get("server_url").and_then(Value::as_str).unwrap_or("");
+        if team_id.is_empty() || member_id.is_empty() {
+            return Err("team.reissue-letter requires `team` and `member`".to_string());
+        }
+        let _ = conn.execute(
+            "INSERT INTO platform_audit (at, actor, action, detail) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                crate::db::now(),
+                format!("service:platform-console:{instance}"),
+                "tenant.rpc",
+                format!("team={team_id} member={member_id} method=team.reissue-letter"),
+            ],
+        );
+        return crate::commands::reissue_letter_for_member(
+            conn,
+            team_id,
+            member_id,
+            server_url,
+            "service:platform-console",
+        )
+        .map_err(|e| e.to_string());
+    }
     if method == "tenant.bootstrap" {
         let team_id = args.get("team_id").and_then(Value::as_str).unwrap_or("");
         let team_name = args.get("team_name").and_then(Value::as_str).unwrap_or("");
@@ -2258,6 +2284,14 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             team: s("team").ok_or_else(|| "tenant.show requires `team`".to_string())?,
         }),
         // Cloud-host provisioning (design/006).
+        "node.provision_cloud" => Command::Node(NodeCmd::ProvisionCloud {
+            team: s("team").ok_or_else(|| "node.provision_cloud requires `team`".to_string())?,
+            member: s("member").ok_or_else(|| "node.provision_cloud requires `member`".to_string())?,
+            workspace_gib: args.get("workspace_gib").and_then(Value::as_u64).unwrap_or(30) as u32,
+            kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
+            context: o("context"),
+            session: sess(args),
+        }),
         "node.provision" => Command::Node(NodeCmd::Provision {
             member: s("member").ok_or_else(|| "node.provision requires `member`".to_string())?,
             provider: o("provider"),

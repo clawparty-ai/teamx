@@ -2734,6 +2734,24 @@ pub enum TenantCmd {
 /// (holds the team owner's AWS credentials + `aws` CLI).
 #[derive(Subcommand, Debug)]
 pub enum NodeCmd {
+    /// Provision a **cloud member** (design/021 §D/A): 把既有席位变成云上 member Pod ——
+    /// 租户侧为该席位重发邀请函（同 CA、不新建席位）→ apply PVC/Secret → apply member Pod。
+    ProvisionCloud {
+        #[arg(long)]
+        team: String,
+        /// existing member (seat) id
+        #[arg(long)]
+        member: String,
+        /// workspace PVC size in GiB
+        #[arg(long, default_value_t = 30)]
+        workspace_gib: u32,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
     /// Provision (or reuse) a cloud host for a member (owner/lead).
     /// Reuse-first: if the same user already has a reusable host, only the
     /// per-team OS user + services are added (design/006 §3.1).
