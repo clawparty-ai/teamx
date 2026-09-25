@@ -2286,7 +2286,8 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
         // Cloud-host provisioning (design/006).
         "node.provision_cloud" => Command::Node(NodeCmd::ProvisionCloud {
             team: s("team").ok_or_else(|| "node.provision_cloud requires `team`".to_string())?,
-            member: s("member").ok_or_else(|| "node.provision_cloud requires `member`".to_string())?,
+            member: s("member"),
+            all: b("all"),
             workspace_gib: args.get("workspace_gib").and_then(Value::as_u64).unwrap_or(30) as u32,
             kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
             context: o("context"),

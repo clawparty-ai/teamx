@@ -776,19 +776,37 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Node(n) => match n {
-            NodeCmd::ProvisionCloud { team, member, workspace_gib, kubeconfig, context, session } => {
+            NodeCmd::ProvisionCloud { team, member, all, workspace_gib, kubeconfig, context, session } => {
                 // 平台会话优先（平台库没有 member 行）；与 tcoin/credit 同款解析
                 let _ = tcoin_actor(conn, session)?;
-                crate::provision::provision_cloud_member(
-                    conn,
-                    team,
-                    member,
-                    kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()).as_deref(),
-                    context.as_deref(),
-                    *workspace_gib,
-                    session,
-                )
-                .map_err(AppError)?
+                let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+                let cx = context.as_deref();
+                if *all {
+                    let seats = crate::provision::team_seat_ids(conn, team).map_err(AppError)?;
+                    if seats.is_empty() {
+                        return Err(AppError(format!("team {team} 没有可铺的席位")));
+                    }
+                    let mut items = Vec::new();
+                    let (mut ok_n, mut failed) = (0usize, 0usize);
+                    for s in &seats {
+                        match crate::provision::provision_cloud_member(
+                            conn, team, s, kc.as_deref(), cx, *workspace_gib, session,
+                        ) {
+                            Ok(_) => { ok_n += 1; items.push(json!({"member": s, "ok": true})); }
+                            Err(e) => { failed += 1; items.push(json!({"member": s, "ok": false, "error": e})); }
+                        }
+                    }
+                    json!({"ok": failed == 0, "team": team, "count": items.len(),
+                           "provisioned": ok_n, "failed": failed, "items": items})
+                } else {
+                    let m = member.clone().ok_or_else(|| {
+                        AppError("provision-cloud 需要 --member <id> 或 --all".to_string())
+                    })?;
+                    crate::provision::provision_cloud_member(
+                        conn, team, &m, kc.as_deref(), cx, *workspace_gib, session,
+                    )
+                    .map_err(AppError)?
+                }
             }
             NodeCmd::Provision { member, provider, region, size, ttl, os_user, session, team } => {
                 cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, os_user.as_deref(), session, team.as_deref())?

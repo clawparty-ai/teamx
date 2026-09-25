@@ -2757,7 +2757,10 @@ pub enum NodeCmd {
         team: String,
         /// existing member (seat) id
         #[arg(long)]
-        member: String,
+        member: Option<String>,
+        /// 该团队**全部**席位（owner + 已批准成员）一次铺好
+        #[arg(long)]
+        all: bool,
         /// workspace PVC size in GiB
         #[arg(long, default_value_t = 30)]
         workspace_gib: u32,

@@ -1373,6 +1373,39 @@ pub fn refresh_owner_letter(
     }))
 }
 
+/// 团队全部席位 id（平台侧权威）：租户 owner 席位 + 已批准的加入申请席位；用于 `node provision-cloud --all`。
+pub fn team_seat_ids(conn: &Connection, team_id: &str) -> Result<Vec<String>, String> {
+    let mut seats: Vec<String> = Vec::new();
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT owner_member_id FROM tenants WHERE team_id = ?1",
+            rusqlite::params![team_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    if let Some(s) = owner.filter(|s| !s.is_empty()) {
+        seats.push(s);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT member_id FROM team_join_requests
+             WHERE team_id = ?1 AND status = 'approved' AND COALESCE(member_id,'') <> ''
+             ORDER BY created_at",
+        )
+        .map_err(|e| format!("db: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![team_id], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("db: {e}"))?;
+    for r in rows {
+        let id = r.map_err(|e| format!("db: {e}"))?;
+        if !seats.contains(&id) {
+            seats.push(id);
+        }
+    }
+    Ok(seats)
+}
+
 /// **云 member** 编排（design/021 §D/A）：把既有席位变成云上 member Pod。
 ///
 /// 1. 经 service 车道让**租户 server**为该席位重发邀请函（同一 CA，**不新建席位**）；
@@ -3153,6 +3186,41 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         db::migrate(&c).unwrap();
         c
+    }
+
+    #[test]
+    fn team_seat_ids_owner_plus_approved_dedupe() {
+        let c = conn();
+        c.execute(
+            "INSERT INTO teams (id, name, invite_token, created_at, updated_at)
+             VALUES ('t1','T1','tok','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO tenants (team_id, namespace, ca_fingerprint, created_at, owner_member_id)
+             VALUES ('t1','ns','fp','2026-01-01T00:00:00Z','seat-owner')",
+            [],
+        )
+        .unwrap();
+        let mk = |i: i64, uid: &str, mid: &str, st: &str| {
+            c.execute(
+                "INSERT INTO team_join_requests (id, team_id, user_id, status, created_at, member_id)
+                 VALUES (?1,'t1',?2,?3,?4,?5)",
+                rusqlite::params![format!("r{i}"), uid, st, format!("2026-01-0{i}T00:00:00Z"), mid],
+            )
+            .unwrap();
+        };
+        mk(1, "u2", "seat-a", "approved");
+        mk(2, "u3", "seat-b", "pending");   // 未批准 → 不算
+        mk(3, "u4", "seat-c", "approved");
+        let got = team_seat_ids(&c, "t1").unwrap();
+        assert_eq!(got, vec!["seat-owner", "seat-a", "seat-c"]);
+        // 重复席位去重
+        mk(4, "u5", "seat-a", "approved");
+        assert_eq!(team_seat_ids(&c, "t1").unwrap().len(), 3);
+        // 无租户行、无申请 → 空
+        assert!(team_seat_ids(&c, "nope").unwrap().is_empty());
     }
 
     #[test]
