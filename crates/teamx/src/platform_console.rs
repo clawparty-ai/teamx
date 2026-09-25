@@ -95,6 +95,9 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         .route("/api/my/teams/{team}/invite", post(api_my_invite))
         .route("/api/my/teams/{team}/leave", post(api_my_leave))
         .route("/api/my/letters", get(api_my_letters))
+        .route("/api/my/credit", get(api_my_credit))
+        .route("/api/my/credit/{team}", get(api_my_credit_team))
+        .route("/api/my/credit/{team}/refresh", post(api_my_credit_refresh))
         .route("/api/my/tcoin", get(api_my_tcoin))
         .route("/api/my/tcoin/{team}", get(api_my_tcoin_team))
         .route("/api/my/tcoin/{team}/settle", post(api_my_tcoin_settle))
@@ -506,6 +509,8 @@ async fn api_dir_team(
             "name": s["name"], "public_summary": s["public_summary"],
             "state": s["state"], "joinable": s["join_policy"] == json!("open_request"),
             "owner_name": owner_name, "member_count": member_count,
+            // credit **公开分档**（design/018 SD-5/SD-16）：数据不足/未刷新 → null
+            "credit_grade": crate::credit::public_grade(c, &team),
         }))
     });
     let base = match detail {
@@ -687,6 +692,130 @@ async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// credit（design/018 SD-16）：团队信用实页；对外只给分档，成员/owner 看分数+构成
+// ---------------------------------------------------------------------------
+
+/// 我的团队 credit：每个团队的分档 + **精确分与构成明细**（调用方是成员/owner，SD-5）。
+/// 同时返回该团队是否已物化（未刷新 → 提示"待刷新"）。
+async fn api_my_credit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        let mine = crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())?;
+        let mut teams: Vec<Value> = Vec::new();
+        for group in ["owned", "joined"] {
+            let relation = if group == "owned" { "owner" } else { "member" };
+            for t in mine.get(group).and_then(Value::as_array).cloned().unwrap_or_default() {
+                let tid = t["team_id"].as_str().unwrap_or("").to_string();
+                if tid.is_empty() {
+                    continue;
+                }
+                let snap = crate::credit::snapshot(c, &tid)?;
+                teams.push(json!({
+                    "team_id": tid,
+                    "team_name": t["team_name"].clone(),
+                    "relation": relation,
+                    "credit": snap,
+                    "grade": snap.as_ref().map(|v| v["grade"].clone()).unwrap_or(Value::Null),
+                    "insufficient": snap.as_ref().map(|v| v["insufficient"].clone()).unwrap_or(json!(true)),
+                    "awaiting_refresh": snap.is_none(),
+                }));
+            }
+        }
+        Ok(json!({
+            "ok": true, "teams": teams,
+            "model_version": crate::credit::MODEL_VERSION,
+            "window_days": crate::credit::WINDOW_DAYS,
+            "min_events": crate::credit::MIN_EVENTS,
+            "baseline": crate::credit::BASELINE,
+        }))
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 单团队 credit 明细（成员/owner 可见精确分 + 构成）；非成员 400。
+async fn api_my_credit_team(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        let mine = crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())?;
+        let mut relation = "";
+        for (g, r) in [("owned", "owner"), ("joined", "member")] {
+            if mine
+                .get(g)
+                .and_then(Value::as_array)
+                .map(|xs| xs.iter().any(|x| x["team_id"].as_str() == Some(team.as_str())))
+                .unwrap_or(false)
+            {
+                relation = r;
+            }
+        }
+        if relation.is_empty() {
+            return Err("not a member of this team".to_string());
+        }
+        let mut v = crate::provision::credit_view(c, &team)?;
+        v["relation"] = json!(relation);
+        Ok(v)
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+    }
+}
+
+/// 刷新 credit 快照（owner-only；经自动通道拉租户侧行为计数）。
+async fn api_my_credit_refresh(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Path(team): Path<String>,
+) -> Response {
+    if let Err(r) = guard(&ctx, &headers) {
+        return r;
+    }
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "user session required"})),
+        )
+            .into_response();
+    };
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    match with_conn(&ctx, |c| {
+        let owned = crate::platform::owned_teams(c, &uid).unwrap_or_default();
+        if !owned.iter().any(|t| t == &team) {
+            return Err("only the owner can refresh this team's credit".to_string());
+        }
+        crate::provision::refresh_credit(c, &team, kc.as_deref(), cx.as_deref())
+    }) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
 }
 
@@ -1366,7 +1495,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <a id="miPending" onclick="openPending()" style="display:none">待我审批</a>
         <div class="sep"></div>
         <a id="miTcoin" onclick="openTcoin()">TCoin</a>
-        <a class="dim" title="未启用">credit（未启用）</a>
+        <a id="miCredit" onclick="openCredit()">credit</a>
         <a onclick="alert('当前改密请用 CLI：teamx platform user set-password --user-id <id>')">设置</a>
         <div class="sep"></div>
         <a onclick="logout()">退出</a>
@@ -1504,6 +1633,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <table><thead><tr><th>时间</th><th>团队</th><th>变动</th><th>原因</th></tr></thead><tbody id="tcRecent"></tbody></table>
   </div>
   </div>
+  <div class="tabpage" id="tab-credit" style="display:none">
+  <div class="panel">
+    <h2>团队信用 <span class="tag">credit · 由履约行为自动派生</span></h2>
+    <div class="pc-meta" style="margin-bottom:8px"><span>对外只显示 <b>分档徽章</b>；精确分与构成明细仅团队成员/owner 可见。
+      基线 <b id="crBaseline">60</b> · 窗口 <b id="crWindow">90</b> 天 · 有效事件 &lt; <b id="crMin">5</b> 时显示「数据不足」。<b>v1 只展示、不影响任何操作。</b></span></div>
+    <div class="split">
+      <div class="split-list" id="crList"><div class="detail-empty">加载中…</div></div>
+      <div class="split-detail" id="crDetail"><div class="detail-empty">← 选择左侧团队查看构成明细</div></div>
+    </div>
+  </div>
+  </div>
   <div class="tabpage" id="tab-platform" style="display:none">
   <div class="panel"><h2>平台 token</h2><table><thead><tr><th>id</th><th>state</th><th>created</th><th>redeemed_by</th></tr></thead><tbody id="tokens"></tbody></table></div>
   <div class="panel"><h2>平台管理员</h2><table><thead><tr><th>user</th><th>granted_at</th><th>via</th></tr></thead><tbody id="admins"></tbody></table></div>
@@ -1537,6 +1677,7 @@ async function loadDir(page){
       ${t.relation==='owner'?'<span class="tag-i">我创建的</span>'
         :(t.relation==='member'?'<span class="tag-i">我加入的</span>'
           :(t.can_apply?'<span class="tag-j">可加入</span>':'<span class="tag-i">仅邀请</span>'))}
+      ${t.credit_grade?`<span class="pill ${crPill(t.credit_grade)}" title="团队信用分档">信用 ${esc(t.credit_grade)}</span>`:''}
       <span class="ri-meta">${esc(t.member_count)} 人</span>
     </div>`).join('')
     : '<div class="detail-empty">没有匹配的公开团队</div>';
@@ -1695,6 +1836,8 @@ async function openMineDetail(id,kind,el){
       <div class="muted">留空即可：平台会自行建立到该租户 server 的通道（同机 port-forward），并把可用地址写进 owner 邀请函。</div>
       <h2 style="margin-top:12px">Owner 邀请函 <span class="tag">认领你在这个团队的 owner 座位</span></h2>
       <div id="ownerLetter_${short}"></div>
+      <h2 style="margin-top:12px">credit <span class="tag">团队信用（派生）</span></h2>
+      <div id="crTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">TCoin <span class="tag">本团队累计消耗</span></h2>
       <div id="tcTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">成员 <span class="tag">只读</span></h2>
@@ -1710,11 +1853,14 @@ async function openMineDetail(id,kind,el){
     loadOwnerLetter(id);
     loadRoster(id);
     loadTeamTcoin(id);
+    loadTeamCredit(id);
   }else{
     box.innerHTML=`
       <div class="team-head"><h3>${esc(t.team_name||t.team_id)}</h3><span class="tag-i">我加入的</span>${ws==='Running'?'<span class="tag-j">工作区运行中</span>':'<span class="tag-i">工作区 '+esc(ws)+'</span>'}</div>
       <div class="pc-meta"><span>加入于 ${esc((t.joined_at||'').slice(0,10)||'—')}</span><span>席位 <code>${esc((t.member_id||'').slice(0,12))}</code></span>${t.workspace_live?'':'<span class="tag-i">状态为快照</span>'}</div>
       <div class="pc-sum">${esc(det.public_summary||'')}</div>
+      <h2 style="margin-top:12px">credit <span class="tag">团队信用（派生）</span></h2>
+      <div id="crTeam_${short}" class="muted">加载中…</div>
       <h2 style="margin-top:12px">我的邀请函</h2>
       ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
       <div class="boot-row" style="border-top:1px solid #EBEEF5;margin-top:14px;padding-top:12px">
@@ -1722,6 +1868,64 @@ async function openMineDetail(id,kind,el){
         <span class="muted">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</span></div>`;
   }
 }
+// ---- credit（design/018 SD-16：用户名菜单实页 + 团队详情 + 目录徽章） ----
+const CR_DESC={S:'极可信（90+）',A:'可信（80-89）',B:'正常（60-79）',C:'需关注（40-59）',D:'高风险（<40）'};
+function crPill(g){return g==='S'||g==='A'?('pill green'):(g==='D'?'pill orange':'pill')}
+function openCredit(){showTab('credit');loadCredit()}
+async function loadCredit(){
+  const list=document.getElementById('crList');
+  const d=await jget('/api/my/credit');
+  if(!d.ok){list.innerHTML='<div class="detail-empty">'+esc(d.error||'')+'</div>';return}
+  document.getElementById('crBaseline').textContent=d.baseline;
+  document.getElementById('crWindow').textContent=d.window_days;
+  document.getElementById('crMin').textContent=d.min_events;
+  const xs=d.teams||[];
+  list.innerHTML=xs.length?xs.map(t=>`<div class="row-item" onclick="openCreditTeam('${esc(t.team_id)}',this)">
+    <div style="flex:1"><div><b>${esc(t.team_name||t.team_id)}</b> <span class="tag-i">${t.relation==='owner'?'Owner':'成员'}</span></div>
+      <div class="muted">${t.insufficient||t.awaiting_refresh?'<span class="tag-i">数据不足</span>':('分数 <b>'+t.credit.score+'</b> · '+esc(CR_DESC[t.grade]||''))}
+        ${t.awaiting_refresh?' · <span class="muted">待刷新</span>':''}</div></div>
+    ${t.grade&&!t.insufficient?`<span class="${crPill(t.grade)}">${esc(t.grade)}</span>`:''}</div>`).join('')
+    :'<div class="detail-empty">还没有参与任何团队<br><br><button class="btn btn-sm" onclick="showTab(\'mine\')">去我的团队</button></div>';
+}
+async function openCreditTeam(id,el){
+  if(typeof markSel==='function')markSel(el);
+  const box=document.getElementById('crDetail');
+  box.innerHTML='<div class="detail-empty">加载中…</div>';
+  const d=await jget('/api/my/credit/'+encodeURIComponent(id));
+  if(!d.ok){box.innerHTML='<div class="detail-empty">'+esc(d.error||'')+'</div>';return}
+  const c=d.credit;
+  const head=`<div class="team-head"><h3>${esc(id)}</h3>
+    ${c&&!c.insufficient?`<span class="${crPill(c.grade)}">${esc(c.grade)}</span>`:'<span class="tag-i">数据不足</span>'}</div>
+    <div class="pc-meta"><span>分数 <b>${c?c.score:'—'}</b></span><span>有效事件 ${c?c.event_count:0}</span>
+      <span>模型 <code>${esc(d.model_version||'')}</code></span></div>
+    ${c&&c.computed_at?'<div class="muted">上次刷新 '+esc(c.computed_at.slice(0,16).replace('T',' '))+'</div>':'<div class="muted">尚未刷新（点下方「刷新」拉取租户侧行为）</div>'}`;
+  const bd=(c&&c.breakdown)||[];
+  const table=bd.length?('<table><thead><tr><th>信号</th><th>计数</th><th>得分</th><th>说明</th></tr></thead><tbody>'+
+    bd.map(r=>`<tr><td>${esc(r.signal)}</td><td>${esc(r.count)}</td>
+      <td style="color:${r.points<0?'#F56C6C':'#4e9a2e'}">${r.points>0?'+':''}${r.points}</td><td class="muted">${esc(r.note||'')}</td></tr>`).join('')+
+    '</tbody></table>'):'<div class="muted">暂无构成明细（先刷新）</div>';
+  box.innerHTML=head+'<h2 style="margin-top:12px">构成明细 <span class="tag">可解释、无黑箱</span></h2>'+table+
+    `<div class="muted" style="margin-top:8px">基线 ${d.baseline||60} 分起步；负向按类封顶；90 天线性衰减；<b>v1 不影响任何操作</b>。</div>
+     <div class="row" style="margin-top:8px"><button class="btn btn-sm" onclick="refreshCredit('${esc(id)}')">刷新</button>
+     <span class="muted">刷新会经自动通道读取该租户的行为计数</span></div>`;
+}
+async function refreshCredit(id){
+  const r=await jpost('/api/my/credit/'+encodeURIComponent(id)+'/refresh',{});
+  if(!r.ok){alert('刷新失败：'+(r.error||''));return}
+  alert(r.insufficient?('已刷新：数据不足（有效事件 '+r.event_count+' < 5），不显示分数'):('已刷新：'+r.grade+'（'+r.score+' 分）'));
+  openCreditTeam(id,null); loadCredit();
+}
+async function loadTeamCredit(id){
+  const short=id.slice(0,8); const el=document.getElementById('crTeam_'+short); if(!el)return;
+  const d=await jget('/api/my/credit/'+encodeURIComponent(id));
+  if(!d.ok){el.innerHTML='<span class="muted">不可用：'+esc(d.error||'')+'</span>';return}
+  const c=d.credit;
+  el.innerHTML=(c?(c.insufficient?'<span class="tag-i">数据不足</span>（有效事件 '+c.event_count+'）':'<span class="'+crPill(c.grade)+'">'+esc(c.grade)+'</span> 分数 <b>'+c.score+'</b>'):
+    '<span class="muted">尚未刷新</span>')+
+    ` <button class="btn btn-sm" style="margin-left:8px" onclick="refreshCredit('${esc(id)}').then(()=>loadTeamCredit('${esc(id)}'))">刷新</button>
+     <div class="muted" style="margin-top:4px">派生自台账事件（完成/驳回/阻塞/入场/留存）+ TCoin 欠费；对外只暴露分档。</div>`;
+}
+
 // ---- TCoin（design/017 SD-15：用户名菜单实页 + 团队详情累计） ----
 function openTcoin(){showTab('tcoin');loadTcoin()}
 async function loadTcoin(){
@@ -1890,6 +2094,7 @@ mod tests {
             "/api/my/teams", "bootstrapTeam", "createMyTeam", "letterOut", "loginPassword", "logout",
             "pwForm", "tab-all", "discovery/directory", "loadDir", "usermenu", "openMyRequests", "saveDiscover",
             "openTcoin", "loadTcoin", "settleTcoin", "tab-tcoin", "tcList", "tcDetail",
+            "openCredit", "loadCredit", "refreshCredit", "tab-credit", "crList", "crDetail", "credit_grade",
             "split-detail", "row-item", "markSel", "openTenantDetail", "reqMode", "btn-primary", "copyText",
             "mineTab", "sub-letters", "loadLetters", "leaveTeam", "loadRoster", "inviteMember", "ncName", "ncVis", "ncJoin",
             "subtabs", "subtab", "mineSubtabs", "subnav-layout", "subnav-item", "团队列表", "加入团队",

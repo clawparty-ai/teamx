@@ -133,7 +133,9 @@ pub fn directory(
     let sql = format!(
         "SELECT t.id, t.name, COALESCE(t.public_summary,''), COALESCE(t.join_policy,'invite_only'),
                 t.created_at, t.updated_at,
-                (SELECT COUNT(*) FROM members m WHERE m.team_id = t.id AND m.state NOT IN ('left','denied'))
+                (SELECT COUNT(*) FROM members m WHERE m.team_id = t.id AND m.state NOT IN ('left','denied')),
+                (SELECT CASE WHEN c.insufficient = 0 THEN c.grade END
+                   FROM team_credit c WHERE c.team_id = t.id)
          FROM teams t
          WHERE COALESCE(t.visibility,'private') = 'public'
            AND t.state IN ('forming','active')
@@ -154,6 +156,8 @@ pub fn directory(
                 "created_at": r.get::<_, String>(4)?,
                 "updated_at": r.get::<_, String>(5)?,
                 "member_count": r.get::<_, i64>(6)?,
+                // credit 公开分档（数据不足时 null —— 不标签化新团队，SD-11/SD-16）
+                "credit_grade": r.get::<_, Option<String>>(7)?,
             }))
         })
         .map_err(|e| format!("db: {e}"))?;

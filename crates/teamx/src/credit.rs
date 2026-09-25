@@ -712,8 +712,7 @@ mod tests {
         assert_eq!(ps.rejected_requests, 1);
         assert_eq!(ps.tcoin_balance, -150);
         // 合并：入场率分母用已批准数
-        let mut ts = Signals::default();
-        ts.members_active = 1;
+        let ts = Signals { members_active: 1, ..Default::default() };
         let m = merge(ts, ps);
         assert_eq!(m.onboarded, 1);
     }

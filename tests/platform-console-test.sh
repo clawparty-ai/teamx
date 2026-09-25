@@ -550,4 +550,62 @@ assert d.get('ok') is not True,d
 print('  ',str(d.get('error'))[:70])" || fail "H5: 租户不可达时应明确失败"
 pass "H5 结算 owner-only + 租户不可达明确失败"
 
+# ---------------------------------------------------------------------------
+# I: credit（design/018 · ADR-0004）—— 派生分档 / 权限 / 数据不足不贴标签
+# ---------------------------------------------------------------------------
+
+# I0: 让 bob 团队公开（目录可见）+ 种一条 insufficient 快照（目录不得出现徽章 —— SD-11/SD-16）
+sqlite3 "$TEAMX_DB" "UPDATE teams SET visibility='public' WHERE id='$BOB_TEAM';"
+sqlite3 "$TEAMX_DB" "INSERT OR REPLACE INTO team_credit (team_id,score,grade,insufficient,event_count,breakdown_json,model_version,computed_at)
+  VALUES ('$BOB_TEAM',62,'B',1,3,'[]','credit-v1','2026-09-25T00:00:00+00:00');"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/credit" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+t=[x for x in d['teams'] if x['team_id']=='$BOB_TEAM'][0]
+assert d['ok'] and d['model_version'].startswith('credit-'),d
+assert t['insufficient'] is True,t
+assert t['grade']=='B',t" || fail "I0: 我的 credit 列表异常"
+pass "I0 credit 列表：insufficient 与 grade 并存（前端显示数据不足）"
+
+# I1: 目录不暴露"数据不足"团队的分档
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/directory?query=bob" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+items=d.get('items') or []
+x=[i for i in items if i['team_id']=='$BOB_TEAM']
+assert x, 'bob 团队应可见'
+assert x[0].get('credit_grade') is None, '数据不足不得给公开分档: %r'%x[0]" || fail "I1: 数据不足仍暴露分档"
+pass "I1 数据不足的团队不给公开分档（不标签化新团队 SD-11）"
+
+# I2: 物化一条足够事件的快照 → 目录出现分档徽章
+sqlite3 "$TEAMX_DB" "UPDATE team_credit SET insufficient=0, event_count=12, score=85, grade='A' WHERE team_id='$BOB_TEAM';"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/directory?query=bob" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+x=[i for i in d['items'] if i['team_id']=='$BOB_TEAM'][0]
+assert x['credit_grade']=='A',x" || fail "I2: 目录未暴露公开分档"
+$C -b /tmp/teamx-platcon-bob "$BASE/api/discovery/teams/$BOB_TEAM" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d['team'].get('credit_grade')=='A',d['team'].get('credit_grade')" || fail "I2: 详情未暴露公开分档"
+pass "I2 目录/详情暴露公开分档（insufficient=0 → A）"
+
+# I3: 权限 —— 非成员看不了成员视角的信用明细；非 owner 不能刷新
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' "$BASE/api/my/credit/$BOB_TEAM")"
+[ "$CODE" = "400" ] || fail "I3: 非成员应 400，实际 $CODE"
+CODE="$($C -b /tmp/teamx-platcon-alice -o /dev/null -w '%{http_code}' -X POST "$BASE/api/my/credit/$BOB_TEAM/refresh")"
+[ "$CODE" = "400" ] || fail "I3: 非 owner 刷新应 400，实际 $CODE"
+pass "I3 credit 权限：非成员 400 / 非 owner 刷新 400"
+
+# I4: 成员/owner 视角拿得到精确分与构成明细
+$C -b /tmp/teamx-platcon-bob "$BASE/api/my/credit/$BOB_TEAM" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d['ok'] and d['relation']=='owner',d
+assert d['credit']['score']==85 and d['credit']['grade']=='A',d['credit']
+assert 'model_version' in d and d['window_days']==90 and d['min_events']==5,d" || fail "I4: 成员视角明细异常"
+pass "I4 成员/owner 可见精确分 + 模型参数（90 天窗口 / <5 事件）"
+
+# I5: owner 刷新在租户不可达时必须明确失败（不假装有分数）
+$C -b /tmp/teamx-platcon-bob -X POST "$BASE/api/my/credit/$BOB_TEAM/refresh" --max-time 40 | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d.get('ok') is not True,d
+print('  ',str(d.get('error'))[:70])" || fail "I5: 租户不可达应明确失败"
+pass "I5 刷新在租户不可达时明确失败"
+
 printf '\nALL PASSED (platform console E2E)\n'
