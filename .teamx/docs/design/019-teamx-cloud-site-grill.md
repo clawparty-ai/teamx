@@ -54,56 +54,88 @@ owner 明确的需求（已定，见 SD-1…SD-3）：做一个 **single page �
 - **SD-1** **单页（single page）** 官网：介绍 **teamx** 与 **teamx cloud**。
 - **SD-2** 提供 **teamx 安装方式**；**目前只有 `brew install`**。
 - **SD-3** 右上角 **Login** → 点击进入 **teamx cloud 的登录页**。
+- **SD-4（Round 1）站点的首要目标是「让用户了解并使用 teamx cloud」**；teamx 客户端只是
+  **teamx cloud 的入口之一**（不把官网写成 CLI 工具介绍页）。
+- **SD-5（Round 1）中英双语**；**平台控制台（console）也要双语**（新增范围）。
+- **SD-6（Round 1）不新建仓库**：站点放在**当前仓库的 `site/` 目录**。
+- **SD-7（Round 1）站点静态资源**编译**进 `teamx` 二进制**，用 **`teamx site`** 启动即可浏览
+  （与 console 内嵌 `INDEX_HTML` 同思路）。
+- **SD-8（Round 1）Login 指向平台控制台登录页**（含 GitHub OAuth）。
+- **SD-9（Round 1）安装区不提 Windows**。
+- **SD-10（Round 1）必须有基础站点安全**：① **登录防暴力破解**（限速/锁定/退避）
+  ② **强制 HTTPS**（证书可从 Let's Encrypt 获取）。
 
 ## Design Tree
 
 | DQ | 问题 | 状态 | 结论 |
 |---|---|---|---|
-| DQ-0001 | **站点目标与边界**（只做介绍+安装+登录引流？文档是否外链？） | ⬜ open | — |
-| DQ-0002 | **语言**：中文 / 英文 / 双语切换 | ⬜ open | — |
-| DQ-0003 | **托管与仓库**：公开静态仓 + GitHub Pages / 自有服务器 / 第三方托管 | ⬜ open | — |
-| DQ-0004 | **技术形态**：单文件零构建 HTML / 轻量框架 | ⬜ open | — |
-| DQ-0005 | **Login 的落点**：哪一个控制台的登录页 + 公开可达如何解决 | ⬜ open | — |
-| DQ-0006 | **安装区块呈现**：brew 命令/复制按钮/Windows 与 Linux 说明 | ⬜ open | — |
-| DQ-0007 | **内容板块与顺序**（Hero → 为什么 → 原则 → 安装 → cloud → 文档/视频 → 页脚） | ⬜ open | — |
-| DQ-0008 | **视觉**：复用控制台设计语言 / 新视觉；深浅色 | ⬜ open | — |
-| DQ-0009 | **资产复用**：架构图 / demo 视频 / 控制台截图（可否公开） | ⬜ open | — |
-| DQ-0010 | **埋点与分析**：v1 是否需要 | ⬜ open | — |
-| DQ-0011 | **维护方式**：内容与 README/docs 的关系（手工 / 派生） | ⬜ open | — |
-| DQ-0012 | **移动端与性能**：响应式要求、视频体积策略 | ⬜ open | — |
+| DQ-0001 | 站点目标与边界 | ✅ | SD-4（cloud 优先；teamx 客户端是入口之一） |
+| DQ-0002 | 语言 | ✅ | SD-5（中英双语；console 也要双语） |
+| DQ-0003 | 托管与仓库 | ✅ | SD-6（本仓 `site/` 目录，不新建仓库） |
+| DQ-0004 | 技术形态 | ✅ | SD-7（静态资源内嵌二进制，`teamx site` 启动） |
+| DQ-0005 | Login 的落点 | ✅ | SD-8（平台控制台登录页） |
+| DQ-0006 | 安装区块呈现 | ✅ | SD-9（brew 为主，不提 Windows） |
+| DQ-0007 | **`teamx site` 的形态**：端口/绑定、与 console 是否同进程、路由关系 | ⬜ open | — |
+| DQ-0008 | **强制 HTTPS 的实现路径**（内建 ACME / 外部证书喂入 / 反代终止） | ⬜ open | — |
+| DQ-0009 | **登录防爆破策略**（维度/阈值/退避/锁定/审计） | ⬜ open | — |
+| DQ-0010 | **console 双语实现方式**（字典/切换/持久化/服务端消息） | ⬜ open | — |
+| DQ-0011 | **站点内容板块与顺序**（cloud-first 叙事） | ⬜ open | — |
+| DQ-0012 | **视觉**：复用控制台设计语言 / 新视觉 | ⬜ open | — |
+| DQ-0013 | **资产复用**：架构图 / demo 视频 / 控制台截图 | ⬜ open | — |
+| DQ-0014 | **内嵌方式与体积**：`site/` 目录结构、资源打包方式、视频是否内嵌 | ⬜ open | — |
+| DQ-0015 | **埋点/SEO**：v1 是否需要 | ⬜ open | — |
 
-## Current Frontier（Round 1）
+## Current Frontier（Round 2）
 
-**主题：目标与边界 + 语言 + 托管 + 技术形态 + 登录落点 + 安装呈现**（DQ-0001…DQ-0006）
+**主题：`teamx site` 形态 + HTTPS/防爆破安全 + console 双语 + 内容与视觉**（DQ-0007…DQ-0015）
 
 建议（待 owner 裁决）：
 
-1. **DQ-0001 目标 = 转化两件事**：① 让人装 teamx（brew 命令一键复制）② 让已有用户 **Login**。
-   文档/方法论**不复制**到站内，改为**外链** GitHub（README / docs/27 / 方法论文）。站内只保留
-   "是什么 / 为什么 / 怎么装 / 怎么进"。
-2. **DQ-0002 语言 = 双语单页 + 右上角切换（中/英）**，默认**跟随浏览器**（`Accept-Language`），
-   不做多页路由（保持 single page）。
-3. **DQ-0003 托管 = 新建**公开**仓（如 `caishu97/teamx-site`）+ GitHub Pages**（自定义域待定）。
-   理由：源码仓私有、tap 仓不适合放站点；Pages 免费且与 brew 分发同源（都在 GitHub 生态）。
-4. **DQ-0004 技术形态 = 单文件零构建静态 HTML**（内联 CSS/JS），无 npm/无构建步骤；
-   理由：single page、内容以文案为主、可被任意静态托管、审阅与改动成本最低（也便于以后换成别的托管）。
-5. **DQ-0005 Login 落点 = 平台控制台登录页**（含 GitHub OAuth），但**公开可达是硬依赖**：
-   在域名/TLS/公网端点未定（O-5）前，建议 v1 先把 Login 指向**一个配置常量**，
-   默认值留空 → 点击提示"即将开放"或指向 GitHub 仓库；**不硬编码 LAN 地址**。
-   （本 DQ 需要 owner 给出：目标 URL / 域名是否有 / 何时可得）
-6. **DQ-0006 安装区块 = 主推 brew（一键复制）+ 次要说明**：
-   ```bash
-   brew install caishu97/tap/teamx
-   ```
-   macOS/Linux 同命令；**Windows 一行注明"暂不支持 brew，见文档"**；不展示源码安装（保持单一入口）。
+7. **DQ-0007 `teamx site` 形态 = 独立子命令，一个进程同时服务官网与控制台**：
+   `teamx site --addr 0.0.0.0 --port 443`（默认 8443 便于本地试）→ `/` 官网、`/console`（或 `/app`）
+   平台控制台；官网与控制台**同域**，这样 **Login 就是一个站内相对路径**（`/console`），
+   不需要跨域配置，也天然共享 HTTPS。
+   理由：SD-7 要求二进制内嵌；同域让 Login 与 cookie（`SameSite=Strict`）语义最简。
+8. **DQ-0008 强制 HTTPS 路径 = 「外部签发 + 二进制加载」为 v1**：
+   `teamx site --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`，
+   证书由 **Let's Encrypt（certbot/任何 ACME 客户端）** 签发；**未配置证书时只监听 127.0.0.1**
+   （拒绝明文对外）；并对 HTTP 端口做 **301 → HTTPS**。
+   **内建 ACME**（二进制自己跑 ACME 协议、自动续期）列为 **v2 候选** —— 需要域名 + 80/443
+   独占 + 续期调度，复杂度和风险都更高（先用外部签发把站点跑通）。
+9. **DQ-0009 防爆破 = 双维度计数 + 指数退避 + 锁定 + 审计**：
+   - 维度：**per-IP** 与 **per-账号** 同时计数（防单 IP 打多号 + 防多 IP 打单号）
+   - 窗口/阈值：如 15 分钟内 ≥5 次失败 → 指数退避（1s、2s、4s…上限 60s）；
+     1 小时内 ≥10 次 → **锁定该账号 15 分钟**（IP 侧同样锁定）
+   - 成功登录清零；失败与锁定写**平台审计**（复用 `platform_audit`）
+   - 实现复用既有模式（`direct.rs` 已有"窗口内计数 + reason_code"的现成做法）
+   - **常量可配**，v1 先给保守默认值
+10. **DQ-0010 console 双语 = 一个内嵌字典 + 前端切换 + 服务端消息双语**：
+    - 前端：`I18N = {zh:{...}, en:{...}}`，`data-i18n` 属性 + `applyLang()`；选择持久化到
+      **cookie（`teamx_lang`）**，默认跟随 `Accept-Language`
+    - **服务端错误消息**：`/api` 返回的 `error` 文案也需双语（用 error code + 前端映射；
+      或服务端按 `Accept-Language`/cookie 选语言）—— **建议 error code + 前端映射**（服务端不动文案）
+    - 范围：**平台控制台全量 UI 文案**（含菜单/按钮/提示/空态），这是本 session 里**最重**的一块
+11. **DQ-0011 内容板块（cloud-first）**：
+    Hero（teamx cloud 一句话 + Login / 安装）→ **teamx cloud 是什么**（多租户、每租户独立 CA、
+    团队发现/加入、TCoin/Credit 治理）→ **团队协作怎么发生**（共享目标 + 台账 + 人机同在）→
+    **四种入口**（① 浏览器 Login ② 客户端 `brew install …` 接入 ③ 邀请函加入 ④ 观察者）→
+    方法论外链 → 页脚
+12. **DQ-0012 视觉**：复用控制台设计语言（主色 `#4A90E5`、卡片、同一字体栈），官网用**大字号 Hero**；
+    与 console **同一套 CSS 变量**，避免两套皮肤。
+13. **DQ-0013 资产**：架构图 PNG 上 Hero 下方；**demo 视频以"点开才加载"方式引入**
+    （`<video preload="none" poster>`）避免首屏 3.5MB；截图用现有控制台界面（TCoin/Credit/我的团队）
+14. **DQ-0014 内嵌方式**：`site/{index.html,assets/…}` 用 `include_str!`/`include_bytes!` 内嵌
+    （与 console 同做法）；**视频等大文件不内嵌**（放 `docs/` 并外链，或按需打包）——需 owner 定
+15. **DQ-0015 埋点/SEO**：v1 **不做埋点**；做最小 SEO（`<title>`/description/Open Graph 卡片）
 
-**Round 2（待 Round 1 settled）**：内容板块顺序、视觉、资产（架构图/视频/截图）、埋点、维护方式、移动端。
+**Round 3（若需要）**：域名与证书签发流程、上线 runbook、ACME 内建（v2）。
 
 ## Open Questions
 
-- 官网的**域名**是否已有（或计划）？
-- Login 目标 URL 现在是否能给出（哪怕是临时域名/隧道地址）？
-- 站内是否**必须**出现价格/TCoin/Credit 等商业化信息？（当前 TCoin/Credit 已实现，但未对外定价）
+- 官网的**域名**是否已有（或计划）？`teamx site` 上线时用它签发 Let's Encrypt 证书。
+- Login 作为站内相对路径（`/console`，DQ-0007 建议）是否可接受？还是要求独立域名？
+- 站内是否出现 **TCoin / Credit**（已实现，未定价）：**作为"平台治理能力"介绍**，还是完全不出现在官网？
+- console 双语是否**必须与站点同批交付**（SD-5 一句话带来的是整个控制台文案的 i18n 工作量）？
 
 ## Fact Requests and Reports
 
