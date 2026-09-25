@@ -188,3 +188,34 @@ worker 跑 `opencode run` 必然 `exit status: 1`（"items kept for retry"）。
 
 定了之后：在 `member_pod_manifest` 加凭据 Secret/env → 重跑试点 → 通过后按同样流程铺开到
 zhongm / caicai / caishu（每人一条命令）。
+
+---
+
+## J. 云 member 铺开完成（2026-09-25）
+
+按 owner 决定（"用 muse free" + "铺开"），**yongyan-dev 的 4 个席位全部拉起云 member Pod**：
+
+| 席位 | member Pod | 状态 | 隧道 | 资源 |
+|---|---|---|---|---|
+| zhaoz（extractor）| `teamx-m-7e9291b1c72144cf` | **5/5 Running**（0 重启）| 2 条已注册 | 10m / 259Mi |
+| zhongm（searcher）| `teamx-m-ef08d762abc34c5e` | **5/5 Running** | 2 条 | 33m / 274Mi |
+| caicai（kb-engineer）| `teamx-m-b22717680498441e` | **5/5 Running** | 2 条 | 8m / 275Mi |
+| caishu（owner）| `teamx-m-1d4d19aed811438c` | **5/5 Running** | 2 条 | 8m / 275Mi |
+
+- 每个 Pod 5 个容器：`setup`（init：导入邀请函 + 注入模型凭据）· `opencode`（serve:4201）·
+  `main`（teamx worker）· `ttyd`(7681) · `fs`(4197) · `expose`（隧道）
+- 4 位 worker 均稳定：`teamx worker: nothing actionable; sleeping 60s`
+- **模型**：平台统一凭据（Secret `teamx-llm`）→ opencode zen `muse-spark-1.3-contributor-free`；
+  已在 Pod 内实测 `opencode run` 回 `OK`、`https://opencode.ai` 200
+- **占用**：4 位合计约 1.1GiB 内存（c6a.2xlarge 16GiB，余量充足）
+- 租户 server 用**源 CA** → 成员既有证书/邀请函继续有效；旧 VM **一台未动**
+
+命令（每人一条，可重复执行、幂等）：
+```bash
+teamx node provision-cloud --team <tenant-team-id> --member <seat-id> --workspace-gib 30
+```
+
+### 仍未做的事
+- `powernano-v2` 的席位（同一批人、另一个团队）暂未拉云 member —— 需要时同样一条命令
+- 席位 `state` 目前多为 `waiting/idle`：成员真正干活（worker 执行任务 / 开 session）时会上报 active
+- 旧 VM（zhongm/caicai/zhaoz 主机）退役：**需 owner 书面同意**
