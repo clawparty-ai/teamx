@@ -1879,7 +1879,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .usermenu-panel .sep{border-top:1px solid #EBEEF5;margin:4px 0}
  .usermenu-panel .dim{color:#C0C4CC;cursor:default}
  /* master-detail split（与成员端 console 的 discussions/documents 同口径） */
- .split{display:grid;grid-template-columns:minmax(300px,38%) 1fr;gap:16px;align-items:start}
+ /* 列表↔详情分栏：列表只占 1/3（owner 反馈：列表信息不多时别占太宽），详情留 2/3 */
+ .split{display:grid;grid-template-columns:minmax(240px,33%) 1fr;gap:16px;align-items:start}
  .split-list{max-height:calc(100vh - 300px);overflow:auto}
  .split-detail{position:sticky;top:16px;min-height:220px}
  @media (max-width:900px){.split{grid-template-columns:1fr}.split-detail{position:static}.split-list{max-height:none}}
