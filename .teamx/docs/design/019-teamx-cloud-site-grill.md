@@ -1,9 +1,9 @@
 ---
-status: active
+status: completed
 protocol_version: 1
 owner: caishu
 created_at: 2026-09-25
-updated_at: 2026-09-25
+updated_at: 2026-09-25（owner 确认开始开发）
 ---
 
 # 019 — Teamx Cloud 官网（单页）grill 设计访谈
@@ -301,6 +301,43 @@ owner 明确的需求（已定，见 SD-1…SD-3）：做一个 **single page �
 - 站点分析、SEO、Open Graph 卡片
 - 英文之外的语种
 - 官网与 tap 仓、docs 的自动化同步
+
+## 实现状态（2026-09-25，代码仓 `main`）
+
+### 已实现（3 个提交）
+
+| 层 | 内容 |
+|---|---|
+| **站点** `site/index.html` | 零构建单文件（内联 CSS/JS）；Hero `teamx = 人 × AI` + 副标；**8 条跨文化谚语带**（中日韩用书法字体栈）；**轮播**（3 张 AI 插画 + 谚语 + 末屏 `team with AI = win`，**每次加载乱序**、谚语与插画交替、首末屏固定）；分段价值（更快/更强/可控/性价比之道）；快速开始三入口；页脚；**中英切换**（跟随浏览器 / localStorage）；brew 一键复制；响应式 + 最小 SEO |
+| **内嵌** `site.rs` | `include_str!`/`include_bytes!` 把 HTML + 3 张图（~200KB）编进二进制；`asset()` 表查找（免疫路径穿越） |
+| **`teamx site`** | 抽出 `build_router(ctx, root_console)`：`/` 官网、`/assets/{file}`、`/console` 控制台；控制台 `/api/*` 保持绝对路径（Login 即站内相对路径）；`serve_https()` 统一 TLS 与 **HTTP→HTTPS 301** |
+| **HTTPS（SD-12）** | `--tls-cert/--tls-key`（或 `TEAMX_TLS_CERT/KEY`）用外部证书并可对外；**未配证书强制只监听 127.0.0.1** |
+| **防爆破（SD-13）** | `LoginGuard` 双维度（IP + 账号）+ 指数退避（2/4/8/16/32s，上限 60s）+ 锁定（默认 15 分钟）+ 平台审计 + 429/`Retry-After`；阈值 `TEAMX_LOGIN_*` 可配；launch-token 登录也按 IP 计数 |
+| **双语（SD-14）** | 控制台头部语言切换（cookie `teamx_lang`，默认跟随浏览器）；**内嵌词典 128 条** + `MutationObserver`（动态渲染也翻译）；**服务端 65 处错误响应统一带稳定 `code`**（`err_code`/`err_body`），前端 `ERR`/`errText()` 出文案；静态可见中文覆盖 **96%** |
+
+### 真机验证（k8e 主机 `192.168.0.229`）
+
+- `teamx site --port 9443` → **只监听 127.0.0.1**（无外部证书，符合 SD-12）；经 SSH 隧道实测：
+  `/` 官网 200（20KB，含 Hero/8 谚语/轮播/brew/`/console`）、`/assets/goal.jpg` 200 image/jpeg 75KB、
+  `/console` 200（控制台）、`/api/me` 401（控制台 API 在绝对路径）
+- 平台控制台（systemd，9540）已升级：错密码返回 `{"code":"invalid_credentials"}`；
+  防爆破实测 3 次失败即退避、期间正确密码也被拒、到期自动解除（E2E J1–J5）
+
+### 开发中修掉的真 bug（均有单测回归）
+
+1. 退避写成**常量**而非"从最后一次失败起算的截止时间" → 失败留在窗口内就**永不解除**；
+2. `as_secs()` **截断**剩余时间 → 剩 0.9s 算成 0 → **提前解除**（改为按时刻比较 + 向上取整）。
+
+### 待办 / 未决
+
+- **插画**：另 2 张（成本用量审计 / 治理信用效率）待 **Gemini 通道开通计费**后用同一风格补齐；
+  现有 3 张即 Gemini 出品（先上线可用）
+- **页脚链接**：公开文档站 / 方法论 / GitHub 地址待定（当前指向公开 tap 仓，代码里已标 TODO）
+- **生产部署**：域名 + Let's Encrypt 证书 + `--http-port 80`（301）已就绪，等域名；
+  **内建 ACME 留 v2**
+- **i18n 收尾**：动态长句（含插值的如"共 N 个"）仍需少量模式化翻译；运维面板文案可继续补
+- **是否把 systemd 服务切到 `teamx site`**（`/` 官网 + `/console` 控制台）—— 会改变现有
+  `https://192.168.0.229:9540/?token=…` 链接（控制台移到 `/console`），**待 owner 决定**
 
 ## Related Artifacts
 
