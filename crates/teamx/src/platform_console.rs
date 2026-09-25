@@ -167,6 +167,52 @@ fn client_ip(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> String 
     peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".to_string())
 }
 
+/// 把服务端错误文案映射成**稳定错误码**（design/019 SD-14）：
+/// 服务端只保证 `code` 稳定，**文案由前端按语言映射**；`error` 原文保留作兜底与排障。
+pub(crate) fn err_code(msg: &str) -> &'static str {
+    let m = msg.to_lowercase();
+    let has = |k: &str| m.contains(k);
+    if has("too_many_attempts") || has("too many attempts") {
+        "too_many_attempts"
+    } else if has("invalid credentials") {
+        "invalid_credentials"
+    } else if has("unauthorized") || has("bad token") {
+        "unauthorized"
+    } else if has("github oauth not configured") {
+        "github_not_configured"
+    } else if has("not your tenant") {
+        "not_your_tenant"
+    } else if has("not a member") {
+        "not_member"
+    } else if has("only the owner") || has("owner only") {
+        "owner_only"
+    } else if has("quota") {
+        "quota_exceeded"
+    } else if has("not found") || has("no such") {
+        "not_found"
+    } else if has("cannot reach")
+        || has("port-forward")
+        || has("exited immediately")
+        || has("tenant-side unavailable")
+        || has("unreachable")
+    {
+        "tenant_unreachable"
+    } else if has("already") || has("exists") {
+        "already_exists"
+    } else if has("cooldown") {
+        "cooldown"
+    } else if has("disabled") {
+        "disabled"
+    } else {
+        "request_failed"
+    }
+}
+
+/// 统一错误响应体：`{ok:false, code, error}`（`code` 稳定、`error` 为英文兜底）。
+pub(crate) fn err_body(msg: &str) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": false, "code": err_code(msg), "error": msg }))
+}
+
 /// 是否被拦（含等待秒数）。
 fn guard_blocked(ctx: &Arc<Ctx>, keys: &[String], now: std::time::Instant) -> Option<u64> {
     ctx.login_guard.lock().ok().and_then(|g| g.blocked_for(keys, now))
@@ -185,7 +231,7 @@ fn guard_ok(ctx: &Arc<Ctx>, keys: &[String]) {
 fn too_many(secs: u64) -> Response {
     let mut r = (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(json!({"ok": false, "error": "too_many_attempts", "retry_after": secs})),
+        Json(json!({"ok": false, "code": "too_many_attempts", "error": "too_many_attempts", "retry_after": secs})),
     )
         .into_response();
     if let Ok(v) = axum::http::HeaderValue::from_str(&secs.max(1).to_string()) {
@@ -494,7 +540,7 @@ fn guard(ctx: &Ctx, headers: &HeaderMap) -> Result<(), Response> {
 }
 
 fn unauth() -> Response {
-    (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "unauthorized"}))).into_response()
+    (StatusCode::UNAUTHORIZED, err_body("unauthorized")).into_response()
 }
 
 /// 会话对应的平台用户（None = 运维 launch-token 或未登录）。
@@ -554,7 +600,7 @@ async fn api_login(
         if locked || wait > 0 {
             return too_many(wait.max(1));
         }
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "bad token"}))).into_response();
+        return (StatusCode::UNAUTHORIZED, err_body("bad token")).into_response();
     }
     guard_ok(&ctx, &ipkey);
     let mut resp = Json(json!({"ok": true})).into_response();
@@ -594,7 +640,7 @@ async fn api_login_password(
             if locked || wait > 0 {
                 return too_many(wait.max(1));
             }
-            return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "invalid credentials"})))
+            return (StatusCode::UNAUTHORIZED, err_body("invalid credentials"))
                 .into_response();
         }
     };
@@ -604,7 +650,7 @@ async fn api_login_password(
     let sess = match with_conn(&ctx, |c| crate::platform::issue_session(c, &uid)) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e})))
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e))
                 .into_response()
         }
     };
@@ -677,7 +723,7 @@ async fn api_tenants(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respons
         }
     }) {
         Ok(ts) => Json(json!({ "ok": true, "tenants": ts })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -690,7 +736,7 @@ fn own_guard(ctx: &Ctx, headers: &HeaderMap, team: &str) -> Result<(), Response>
         if !ok {
             return Err((
                 StatusCode::FORBIDDEN,
-                Json(json!({"ok": false, "error": "not your tenant"})),
+                err_body("not your tenant"),
             )
                 .into_response());
         }
@@ -706,19 +752,19 @@ async fn api_tenant_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Json
     if session_user(&ctx, &headers).is_some() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "use POST /api/my/teams for self-service"})),
+            err_body("use POST /api/my/teams for self-service"),
         )
             .into_response();
     }
     let team = body.get("team").and_then(Value::as_str).unwrap_or("").to_string();
     let image = body.get("server_image").and_then(Value::as_str).map(str::to_string);
     if team.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "team is required"}))).into_response();
+        return (StatusCode::BAD_REQUEST, err_body("team is required")).into_response();
     }
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| crate::provision::create_tenant(c, &team, image.as_deref(), kc.as_deref(), cx.as_deref())) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -732,7 +778,7 @@ async fn api_tenant_destroy(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| crate::provision::destroy_tenant(c, &team, kc.as_deref(), cx.as_deref())) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -762,7 +808,7 @@ async fn api_tenant_provision(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, P
     }
     let member = body.get("member").and_then(Value::as_str).unwrap_or("").to_string();
     if member.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "member is required"}))).into_response();
+        return (StatusCode::BAD_REQUEST, err_body("member is required")).into_response();
     }
     service_call(&ctx, &team, "node.provision", json!({
         "member": member, "team": team,
@@ -790,7 +836,7 @@ async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
     });
     match out {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -802,7 +848,7 @@ async fn api_tenant_reissue(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Pat
 #[allow(clippy::result_large_err)]
 fn require_user(ctx: &Ctx, headers: &HeaderMap) -> Result<(String, String), Response> {
     session_user(ctx, headers).ok_or_else(|| {
-        (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "user session required"})))
+        (StatusCode::FORBIDDEN, err_body("user session required"))
             .into_response()
     })
 }
@@ -841,7 +887,7 @@ async fn api_dir(
         Ok::<_, String>(d)
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -883,7 +929,7 @@ async fn api_dir_team(
     });
     let base = match detail {
         Ok(v) => v,
-        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "team not found"}))).into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, err_body("team not found")).into_response(),
     };
     // 租户侧字段：**端点已配置**时经 service 车道取白名单（SD-15 租户侧裁剪）；
     // 未配置或不可达时如实说明（不假装有）。
@@ -922,7 +968,7 @@ async fn api_dir_apply(
     let msg = body.get("message").and_then(Value::as_str).map(str::to_string);
     match with_conn(&ctx, |c| crate::discovery::request_join(c, &team, &uid, msg.as_deref())) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -959,7 +1005,7 @@ async fn api_dir_settings(
     };
     match out {
         Ok(v) => Json(json!({ "ok": true, "settings": v, "projection": projection })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -969,7 +1015,7 @@ async fn api_dir_mine(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     match with_conn(&ctx, |c| crate::discovery::my_requests(c, &uid)) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -980,7 +1026,7 @@ async fn api_dir_withdraw(
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     match with_conn(&ctx, |c| crate::discovery::withdraw_request(c, &id, &uid)) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -990,7 +1036,7 @@ async fn api_dir_pending(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Res
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     match with_conn(&ctx, |c| crate::discovery::pending_for_owner(c, &uid)) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1037,7 +1083,7 @@ async fn api_dir_decide(
     });
     match out {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1050,7 +1096,7 @@ async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
         // 运维走 /api/tenants（全量）；my/* 是用户面。
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1059,7 +1105,7 @@ async fn api_my_teams(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
         crate::provision::my_teams(c, &uid, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1076,7 +1122,7 @@ async fn api_my_credit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respo
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1112,7 +1158,7 @@ async fn api_my_credit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respo
         }))
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1128,7 +1174,7 @@ async fn api_my_credit_team(
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1154,7 +1200,7 @@ async fn api_my_credit_team(
         Ok(v)
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1170,7 +1216,7 @@ async fn api_my_credit_refresh(
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1183,7 +1229,7 @@ async fn api_my_credit_refresh(
         crate::provision::refresh_credit(c, &team, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1199,7 +1245,7 @@ async fn api_my_tcoin(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1249,7 +1295,7 @@ async fn api_my_tcoin(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Respon
         Ok(json!({ "ok": true, "rate": crate::tcoin::TCOIN_PER_USD, "teams": teams, "recent": recent }))
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1265,7 +1311,7 @@ async fn api_my_tcoin_team(
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1314,7 +1360,7 @@ async fn api_my_tcoin_team(
         Ok(ov)
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1330,7 +1376,7 @@ async fn api_my_tcoin_settle(
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1344,7 +1390,7 @@ async fn api_my_tcoin_settle(
         crate::provision::settle_team_tcoin(c, &team, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1363,7 +1409,7 @@ async fn api_my_roster(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(tea
     });
     match out {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1384,7 +1430,7 @@ async fn api_my_invite(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(tea
     });
     match out {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1395,7 +1441,7 @@ async fn api_my_leave(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Path(team
     let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
     match with_conn(&ctx, |c| crate::provision::leave_team(c, &team, &uid, kc.as_deref(), cx.as_deref())) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1405,7 +1451,7 @@ async fn api_my_letters(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Resp
     let (uid, _) = match require_user(&ctx, &headers) { Ok(v) => v, Err(r) => return r };
     match with_conn(&ctx, |c| crate::provision::my_letters(c, &uid)) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1418,14 +1464,14 @@ async fn api_my_teams_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Js
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
     let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
     // M2（weiye-mini task-103）：用户面**不接受** server_image（镜像由平台 pin）。
     if name.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "name is required"}))).into_response();
+        return (StatusCode::BAD_REQUEST, err_body("name is required")).into_response();
     }
     // design/016 SD-10：创建表单一步带上发现设置
     let vis = body.get("visibility").and_then(Value::as_str).map(str::to_string);
@@ -1438,7 +1484,7 @@ async fn api_my_teams_create(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Js
         )
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1455,7 +1501,7 @@ async fn api_my_teams_bootstrap(
     let Some((uid, _)) = session_user(&ctx, &headers) else {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "user session required"})),
+            err_body("user session required"),
         )
             .into_response();
     };
@@ -1470,7 +1516,7 @@ async fn api_my_teams_bootstrap(
         crate::provision::bootstrap_my_team(c, &team, &uid, &server_url, kc.as_deref(), cx.as_deref())
     }) {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_body(&e)).into_response(),
     }
 }
 
@@ -1480,7 +1526,7 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
     let tenant = match with_conn(ctx, |c| crate::provision::tenant_get(c, team)) {
         Ok(Some(t)) => t,
         Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": format!("tenant {team} not found")}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     };
     let ns = tenant["namespace"].as_str().unwrap_or("").to_string();
     let ca_secret = format!("teamx-ca-{}", crate::k8s::short_id(team));
@@ -1489,7 +1535,7 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
     let secret = match kubectl.get_json("secret", &ca_secret, &ns) {
         Ok(Some(v)) => v,
         Ok(None) => return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": format!("tenant CA secret {ca_secret} not found in {ns}")}))).into_response(),
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => return (StatusCode::BAD_GATEWAY, err_body(&e)).into_response(),
     };
     let dec = |k: &str| -> Option<String> {
         secret["data"][k]
@@ -1499,14 +1545,14 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
     };
     let (ca_crt, ca_key) = match (dec("ca.crt"), dec("ca.key")) {
         (Some(a), Some(b)) => (a, b),
-        _ => return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "tenant CA material missing in Secret"}))).into_response(),
+        _ => return (StatusCode::BAD_GATEWAY, err_body("tenant CA material missing in Secret")).into_response(),
     };
     // 2) 用租户 CA 签平台服务证书（service:platform-console:<instance>）
     // instance 只取 token 前缀（CN 由签发函数组装为 service:platform-console:<instance>，调用方不得自带前缀）
     let svc_cn = format!("console-{}", &ctx.launch_token[..8.min(ctx.launch_token.len())]);
     let svc = match crate::pki::issue_service_cert_with_ca(&ca_crt, &ca_key, "platform-console", &svc_cn) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     };
     // O-2 台账：平台服务证书（短 TTL，每次调用重签）也落一行 —— 否则"旧 CA 活数"永远少算。
     // 记录失败不阻断本次调用（台账是审计，不是门禁），但要写日志。
@@ -1536,7 +1582,7 @@ async fn service_call(ctx: &Ctx, team: &str, method: &str, args: Value) -> Respo
     .await;
     match out {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e}))).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, err_body(&e)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": format!("join: {e}")}))).into_response(),
     }
 }
@@ -1554,7 +1600,7 @@ async fn api_tokens(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response
     if let Err(r) = guard(&ctx, &headers) { return r; }
     match with_conn(&ctx, |c| crate::platform::list_tokens(c)) {
         Ok(v) => Json(json!({"ok": true, "tokens": v})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1562,7 +1608,7 @@ async fn api_admins(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response
     if let Err(r) = guard(&ctx, &headers) { return r; }
     match with_conn(&ctx, |c| crate::platform::list_admins(c)) {
         Ok(v) => Json(json!({"ok": true, "admins": v})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1570,7 +1616,7 @@ async fn api_audit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap) -> Response 
     if let Err(r) = guard(&ctx, &headers) { return r; }
     match with_conn(&ctx, |c| crate::platform::audit_log(c, 100)) {
         Ok(v) => Json(json!({"ok": true, "audit": v})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response(),
     }
 }
 
@@ -1626,7 +1672,7 @@ fn oauth_consume(ctx: &Ctx, state: &str) -> bool {
 /// 302 到 GitHub 授权页（浏览器跟随；用户在 GitHub 完成授权）。
 async fn api_oauth_start(State(ctx): State<Arc<Ctx>>) -> Response {
     if !github_configured() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "GitHub OAuth not configured (set TEAMX_GITHUB_CLIENT_ID/SECRET)"}))).into_response();
+        return (StatusCode::SERVICE_UNAVAILABLE, err_body("GitHub OAuth not configured (set TEAMX_GITHUB_CLIENT_ID/SECRET)")).into_response();
     }
     let client_id = std::env::var("TEAMX_GITHUB_CLIENT_ID").unwrap_or_default();
     let state = oauth_issue(&ctx);
@@ -1643,18 +1689,18 @@ async fn api_oauth_callback(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if !github_configured() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "GitHub OAuth not configured"}))).into_response();
+        return (StatusCode::SERVICE_UNAVAILABLE, err_body("GitHub OAuth not configured")).into_response();
     }
     let state = q.get("state").cloned().unwrap_or_default();
     if !oauth_consume(&ctx, &state) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "bad or expired state (CSRF)"}))).into_response();
+        return (StatusCode::BAD_REQUEST, err_body("bad or expired state (CSRF)")).into_response();
     }
     if let Some(e) = q.get("error") {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": format!("github refused: {e}")}))).into_response();
     }
     let code = q.get("code").cloned().unwrap_or_default();
     if code.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "missing code"}))).into_response();
+        return (StatusCode::BAD_REQUEST, err_body("missing code")).into_response();
     }
     // 换 token + 取用户：阻塞 HTTP（ureq）跑在 spawn_blocking（async 上下文禁直接阻塞）。
     // secret 只出现在发往 GitHub 的请求体里，永不进日志/审计/响应。
@@ -1698,19 +1744,19 @@ async fn api_oauth_callback(
     let me = match fetched {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e}))).into_response()
+            return (StatusCode::BAD_GATEWAY, err_body(&e)).into_response()
         }
     };
     let gid = me.get("id").map(|v| v.to_string()).unwrap_or_default();
     let login = me.get("login").and_then(Value::as_str).unwrap_or("").to_string();
     if gid.is_empty() || gid == "null" || login.is_empty() {
-        return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "github user missing id/login"}))).into_response();
+        return (StatusCode::BAD_GATEWAY, err_body("github user missing id/login")).into_response();
     }
     // 绑定/新建用户（github_id 锚定；禁用用户拒绝；重名加 -gh 后缀，不自动并户）。
     let user = match with_conn(&ctx, |c| crate::platform::find_or_create_github_user(c, &gid, &login)) {
         Ok(u) => u,
         Err(e) => {
-            return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": e}))).into_response()
+            return (StatusCode::FORBIDDEN, err_body(&e)).into_response()
         }
     };
     let uid = user["user_id"].as_str().unwrap_or("").to_string();
@@ -1718,7 +1764,7 @@ async fn api_oauth_callback(
     let sess = match with_conn(&ctx, |c| crate::platform::issue_session(c, &uid)) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e}))).into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, err_body(&e)).into_response()
         }
     };
     let token = sess["token"].as_str().unwrap_or("").to_string();
@@ -1789,6 +1835,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
  .subtab{border:none;background:none;padding:6px 16px;font-size:13px;color:#606266;cursor:pointer;border-radius:6px;font-family:inherit;transition:background 150ms,color 150ms}
  .subtab:hover{color:#4A90E5}
  .subtab.active{background:#fff;color:#4A90E5;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.10)}
+ .lang{display:inline-flex;background:#F2F6FC;border-radius:999px;padding:3px;margin-right:4px}
+ .lang button{border:none;background:none;font:inherit;font-size:12.5px;color:#606266;padding:5px 12px;border-radius:999px;cursor:pointer}
+ .lang button.on{background:#fff;color:#4A90E5;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.08)}
  .usermenu{position:relative;display:inline-block}
  .usermenu-panel{display:none;position:absolute;right:0;top:130%;background:#fff;border:1px solid #EBEEF5;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.12);min-width:190px;padding:6px 0;z-index:50}
  .usermenu-panel a{display:block;padding:8px 16px;font-size:13px;color:#333;text-decoration:none;cursor:pointer}
@@ -1851,6 +1900,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
 <body>
 <header><div class="logo"><div class="logo-icon">Tx</div><span class="logo-text">Teamx Cloud</span><span class="logo-sub">平台控制台</span></div>
   <div class="head-right">
+    <span class="lang" id="langSwitch" role="group" aria-label="language">
+      <button id="lg-zh" class="on" onclick="setLang('zh')">中文</button>
+      <button id="lg-en" onclick="setLang('en')">EN</button>
+    </span>
     <div class="usermenu" id="usermenu" style="display:none">
       <button class="btn btn-sm" onclick="toggleMenu(event)"><span id="who"></span> ▾</button>
       <div class="usermenu-panel" id="usermenuPanel">
@@ -1981,6 +2034,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </div>
 </div>
 <script>
+initLang();
 const q=new URLSearchParams(location.search);
 if(q.get('token')){fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:q.get('token')})}).then(()=>{history.replaceState({},'',location.pathname);boot()})}
 else boot();
@@ -1988,6 +2042,121 @@ async function jget(u){const r=await fetch(u,{cache:'no-store'});return await r.
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});return await r.json()}
 async function jdel(u){const r=await fetch(u,{method:'DELETE'});return await r.json()}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+/* ================= 双语（design/019 SD-14） =================
+   方案：**词表按"中文原文 → 英文"精确匹配**，遍历文本节点与 placeholder/title 属性替换；
+   MutationObserver 让动态渲染（innerHTML）出来的内容同样被翻译。
+   语言选择存 cookie `teamx_lang`；默认跟随浏览器语言。服务端只回稳定 `code`，
+   错误文案由 `ERR` 表映射（`errText`）。 */
+var LANG = 'zh';
+var DICT = {
+  "加载中…":"Loading…","成员":"Members","仅邀请":"Invite only","余额":"Balance",
+  "我的申请":"My applications","创建团队":"Create team","公开":"Public","私有":"Private",
+  "平台控制台":"Platform console","待我审批":"Awaiting my review","我加入的":"Joined",
+  "邀请函":"Invitation","复制邀请函":"Copy invitation","数据不足":"Not enough data","分数":"Score",
+  "不可用：":"Unavailable: ","全部团队":"All teams","加入团队":"Join a team","租户":"Tenants",
+  "时间":"Time","团队":"Team","变动":"Change","原因":"Reason","我创建的":"Created by me",
+  "状态":"Status","待审批":"Pending","已复制":"Copied","允许申请加入":"Allow join requests",
+  "加入":"Join","暂无":"None yet","去全部团队发现":"Discover teams","允许申请":"Open to requests",
+  "团队信用（派生）":"Team credit (derived)","本团队累计消耗":"Team consumption",
+  "回收租户":"Destroy tenant","还没有参与任何团队":"Not in any team yet","去我的团队":"Go to my teams",
+  "有效事件":"Valid events","刷新":"Refresh","累计消耗":"Total consumption","暂无流水":"No entries yet",
+  "无未结算消耗":"No unsettled usage","设置":"Settings","退出":"Sign out","平台登录":"Platform sign-in",
+  "用户名":"Username","密码":"Password","登 录":"Sign in","登录":"Sign in","检查中…":"Checking…",
+  "我的团队":"My teams","租户管理":"Tenant admin","平台管理":"Platform admin",
+  "运行中工作区":"Running workspaces","Owner 邀请函":"Owner invitation","邀请成员":"Invite member",
+  "生成邀请函":"Generate invitation","发现设置":"Discovery settings","保存":"Save",
+  "离开团队":"Leave team","初始化团队":"Initialize team","公开简介":"Public summary",
+  "团队列表":"Teams","加入团队发现":"Discover","我的团队信用":"My team credit",
+  "未结算用量":"Unsettled usage","平台总账流水":"Platform ledger","成员分配余额":"Member balances",
+  "退出登录":"Sign out","GitHub 登录":"Sign in with GitHub","未启用":"Not enabled",
+  "待处理":"Pending","已批准":"Approved","已拒绝":"Rejected","已撤回":"Withdrawn",
+  "席位":"Seat","工作区运行中":"Workspace running","工作区":"Workspace","角色":"Role",
+  "只读":"read-only","成员操作":"Member ops","平台 token":"Platform tokens","平台管理员":"Platform admins",
+  "平台审计":"Platform audit","独立于租户台账":"separate from tenant ledgers",
+  "创建租户":"Create tenant","当前":"Current ","共":"Total ","已加入":"Joined",
+  "可加入":"Joinable","我创建的团队":"Teams I created","我加入的团队":"Teams I joined",
+  "Teamx Cloud · 平台控制台":"Teamx Cloud · Platform console","最新创建":"Newest","成员最多":"Most members",
+  "只看可加入":"Joinable only","搜索":"Search","← 点击左侧团队查看详情":"← Pick a team on the left",
+  "← 点击左侧条目查看详情":"← Pick an item on the left","＋ 创建团队":"＋ Create team",
+  "← 选左侧团队查看/管理":"← Pick a team to view or manage",
+  "或点上方「创建团队 / 加入团队」（表单在右侧显示）":"or use “Create team / Join a team” above (the form opens on the right)",
+  "project（运维全量）":"project (operator, all tenants)","← 点击左侧租户查看详情":"← Pick a tenant on the left",
+  "TCoin 余额":"TCoin balance",
+  "平台赠送额度；消耗按 LLM tokens 折算（唯一计量源）。":"Platform-issued credit; usage converts from LLM tokens (single source of truth).",
+  "v1 只记账不阻断":"v1 records only, never blocks","—— 余额不足仅提示。":"— low balance is a warning only.",
+  "← 选择左侧团队查看流水":"← Pick a team to see its ledger","我的最近动态":"My recent activity",
+  "团队信用":"Team credit","Credit · 由履约行为自动派生":"Credit · derived from delivery behaviour",
+  "对外只显示":"Publicly only","分档徽章":"the grade badge",
+  "；精确分与构成明细仅团队成员/owner 可见。":"; exact score and breakdown are visible to members/owner only.",
+  "· 窗口":"· window ","天 · 有效事件":"days · valid events","时显示「数据不足」。":"shows “not enough data”.",
+  "v1 只展示、不影响任何操作。":"v1 is display-only and affects nothing.",
+  "← 选择左侧团队查看构成明细":"← Pick a team to see the breakdown",
+  "信用":"Credit","公开":"Public",
+  "结算失败：":"Settle failed: ","刷新失败：":"Refresh failed: ","离开失败：":"Leave failed: ",
+  "初始化失败：":"Initialize failed: ","退出失败：":"Sign out failed: ","创建失败：":"Create failed: "
+};
+/* 服务端错误码 → 文案（SD-14：服务端只回 code，前端出文案） */
+var ERR = {
+  zh:{ too_many_attempts:"尝试过于频繁，请稍后再试", invalid_credentials:"用户名或密码不正确",
+      unauthorized:"请先登录", github_not_configured:"GitHub 登录未配置", not_your_tenant:"不是你的团队",
+      not_member:"你不是该团队成员", owner_only:"仅 owner 可操作", quota_exceeded:"已超出配额",
+      not_found:"未找到", tenant_unreachable:"租户 server 暂不可达", already_exists:"已存在",
+      cooldown:"仍在冷却期内", disabled:"账号已停用", request_failed:"请求失败" },
+  en:{ too_many_attempts:"Too many attempts, try again later", invalid_credentials:"Invalid username or password",
+      unauthorized:"Please sign in first", github_not_configured:"GitHub sign-in is not configured",
+      not_your_tenant:"Not your team", not_member:"You are not a member of this team",
+      owner_only:"Owner only", quota_exceeded:"Quota exceeded", not_found:"Not found",
+      tenant_unreachable:"Tenant server unreachable", already_exists:"Already exists",
+      cooldown:"Still in cooldown", disabled:"Account disabled", request_failed:"Request failed" }
+};
+function T(zh){ return (LANG==='en' && DICT[zh]) ? DICT[zh] : zh; }
+function errText(d){
+  var c = d && d.code;
+  if (LANG==='en'){ if(c && ERR.en[c]) return ERR.en[c]; return (d && d.error) || ''; }
+  if (c && ERR.zh[c]) return ERR.zh[c] + (d.error && c!=='request_failed' ? '' : ('：'+(d.error||'')));
+  return (d && d.error) || '';
+}
+function getCookie(n){ var m=document.cookie.match('(^|; )'+n+'=([^;]*)'); return m?decodeURIComponent(m[2]):null; }
+function setCookieLang(l){ document.cookie = 'teamx_lang='+l+'; Path=/; SameSite=Strict; Max-Age=31536000'; }
+function applyLangNode(root){
+  root = root || document.body;
+  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  var n;
+  while((n = walker.nextNode())){
+    var t = n.nodeValue, k = t && t.trim();
+    if(k && DICT[k] && k === t.trim()){ n.nodeValue = (LANG==='en' ? DICT[k] : k); }
+    else if(k && DICT[k] && k !== t){ n.nodeValue = t.replace(k, (LANG==='en' ? DICT[k] : k)); }
+  }
+  var els = root.querySelectorAll ? root.querySelectorAll('[placeholder],[title]') : [];
+  for(var i=0;i<els.length;i++){
+    ['placeholder','title'].forEach(function(a){
+      var v = els[i].getAttribute(a); if(v && DICT[v.trim()]) els[i].setAttribute(a, DICT[v.trim()]);
+    });
+  }
+}
+function setLang(l){
+  LANG = l;
+  document.documentElement.lang = (l==='zh' ? 'zh-CN' : 'en');
+  try{ setCookieLang(l); }catch(e){}
+  var a=document.getElementById('lg-zh'), b=document.getElementById('lg-en');
+  if(a)a.classList.toggle('on', l==='zh'); if(b)b.classList.toggle('on', l==='en');
+  applyLangNode(document.body);
+}
+/* 动态渲染的内容也要翻译：观察 DOM 变化后重扫（节流） */
+var __langTimer=null;
+function watchLang(){
+  try{
+    new MutationObserver(function(){
+      if(LANG!=='en') return;
+      if(__langTimer) clearTimeout(__langTimer);
+      __langTimer = setTimeout(function(){ applyLangNode(document.body); }, 40);
+    }).observe(document.body, {childList:true, subtree:true});
+  }catch(e){}
+}
+function initLang(){
+  var l = getCookie('teamx_lang') || ((navigator.language||'zh').toLowerCase().indexOf('zh')===0 ? 'zh' : 'en');
+  setLang(l); watchLang();
+}
 function toggleMenu(e){e.stopPropagation();const p=document.getElementById('usermenuPanel');p.style.display=p.style.display==='block'?'none':'block'}
 document.addEventListener('click',()=>{const p=document.getElementById('usermenuPanel');if(p)p.style.display='none'});
 function openMyRequests(){showTab('reqs');loadMineReqs();loadPendingReqs()}
@@ -2036,7 +2205,7 @@ async function openDirDetail(id,el){
 async function applyJoin(id){
   const message=(document.getElementById('applyMsg')||{}).value||'';
   const r=await jpost('/api/discovery/teams/'+encodeURIComponent(id)+'/apply',{message});
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   alert('申请已提交，等待团队 owner 审批。可在「我的申请」查看状态。');
   document.getElementById('dirDetail').style.display='none';
 }
@@ -2060,7 +2229,7 @@ async function loadMineReqs(){
 }
 async function withdrawReq(id){
   const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/withdraw',{});
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   loadMineReqs();
 }
 async function loadPendingReqs(){
@@ -2099,7 +2268,7 @@ function openReqDetail(id,el){
 }
 async function decideReq(id,approve){
   const r=await jpost('/api/discovery/requests/'+encodeURIComponent(id)+'/decide',{approve});
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   alert(approve?'已批准（邀请函与成员工作区见后续步骤）':'已拒绝（申请人 7 天后可再次申请）');
   loadPendingReqs();loadMineReqs();
 }
@@ -2118,10 +2287,10 @@ async function boot(){
   await loadMine();await loadTenants();await loadPlatform();
 }
 document.getElementById('pwForm').addEventListener('submit',e=>{e.preventDefault();loginPassword()});
-async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(r.error)}
+async function loginPassword(){const name=document.getElementById('uname').value.trim();const password=document.getElementById('password').value;const r=await jpost('/api/login/password',{name,password});if(r.ok)boot();else loginFail(errText(r))}
 async function logout(){
   const r=await jpost('/api/logout',{});
-  if(!r.ok){alert('退出失败：'+(r.error||''));return}
+  if(!r.ok){alert(T('退出失败：')+errText(r));return}
   const um=document.getElementById('usermenu'); if(um) um.style.display='none';
   const up=document.getElementById('usermenuPanel'); if(up) up.style.display='none';
   // 清空上一会话的界面残留（团队/租户/平台三块）
@@ -2271,7 +2440,7 @@ async function openCreditTeam(id,el){
 }
 async function refreshCredit(id){
   const r=await jpost('/api/my/credit/'+encodeURIComponent(id)+'/refresh',{});
-  if(!r.ok){alert('刷新失败：'+(r.error||''));return}
+  if(!r.ok){alert(T('刷新失败：')+errText(r));return}
   alert(r.insufficient?('已刷新：数据不足（有效事件 '+r.event_count+' < 5），不显示分数'):('已刷新：'+r.grade+'（'+r.score+' 分）'));
   openCreditTeam(id,null); loadCredit();
 }
@@ -2332,7 +2501,7 @@ async function openTcoinTeam(id,el){
 }
 async function settleTcoin(id){
   const r=await jpost('/api/my/tcoin/'+encodeURIComponent(id)+'/settle',{});
-  if(!r.ok){alert('结算失败：'+(r.error||''));return}
+  if(!r.ok){alert(T('结算失败：')+errText(r));return}
   alert(r.consumed?('已结算 '+r.consumed+' TCoin（批次 '+r.batch+'）'):'无未结算消耗');
   openTcoinTeam(id,null); loadTcoin();
 }
@@ -2374,7 +2543,7 @@ async function inviteMember(id){
 async function leaveTeam(id,name){
   if(!confirm('离开团队「'+name+'」？\n\n会释放我的座位、回收我的工作区（PVC 保留 7 天），之后可再次申请。'))return;
   const r=await jpost('/api/my/teams/'+encodeURIComponent(id)+'/leave',{});
-  if(!r.ok){alert('离开失败：'+(r.error||''));return}
+  if(!r.ok){alert(T('离开失败：')+errText(r));return}
   alert('已离开'+(r.pod_deleted?'（工作区已回收）':'（工作区待回收）'));
   loadMine();
 }
@@ -2391,7 +2560,7 @@ async function createMyTeam(){
   const visibility=document.getElementById('ncVis').value, join_policy=document.getElementById('ncJoin').value;
   const summary=document.getElementById('ncSum').value;
   const r=await jpost('/api/my/teams',{name,visibility,join_policy,summary});
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   await loadMine();
   if(r.team_id)openMineDetail(r.team_id,'owned',null);
   alert('团队已创建（空账本）。平台正在拉起 server（约 1 分钟）；就绪后点详情里的「初始化团队」，再取 Owner 邀请函导入。');
@@ -2402,7 +2571,7 @@ async function saveDiscover(team){
   const join_policy=document.getElementById('jp_'+short).value;
   const summary=document.getElementById('sum_'+short).value;
   const r=await jpost('/api/discovery/teams/'+encodeURIComponent(team)+'/settings',{visibility,join_policy,summary});
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   alert('已保存：'+(visibility==='public'?'公开':'私有')+' / '+(join_policy==='open_request'?'允许申请':'仅邀请'));
   loadDir(1);
 }
@@ -2412,7 +2581,7 @@ async function bootstrapTeam(team){
   const server_url=(urlEl?urlEl.value:'').trim();
   if(!team){alert('缺少 team id');return}
   const r=await jpost('/api/my/teams/'+encodeURIComponent(team)+'/bootstrap',{server_url});
-  if(!r.ok){alert('初始化失败：'+(r.error||''));return}
+  if(!r.ok){alert(T('初始化失败：')+errText(r));return}
   await loadMine();
   // 此前这里写向一个已不存在的元素（letterOut）→ 抛错导致「初始化成功却不刷新」。
   openMineDetail(team,'owned',null);
@@ -2446,7 +2615,7 @@ async function destroyTenant(t,teamName){
   if(typed===null)return;
   if(typed.trim()!==expect.trim()){alert('团队名不匹配，已取消');return}
   const r=await jdel('/api/tenants/'+encodeURIComponent(t));
-  if(!r.ok){alert(r.error);return}
+  if(!r.ok){alert(errText(r));return}
   loadMine();loadTenants();loadPlatform();
 }
 </script>
@@ -2532,6 +2701,58 @@ mod tests {
             g.blocked_for(&keys, t0 + Duration::from_millis(2500)).is_none(),
             "退避到期应放行"
         );
+    }
+
+    #[test]
+    fn console_has_bilingual_infrastructure() {
+        // design/019 SD-14：内嵌词典 + cookie 语言 + 服务端 error code → 前端映射
+        for needle in [
+            "var DICT = {",
+            "var ERR = {",
+            "function applyLangNode(",
+            "function setLang(",
+            "function initLang(",
+            "MutationObserver(",
+            "teamx_lang",           // cookie 持久化
+            "function errText(",    // 服务端 code → 文案
+            "lg-zh", "lg-en",       // 切换器
+            "initLang();",          // 启动即生效
+        ] {
+            assert!(INDEX_HTML.contains(needle), "双语基建缺少: {needle}");
+        }
+        // 词表规模与关键翻译
+        let dict = &INDEX_HTML[INDEX_HTML.find("var DICT = {").unwrap()..];
+        let dict = &dict[..dict.find("\n};").unwrap_or(dict.len())];
+        let entries = dict.matches("\":\"").count();
+        assert!(entries >= 120, "词表条目过少: {entries}");
+        for (zh, en) in [
+            ("\"加载中…\":\"Loading…\"", ""),
+            ("\"全部团队\":\"All teams\"", ""),
+            ("\"我的团队\":\"My teams\"", ""),
+            ("\"退出\":\"Sign out\"", ""),
+            ("\"登录\":\"Sign in\"", ""),
+        ] {
+            let _ = en;
+            assert!(dict.contains(zh), "词表缺少 {zh}");
+        }
+        // 错误码映射（服务端只回码）
+        assert!(INDEX_HTML.contains("invalid_credentials"));
+        assert!(INDEX_HTML.contains("too_many_attempts"));
+    }
+
+    #[test]
+    fn err_code_maps_known_messages() {
+        assert_eq!(err_code("invalid credentials"), "invalid_credentials");
+        assert_eq!(err_code("too_many_attempts"), "too_many_attempts");
+        assert_eq!(err_code("not your tenant"), "not_your_tenant");
+        assert_eq!(err_code("only the owner can settle this team"), "owner_only");
+        assert_eq!(err_code("tenant xyz not found"), "not_found");
+        assert_eq!(
+            err_code("cannot reach tenant server (auto port-forward to ns/svc not ready)"),
+            "tenant_unreachable"
+        );
+        assert_eq!(err_code("GitHub OAuth not configured"), "github_not_configured");
+        assert_eq!(err_code("something weird"), "request_failed");
     }
 
     /// 防回归：静态 `getElementById('x')` 必须有对应的 `id="x"`。
