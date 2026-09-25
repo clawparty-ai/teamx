@@ -14,6 +14,7 @@ pub const ASSETS: &[(&str, &[u8], &str)] = &[
     ("goal.jpg", include_bytes!("../../../site/assets/goal.jpg"), "image/jpeg"),
     ("members.jpg", include_bytes!("../../../site/assets/members.jpg"), "image/jpeg"),
     ("modes.jpg", include_bytes!("../../../site/assets/modes.jpg"), "image/jpeg"),
+    ("cost.jpg", include_bytes!("../../../site/assets/cost.jpg"), "image/jpeg"),
 ];
 
 /// 按文件名取内嵌资源；未命中返回 `None`（404）。
@@ -49,7 +50,7 @@ mod tests {
 
     #[test]
     fn assets_are_embedded_and_typed() {
-        for name in ["goal.jpg", "members.jpg", "modes.jpg"] {
+        for name in ["goal.jpg", "members.jpg", "modes.jpg", "cost.jpg"] {
             let (bytes, ct) = asset(name).unwrap_or_else(|| panic!("缺少资源 {name}"));
             assert!(bytes.len() > 1000, "{name} 太小，疑似占位");
             assert_eq!(ct, "image/jpeg");
