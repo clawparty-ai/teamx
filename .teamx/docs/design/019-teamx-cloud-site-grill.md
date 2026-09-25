@@ -119,6 +119,11 @@ owner 明确的需求（已定，见 SD-1…SD-3）：做一个 **single page �
     `mlx-runner` 在 `Decoding VAE...` 阶段 `unexpected EOF`，子进程退出，响应为空。
   - **结论**：**要用 Gemini 全量生图，须为 Gemini 通道开通计费**（Google 直连开通 billing，
     或给走 Gemini 的 OpenRouter 充值）；本地路径需先修 MLX 崩溃。
+  - **补充实测（owner 另给的 key）**：key 本身有效（可列 50 个模型、含 5 个图像模型），但同样返回
+    `generate_content_free_tier_requests, **limit: 0**` —— 即**图像模型没有免费额度**（Google 策略），
+    **必须在开启了结算（billing）的项目里使用**；非 key 失效问题。官方单价 ≈ **$0.039/张**
+    （`gemini-2.5-flash-image`），5 张 ≈ <¥1.5。
+  - 安全：owner 提供的 key **不得写入仓库**；实现阶段用环境变量 / 密钥管理。
 - **SD-27（Round 5）轮播 = 乱序（随机）**，但有**两条约束**：
   ① **谚语与插画交替编排**（因此同语言谚语永不相邻，自动满足 SD-25 的"不相邻"要求）；
   ② **首屏与末屏固定** —— 首屏 = 「分享目标」插画（承接 Hero），末屏 = 收束卡 **`team with AI = win`**；
