@@ -281,6 +281,77 @@ fn memberships_for_session(
 /// TCoin 写账的 actor 解析（design/017 SD-5：写账 = 平台自动 + owner 手动）。
 /// **平台库只有 platform 用户、没有 member 行** —— 先按平台会话令牌解析，再退回 member 会话。
 /// 返回 `user:<id>` / `member:<id>` 记入分录 `actor`。
+/// Activate a pre-allocated tenant seat: write the `members` row (state=active).
+/// Used by `teamx cloud tenant member activate` via the service lane.
+pub(crate) fn tenant_activate_member(
+    conn: &Connection,
+    team_id: &str,
+    member_id: &str,
+    name: Option<&str>,
+    role: Option<&str>,
+) -> Result<Value> {
+    let name = name
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| member_id[..8.min(member_id.len())].to_string());
+    let role = role
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| name.clone());
+    conn.execute(
+        "INSERT OR REPLACE INTO members
+           (id,team_id,session_key,display_name,role,state,joined_at,is_lead,user_id,discussion_quota)
+         VALUES (?1,?2,?3,?4,?5,'active',?6,0,'',5)",
+        params![member_id, team_id, format!("net:{member_id}"), name, role, crate::db::now()],
+    )
+    .map_err(|e| AppError(format!("db: {e}")))?;
+    Ok(json!({ "ok": true, "team_id": team_id, "member_id": member_id, "display_name": name }))
+}
+
+/// Grant a tenant member access to a team repo (default: the first repo).
+pub(crate) fn tenant_grant_repo(
+    conn: &Connection,
+    team_id: &str,
+    member_id: &str,
+    repo: Option<&str>,
+    perm: Option<&str>,
+) -> Result<Value> {
+    let perm = perm.filter(|s| !s.is_empty()).unwrap_or("write");
+    let repo_id: String = match repo.filter(|s| !s.is_empty()) {
+        Some(r) => conn
+            .query_row(
+                "SELECT id FROM git_repos WHERE team_id=?1 AND name=?2",
+                params![team_id, r],
+                |x| x.get(0),
+            )
+            .map_err(|_| AppError(format!("repo `{r}` not found in tenant")))?,
+        None => conn
+            .query_row(
+                "SELECT id FROM git_repos WHERE team_id=?1 ORDER BY created_at LIMIT 1",
+                params![team_id],
+                |x| x.get(0),
+            )
+            .map_err(|_| AppError("tenant has no repos".to_string()))?,
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO git_repo_permissions (repo_id,member_id,permission,granted_by,granted_at)
+         VALUES (?1,?2,?3,'service',?4)",
+        params![repo_id, member_id, perm, crate::db::now()],
+    )
+    .map_err(|e| AppError(format!("db: {e}")))?;
+    Ok(json!({ "ok": true, "team_id": team_id, "member_id": member_id, "repo_id": repo_id, "permission": perm }))
+}
+
+/// Remove a tenant member seat and its repo permissions.
+pub(crate) fn tenant_remove_member(conn: &Connection, team_id: &str, member_id: &str) -> Result<Value> {
+    conn.execute("DELETE FROM git_repo_permissions WHERE member_id=?1", params![member_id])
+        .map_err(|e| AppError(format!("db: {e}")))?;
+    let n = conn
+        .execute("DELETE FROM members WHERE id=?1 AND team_id=?2", params![member_id, team_id])
+        .map_err(|e| AppError(format!("db: {e}")))?;
+    Ok(json!({ "ok": true, "team_id": team_id, "member_id": member_id, "deleted": n }))
+}
+
 pub(crate) fn tcoin_actor(conn: &Connection, session: &str) -> Result<String> {
     if let Ok(v) = crate::platform::verify_session(conn, session) {
         let uid = v.get("user_id").and_then(|x| x.as_str()).unwrap_or("");
@@ -7110,7 +7181,74 @@ pub(crate) fn cmd_node(conn: &mut Connection, n: &NodeCmd) -> Result<Value> {
         NodeCmd::RunJobs { key_dir, server_url, team_repo_url, ca_file } => {
             cmd_node_run_jobs(conn, key_dir.as_deref(), server_url.as_deref(), team_repo_url.as_deref(), ca_file.as_deref())
         }
+        NodeCmd::Snapshot { node_id, all, session, team, region } => {
+            let (actor, team) = resolve_actor(conn, session, team.as_deref())?;
+            ensure_owner(conn, &actor, &team)?;
+            let mut targets: Vec<(String, String)> = Vec::new();
+            if *all {
+                let mut stmt = conn
+                    .prepare("SELECT region, COALESCE(instance_id,'') FROM nodes WHERE team_id=?1")
+                    .map_err(|e| AppError(format!("db: {e}")))?;
+                let rows = stmt
+                    .query_map(params![team.id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|e| AppError(format!("db: {e}")))?;
+                for r in rows {
+                    let (rg, iid) = r.map_err(|e| AppError(format!("db: {e}")))?;
+                    if !iid.is_empty() {
+                        targets.push((rg, iid));
+                    }
+                }
+            } else {
+                let nid = node_id.clone().ok_or_else(|| AppError("snapshot needs NODE_ID or --all".into()))?;
+                let node = cmd_node_in_team(conn, &nid, &team)?;
+                let iid = node["instance_id"].as_str().unwrap_or("").to_string();
+                if iid.is_empty() {
+                    return Err(AppError("node has no instance_id".into()));
+                }
+                let rg = region.clone().unwrap_or_else(|| node["region"].as_str().unwrap_or("").to_string());
+                targets.push((rg, iid));
+            }
+            if targets.is_empty() {
+                return Err(AppError("no nodes to snapshot".into()));
+            }
+            let mut snaps: Vec<Value> = Vec::new();
+            for (rg, iid) in targets {
+                let rg = if rg.is_empty() { "us-east-1".to_string() } else { rg };
+                let vols = aws(&rg, &["ec2","describe-volumes","--filters",&format!("Name=attachment.instance-id,Values={iid}"),"--query","Volumes[].VolumeId","--output","text"])?;
+                for v in vols.split_whitespace() {
+                    let sid = aws(&rg, &["ec2","create-snapshot","--volume-id",v,"--description",&format!("pre-destroy {iid} ({v})"),"--tag-specifications",&format!("ResourceType=snapshot,Tags=[{{Key=Name,Value=pre-destroy-{iid}}}]"),"--query","SnapshotId","--output","text"])?;
+                    let sid = sid.trim().to_string();
+                    if !sid.is_empty() {
+                        let _ = aws(&rg, &["ec2","wait","snapshot-completed","--snapshot-ids",&sid]);
+                    }
+                    snaps.push(json!({ "instance": iid, "volume": v, "snapshot": sid, "region": rg }));
+                }
+            }
+            Ok(json!({ "ok": true, "snapshots": snaps }))
+        }
+        NodeCmd::ReleaseEip { allocation_id, region } => {
+            let out = aws(region, &["ec2","release-address","--allocation-id",allocation_id])?;
+            Ok(json!({ "ok": true, "allocation_id": allocation_id, "region": region, "out": out.trim() }))
+        }
     }
+}
+
+/// Run `aws --region <r> <args>` (the AWS CLI must be installed).
+fn aws(region: &str, args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("aws")
+        .arg("--region")
+        .arg(region)
+        .args(args)
+        .output()
+        .map_err(|e| AppError(format!("spawn aws (is the AWS CLI installed?): {e}")))?;
+    if !out.status.success() {
+        return Err(AppError(format!(
+            "aws {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -137,6 +137,55 @@ impl Kubectl {
         serde_json::from_str(&out).map_err(|e| format!("kubectl json: {e}"))
     }
 
+    /// Cluster-scoped `kubectl get <kind> -o json` (e.g. `pv`).
+    pub fn get_json_cluster(&self, kind: &str) -> Result<Value, String> {
+        let out = self.run(&["get", kind, "-o", "json"])?;
+        serde_json::from_str(&out).map_err(|e| format!("kubectl json: {e}"))
+    }
+
+    /// Decode a Secret's `data` map (base64 values → UTF-8 strings).
+    pub fn secret_data(
+        &self,
+        name: &str,
+        ns: &str,
+    ) -> Result<Option<std::collections::BTreeMap<String, String>>, String> {
+        use base64::Engine as _;
+        let Some(v) = self.get_json("secret", name, ns)? else {
+            return Ok(None);
+        };
+        let mut out = std::collections::BTreeMap::new();
+        if let Some(m) = v["data"].as_object() {
+            for (k, val) in m {
+                if let Some(s) = val.as_str() {
+                    if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(s) {
+                        out.insert(k.clone(), String::from_utf8_lossy(&b).to_string());
+                    }
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
+    /// `kubectl -n <ns> scale deploy/<deploy> --replicas=<n>`
+    pub fn scale(&self, ns: &str, deploy: &str, replicas: u32) -> Result<String, String> {
+        self.run(&["-n", ns, "scale", "deploy", deploy, &format!("--replicas={replicas}")])
+    }
+
+    /// `kubectl -n <ns> rollout status deploy/<deploy>`
+    pub fn rollout_status(&self, ns: &str, deploy: &str) -> Result<String, String> {
+        self.run(&["-n", ns, "rollout", "status", &format!("deploy/{deploy}"), "--timeout=180s"])
+    }
+
+    /// `kubectl -n <ns> rollout restart deploy/<deploy>`
+    pub fn rollout_restart(&self, ns: &str, deploy: &str) -> Result<String, String> {
+        self.run(&["-n", ns, "rollout", "restart", &format!("deploy/{deploy}")])
+    }
+
+    /// `kubectl -n <ns> delete pods -l <label> --wait=false`
+    pub fn delete_pods_by_label(&self, ns: &str, label: &str) -> Result<String, String> {
+        self.run(&["-n", ns, "delete", "pods", "-l", label, "--wait=false"])
+    }
+
     /// 打/覆盖一个 label（`kubectl label <kind> <name> k=v --overwrite -n <ns>`）。
     pub fn label(&self, kind: &str, name: &str, key: &str, value: &str, namespace: &str) -> Result<(), String> {
         let kv = format!("{key}={value}");
@@ -148,9 +197,17 @@ impl Kubectl {
         Ok(())
     }
 
-    /// 读一个资源为 JSON（不存在返回 `None`）。
+    /// 读一个资源为 JSON（不存在返回 `None`）；`name` 为空时列整个 kind。
     pub fn get_json(&self, kind: &str, name: &str, namespace: &str) -> Result<Option<Value>, String> {
-        match self.run(&["get", kind, name, "-n", namespace, "-o", "json"]) {
+        let mut args: Vec<&str> = vec!["get", kind];
+        if !name.is_empty() {
+            args.push(name);
+        }
+        args.push("-n");
+        args.push(namespace);
+        args.push("-o");
+        args.push("json");
+        match self.run(&args) {
             Ok(s) => serde_json::from_str(&s)
                 .map(Some)
                 .map_err(|e| format!("bad kubectl json: {e}")),

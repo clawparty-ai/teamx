@@ -2881,6 +2881,28 @@ pub enum NodeCmd {
         #[arg(long)]
         ca_file: Option<PathBuf>,
     },
+    /// Snapshot the EBS volume(s) of a node (or every node) before destroying it
+    Snapshot {
+        /// node id (omit with --all)
+        #[arg(value_name = "NODE_ID")]
+        node_id: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+        /// AWS region override
+        #[arg(long)]
+        region: Option<String>,
+    },
+    /// Release an Elastic IP (by allocation id; e.g. an unassociated leftover)
+    ReleaseEip {
+        #[arg(value_name = "ALLOCATION_ID")]
+        allocation_id: String,
+        #[arg(long)]
+        region: String,
+    },
 }
 
 // ===========================================================================
@@ -3081,13 +3103,13 @@ pub enum CloudTenantCmd {
         #[arg(long)]
         session: Option<String>,
     },
-    /// Stop a tenant (delete member pods; server optionally scaled to 0)
+    /// Stop a tenant (delete member pods; optionally also scale the server to 0)
     Stop {
         #[arg(value_name = "TEAM")]
         team: String,
-        /// keep the tenant server running (default: keep)
-        #[arg(long, default_value_t = true)]
-        keep_server: bool,
+        /// also scale the tenant server to 0 (default: keep it running)
+        #[arg(long)]
+        stop_server: bool,
         #[arg(long)]
         kubeconfig: Option<PathBuf>,
         #[arg(long)]
@@ -3201,6 +3223,52 @@ pub enum CloudMemberCmd {
         /// write the letter to this file (else print)
         #[arg(long)]
         save: Option<PathBuf>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Activate a pre-allocated seat (invite only mints the seat id, not the row)
+    Activate {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// seat id returned by `member add`
+        #[arg(long)]
+        member: String,
+        /// display name (defaults to the seat id prefix)
+        #[arg(long)]
+        name: Option<String>,
+        /// role key / label
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Grant a member access to a team repository
+    GrantRepo {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        member: String,
+        /// repo name (default: the team's first repo)
+        #[arg(long)]
+        repo: Option<String>,
+        /// read | write | admin
+        #[arg(long, default_value = "write")]
+        perm: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Remove a member seat (and its repo permissions)
+    Remove {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        member: String,
         #[arg(long)]
         kubeconfig: Option<PathBuf>,
         #[arg(long)]

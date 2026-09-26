@@ -1241,6 +1241,9 @@ const PLATFORM_CONSOLE_METHODS: &[&str] = &[
     "issued.list",    // 签发台账只读（O-2 合并审计用；revoke 不放行）
     "tenant.bootstrap", // 空 server 首 team 自举 O-1(a)（一次性，core 内二次校验）
     "team.reissue-letter", // 为**既有席位**重发邀请函（design/021 P4 云 member：不新建席位）
+    "team.activate-member", // 落地预分配席位的 members 行（design/023 cloud CLI）
+    "team.grant-repo",      // 授予成员仓库权限（design/023 cloud CLI）
+    "team.remove-member",   // 删除成员席位 + 其仓库权限（design/023 cloud CLI）
 ];
 
 /// 平台 console 车道是否允许该方法（fail-closed：不在白名单即拒绝）。
@@ -1380,6 +1383,40 @@ fn dispatch_platform_console(
             return Err("team.roster requires `team`".to_string());
         }
         return crate::commands::team_roster(conn, tid).map_err(|e| e.to_string());
+    }
+    if method == "team.activate-member" {
+        let team_id = args.get("team").and_then(Value::as_str).unwrap_or("");
+        let member_id = args.get("member").and_then(Value::as_str).unwrap_or("");
+        if team_id.is_empty() || member_id.is_empty() {
+            return Err("team.activate-member requires `team` and `member`".to_string());
+        }
+        return crate::commands::tenant_activate_member(
+            conn, team_id, member_id,
+            args.get("name").and_then(Value::as_str),
+            args.get("role").and_then(Value::as_str),
+        )
+        .map_err(|e| e.to_string());
+    }
+    if method == "team.grant-repo" {
+        let team_id = args.get("team").and_then(Value::as_str).unwrap_or("");
+        let member_id = args.get("member").and_then(Value::as_str).unwrap_or("");
+        if team_id.is_empty() || member_id.is_empty() {
+            return Err("team.grant-repo requires `team` and `member`".to_string());
+        }
+        return crate::commands::tenant_grant_repo(
+            conn, team_id, member_id,
+            args.get("repo").and_then(Value::as_str),
+            args.get("perm").and_then(Value::as_str),
+        )
+        .map_err(|e| e.to_string());
+    }
+    if method == "team.remove-member" {
+        let team_id = args.get("team").and_then(Value::as_str).unwrap_or("");
+        let member_id = args.get("member").and_then(Value::as_str).unwrap_or("");
+        if team_id.is_empty() || member_id.is_empty() {
+            return Err("team.remove-member requires `team` and `member`".to_string());
+        }
+        return crate::commands::tenant_remove_member(conn, team_id, member_id).map_err(|e| e.to_string());
     }
     if method == "public.team_meta" {
         let tid = args.get("team").and_then(Value::as_str).unwrap_or("");

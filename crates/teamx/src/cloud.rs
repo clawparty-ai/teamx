@@ -313,8 +313,65 @@ fn run_tenant(conn: &mut Connection, cmd: &CloudTenantCmd) -> Result<Value, Stri
         }
         CloudTenantCmd::Ca(c) => run_ca(conn, c),
         CloudTenantCmd::Member(m) => run_member(conn, m),
-        CloudTenantCmd::Start { .. } | CloudTenantCmd::Stop { .. } | CloudTenantCmd::Status { .. } => {
-            Err("cloud tenant start/stop/status: not implemented yet (design/023 P3 — needs k8s scale/pod helpers)".to_string())
+        CloudTenantCmd::Start { team, members, workspace_gib, kubeconfig, context, session } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kube = kube(kubeconfig, context);
+            let (ns, _svc, deploy) = tenant_ids(&tid);
+            kube.scale(&ns, &deploy, 1)?;
+            let roll = kube.rollout_status(&ns, &deploy).unwrap_or_else(|e| e);
+            let mut provisioned: Vec<String> = Vec::new();
+            if members != "none" {
+                let sess = session
+                    .as_deref()
+                    .ok_or_else(|| "tenant start --members none|owner|all needs --session <platform token>".to_string())?;
+                let seats: Vec<String> = match members.as_str() {
+                    "owner" => crate::provision::tenant_get(conn, &tid)?
+                        .and_then(|t| t["owner_member_id"].as_str().map(str::to_string))
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    "all" => crate::provision::team_seat_ids(conn, &tid)?,
+                    other => return Err(format!("members must be none|owner|all (got `{other}`)")),
+                };
+                let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+                for mid in seats {
+                    crate::provision::provision_cloud_member(conn, &tid, &mid, kc.as_deref(), context.as_deref(), *workspace_gib, sess)?;
+                    provisioned.push(mid);
+                }
+            }
+            Ok(json!({ "ok": true, "team": tid, "server": "running", "rollout": roll, "provisioned": provisioned }))
+        }
+        CloudTenantCmd::Stop { team, stop_server, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kube = kube(kubeconfig, context);
+            let (ns, _svc, deploy) = tenant_ids(&tid);
+            let del = kube.delete_pods_by_label(&ns, "teamx.io/member").unwrap_or_else(|e| e);
+            let server = if *stop_server {
+                let _ = kube.scale(&ns, &deploy, 0);
+                "stopped"
+            } else {
+                "kept"
+            };
+            Ok(json!({ "ok": true, "team": tid, "member_pods": del, "server": server }))
+        }
+        CloudTenantCmd::Status { team, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kube = kube(kubeconfig, context);
+            let (ns, _svc, deploy) = tenant_ids(&tid);
+            let dep = kube.get_json("deploy", &deploy, &ns)?;
+            let ready = dep.as_ref().and_then(|d| d["status"]["readyReplicas"].as_i64()).unwrap_or(0);
+            let desired = dep.as_ref().and_then(|d| d["status"]["replicas"].as_i64()).unwrap_or(0);
+            let pods = kube.get_json("pods", "", &ns)?;
+            let (mut total, mut running) = (0i64, 0i64);
+            if let Some(items) = pods.as_ref().and_then(|p| p["items"].as_array()) {
+                for p in items {
+                    total += 1;
+                    if p["status"]["phase"].as_str() == Some("Running") {
+                        running += 1;
+                    }
+                }
+            }
+            Ok(json!({ "ok": true, "team": tid, "namespace": ns, "server_ready": ready, "server_desired": desired, "pods_total": total, "pods_running": running }))
         }
     }
 }
@@ -326,8 +383,45 @@ fn run_ca(conn: &mut Connection, cmd: &CloudCaCmd) -> Result<Value, String> {
             let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
             crate::provision::tenant_ca_audit(conn, &tid, server_url.as_deref(), kc.as_deref(), context.as_deref())
         }
-        CloudCaCmd::Show { .. } | CloudCaCmd::Import { .. } => {
-            Err("cloud tenant ca show/import: not implemented yet (design/023 P3 — needs Secret swap + re-sign)".to_string())
+        CloudCaCmd::Show { team, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let t = crate::provision::tenant_get(conn, &tid)?.ok_or_else(|| format!("tenant for team {tid} not found"))?;
+            let platform = t["ca_fingerprint"].as_str().unwrap_or("").to_string();
+            let kube = kube(kubeconfig, context);
+            let ns = crate::k8s::namespace_for(&tid);
+            let sname = format!("teamx-ca-{}", crate::k8s::short_id(&tid));
+            let live = match kube.secret_data(&sname, &ns)? {
+                Some(m) => m.get("ca.crt").map(|pem| crate::pki::ca_fingerprint_of(pem)).transpose()?,
+                None => None,
+            };
+            let m = live.as_deref() == Some(platform.as_str());
+            Ok(json!({ "ok": true, "team": tid, "platform_ca_fingerprint": platform, "live_ca_fingerprint": live, "match": m }))
+        }
+        CloudCaCmd::Import { team, ca_cert, ca_key, domain, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let ca_pem = std::fs::read_to_string(ca_cert).map_err(|e| format!("read {}: {e}", ca_cert.display()))?;
+            let key_pem = std::fs::read_to_string(ca_key).map_err(|e| format!("read {}: {e}", ca_key.display()))?;
+            let kube = kube(kubeconfig, context);
+            let ns = crate::k8s::namespace_for(&tid);
+            let short = crate::k8s::short_id(&tid);
+            let mut sans = vec![format!("teamx-serve-{short}.{ns}.svc"), "localhost".to_string(), "127.0.0.1".to_string()];
+            if let Some(d) = domain {
+                sans.push(d.clone());
+            }
+            let srv = crate::pki::issue_server_cert_with_ca(&ca_pem, &key_pem, &sans)?;
+            let secret = json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": format!("teamx-ca-{short}"), "namespace": ns },
+                "type": "Opaque",
+                "stringData": { "ca.crt": ca_pem, "ca.key": key_pem, "server.crt": srv.cert_pem, "server.key": srv.key_pem }
+            });
+            let yaml = serde_yaml::to_string(&secret).map_err(|e| e.to_string())?;
+            kube.apply(&yaml)?;
+            kube.rollout_restart(&ns, &format!("teamx-serve-{short}"))?;
+            let fp = crate::pki::ca_fingerprint_of(&ca_pem)?;
+            conn.execute("UPDATE tenants SET ca_fingerprint = ?1 WHERE team_id = ?2", params![fp, tid])
+                .map_err(|e| format!("db: {e}"))?;
+            Ok(json!({ "ok": true, "team": tid, "ca_fingerprint": fp, "server_sans": sans }))
         }
     }
 }
@@ -369,6 +463,30 @@ fn run_member(conn: &mut Connection, cmd: &CloudMemberCmd) -> Result<Value, Stri
                 }
             }
             Ok(out)
+        }
+        CloudMemberCmd::Activate { team, member, name, role, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+            crate::provision::tenant_service_post_via_endpoint(
+                conn, &tid, kc.as_deref(), context.as_deref(), "team.activate-member",
+                json!({ "team": tid, "member": member, "name": name, "role": role }),
+            )
+        }
+        CloudMemberCmd::GrantRepo { team, member, repo, perm, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+            crate::provision::tenant_service_post_via_endpoint(
+                conn, &tid, kc.as_deref(), context.as_deref(), "team.grant-repo",
+                json!({ "team": tid, "member": member, "repo": repo, "perm": perm }),
+            )
+        }
+        CloudMemberCmd::Remove { team, member, kubeconfig, context } => {
+            let tid = resolve_team_id(conn, team)?;
+            let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+            crate::provision::tenant_service_post_via_endpoint(
+                conn, &tid, kc.as_deref(), context.as_deref(), "team.remove-member",
+                json!({ "team": tid, "member": member }),
+            )
         }
         CloudMemberCmd::Provision { team, member, all, workspace_gib, kubeconfig, context, session } => {
             let tid = resolve_team_id(conn, team)?;
@@ -427,8 +545,15 @@ fn run_join(conn: &mut Connection, cmd: &CloudJoinCmd) -> Result<Value, String> 
             .map_err(|e| format!("db: {e}"))?;
             Ok(json!({ "ok": true, "id": id, "team_id": tid, "user_id": uid, "member_id": member, "status": status }))
         }
-        CloudJoinCmd::Approve { .. } | CloudJoinCmd::Deny { .. } => {
-            Err("cloud join approve/deny: not implemented yet (use `teamx discovery` / the platform console)".to_string())
+        CloudJoinCmd::Approve { id, session, team } => {
+            let _ = team;
+            let uid = crate::commands::tcoin_actor(conn, session).map_err(|e| e.0)?;
+            crate::discovery::decide_request(conn, id, &uid, true)
+        }
+        CloudJoinCmd::Deny { id, reason, session, team } => {
+            let _ = (team, reason);
+            let uid = crate::commands::tcoin_actor(conn, session).map_err(|e| e.0)?;
+            crate::discovery::decide_request(conn, id, &uid, false)
         }
     }
 }
@@ -441,3 +566,22 @@ fn run_bootstrap(conn: &mut Connection, cmd: &CloudBootstrapCmd) -> Result<Value
         CloudBootstrapCmd::AdminRevoke { user } => crate::platform::revoke_admin(conn, user),
     }
 }
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+fn kube(kubeconfig: &Option<PathBuf>, context: &Option<String>) -> crate::k8s::Kubectl {
+    crate::k8s::Kubectl::new(
+        kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string()),
+        context.clone(),
+    )
+}
+
+/// `(namespace, in-cluster service DNS, deployment name)` for a tenant.
+fn tenant_ids(team_id: &str) -> (String, String, String) {
+    let ns = crate::k8s::namespace_for(team_id);
+    let short = crate::k8s::short_id(team_id);
+    (ns.clone(), format!("teamx-serve-{short}.{ns}.svc"), format!("teamx-serve-{short}"))
+}
+
