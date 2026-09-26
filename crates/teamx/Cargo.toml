@@ -54,8 +54,11 @@ rfd = { version = "0.17", optional = true, default-features = false }
 # single HTTP call is served by the ureq transport in `im::ws_gateway`).
 lark-channel = { version = "0.6.0", default-features = false, features = ["websocket"] }
 
+# teamx-oss branch: the default build is the open-source variant.
+# Enterprise (audit/finance/dashboard, multi-tenant cloud plane, website, console)
+# is opt-in: `cargo build --features enterprise`.
 [features]
-default = ["enterprise"]
+default = []
 enterprise = []
 gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui", "dep:rfd"]
 
