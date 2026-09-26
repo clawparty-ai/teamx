@@ -45,6 +45,7 @@ pub mod credit;
 pub mod site;
 pub mod tcoin;
 pub mod platform_console;
+pub mod console_proxy;
 pub mod procwatch;
 pub mod k8s;
 pub mod provision;

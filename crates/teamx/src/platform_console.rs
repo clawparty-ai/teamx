@@ -23,6 +23,9 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use axum::body::Body;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{FromRequestParts, Request};
 use axum::extract::ConnectInfo;
 use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
@@ -258,6 +261,12 @@ struct Ctx {
     /// OAuth state（CSRF）：state → 发起时间；单次有效，10 分钟过期。
     /// 内存态（单进程控制台；重启后未完成的登录作废，需重走 start）。
     oauth_states: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
+    /// 平台控制台登录页路径：`teamx platform-console` 为 `/`，`teamx site` 为 `/console`。
+    /// 未登录访问 `/c/<member16>` 时 303 到这里。
+    console_page: String,
+    /// 成员 console 反代目标覆盖（仅测试/排障）。`None` = 走 `kubectl port-forward`
+    /// 到成员的 ClusterIP Service；`Some("https://127.0.0.1:PORT")` = 直连该 loopback。
+    console_target_override: Option<String>,
 }
 
 /// 启动平台控制台（HTTPS，绑 127.0.0.1 或显式地址）。
@@ -294,6 +303,8 @@ async fn run_async(cmd: &PlatformConsoleCmd) -> Result<(), String> {
         context,
         login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
         oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        console_page: "/".to_string(),
+        console_target_override: None,
     });
 
     let app = build_router(ctx.clone(), true);
@@ -308,6 +319,9 @@ fn build_router(ctx: Arc<Ctx>, root_console: bool) -> Router {
     let base = Router::new();
     let base = if root_console { base.route("/", get(index)) } else { base };
     base
+        .route("/c/{member16}", get(api_console_proxy))
+        .route("/c/{member16}/", get(api_console_proxy))
+        .route("/c/{member16}/{*rest}", get(api_console_proxy))
         .route("/api/login", post(api_login))
         .route("/api/login/password", post(api_login_password))
         .route("/api/logout", post(api_logout))
@@ -501,6 +515,8 @@ async fn run_site_async(cmd: &crate::cli::SiteCmd) -> Result<(), String> {
         context,
         login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
         oauth_states: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        console_page: "/console".to_string(),
+        console_target_override: None,
     });
 
     let app = build_router(ctx, false)
@@ -1430,7 +1446,8 @@ async fn api_my_tcoin_settle(
 }
 
 /// **我的**云 member console 地址（design/021 §J）：点开即进入**云上 member Pod 里的 `teamx console`**
-/// （本地 `teamx console` 是另一回事）。链接由平台生成：`https://c-<member16>.teamx.beer/?token=<确定性 token>`。
+/// （本地 `teamx console` 是另一回事）。链接改为**平台反代路径** `/c/<member16>`：
+/// 浏览器 URL 里**不含 token**；平台会话鉴权后由平台在上游请求注入 console token。
 async fn api_my_team_console(
     State(ctx): State<Arc<Ctx>>,
     headers: HeaderMap,
@@ -1452,16 +1469,153 @@ async fn api_my_team_console(
             return Err("no member seat for this user in this team".to_string());
         };
         let short = crate::k8s::short_id(&seat);
-        let token = crate::k8s::console_token_for(&seat);
         Ok(json!({
             "ok": true, "team_id": team, "member_id": seat,
-            "url": format!("https://c-{short}.teamx.beer/?token={token}"),
+            "url": format!("/c/{short}"),
             "kind": "cloud-member-console",
         }))
     }) {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
     }
+}
+
+/// 从 `/c/<member16>...` 路径取出 `member16`（非本前缀 → None）。
+fn member16_from_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/c/")?;
+    let seg = rest.split('/').next()?;
+    if seg.is_empty() {
+        None
+    } else {
+        Some(seg.to_string())
+    }
+}
+
+fn is_ws_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false)
+}
+
+/// 在**当前用户自己的席位**里按 `member16` 匹配 `(team_id, member_id)`。
+///
+/// 只放开本人席位（owner 的 `tenants.owner_member_id` + 已批准申请的 `team_join_requests.member_id`）：
+/// console token 是确定性的、等于该成员的完整身份，跨成员放开等同越权。
+fn resolve_seat(
+    conn: &rusqlite::Connection,
+    uid: &str,
+    m16: &str,
+) -> Result<Option<(String, String)>, String> {
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.team_id, t.owner_member_id FROM tenants t
+                 JOIN tenant_owners o ON o.team_id = t.team_id
+                 WHERE o.user_id = ?1 AND t.owner_member_id <> ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![uid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            candidates.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT team_id, COALESCE(member_id,'') FROM team_join_requests
+                 WHERE user_id = ?1 AND status = 'approved'",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![uid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (t, m) = row.map_err(|e| e.to_string())?;
+            if !m.is_empty() {
+                candidates.push((t, m));
+            }
+        }
+    }
+    Ok(candidates
+        .into_iter()
+        .find(|(_, m)| crate::console_proxy::member16(m) == m16))
+}
+
+/// 解析成员 console 的上游目标：测试覆盖优先，否则经 port-forward 拨号 ClusterIP。
+async fn resolve_console_target(
+    ctx: &Arc<Ctx>,
+    team_id: &str,
+    member_id: &str,
+) -> Result<crate::console_proxy::Target, String> {
+    if let Some(base) = &ctx.console_target_override {
+        return crate::console_proxy::parse_target(base);
+    }
+    let (kc, cx) = (ctx.kubeconfig.clone(), ctx.context.clone());
+    let (t, m) = (team_id.to_string(), member_id.to_string());
+    let port = tokio::task::spawn_blocking(move || {
+        crate::console_proxy::ensure_forward(&t, &m, kc.as_deref(), cx.as_deref())
+    })
+    .await
+    .map_err(|e| format!("console forward task panicked: {e}"))??;
+    Ok(crate::console_proxy::Target {
+        host: "127.0.0.1".to_string(),
+        port,
+        tls: true,
+    })
+}
+
+/// `GET /c/{member16}[/...]` —— 平台控制台反代成员 console（design/021 §J）。
+///
+/// - 鉴权 = **平台会话**：未登录 303 跳平台登录页（与控制台一致）。
+/// - 只反代**本人席位**的 console（见 `resolve_seat`）。
+/// - console token 只注入上游 `Cookie`；浏览器 URL/页面/响应头里都不出现
+///   （`Set-Cookie` 在上游响应里去丢弃，见 `console_proxy`）。
+/// - **含 WebSocket upgrade**（ttyd 终端等）：显式解析 `WebSocketUpgrade` 后走 `serve_ws`。
+async fn api_console_proxy(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let Some(m16) = member16_from_path(&path) else {
+        return (StatusCode::NOT_FOUND, err_body("not found")).into_response();
+    };
+    let Some((uid, _)) = session_user(&ctx, &headers) else {
+        // 页面导航要的是登录页，不是裸 401 JSON。
+        let mut resp = axum::response::Redirect::to(&ctx.console_page).into_response();
+        *resp.status_mut() = StatusCode::SEE_OTHER;
+        return resp;
+    };
+    let seat = with_conn(&ctx, |c| resolve_seat(c, &uid, &m16));
+    let Some((team_id, member_id)) = seat.ok().flatten() else {
+        return (StatusCode::NOT_FOUND, err_body("no such console")).into_response();
+    };
+    let token = crate::k8s::console_token_for(&member_id);
+    let target = match resolve_console_target(&ctx, &team_id, &member_id).await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_GATEWAY, err_body(&e)).into_response(),
+    };
+    let rest = crate::console_proxy::strip_prefix(&m16, &path);
+    let query = request.uri().query().map(str::to_string);
+    let up_path = crate::console_proxy::upstream_path(&rest, query.as_deref());
+    if is_ws_upgrade(&headers) {
+        let (mut parts, _body) = request.into_parts();
+        return match WebSocketUpgrade::from_request_parts(&mut parts, &ctx).await {
+            Ok(ws) => crate::console_proxy::serve_ws(target, up_path, token, ws).await,
+            Err(_) => (StatusCode::BAD_REQUEST, err_body("bad websocket upgrade")).into_response(),
+        };
+    }
+    let method = request.method().clone();
+    crate::console_proxy::serve_http(target, m16, method, up_path, headers, request, token).await
 }
 
 /// 当前用户在某团队的**席位 id**（owner 看 `tenants.owner_member_id`；成员看已批准申请的 `member_id`）。
@@ -3124,6 +3278,8 @@ mod tests {
             context: None,
             login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
             oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            console_page: "/console".to_string(),
+            console_target_override: None,
         }
     }
 
@@ -3175,5 +3331,277 @@ mod tests {
         std::env::remove_var("TEAMX_GITHUB_CLIENT_ID");
         std::env::remove_var("TEAMX_GITHUB_CLIENT_SECRET");
         assert!(!github_configured());
+    }
+
+    // -----------------------------------------------------------------------
+    // `/c/{member16}` 反代 E2E（design/021 §J）
+    // -----------------------------------------------------------------------
+
+    use axum::extract::ws::{Message as WsMessage, WebSocketUpgrade};
+    use axum::response::Html;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// 假成员 console：index（HTML）/ api_me（校验 console token）/ WS echo。
+    fn fake_console_app(token: String) -> Router {
+        let tok_me = token.clone();
+        Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    Html("<!doctype html><html><head><title>Teamx Console</title></head><body>FAKE-CONSOLE-INDEX</body></html>")
+                }),
+            )
+            .route(
+                "/api/me",
+                get(move |headers: HeaderMap| {
+                    let tok = tok_me.clone();
+                    async move {
+                        let got = headers
+                            .get(header::COOKIE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if got == format!("teamx_console_token={tok}") {
+                            Json(json!({"ok": true, "data": {"name": "seat-member"}})).into_response()
+                        } else {
+                            (StatusCode::FORBIDDEN, "missing console token").into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/cloud/{id}/ws",
+                get(|ws: WebSocketUpgrade| async move {
+                    ws.on_upgrade(|mut socket| async move {
+                        while let Some(Ok(m)) = socket.recv().await {
+                            match m {
+                                WsMessage::Text(t) => {
+                                    let _ = socket.send(WsMessage::Text(t)).await;
+                                }
+                                WsMessage::Binary(b) => {
+                                    let _ = socket.send(WsMessage::Binary(b)).await;
+                                }
+                                WsMessage::Close(_) => break,
+                                _ => {}
+                            }
+                        }
+                    })
+                }),
+            )
+    }
+
+    /// 起一个假成员 console（可选自签 TLS），返回 base URL 与任务句柄。
+    async fn spawn_fake_console(tls: bool, token: String) -> (String, tokio::task::JoinHandle<()>) {
+        let app = fake_console_app(token);
+        let port = free_port();
+        let addr = format!("127.0.0.1:{port}");
+        if tls {
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let cert_pem = cert.cert.pem();
+            let key_pem = cert.key_pair.serialize_pem();
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem.into_bytes(), key_pem.into_bytes())
+                .await
+                .unwrap();
+            let sock: SocketAddr = addr.parse().unwrap();
+            let h = tokio::spawn(async move {
+                let _ = axum_server::bind_rustls(sock, config)
+                    .serve(app.into_make_service())
+                    .await;
+            });
+            (format!("https://{addr}"), h)
+        } else {
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            let h = tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            (format!("http://{addr}"), h)
+        }
+    }
+
+    fn mktmp_db(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "teamx-pc-console-{}-{}-{}.db",
+            std::process::id(),
+            tag,
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// 建一个平台 DB：用户 + 会话 + 一个 owner 租户（owner_member_id = seat）。
+    fn setup_console_ctx(override_url: Option<String>) -> (Arc<Ctx>, std::path::PathBuf, String, String) {
+        let db = mktmp_db("console");
+        {
+            let conn = crate::db::open(&db).unwrap();
+            crate::db::migrate(&conn).unwrap();
+        }
+        let mut conn = crate::db::open(&db).unwrap();
+        let user = crate::platform::create_user(&mut conn, "alice-console", "password123").unwrap();
+        let uid = user["user_id"].as_str().unwrap().to_string();
+        let session =
+            crate::platform::issue_session(&mut conn, &uid).unwrap()["token"].as_str().unwrap().to_string();
+        let team = "team-console-e2e";
+        let seat = "474a5a6b-2440-4c1c-b24c-4d2044589b65";
+        conn.execute(
+            "INSERT OR REPLACE INTO teams (id,name,invite_token,created_at,updated_at) VALUES (?1,?1,'tok','2026-01-01',?1)",
+            rusqlite::params![team],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO tenants (team_id,namespace,ca_fingerprint,created_at,owner_member_id) VALUES (?1,'tenant-x','fp','2026-01-01',?2)",
+            rusqlite::params![team, seat],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO tenant_owners (team_id,user_id,created_at) VALUES (?1,?2,'2026-01-01')",
+            rusqlite::params![team, uid],
+        )
+        .unwrap();
+        drop(conn);
+        let ctx = Arc::new(Ctx {
+            db_path: db.clone(),
+            launch_token: "launch".into(),
+            kubeconfig: None,
+            context: None,
+            login_guard: std::sync::Arc::new(std::sync::Mutex::new(LoginGuard::new())),
+            oauth_states: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            console_page: "/console".into(),
+            console_target_override: override_url,
+        });
+        (ctx, db, session, seat.to_string())
+    }
+
+    async fn spawn_platform(ctx: Arc<Ctx>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let app = build_router(ctx, false);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await;
+        });
+        (addr, h)
+    }
+
+    async fn raw_get(addr: SocketAddr, path: &str, cookie: Option<&str>) -> (u16, Vec<(String, String)>, String) {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+        if let Some(c) = cookie {
+            req.push_str(&format!("Cookie: {c}\r\n"));
+        }
+        req.push_str("\r\n");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf).to_string();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+        let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let mut hs = Vec::new();
+        for l in head.lines().skip(1) {
+            if let Some((k, v)) = l.split_once(':') {
+                hs.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+        (status, hs, body.to_string())
+    }
+
+    #[tokio::test]
+    async fn console_route_without_session_redirects_to_login() {
+        let (target, _fake) = spawn_fake_console(false, "tok".into()).await;
+        let (ctx, _db, _session, seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        let m16 = crate::k8s::short_id(&seat);
+
+        let (status, headers, _) = raw_get(addr, &format!("/c/{m16}"), None).await;
+        assert_eq!(status, 303, "未登录必须跳登录页");
+        let loc = headers.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone()).unwrap_or_default();
+        assert_eq!(loc, "/console");
+
+        // 页面下的 API 路径同样先过平台会话（不泄露 console token）
+        let (status2, _, _) = raw_get(addr, &format!("/c/{m16}/api/me"), None).await;
+        assert_eq!(status2, 303);
+    }
+
+    #[tokio::test]
+    async fn console_route_with_session_serves_member_console_and_injects_base() {
+        let seat = "474a5a6b-2440-4c1c-b24c-4d2044589b65";
+        let tok = crate::k8s::console_token_for(seat);
+        let (target, _fake) = spawn_fake_console(true, tok).await; // 自签 TLS 上游
+        let (ctx, _db, session, seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        let m16 = crate::k8s::short_id(&seat);
+        let cookie = format!("teamx_platform_token={session}");
+
+        let (status, headers, body) = raw_get(addr, &format!("/c/{m16}"), Some(&cookie)).await;
+        assert_eq!(status, 200, "有会话应 200（自签上游 TLS 必须跳过校验）: {body}");
+        assert!(body.contains("FAKE-CONSOLE-INDEX"), "页面必须来自 member console: {body}");
+        assert!(body.contains(&format!("<base href=\"/c/{m16}/\">")), "必须注入前缀 base");
+        assert!(
+            !headers.iter().any(|(k, _)| k == "set-cookie"),
+            "console token cookie 绝不能下发浏览器: {headers:?}"
+        );
+
+        // 平台把确定性 token 注入上游 Cookie → fake /api/me 校验通过
+        let (s2, _, b2) = raw_get(addr, &format!("/c/{m16}/api/me"), Some(&cookie)).await;
+        assert_eq!(s2, 200, "平台必须向上游注入 console token: {b2}");
+        assert!(b2.contains("\"ok\":true"), "{b2}");
+    }
+
+    #[tokio::test]
+    async fn my_team_console_url_is_prefix_path_without_token() {
+        let (target, _fake) = spawn_fake_console(false, "tok".into()).await;
+        let (ctx, _db, session, seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        let m16 = crate::k8s::short_id(&seat);
+        let (status, _, body) = raw_get(
+            addr,
+            "/api/my/team-console/team-console-e2e",
+            Some(&format!("teamx_platform_token={session}")),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains(&format!("\"url\":\"/c/{m16}\"")), "URL 必须改为前缀路径: {body}");
+        assert!(!body.contains("token"), "浏览器 URL 里绝不能出现 console token: {body}");
+    }
+
+    #[tokio::test]
+    async fn console_route_rejects_seat_not_owned_by_user() {        let (target, _fake) = spawn_fake_console(false, "tok".into()).await;
+        let (ctx, _db, session, _seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        // 合法 member16 形状，但不在本人席位里 → 404（不越权）
+        let (status, _, _) = raw_get(addr, "/c/deadbeefdeadbeef", Some(&format!("teamx_platform_token={session}"))).await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn console_ws_relays_over_self_signed_tls() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let seat = "474a5a6b-2440-4c1c-b24c-4d2044589b65";
+        let tok = crate::k8s::console_token_for(seat);
+        let (target, _fake) = spawn_fake_console(true, tok).await; // 自签 TLS 上游
+        let (ctx, _db, session, seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        let m16 = crate::k8s::short_id(&seat);
+
+        let url = format!("ws://{addr}/c/{m16}/api/cloud/42/ws");
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut()
+            .insert("cookie", format!("teamx_platform_token={session}").parse().unwrap());
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text("hello-ws".into()))
+            .await
+            .unwrap();
+        let got = ws.next().await.unwrap().unwrap();
+        assert_eq!(got.into_text().unwrap(), "hello-ws", "WS 必须经自签 TLS 上游回环");
     }
 }

@@ -1834,6 +1834,9 @@ body { margin:0; padding:24px 28px; background:#fff; color:var(--fg); font-size:
 const PRINT_JS: &str = r####"
 const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const tf=(iso)=>{ if(!iso) return "—"; const d=new Date(iso); return isNaN(d)?iso:d.toLocaleString(); };
+// 与主页面一致：支持平台反代前缀（`<base href="/c/<member16>/">`）。
+const TXB=(document.querySelector('base')?.getAttribute('href')||'').replace(/\/+$/,'');
+const TXU=(p)=>TXB+p;
 function quoteHtml(m){
   let h="";
   if(m.reply_to && typeof m.reply_to==="object"){
@@ -1879,7 +1882,7 @@ async function run(){
   const host=document.getElementById("doc");
   let d;
   try{
-    const r=await fetch("/api/panels/discussion?id="+encodeURIComponent(id));
+    const r=await fetch(TXU("/api/panels/discussion?id="+encodeURIComponent(id)));
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||"加载失败");
     d=j.data||{};
@@ -1997,6 +2000,11 @@ const MDRENDER_JS: &str = r##"function mdRender(src){
 const JS: &str = r##"
 const $=(s)=>document.querySelector(s);
 const $$=(s)=>Array.from(document.querySelectorAll(s));
+// 平台控制台把成员 console 挂在 `/c/<member16>` 前缀下（反代注入 `<base href>`）。
+// TXB 为空时（本地直接访问）行为不变；非空时给所有绝对路径加上前缀。
+// 名字用 TXB/TXU 而非 BASE/U：后者与内嵌 highlight.js 的全局 `U` 冲突（const 重声明报错）。
+const TXB=(document.querySelector('base')?.getAttribute('href')||'').replace(/\/+$/,'');
+const TXU=(p)=>TXB+p;
 const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const badge=(s)=>{const b=s||"idle";return `<span class="badge ${esc(b)}">${esc(b)}</span>`};
 const fmtN=(n)=>{ n=Number(n)||0; return n>=1e9?(n/1e9).toFixed(1)+"B": n>=1e6?(n/1e6).toFixed(1)+"M": n>=1e3?(n/1e3).toFixed(1)+"k": String(n); };
@@ -2015,7 +2023,7 @@ $("#wsPath").textContent = window.location.origin.replace(/^https?:\/\//,"") + "
 /* ---------- header identity (current workspace member) ---------- */
 async function loadMe(){
   try {
-    const r=await fetch("/api/me",{cache:"no-store"});
+    const r=await fetch(TXU("/api/me"),{cache:"no-store"});
     if(!r.ok) return;
     const p=await r.json();
     if(p.ok && p.data){
@@ -2041,7 +2049,7 @@ $$("nav button").forEach(b=>b.addEventListener("click",()=>showView(b.dataset.vi
 $("#refreshBtn").addEventListener("click",()=>renderView(currentView));
 
 async function panel(id){
-  const r=await fetch("/api/panels/"+id,{cache:"no-store"});
+  const r=await fetch(TXU("/api/panels/"+id),{cache:"no-store"});
   if(!r.ok){ const txt=await r.text(); return {ok:false,error:("HTTP "+r.status+" "+(txt||"").slice(0,200))}; }
   return r.json();
 }
@@ -2168,7 +2176,7 @@ async function loadTeams(){
     const name=b.dataset.name, member=b.dataset.member, kind=b.dataset.kind;
     b.disabled=true; b.classList.add("busy"); b.textContent="forwarding…";
     try{
-      const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+      const r=await fetch(TXU("/api/tunnels/forward"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
       const j=await r.json().catch(()=>({}));
       if(!r.ok || !j.ok){ alert("自动 forward 失败："+(j.error||("HTTP "+r.status))); return; }
       // All kinds open in a NEW tab at the real local address: ttyd/headless
@@ -2189,7 +2197,7 @@ async function loadTeams(){
 
 /* ---------- File browser overlay (backend: teamx fs via tunnel) ---------- */
 let FS = { nodeId:"", name:"", path:"" };
-const fsProxy=(suffix)=>"/api/cloud/"+encodeURIComponent(FS.nodeId)+suffix;
+const fsProxy=(suffix)=>TXU("/api/cloud/"+encodeURIComponent(FS.nodeId)+suffix);
 function fsFull(rel){
   if(!rel || rel==="/") return "";
   return rel.startsWith("/") ? rel.slice(1) : rel;
@@ -2199,7 +2207,7 @@ async function fsOpenByMember(memberId, display){
   const tuns = window.__memTunnels.get(memberId) || [];
   const fs = tuns.find(t => t && t.name && t.name.startsWith("fs-"));
   if(!fs){ alert("该成员节点未运行 teamx fs（无 fs-* 隧道）"); return; }
-  const r=await fetch("/api/tunnels/forward",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:fs.name})});
+  const r=await fetch(TXU("/api/tunnels/forward"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:fs.name})});
   const j=await r.json().catch(()=>({}));
   if(!r.ok || !j.ok){ alert("forward 失败："+(j.error||r.status)); return; }
   FS.nodeId=j.node_id; FS.name=fs.name; FS.path="";
@@ -2345,7 +2353,7 @@ let dscReplyTo = null;       // {message_id, text} when replying to a floor
 let dscTimer = null;
 
 async function dscAction(action, payload){
-  const r = await fetch("/api/discussion/"+action, {
+  const r = await fetch(TXU("/api/discussion/"+action), {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify(payload||{}), cache:"no-store",
   });
@@ -2479,7 +2487,7 @@ function renderThread(d){
   // re-renders it with the same mdRender and opens the browser's print dialog —
   // "Save as PDF" there is the actual export.
   const pdf=$("#dscDownloadPdf"); if(pdf) pdf.onclick = ()=>{
-    window.open("/print/discussion?id="+encodeURIComponent(curDsc), "_blank");
+    window.open(TXU("/print/discussion?id="+encodeURIComponent(curDsc)), "_blank");
   };
   const send=$("#dscSend"); if(send) send.onclick = async ()=>{
     const input=$("#dscInput");
@@ -2683,7 +2691,7 @@ async function openFile(path){
   // Content-Disposition). No PDF.js, no extra bundle weight.
   // Everything below streams from the raw endpoint, so the panel only carries
   // a URL — no base64 blobs, and video can seek.
-  const raw='/api/file?path='+encodeURIComponent(d.path||path);
+  const raw=TXU('/api/file?path='+encodeURIComponent(d.path||path));
   // PDF and HTML both render in the browser's own engine. HTML gets a sandbox
   // WITHOUT allow-same-origin: its scripts may run, but in an opaque origin
   // that cannot read the console cookie or its authenticated /api responses.
@@ -2828,7 +2836,7 @@ function handleStreamEvent(j){
 function connectStream(){
   if(!window.EventSource) return;
   if(sseConn) sseConn.close();
-  sseConn = new EventSource("/api/stream");
+  sseConn = new EventSource(TXU("/api/stream"));
   sseConn.addEventListener("event",(e)=>{ try{ handleStreamEvent(JSON.parse(e.data||"{}")); }catch(_){} });
   // EventSource auto-reconnects; nothing else needed here.
 }

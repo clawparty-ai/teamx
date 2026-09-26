@@ -1412,6 +1412,8 @@ pub fn team_seat_ids(conn: &Connection, team_id: &str) -> Result<Vec<String>, St
 /// 2. apply namespace + PVC + 信 Secret（`k8s::provision_manifests`）；
 /// 3. apply member Pod + NetworkPolicy（`K8sProvider::start_member`），
 ///    端点用**集群内**服务名（`https://teamx-serve-<short>.<ns>.svc:5783`），天然 mTLS、无需 nginx。
+///    同一步还会建 console 的 **ClusterIP** Service（`teamx-m-<short16>-console`，端口 9528），
+///    供平台控制台 `/c/<member16>` 经 port-forward 反代；**不再使用 NodePort/子域**。
 pub fn provision_cloud_member(
     conn: &mut Connection,
     team_id: &str,

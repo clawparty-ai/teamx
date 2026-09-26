@@ -256,6 +256,46 @@ pub fn secret_name(member_id: &str) -> String {
     format!("teamx-letter-{}", short_id(member_id))
 }
 
+/// 云 member console 的 **ClusterIP** Service 名（成员 console 自动暴露的入口）。
+///
+/// 平台控制台 `/c/<member16>` 反代即拨号到这里（经 `kubectl port-forward`）：
+/// 名与 `short_id(member_id)` 绑定，故 `member16` 可从名字反推、无需额外状态。
+pub fn console_svc_name(member_id: &str) -> String {
+    format!("teamx-m-{}-console", short_id(member_id))
+}
+
+/// 成员 console 的 ClusterIP Service 清单（design/021 §J 自动暴露）。
+///
+/// **不是 NodePort**：只暴露集群内地址，平台侧经 port-forward 访问；不占主机端口、
+/// 不需要每成员子域/证书。selector 与 member Pod 的 `teamx.io/member` label 对齐，
+/// 端口固定 9528（console 容器监听口）。
+pub fn console_service_manifest(team_id: &str, member_id: &str) -> String {
+    let ns = namespace_for(team_id);
+    let name = console_svc_name(member_id);
+    format!(
+        r#"apiVersion: v1
+kind: Service
+metadata:
+  name: {name}
+  namespace: {ns}
+  labels:
+    teamx.io/managed: "true"
+    teamx.io/team: "{team_id}"
+    teamx.io/member: "{member_id}"
+    teamx.io/kind: member-console
+spec:
+  type: ClusterIP
+  selector:
+    teamx.io/member: "{member_id}"
+  ports:
+    - name: console
+      port: 9528
+      targetPort: 9528
+      protocol: TCP
+"#
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 清单生成
 // ---------------------------------------------------------------------------
@@ -937,7 +977,11 @@ impl K8sProvider {
         self.kubectl.apply(&format!("{yaml}---\n{quota}")).map(|_| ())
     }
 
-    /// approve 阶段：建 member Pod（= 启动服务，裁决 V）+ NetworkPolicy。
+    /// approve 阶段：建 member Pod（= 启动服务，裁决 V）+ NetworkPolicy
+    /// + console 的 **ClusterIP** Service（自动暴露，design/021 §J）。
+    ///
+    /// 注意：这里**不建 NodePort**（旧的手工 NodePort + `c-*.teamx.beer` 子域已废弃），
+    /// 平台控制台 `/c/<member16>` 经 port-forward 走 ClusterIP。
     pub fn start_member(
         &self,
         team_id: &str,
@@ -948,7 +992,8 @@ impl K8sProvider {
     ) -> Result<(), String> {
         let pod = member_pod_manifest(team_id, member_id, server_url, team_repo_url, session);
         let np = network_policy_manifest(team_id, member_id, &self.egress_allow);
-        let combined = format!("{pod}---\n{np}");
+        let svc = console_service_manifest(team_id, member_id);
+        let combined = format!("{pod}---\n{np}---\n{svc}");
         self.kubectl.apply(&combined).map(|_| ())
     }
 
@@ -1118,6 +1163,21 @@ mod tests {
         // 幂等 setup
         assert!(y.contains("if [ -d /workspace/.git ]"));
         assert!(y.contains("teamx team import"));
+    }
+
+    #[test]
+    fn console_service_is_clusterip_and_selects_the_member() {
+        let m = "474a5a6b-2440-4c1c-b24c-4d2044589b65";
+        assert_eq!(console_svc_name(m), "teamx-m-474a5a6b24404c1c-console");
+        let y = console_service_manifest("t1", m);
+        assert!(y.contains("kind: Service"));
+        assert!(y.contains("type: ClusterIP"), "自动暴露不得用 NodePort: {y}");
+        assert!(!y.contains("NodePort"), "严禁 NodePort（每成员子域/证书已废弃）");
+        assert!(y.contains("name: teamx-m-474a5a6b24404c1c-console"));
+        assert!(y.contains("namespace: tenant-t1"));
+        assert!(y.contains("teamx.io/member: \"474a5a6b-2440-4c1c-b24c-4d2044589b65\""), "selector 必须对齐 Pod label");
+        assert!(y.contains("port: 9528"));
+        assert!(y.contains("targetPort: 9528"));
     }
 
     #[test]
