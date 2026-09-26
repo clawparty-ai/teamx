@@ -248,6 +248,17 @@ pub fn fetch_panel(ctx: &Ctx, id: &str, query_id: Option<&str>) -> RunOut {
     }
 }
 
+/// `git.repos` — the repos the calling member can read, plus the resolved team
+/// id (needed to build the native git-over-mTLS clone URL). Network mode uses
+/// the server RPC (member identity = the invitation letter's client cert);
+/// local mode falls back to the `teamx git list` CLI.
+pub fn repos_data(ctx: &Ctx) -> Result<Value, String> {
+    match &ctx.mode {
+        Mode::Network(url) => net_rpc(url, "git.repos", json!({})),
+        Mode::Local => local_cli(&["git", "list"]),
+    }
+}
+
 /// `team.status` through the workspace's natural channel (RPC or local CLI).
 fn teams_status(ctx: &Ctx) -> Result<Value, String> {
     match &ctx.mode {

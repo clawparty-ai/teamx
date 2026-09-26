@@ -97,6 +97,7 @@ pub fn page_html() -> String {
     <div class="files-toolbar">
       <div class="fs-breadcrumb" id="flCrumb">/</div>
       <div class="files-repos" id="flRepos"></div>
+      <button class="btn btn-mini" id="flPullRepo" title="从团队仓库区拉取代码到本工作区">📦 仓库 / Repos</button>
     </div>
     <div class="files-body">
       <section class="panel files-list" id="flList"></section>
@@ -134,6 +135,18 @@ pub fn page_html() -> String {
     <div class="fs-body">
       <div class="fs-left" id="fsRows"></div>
       <div class="fs-right" id="fsPreview"><div class="fs-preview-empty">选择文件预览</div></div>
+    </div>
+  </div>
+</div>
+<div class="fs-overlay" id="repoOverlay" style="display:none">
+  <div class="fs-dialog repo-dialog">
+    <div class="fs-head">
+      <span class="fs-title">📦 团队仓库 / Team repositories</span>
+      <button class="btn btn-mini" id="repoClose">✕</button>
+    </div>
+    <div class="repo-body">
+      <div class="muted repo-hint">按需拉取到本工作区（<span class="mono">/workspace/&lt;repo&gt;</span>）。大仓库会占用大量磁盘空间。 / Clone on demand into this workspace; large repos use a lot of disk.</div>
+      <div id="repoList" class="repo-list"></div>
     </div>
   </div>
 </div>
@@ -540,6 +553,20 @@ body:not(.dark) .fs-dialog .fs-preview-empty { color:#909399; }
 .dark .fs-dialog .fs-row .meta { color:#909399; }
 .dark .fs-dialog pre { background:#F2F6FC; color:#333333; border-color:#EBEEF5; }
 .dark .fs-dialog .fs-preview-empty { color:#909399; }
+/* Team repositories ("pull repo") dialog */
+.repo-dialog { width:min(720px,96vw); height:auto; max-height:min(860px,94vh); }
+.repo-body { padding:14px 16px; overflow:auto; }
+.repo-hint { font-size:12px; margin-bottom:12px; line-height:1.5; }
+.repo-list { display:flex; flex-direction:column; gap:8px; }
+.repo-item { border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; display:flex; align-items:center; gap:12px; }
+.repo-item .ri-main { flex:1; min-width:0; }
+.repo-item .ri-name { font-family:var(--font-mono); font-weight:600; word-break:break-all; }
+.repo-item .ri-sub { color:var(--muted-fg); font-size:12px; margin-top:2px; }
+.repo-item .ri-big { color:#b45309; font-weight:600; }
+.repo-item .ri-status { font-size:12px; color:var(--muted-fg); margin-top:4px; white-space:pre-wrap; word-break:break-all; }
+.repo-item .ri-status.err { color:#F56C6C; }
+.repo-item .ri-status.ok { color:#16a34a; }
+.repo-item .ri-local { font-size:11px; border:1px solid var(--border); border-radius:4px; padding:0 5px; color:var(--muted-fg); }
 a.btn { text-decoration:none; }
 "#;
 
@@ -2639,7 +2666,7 @@ let docTypes=[], docAll=[], docCurType=null, docCur=null;
 // ---- File panel (design docs/design/console-file-browser.md) ----
 // Backend: `files`/`file` panels read the workspace directly (local-only).
 let FL={path:"."};
-function fmtBytes(n){ if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(1)+" KB"; return (n/1048576).toFixed(1)+" MB"; }
+function fmtBytes(n){ n=Number(n)||0; if(n<1024) return n+" B"; if(n<1048576) return (n/1024).toFixed(1)+" KB"; if(n<1073741824) return (n/1048576).toFixed(1)+" MB"; return (n/1073741824).toFixed(1)+" GB"; }
 async function loadFiles(path){
   if(path!==undefined) FL.path=path;
   const q=(FL.path&&FL.path!==".")?("?id="+encodeURIComponent(FL.path)):"";
@@ -2680,6 +2707,98 @@ function renderFlList(entries){
     if(el.dataset.t==="directory") loadFiles(child); else openFile(child);
   }));
 }
+// ---- Team repositories: list + on-demand clone (dialog in the File panel) ----
+// Backend: /api/repos, /api/repos/clone, /api/repos/clone/status. Names are
+// prefixed `repo` to avoid the global-name clashes this page has hit before.
+let repoRows={}, repoActive=new Set(), repoTimer=null;
+function repoApi(path, opts){
+  return fetch(TXU(path), Object.assign({cache:"no-store"}, opts||{})).then(async r=>{
+    let j=null; try{ j=await r.json(); }catch(_){ j={ok:false,error:"HTTP "+r.status}; }
+    if(!r.ok) return {ok:false,error:(j&&j.error)||("HTTP "+r.status)};
+    return j;
+  });
+}
+function repoOpen(){ $("#repoOverlay").style.display="flex"; repoLoad(); }
+function repoClose(){
+  $("#repoOverlay").style.display="none";
+  if(repoTimer){ clearInterval(repoTimer); repoTimer=null; }
+}
+async function repoLoad(){
+  $("#repoList").innerHTML='<div class="loading">loading …</div>';
+  const j=await repoApi("/api/repos");
+  if(!j.ok){ $("#repoList").innerHTML='<div class="errorbox"><b>加载失败 / Failed to load</b><br>'+esc(j.error||"")+'</div>'; return; }
+  repoRender(j.repos||[]);
+}
+function repoRender(repos){
+  repoRows={};
+  if(!repos.length){ $("#repoList").innerHTML='<div class="muted">没有可访问的仓库 / No accessible repositories.</div>'; return; }
+  $("#repoList").innerHTML=repos.map(r=>{
+    const big=Number(r.bytes)>=1073741824;
+    const local=r.local?'<span class="ri-local">已在本工作区 / local</span>':'';
+    const act=r.local
+      ?'<button class="btn btn-mini" data-act disabled>✓ 已在本地 / local</button>'
+      :'<button class="btn btn-mini" data-act>拉取 / Pull</button>';
+    return '<div class="repo-item" data-repo="'+esc(r.name)+'">'
+      +'<div class="ri-main"><div class="ri-name">'+esc(r.name)+'</div>'
+      +'<div class="ri-sub">'+esc(r.size_text||"")+(r.description?(' · '+esc(r.description)):'')+' '+local+'</div>'
+      +(big?'<div class="ri-sub ri-big">⚠ 约 '+esc(r.size_text)+'，拉取会占用大量工作区磁盘 / large clone, uses a lot of disk</div>':'')
+      +'<div class="ri-status" data-st></div></div>'
+      +act
+      +'</div>';
+  }).join("");
+  $$("#repoList .repo-item").forEach(el=>{
+    const name=el.getAttribute("data-repo");
+    repoRows[name]=el;
+    el.querySelector("[data-act]").addEventListener("click",()=>repoClone(name));
+  });
+}
+function repoStatus(name, cls, text){
+  const el=repoRows[name]; if(!el) return;
+  const s=el.querySelector("[data-st]");
+  if(s){ s.className="ri-status"+(cls?(" "+cls):""); s.textContent=text||""; }
+}
+function repoEnsureTimer(){
+  if(repoTimer||!repoActive.size) return;
+  repoTimer=setInterval(()=>{
+    if(!repoActive.size){ clearInterval(repoTimer); repoTimer=null; return; }
+    Array.from(repoActive).forEach(n=>repoPollOne(n));
+  },2000);
+}
+async function repoClone(name){
+  const el=repoRows[name]; const btn=el&&el.querySelector("[data-act]");
+  if(btn) btn.disabled=true;
+  repoActive.add(name); repoStatus(name,"","⏳ 启动中 / starting …");
+  const j=await repoApi("/api/repos/clone",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name})});
+  if(!j.ok){
+    repoActive.delete(name); repoStatus(name,"err","✗ "+(j.error||"failed"));
+    if(btn) btn.disabled=false; return;
+  }
+  repoStatus(name,"","⏳ 克隆中 / cloning …");
+  repoEnsureTimer();
+  repoPollOne(name);
+}
+async function repoPollOne(name){
+  const el=repoRows[name]; const btn=el&&el.querySelector("[data-act]");
+  const j=await repoApi("/api/repos/clone/status?name="+encodeURIComponent(name));
+  if(!j.ok){ repoActive.delete(name); repoStatus(name,"err","✗ "+(j.error||"")); if(btn) btn.disabled=false; return; }
+  if(j.state==="running"){
+    const lines=(j.tail||"").split("\n").map(x=>x.trim()).filter(Boolean);
+    const tail=lines.length?lines[lines.length-1]:"";
+    repoStatus(name,"","⏳ 克隆中 / cloning …"+(tail?(" · "+tail):""));
+  } else if(j.state==="done"){
+    repoActive.delete(name);
+    repoStatus(name,"ok","✓ 完成 / done · 打开 Files 刷新查看");
+    if(btn) btn.disabled=false;
+    if(el) el.setAttribute("data-local","1");
+  } else if(j.state==="error"){
+    repoActive.delete(name);
+    repoStatus(name,"err","✗ 失败 / failed: "+(j.error||"unknown"));
+    if(btn) btn.disabled=false;
+  }
+}
+$("#flPullRepo").addEventListener("click",repoOpen);
+$("#repoClose").addEventListener("click",repoClose);
+$("#repoOverlay").addEventListener("click",(e)=>{ if(e.target===$("#repoOverlay")) repoClose(); });
 async function openFile(path){
   $("#flPreview").innerHTML='<div class="loading">loading …</div>';
   const p=await panel("file?id="+encodeURIComponent(path));

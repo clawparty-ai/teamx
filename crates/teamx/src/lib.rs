@@ -85,6 +85,7 @@ pub mod fs;
 pub mod worker;
 pub mod console_data;
 pub mod console_html;
+pub mod console_repos;
 pub mod discussion;
 
 use cli::Cli;

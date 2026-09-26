@@ -102,6 +102,9 @@ pub fn run(cmd: &ConsoleCmd) -> Result<(), String> {
         .route("/api/discussion/{action}", post(api_discussion))
         .route("/api/me", get(api_me))
         .route("/api/file", get(api_file))
+        .route("/api/repos", get(api_repos))
+        .route("/api/repos/clone", post(api_repos_clone))
+        .route("/api/repos/clone/status", get(api_repos_clone_status))
         .route("/api/cloud", get(api_cloud_get).post(api_cloud_post))
         .route(
             "/api/cloud/{id}",
@@ -663,6 +666,84 @@ async fn api_me(State(state): State<S>, headers: HeaderMap) -> axum::response::R
             elapsed_ms: 0,
         });
     (StatusCode::OK, Json(out)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Team repositories ("pull repo"): list + background clone + status polling
+// ---------------------------------------------------------------------------
+
+/// GET /api/repos — the repos the calling member can read, with a size and a
+/// local-presence flag.
+async fn api_repos(State(state): State<S>, headers: HeaderMap) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let ctx = state.ctx.clone();
+    let out = tokio::task::spawn_blocking(move || crate::console_repos::list_repos(&ctx)).await;
+    match out {
+        Ok(Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
+        Ok(Err(e)) => err_json(StatusCode::BAD_GATEWAY, e),
+        Err(_) => err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "repos task panicked".to_string(),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct RepoCloneReq {
+    /// Accepts `{name}` (or `{repo}` for convenience).
+    name: Option<String>,
+    repo: Option<String>,
+}
+
+/// POST /api/repos/clone `{name}` — start cloning `<name>` into the workspace.
+///
+/// The clone itself runs on a detached thread (an 11 GiB repo takes minutes);
+/// this returns the initial `running` job immediately. Poll
+/// `/api/repos/clone/status?name=` for progress/failure.
+async fn api_repos_clone(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(req): Json<RepoCloneReq>,
+) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let name = req.name.or(req.repo).unwrap_or_default().trim().to_string();
+    if name.is_empty() {
+        return err_json(StatusCode::BAD_REQUEST, "`name` is required".to_string());
+    }
+    let ctx = state.ctx.clone();
+    let out =
+        tokio::task::spawn_blocking(move || crate::console_repos::start_clone(&ctx, &name)).await;
+    match out {
+        Ok(Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
+        Ok(Err(e)) => err_json(StatusCode::BAD_REQUEST, e),
+        Err(_) => err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "clone task panicked".to_string(),
+        ),
+    }
+}
+
+/// GET /api/repos/clone/status?name= — in-flight/finished clone state.
+async fn api_repos_clone_status(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let name = params.get("name").cloned().unwrap_or_default();
+    if name.is_empty() {
+        return err_json(StatusCode::BAD_REQUEST, "`name` is required".to_string());
+    }
+    match crate::console_repos::clone_status(&name) {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => err_json(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 // ---------------------------------------------------------------------------

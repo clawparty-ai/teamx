@@ -2670,7 +2670,27 @@ fn git_dispatch(
         "git.repos" => {
             let repos = crate::git_service::list_accessible_repos(conn, &team_id, member_id)
                 .map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({ "ok": true, "repos": repos }))
+            // Annotate each repo with an approximate on-disk size (KiB-based, a
+            // single `git count-objects`) so the member console can show it and
+            // warn about multi-GiB clones. `path` etc. stay for `teamx git list`
+            // back-compat; the top-level `team` lets the console build the
+            // native git-over-mTLS clone URL.
+            let repos: Vec<Value> = repos
+                .iter()
+                .map(|r| {
+                    let mut v = serde_json::to_value(r).unwrap_or_else(|_| json!({}));
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert(
+                            "bytes".to_string(),
+                            json!(crate::git_service::repo_size_bytes(std::path::Path::new(
+                                &r.path
+                            ))),
+                        );
+                    }
+                    v
+                })
+                .collect();
+            Ok(serde_json::json!({ "ok": true, "team": team_id, "repos": repos }))
         }
         "git.create" => {
             let name = s("name").ok_or_else(|| "git.create requires `name`".to_string())?;

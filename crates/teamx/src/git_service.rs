@@ -38,6 +38,40 @@ pub fn repo_dir(team_id: &str, name: &str) -> PathBuf {
     repos_root().join(team_id).join(format!("{name}.git"))
 }
 
+/// Approximate on-disk size of a bare repo, in bytes.
+///
+/// Uses `git count-objects -v`, whose `size` (loose objects) and `size-pack`
+/// (packfiles) fields are in KiB — fast even for a multi-GiB repo because a
+/// packed repo is a single file, unlike a full directory walk. Returns 0 when
+/// the repo is absent/unreadable (the console then just hides the size).
+pub fn repo_size_bytes(dir: &Path) -> u64 {
+    let out = run_git(&[
+        "--git-dir",
+        dir.to_str().unwrap_or_default(),
+        "count-objects",
+        "-v",
+    ]);
+    match out {
+        Ok(s) => parse_count_objects_kib(&s).saturating_mul(1024),
+        Err(_) => 0,
+    }
+}
+
+/// Sum the `size` + `size-pack` fields (KiB) of `git count-objects -v`.
+fn parse_count_objects_kib(out: &str) -> u64 {
+    let mut kib = 0u64;
+    for line in out.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if matches!(k.trim(), "size" | "size-pack") {
+                if let Ok(n) = v.trim().parse::<u64>() {
+                    kib = kib.saturating_add(n);
+                }
+            }
+        }
+    }
+    kib
+}
+
 /// Run a git command; returns stdout trimmed, or an error with stderr.
 fn run_git(args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
@@ -693,4 +727,42 @@ pub fn list_accessible_repos(
         .map_err(|e| format!("db error: {e}"))?;
 
     Ok(repos)
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn count_objects_sums_loose_and_pack() {
+        let sample = "count: 0\nsize: 12\nin-pack: 345\npacks: 1\nsize-pack: 6789\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n";
+        assert_eq!(parse_count_objects_kib(sample), 6801);
+    }
+
+    #[test]
+    fn count_objects_missing_fields_is_zero() {
+        assert_eq!(parse_count_objects_kib("count: 0\n"), 0);
+        assert_eq!(parse_count_objects_kib(""), 0);
+    }
+
+    #[test]
+    fn repo_size_of_a_real_bare_repo() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return; // git not installed -> skip
+        }
+        let dir = std::env::temp_dir().join(format!("teamx-size-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bare = dir.join("r.git");
+        let out = std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        // An empty repo still has a HEAD/config; size is a number, not a panic.
+        let _ = repo_size_bytes(&bare);
+        // Missing repo -> 0.
+        assert_eq!(repo_size_bytes(&dir.join("nope.git")), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
