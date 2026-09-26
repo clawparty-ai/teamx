@@ -67,46 +67,20 @@ HK 源机 95.40.221.159 绝不动、不销毁；销毁任何实例前必须有 E
 3. **starnet 单队子集库已生成并传到云机**：`/tmp/starnet-subset.db`（3.2MB；4 成员 / 1096 事件 / 1 goal / 1 repo；已剪掉其他队 12604 事件、65412 activity、19523 连接等）。
 4. HK 队清单（源）：yongyan-dev `f2adafd3`(active,4) · powernano-v2 `1da9a7f0`(active,6) · starnet `5e59132f`(completed,4) + 历史队。starnet 的机器 `starnet-jp` 的 `TEAMX_SERVER_URL=https://95.40.221.159`。
 5. 云租户原为 HK 整机拷贝，5 个仓库目录都在（含 starnet 87M、powernano-v2 11G），所以这两队**无需重新拷数据源**（可从 yongyan 租户 PVC 内取）。
+6. **starnet 租户数据已就位**：子集库（3,231,744 B，仅 starnet：4 成员/1096 事件/1 goal/1 repo）已灌入 PVC `/data/teamx.db`；仓库 `87M /data/repos/5e59132f-.../starnet.git` 已灌入；server pod Running 且日志为
+   `teamx serve: tenant mode (team 5e59132f-...), identity from /data/ca` + `listening https://0.0.0.0:5783 (mtls, db /data/teamx.db)`。
+   平台 tenants 行现状：`owner_member_id` 为空、`endpoint` 为空（待配）。
 
-## §5 立刻要做的下一步（当前卡点）
-**给 starnet 隔离租户灌数据**（子集库 + 87M 仓库 → 写入 `tenant-5e59132fd5fb48e5` 的 PVC）。
+## §5 下一步：starnet 暴露 + 登记（数据已就位，从这里接续）
+> 已完成：隔离租户骨架（ns/PVC/Deployment/Secret）+ HK CA 换入 + server cert 重签 + 平台 teams/tenants 行 + 子集库与 87M 仓库入 PVC。
+> 完成方式备忘：临时 Pod 必须带 `restricted` 合规 securityContext（见 §7 坑 1）；**大文件别用 `kubectl exec -i` 灌（90MB 会失败），用 `kubectl cp`**。
 
-**当前报错**：在该 ns 建临时 Pod 被 **PodSecurity `restricted:latest`** 拒绝：
-`allowPrivilegeEscalation != false` / `unrestricted capabilities` / `runAsNonRoot != true` / `seccompProfile` 缺失。
-**修法**：临时 Pod 必须带完整 securityContext（并且 PVC 属主通常是 uid 1000）：
-
-```yaml
-spec:
-  restartPolicy: Never
-  securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
-  containers:
-  - name: fix
-    image: teamx-server:dev6          # 该镜像自带 sh/git，勿用未导入的镜像
-    imagePullPolicy: IfNotPresent
-    command: ["sleep","3600"]
-    securityContext:
-      allowPrivilegeEscalation: false
-      capabilities: { drop: ["ALL"] }
-    volumeMounts: [{ name: data, mountPath: /data }]
-  volumes:
-  - name: data
-    persistentVolumeClaim: { claimName: teamx-serve-data-5e59132fd5fb48e5 }
-```
-
-流程（命令已验证过，只差 securityContext）：
-```bash
-K="sudo -n /usr/local/bin/k8e kubectl"; NS=tenant-5e59132fd5fb48e5; SH=5e59132fd5fb48e5
-SID=5e59132f-d5fb-48e5-a90a-33a3ff0c7068
-$K -n $NS scale deploy/teamx-serve-$SH --replicas=0                     # 先停，避免 WAL 覆盖
-# 建临时 Pod（用上面带 securityContext 的 YAML），wait Ready
-$K -n $NS exec -i <fix-pod> -- sh -c 'rm -f /data/teamx.db-wal /data/teamx.db-shm; cat > /data/teamx.db' < /tmp/starnet-subset.db
-YP=$($K -n tenant-f2adafd3b3d74a84 get pods --no-headers -o custom-columns=:metadata.name | grep ^teamx-serve | head -1)
-$K -n tenant-f2adafd3b3d74a84 exec $YP -c serve -- tar -C /data/repos -cf - $SID > /tmp/starnet-repo.tar   # 87M
-$K -n $NS exec -i <fix-pod> -- sh -c 'mkdir -p /data/repos && tar -C /data/repos -xf -' < /tmp/starnet-repo.tar
-$K -n $NS exec <fix-pod> -- sh -c 'chown -R 1000:1000 /data/repos /data/teamx.db || true; du -sh /data/repos/*'
-$K -n $NS delete pod <fix-pod>; $K -n $NS scale deploy/teamx-serve-$SH --replicas=1
-sleep 30; $K -n $NS get pods; $K -n $NS logs <新 pod> --tail=5      # 期望 tenant mode + 5783 listening
-```
+1. **暴露**：给该租户建 NodePort（参考 yongyan 租户的 `30443` 模式，或按需另取）；nginx `teamx-stream.conf` 加 `starnet.teamx.beer → 127.0.0.1:<NodePort>`；Let's Encrypt 证书（webroot + deploy hook 条目）。
+2. **平台登记**：设 `tenants.owner_member_id`（= HK 库 starnet 的 lead 席位 id）+ `tenants.endpoint`（`https://starnet.teamx.beer` 或同机 port-forward 端点，参照 yongyan 租户的取值方式）；按 HK 库的 4 个 starnet 成员补 `team_join_requests`（`user_id` 指向平台用户、`status='approved'`、`member_id`=席位 id）；补 `owner_letter`（`teamx tenant owner-letter`，平台控制台"已初始化"判定用）。
+3. **验证**：用 starnet 成员来信（HK CA 签的旧信，无需重发）经 `https://starnet.teamx.beer` 跑一次 mTLS 调用（如 `teamx status` 或 service 车道名册）确认租户正常服务该队。
+4. **摘除**：在 yongyan-dev 租户库（`tenant-f2adafd3b3d74a84` 的 `/data/teamx.db`）删除 starnet 队行（以及第 5 步的 pnv2 行），杜绝 split-brain；摘除后回归一次 yongyan-dev 自身功能。
+5. **铺成员**：`teamx --json node provision-cloud --team 5e59132f-d5fb-48e5-a90a-33a3ff0c7068 --all --session <token>`。
+6. **yongyan-team（原 powernano-v2）**：按同一套流程再做一遍（独立租户，PVC 建议 ≥40Gi 因仓库 11G；子集库按 `team_id=1da9a7f0-...` 剪裁；队名可改为 `yongyan-team`）。
 
 ## §6 后续阶段（按序）
 1. **starnet 暴露**：nginx stream 加 `starnet.teamx.beer → 127.0.0.1:<NodePort>`；租户 Pod 侧需 NodePort（或复用 443 的 SNI 分流 + 一个 NodePort）；Let's Encrypt 证书（webroot + deploy hook 条目）。
@@ -130,6 +104,8 @@ sleep 30; $K -n $NS get pods; $K -n $NS logs <新 pod> --tail=5      # 期望 te
 - member console 反代 `/c/<member16>` 需成员 Pod 里跑的是含"console 支持前缀"的镜像（dev4 起）。
 - `/api/repos/clone` 需要成员 console 侧 `git`（member 镜像有）+ server 侧 `git`（`teamx-server:dev6` 起有，否则报 `spawn git: No such file or directory`）。
 - 全角字符紧跟 `$VAR` 要写 `${VAR}`；`UID` 是 shell 保留变量。
+- 临时 Pod 会被 **PodSecurity `restricted:latest`** 拒绝 → 必须带 `allowPrivilegeEscalation:false` + `capabilities.drop:["ALL"]` + `runAsNonRoot:true` + `seccompProfile:RuntimeDefault`（PVC 属主 uid 1000，另加 runAsUser/runAsGroup/fsGroup=1000）。
+- **`kubectl exec -i` 灌大文件（数十 MB）会损坏流**（90MB tar 报 "This does not look like a tar archive"）→ 用 `kubectl cp`（小文件如 3MB DB 用 exec 没问题）。
 - 平台控制台 JS 的"引用尚不存在/顺序依赖"踩过多次（死引用会导致整段脚本失效）→ 改前端后务必跑 `node --check` 并保留回归断言。
 
 ## §8 关键 id 速查
