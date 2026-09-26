@@ -20,7 +20,7 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
     Json, Router,
 };
 use axum::body::Body;
@@ -319,9 +319,9 @@ fn build_router(ctx: Arc<Ctx>, root_console: bool) -> Router {
     let base = Router::new();
     let base = if root_console { base.route("/", get(index)) } else { base };
     base
-        .route("/c/{member16}", get(api_console_proxy))
-        .route("/c/{member16}/", get(api_console_proxy))
-        .route("/c/{member16}/{*rest}", get(api_console_proxy))
+        .route("/c/{member16}", any(api_console_proxy))
+        .route("/c/{member16}/", any(api_console_proxy))
+        .route("/c/{member16}/{*rest}", any(api_console_proxy))
         .route("/api/login", post(api_login))
         .route("/api/login/password", post(api_login_password))
         .route("/api/logout", post(api_logout))
@@ -1573,7 +1573,7 @@ async fn resolve_console_target(
     })
 }
 
-/// `GET /c/{member16}[/...]` —— 平台控制台反代成员 console（design/021 §J）。
+/// `GET|POST|... /c/{member16}[/...]` —— 平台控制台反代成员 console（design/021 §J）。
 ///
 /// - 鉴权 = **平台会话**：未登录 303 跳平台登录页（与控制台一致）。
 /// - 只反代**本人席位**的 console（见 `resolve_seat`）。
@@ -3396,6 +3396,24 @@ mod tests {
                     })
                 }),
             )
+            .route(
+                "/api/repos/clone",
+                post(|headers: HeaderMap, body: axum::body::Bytes| async move {
+                    let ct = headers
+                        .get(header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    (
+                        [(header::SET_COOKIE, "upstream=1; Path=/")],
+                        Json(json!({
+                            "ok": true,
+                            "ct": ct,
+                            "echo": String::from_utf8_lossy(&body),
+                        })),
+                    )
+                }),
+            )
     }
 
     /// 起一个假成员 console（可选自签 TLS），返回 base URL 与任务句柄。
@@ -3511,6 +3529,65 @@ mod tests {
             }
         }
         (status, hs, body.to_string())
+    }
+
+    async fn raw_post(
+        addr: SocketAddr,
+        path: &str,
+        cookie: Option<&str>,
+        content_type: &str,
+        body: &[u8],
+    ) -> (u16, Vec<(String, String)>, String) {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut req = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        if let Some(c) = cookie {
+            req.push_str(&format!("Cookie: {c}\r\n"));
+        }
+        req.push_str("\r\n");
+        s.write_all(req.as_bytes()).await.unwrap();
+        s.write_all(body).await.unwrap();
+        let mut buf = Vec::new();
+        s.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf).to_string();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+        let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let mut hs = Vec::new();
+        for l in head.lines().skip(1) {
+            if let Some((k, v)) = l.split_once(':') {
+                hs.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+        (status, hs, body.to_string())
+    }
+
+    /// Regression (Bug 1): the `/c/{member16}` routes must accept POST (and
+    /// every other method) and forward the request body + Content-Type to the
+    /// member console, while dropping the upstream `Set-Cookie`.
+    #[tokio::test]
+    async fn console_route_forwards_post_body_and_drops_set_cookie() {
+        let (target, _fake) = spawn_fake_console(false, "tok".into()).await;
+        let (ctx, _db, session, seat) = setup_console_ctx(Some(target));
+        let (addr, _plat) = spawn_platform(ctx).await;
+        let m16 = crate::k8s::short_id(&seat);
+
+        let (status, headers, body) = raw_post(
+            addr,
+            &format!("/c/{m16}/api/repos/clone"),
+            Some(&format!("teamx_platform_token={session}")),
+            "application/json",
+            br#"{"name":"yongyan-dev"}"#,
+        )
+        .await;
+        assert_eq!(status, 200, "POST 必须被反代（不能 405）: {body}");
+        assert!(body.contains("yongyan-dev"), "上游必须收到 POST body: {body}");
+        assert!(body.contains("\"ct\":\"application/json\""), "Content-Type 必须保留: {body}");
+        assert!(
+            !headers.iter().any(|(k, _)| k == "set-cookie"),
+            "上游 Set-Cookie 必须丢弃: {headers:?}"
+        );
     }
 
     #[tokio::test]

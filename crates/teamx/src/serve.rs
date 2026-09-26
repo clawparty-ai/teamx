@@ -2682,9 +2682,9 @@ fn git_dispatch(
                     if let Some(o) = v.as_object_mut() {
                         o.insert(
                             "bytes".to_string(),
-                            json!(crate::git_service::repo_size_bytes(std::path::Path::new(
-                                &r.path
-                            ))),
+                            json!(crate::git_service::repo_size_bytes(
+                                &crate::git_service::resolve_repo_dir(&r.path, &r.team_id, &r.name)
+                            )),
                         );
                     }
                     v

@@ -285,27 +285,66 @@ async fn tls_connect(t: &Target) -> Result<tokio_rustls::client::TlsStream<tokio
 // HTTP 反代
 // ---------------------------------------------------------------------------
 
+/// 浏览器允许透传给上游 console 的请求头（**白名单**，绝不用黑名单）。
+///
+/// `Cookie`/`Authorization`/`Proxy-Authorization` 等平台凭据、以及
+/// `Host`/`Connection`/`Upgrade`/`Transfer-Encoding` 等连接管理头都不在名单里，
+/// 因此它们**永远不会**泄露给上游（上游只用平台注入的 console token）。
+/// 特意不透传 `Accept-Encoding`：压缩后的 HTML 无法安全注入 `<base>`，压缩后的
+/// 流也无法原样透传。
+const FORWARD_REQ_HEADERS: &[&str] = &[
+    "accept",
+    "accept-language",
+    "cache-control",
+    "content-type",
+    "content-length",
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-range",
+    "pragma",
+    "range",
+    "user-agent",
+    "x-requested-with",
+];
+
+/// 未声明长度的请求体（chunked 上传）的上限；带 `Content-Length` 的请求体一律
+/// **流式转发、不缓冲**，所以这里只兜底少见的未知长度场景。
+const MAX_UNKNOWN_BODY: usize = 512 * 1024 * 1024;
+
+/// 上游请求体中已声明的字节数（`Content-Length`）；chunked/未知长度返回 `None`。
+fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        return None;
+    }
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+}
+
 /// 反代一个普通 HTTP 请求到成员 console。
 ///
-/// `path` 已是上游路径（含 query，形如 `/api/me`）；`body` 已读出（有上限）。
+/// `path` 已是上游路径（含 query，形如 `/api/me`）。**无损转发**方法、请求体
+/// （带 `Content-Length` 的体流式透传，二进制/大文件不受小上限影响）与白名单请求头。
 /// 对 HTML 响应注入 `<base>`；`Set-Cookie` 一律丢弃；`Location` 重写到前缀内。
 pub async fn forward_http(
     target: &Target,
     method: Method,
     path: String,
-    content_type: Option<String>,
-    body: Bytes,
+    headers: HeaderMap,
+    body: Body,
     token: &str,
     member16: &str,
 ) -> Response<Body> {
     if target.tls {
         match tls_connect(target).await {
-            Ok(io) => forward_http_io(io, target, method, path, content_type, body, token, member16).await,
+            Ok(io) => forward_http_io(io, target, method, path, headers, body, token, member16).await,
             Err(e) => (StatusCode::BAD_GATEWAY, format!("member console unreachable: {e}")).into_response(),
         }
     } else {
         match plain_connect(target).await {
-            Ok(io) => forward_http_io(io, target, method, path, content_type, body, token, member16).await,
+            Ok(io) => forward_http_io(io, target, method, path, headers, body, token, member16).await,
             Err(e) => (StatusCode::BAD_GATEWAY, format!("member console unreachable: {e}")).into_response(),
         }
     }
@@ -317,8 +356,8 @@ async fn forward_http_io<S>(
     target: &Target,
     method: Method,
     path: String,
-    content_type: Option<String>,
-    body: Bytes,
+    headers: HeaderMap,
+    body: Body,
     token: &str,
     member16: &str,
 ) -> Response<Body>
@@ -326,6 +365,21 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let mut reader = BufReader::new(io);
+    let declared_len = declared_content_length(&headers);
+    // 已声明长度 → 直接流式转发（无小上限，二进制/大上传都无损）；否则（chunked/
+    // 未知）先缓冲到一个较宽的上限，好在向上游发请求时补一个 `Content-Length`。
+    enum Payload {
+        Stream(Body),
+        Buffered(Bytes),
+    }
+    let payload = if declared_len.is_some() {
+        Payload::Stream(body)
+    } else {
+        match to_bytes(body, MAX_UNKNOWN_BODY).await {
+            Ok(b) => Payload::Buffered(b),
+            Err(_) => return (StatusCode::BAD_REQUEST, "request body too large").into_response(),
+        }
+    };
     // HTTP/1.0：上游不会用 chunked，响应体靠 Content-Length 或连接关闭界定，
     // 因此 SSE 等无 Content-Length 的流可以“读原始字节直到 EOF”地透传。
     let mut head = format!(
@@ -336,16 +390,50 @@ where
         CONSOLE_TOKEN_COOKIE,
         token
     );
-    if !body.is_empty() {
-        let ct = content_type.unwrap_or_else(|| "application/json".to_string());
-        head.push_str(&format!("Content-Type: {ct}\r\nContent-Length: {}\r\n", body.len()));
+    for (name, value) in headers.iter() {
+        let lower = name.as_str();
+        if !FORWARD_REQ_HEADERS.contains(&lower) {
+            continue;
+        }
+        // 缓冲分支自己补 Content-Length，避免出现重复头。
+        if matches!(payload, Payload::Buffered(_)) && lower == header::CONTENT_LENGTH.as_str() {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            head.push_str(&format!("{lower}: {v}\r\n"));
+        }
+    }
+    if let Payload::Buffered(b) = &payload {
+        head.push_str(&format!("Content-Length: {}\r\n", b.len()));
     }
     head.push_str("Connection: close\r\n\r\n");
     if reader.get_mut().write_all(head.as_bytes()).await.is_err() {
         return (StatusCode::BAD_GATEWAY, "member console write failed").into_response();
     }
-    if !body.is_empty() && reader.get_mut().write_all(&body).await.is_err() {
-        return (StatusCode::BAD_GATEWAY, "member console body write failed").into_response();
+    match payload {
+        Payload::Buffered(b) => {
+            if !b.is_empty() && reader.get_mut().write_all(&b).await.is_err() {
+                return (StatusCode::BAD_GATEWAY, "member console body write failed").into_response();
+            }
+        }
+        Payload::Stream(body) => {
+            let mut stream = body.into_data_stream();
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) if !bytes.is_empty() => {
+                        if reader.get_mut().write_all(&bytes).await.is_err() {
+                            return (StatusCode::BAD_GATEWAY, "member console body write failed")
+                                .into_response();
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        return (StatusCode::BAD_GATEWAY, "member console body read failed")
+                            .into_response()
+                    }
+                }
+            }
+        }
     }
     let (status, headers) = match read_head(&mut reader).await {
         Ok(v) => v,
@@ -610,8 +698,8 @@ async fn relay_ws_io<S>(
 
 /// 处理一个 `/c/<member16>/...` 的普通 HTTP 请求。
 ///
-/// 鉴权/席位解析/token 派生在 `platform_console` 侧完成后，把目标、上游路径与已读
-/// 请求体交给本函数。`member16` 用于注入 `<base>` 与重写 `Location`。
+/// 鉴权/席位解析/token 派生在 `platform_console` 侧完成后，把目标、上游路径与原始
+/// 请求（方法/头/体流）交给本函数。`member16` 用于注入 `<base>` 与重写 `Location`。
 pub async fn serve_http(
     target: Target,
     member16: String,
@@ -621,15 +709,7 @@ pub async fn serve_http(
     request: Request<Body>,
     token: String,
 ) -> Response<Body> {
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let body = match to_bytes(request.into_body(), 8 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, "request body too large").into_response(),
-    };
-    forward_http(&target, method, path, content_type, body, &token, &member16).await
+    forward_http(&target, method, path, headers, request.into_body(), &token, &member16).await
 }
 
 /// 处理一个 `/c/<member16>/...` 的 WebSocket upgrade。
@@ -730,5 +810,140 @@ mod tests {
         let print = crate::console_html::print_discussion_html();
         assert!(print.contains("const TXU="), "打印页也必须支持反代前缀");
         assert!(print.contains("fetch(TXU("), "打印页 API 调用必须带前缀");
+    }
+
+    // -----------------------------------------------------------------------
+    // 请求/响应转发保真（Bug 1）
+    // -----------------------------------------------------------------------
+
+    #[derive(Default)]
+    struct Echo {
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    /// 起一个本地假上游：`POST /echo` 记录收到的头与 body 并回 200。
+    async fn spawn_echo() -> (Target, std::sync::Arc<Mutex<Echo>>) {
+        use axum::extract::Request as AxRequest;
+        let seen = std::sync::Arc::new(Mutex::new(Echo::default()));
+        let seen2 = seen.clone();
+        let app = axum::Router::new().route(
+            "/echo",
+            axum::routing::post(move |req: AxRequest| {
+                let seen = seen2.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let bytes = to_bytes(body, 1024 * 1024 * 1024).await.unwrap_or_default();
+                    let mut e = seen.lock().unwrap();
+                    e.headers = parts
+                        .headers
+                        .iter()
+                        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+                    e.body = bytes.to_vec();
+                    (StatusCode::OK, "ok")
+                }
+            }),
+        );
+        let target = spawn_app(app).await;
+        (target, seen)
+    }
+
+    async fn spawn_app(app: axum::Router) -> Target {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Target { host: "127.0.0.1".into(), port, tls: false }
+    }
+
+    #[tokio::test]
+    async fn forward_http_preserves_post_body_headers_and_large_binary() {
+        let (target, echo) = spawn_echo().await;
+        // 12 MiB（远超旧的 8 MiB 缓冲上限）且非 UTF-8，验证逐字节保真。
+        let payload: Vec<u8> = (0..12 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+        headers.insert(header::CONTENT_LENGTH, payload.len().to_string().parse().unwrap());
+        headers.insert(header::ACCEPT, "application/json".parse().unwrap());
+        headers.insert(header::COOKIE, "teamx_platform_token=SECRET".parse().unwrap());
+
+        let resp = forward_http(
+            &target,
+            Method::POST,
+            "/echo".into(),
+            headers,
+            Body::from(payload.clone()),
+            "CONSOLE_TOK",
+            "m16",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let got = echo.lock().unwrap();
+        assert_eq!(got.body, payload, "上游收到的 body 必须逐字节一致");
+        let h = |n: &str| {
+            got.headers
+                .iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(h("content-type"), Some("application/octet-stream"));
+        assert_eq!(h("accept"), Some("application/json"));
+        assert_eq!(
+            h("cookie"),
+            Some("teamx_console_token=CONSOLE_TOK"),
+            "只能注入 console token，平台会话 cookie 不得泄露"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_http_drops_upstream_set_cookie_and_injects_base() {
+        use axum::response::Html;
+        let app = axum::Router::new().route(
+            "/page",
+            axum::routing::get(|| async {
+                (
+                    [(header::SET_COOKIE, "evil=1; Path=/")],
+                    Html("<!doctype html><html><head><title>T</title></head><body>hi</body></html>"),
+                )
+            }),
+        );
+        let target = spawn_app(app).await;
+        let resp = forward_http(
+            &target,
+            Method::GET,
+            "/page".into(),
+            HeaderMap::new(),
+            Body::empty(),
+            "t",
+            "m16",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get(header::SET_COOKIE).is_none(), "上游 Set-Cookie 必须丢弃");
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("<base href=\"/c/m16/\">"));
+    }
+
+    #[tokio::test]
+    async fn forward_http_rewrites_redirect_location_into_prefix() {
+        let app = axum::Router::new().route(
+            "/redir",
+            axum::routing::get(|| async { (StatusCode::SEE_OTHER, [(header::LOCATION, "/")], "") }),
+        );
+        let target = spawn_app(app).await;
+        let resp = forward_http(
+            &target,
+            Method::GET,
+            "/redir".into(),
+            HeaderMap::new(),
+            Body::empty(),
+            "t",
+            "m16",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/c/m16/");
     }
 }

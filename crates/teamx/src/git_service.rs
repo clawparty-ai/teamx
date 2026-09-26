@@ -38,20 +38,68 @@ pub fn repo_dir(team_id: &str, name: &str) -> PathBuf {
     repos_root().join(team_id).join(format!("{name}.git"))
 }
 
-/// Approximate on-disk size of a bare repo, in bytes.
+/// Resolve the directory a repo row actually lives in.
 ///
-/// Uses `git count-objects -v`, whose `size` (loose objects) and `size-pack`
-/// (packfiles) fields are in KiB — fast even for a multi-GiB repo because a
-/// packed repo is a single file, unlike a full directory walk. Returns 0 when
-/// the repo is absent/unreadable (the console then just hides the size).
+/// Prefer the path recorded in the DB, but fall back to the canonical
+/// `repo_dir(team_id, name)` when that path no longer exists (e.g. the server
+/// `TEAMX_HOME` changed after the row was created). Smart-HTTP clone/fetch
+/// always use `repo_dir`, so sizing must agree with the directory git serves.
+pub fn resolve_repo_dir(path: &str, team_id: &str, name: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_dir() {
+        p
+    } else {
+        repo_dir(team_id, name)
+    }
+}
+
+/// Apparent size of a directory tree, in bytes — the portable equivalent of
+/// `du -sb`. Sums every regular file/symlink entry (best effort: unreadable
+/// sub-entries are skipped) and recurses into subdirectories.
+///
+/// Returns `Some(0)` for an existing-but-empty directory, and `None` only when
+/// the root itself cannot be read.
+pub fn dir_size_bytes(dir: &Path) -> Option<u64> {
+    fn walk(dir: &Path) -> Option<u64> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut total = 0u64;
+        for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if let Some(n) = walk(&e.path()) {
+                    total = total.saturating_add(n);
+                }
+            } else if ft.is_symlink() {
+                // Do not follow symlinks (matches `du -sb`, avoids loops).
+                if let Ok(m) = std::fs::symlink_metadata(e.path()) {
+                    total = total.saturating_add(m.len());
+                }
+            } else if let Ok(m) = e.metadata() {
+                total = total.saturating_add(m.len());
+            }
+        }
+        Some(total)
+    }
+    if dir.is_dir() {
+        walk(dir)
+    } else {
+        None
+    }
+}
+
+/// Approximate on-disk size of a repository directory, in bytes.
+///
+/// The **directory tree size** is authoritative (matches the actual disk usage
+/// the console displays, and works for bare repos, non-bare worktrees, and
+/// repos git refuses to inspect). `git count-objects -v` is only a fallback for
+/// the rare case where the tree cannot be walked. Returns 0 when the directory
+/// is absent/unreadable (the console then just hides the size).
 pub fn repo_size_bytes(dir: &Path) -> u64 {
-    let out = run_git(&[
-        "--git-dir",
-        dir.to_str().unwrap_or_default(),
-        "count-objects",
-        "-v",
-    ]);
-    match out {
+    if let Some(n) = dir_size_bytes(dir) {
+        return n;
+    }
+    let dir_s = dir.to_str().unwrap_or_default();
+    match run_git(&["--git-dir", dir_s, "count-objects", "-v"]) {
         Ok(s) => parse_count_objects_kib(&s).saturating_mul(1024),
         Err(_) => 0,
     }
@@ -764,5 +812,47 @@ mod size_tests {
         // Missing repo -> 0.
         assert_eq!(repo_size_bytes(&dir.join("nope.git")), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_size_sums_nested_files() {
+        let root = std::env::temp_dir().join(format!("teamx-dirsize-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("f1"), vec![0u8; 100]).unwrap();
+        std::fs::write(root.join("a/f2"), vec![0u8; 250]).unwrap();
+        std::fs::write(root.join("a/b/f3"), vec![0u8; 7]).unwrap();
+        assert_eq!(dir_size_bytes(&root), Some(357));
+        assert_eq!(dir_size_bytes(&root.join("nope")), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Regression (Bug 2): `git --git-dir <non-bare-worktree> count-objects`
+    /// fails ("not a git repository"), so the old implementation reported 0.
+    /// The directory walk must report the real on-disk size instead.
+    #[test]
+    fn repo_size_of_non_bare_worktree_is_not_zero() {
+        let root = std::env::temp_dir().join(format!("teamx-nonbare-{}", Uuid::new_v4()));
+        let wt = root.join("work");
+        std::fs::create_dir_all(wt.join(".git")).unwrap();
+        std::fs::write(wt.join("blob.bin"), vec![7u8; 4096]).unwrap();
+        std::fs::write(wt.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        let n = repo_size_bytes(&wt);
+        assert!(n >= 4096, "non-bare repo size must reflect the directory, got {n}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_repo_dir_falls_back_to_canonical() {
+        // Stale/absent DB path -> canonical repo_dir(team, name).
+        assert_eq!(
+            resolve_repo_dir("/nonexistent/teamx/repos/row.git", "team-x", "demo"),
+            repo_dir("team-x", "demo")
+        );
+        // Existing DB path wins.
+        let root = std::env::temp_dir().join(format!("teamx-resolve-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let existing = root.to_string_lossy().to_string();
+        assert_eq!(resolve_repo_dir(&existing, "team-x", "demo"), root);
+        let _ = std::fs::remove_dir_all(&existing);
     }
 }
