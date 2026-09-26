@@ -26,7 +26,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true; \
     fi \
  && apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl bash \
+      ca-certificates curl bash git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ${TEAMX_BIN} /usr/local/bin/teamx
