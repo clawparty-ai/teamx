@@ -18,6 +18,7 @@ fn main() {
         }
         return;
     }
+    #[cfg(feature = "enterprise")]
     if let Command::Ui(uc) = &cli.command {
         match teamx::ui::ui(uc) {
             Ok(()) => {}
@@ -48,6 +49,7 @@ fn main() {
         }
         return;
     }
+    #[cfg(feature = "enterprise")]
     if let Command::Platform(teamx::cli::PlatformCmd::Console { addr, port, kubeconfig, context }) = &cli.command {
         let pc = teamx::cli::PlatformConsoleCmd {
             addr: addr.clone(),
@@ -64,6 +66,7 @@ fn main() {
         }
         return;
     }
+    #[cfg(feature = "enterprise")]
     if let Command::Site(sc) = &cli.command {
         match teamx::platform_console::run_site(sc) {
             Ok(()) => {}

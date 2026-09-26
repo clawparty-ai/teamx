@@ -14,6 +14,7 @@ pub mod local_team;
 pub mod broadcast;
 pub mod buildinfo;
 pub mod cli;
+#[cfg(feature = "enterprise")]
 pub mod cloud;
 pub mod commands;
 pub mod db;
@@ -43,8 +44,10 @@ pub mod platform;
 pub mod issued;
 pub mod discovery;
 pub mod credit;
+#[cfg(feature = "enterprise")]
 pub mod site;
 pub mod tcoin;
+#[cfg(feature = "enterprise")]
 pub mod platform_console;
 pub mod console_proxy;
 pub mod procwatch;
@@ -80,6 +83,7 @@ pub mod capture_cli;
 pub mod replay;
 pub mod replay_cli;
 pub mod tls_parse;
+#[cfg(feature = "enterprise")]
 pub mod ui;
 pub mod console;
 pub mod fs;

@@ -40,7 +40,9 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use crate::broadcast::Hub;
-use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, NodeCmd, RoleCmd, ServeCmd, TeamCmd, TenantCmd, UserCmd};
+use crate::cli::{Cli, Command, DiscussionCmd, GoalCmd, LoopxCmd, MemberCmd, NodeCmd, RoleCmd, ServeCmd, TeamCmd, UserCmd};
+#[cfg(feature = "enterprise")]
+use crate::cli::TenantCmd;
 use crate::commands;
 use crate::pki;
 
@@ -2207,6 +2209,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             os_user: o("os_user"),
         }),
         // Multi-tenant platform (design/014).
+        #[cfg(feature = "enterprise")]
         "tenant.create" => Command::Tenant(TenantCmd::Create {
             team: s("team").ok_or_else(|| "tenant.create requires `team`".to_string())?,
             server_image: o("server_image"),
@@ -2214,16 +2217,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             kubeconfig: None,
             context: None,
         }),
+        #[cfg(feature = "enterprise")]
         "tenant.destroy" => Command::Tenant(TenantCmd::Destroy {
             team: s("team").ok_or_else(|| "tenant.destroy requires `team`".to_string())?,
             kubeconfig: None,
             context: None,
         }),
+        #[cfg(feature = "enterprise")]
         "tenant.reissue_members" | "tenant.reissue-members" => Command::Tenant(TenantCmd::ReissueMembers {
             team: s("team").ok_or_else(|| "tenant.reissue_members requires `team`".to_string())?,
             kubeconfig: s("kubeconfig").map(std::path::PathBuf::from),
             context: s("context"),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.directory" => Command::Discovery(crate::cli::DiscoveryCmd::Directory {
             query: o("query"),
             sort: o("sort"),
@@ -2231,6 +2237,7 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             page: args.get("page").and_then(Value::as_i64).unwrap_or(1),
             per_page: args.get("per_page").and_then(Value::as_i64).unwrap_or(20),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.set" => Command::Discovery(crate::cli::DiscoveryCmd::Set {
             team: s("team").ok_or_else(|| "discovery.set requires `team`".to_string())?,
             visibility: o("visibility"),
@@ -2238,16 +2245,19 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             summary: o("summary"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.apply" => Command::Discovery(crate::cli::DiscoveryCmd::Apply {
             team: s("team").ok_or_else(|| "discovery.apply requires `team`".to_string())?,
             message: o("message"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "credit.show" => Command::Credit(crate::cli::CreditCmd::Show {
             team: o("team"),
             all: args.get("all").and_then(Value::as_bool).unwrap_or(false),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "credit.refresh" => Command::Credit(crate::cli::CreditCmd::Refresh {
             team: o("team"),
             all: args.get("all").and_then(Value::as_bool).unwrap_or(false),
@@ -2255,68 +2265,84 @@ fn dispatch(method: &str, args: &Value, conn: &mut rusqlite::Connection, actor_c
             context: o("context"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "tcoin.grant" => Command::Tcoin(crate::cli::TcoinCmd::Grant {
             team: s("team").ok_or_else(|| "tcoin.grant requires `team`".to_string())?,
             amount: args.get("amount").and_then(Value::as_i64).unwrap_or(0),
             reason: o("reason").unwrap_or_else(|| "platform grant".to_string()),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "tcoin.allocate" => Command::Tcoin(crate::cli::TcoinCmd::Allocate {
             team: s("team").ok_or_else(|| "tcoin.allocate requires `team`".to_string())?,
             member: s("member").ok_or_else(|| "tcoin.allocate requires `member`".to_string())?,
             amount: args.get("amount").and_then(Value::as_i64).unwrap_or(0),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "tcoin.settle" => Command::Tcoin(crate::cli::TcoinCmd::Settle {
             team: s("team").ok_or_else(|| "tcoin.settle requires `team`".to_string())?,
             kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
             context: o("context"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "tcoin.reverse" => Command::Tcoin(crate::cli::TcoinCmd::Reverse {
             seq: args.get("seq").and_then(Value::as_i64).unwrap_or(0),
             reason: s("reason").ok_or_else(|| "tcoin.reverse requires `reason`".to_string())?,
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "tcoin.show" => Command::Tcoin(crate::cli::TcoinCmd::Show {
             team: s("team").ok_or_else(|| "tcoin.show requires `team`".to_string())?,
             kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
             context: o("context"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.mine" => Command::Discovery(crate::cli::DiscoveryCmd::Mine { session: sess(args) }),
+        #[cfg(feature = "enterprise")]
         "discovery.reconcile" => Command::Discovery(crate::cli::DiscoveryCmd::Reconcile {
             kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
             context: o("context"),
         }),
+        #[cfg(feature = "enterprise")]
         "tenant.set_endpoint" | "tenant.set-endpoint" => Command::Tenant(TenantCmd::SetEndpoint {
             team: s("team").ok_or_else(|| "tenant.set_endpoint requires `team`".to_string())?,
             endpoint: s("endpoint").unwrap_or_default(),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.withdraw" => Command::Discovery(crate::cli::DiscoveryCmd::Withdraw {
             request_id: s("request_id").ok_or_else(|| "discovery.withdraw requires `request_id`".to_string())?,
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "discovery.pending" => Command::Discovery(crate::cli::DiscoveryCmd::Pending { session: sess(args) }),
+        #[cfg(feature = "enterprise")]
         "discovery.decide" => Command::Discovery(crate::cli::DiscoveryCmd::Decide {
             request_id: s("request_id").ok_or_else(|| "discovery.decide requires `request_id`".to_string())?,
             approve: b("approve"),
             session: sess(args),
         }),
+        #[cfg(feature = "enterprise")]
         "issued.list" => Command::Issued(crate::cli::IssuedCmd::List {
             team: o("team"),
             ca: o("ca"),
         }),
+        #[cfg(feature = "enterprise")]
         "issued.revoke" => Command::Issued(crate::cli::IssuedCmd::Revoke {
             serial: s("serial").ok_or_else(|| "issued.revoke requires `serial`".to_string())?,
         }),
+        #[cfg(feature = "enterprise")]
         "tenant.ca_audit" | "tenant.ca-audit" => Command::Tenant(TenantCmd::CaAudit {
             team: s("team").ok_or_else(|| "tenant.ca_audit requires `team`".to_string())?,
             server_url: o("server_url"),
             kubeconfig: o("kubeconfig").map(std::path::PathBuf::from),
             context: o("context"),
         }),
+        #[cfg(feature = "enterprise")]
         "tenant.list" => Command::Tenant(TenantCmd::List),
+        #[cfg(feature = "enterprise")]
         "tenant.show" => Command::Tenant(TenantCmd::Show {
             team: s("team").ok_or_else(|| "tenant.show requires `team`".to_string())?,
         }),

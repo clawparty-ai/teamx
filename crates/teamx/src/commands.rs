@@ -1,4 +1,6 @@
-use crate::cli::{CertCmd, Cli, Command, CreditCmd, DirectCmd, DiscoveryCmd, GoalCmd, ImGatewayCmd, IssuedCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, PlatformCmd, PlatformUserCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TenantCmd, TcoinCmd, TunnelCmd, UserCmd};
+use crate::cli::{CertCmd, Cli, Command, DirectCmd, GoalCmd, ImGatewayCmd, LocalCmd, LoopxCmd, MemberCmd, NodeCmd, ProxyCmd, RoleCmd, RoutesCmd, TeamCmd, TeamfileCmd, TunnelCmd, UserCmd};
+#[cfg(feature = "enterprise")]
+use crate::cli::{CreditCmd, DiscoveryCmd, IssuedCmd, PlatformCmd, PlatformUserCmd, TenantCmd, TcoinCmd};
 use crate::db::{self, DEFAULT_ROLES};
 use crate::events;
 use crate::loopx;
@@ -567,6 +569,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 cmd_team_clone(conn, name, team.as_deref(), server_url.as_deref(), *yes, session, None)?
             }
         },
+        #[cfg(feature = "enterprise")]
         Command::Platform(p) => match p {
             PlatformCmd::BootstrapToken { ttl } => {
                 crate::platform::issue_bootstrap_token(conn, *ttl).map_err(AppError)?
@@ -611,10 +614,12 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 "audit": crate::platform::audit_log(conn, limit.unwrap_or(50)).map_err(AppError)?,
             }),
         },
+        #[cfg(feature = "enterprise")]
         Command::Site(_) => {
             // `teamx site` 自带服务器（同 platform console），不进 DB 分发器。
             return err("`site` runs its own server; it must not reach the DB dispatcher");
         }
+        #[cfg(feature = "enterprise")]
         Command::Credit(c) => match c {
             CreditCmd::Refresh { team, all, kubeconfig, context, session } => {
                 let _ = tcoin_actor(conn, session)?;
@@ -654,6 +659,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
             }
         },
+        #[cfg(feature = "enterprise")]
         Command::Tcoin(t) => match t {
             TcoinCmd::Grant { team, amount, reason, session } => {
                 // 发行方是**平台**：优先按 platform 用户会话解析 actor（平台库只有用户、没有 member 行），
@@ -693,6 +699,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 .map_err(AppError)?
             }
         },
+        #[cfg(feature = "enterprise")]
         Command::Discovery(d) => match d {
             DiscoveryCmd::Directory { query, sort, joinable, page, per_page } => {
                 crate::discovery::directory(
@@ -762,6 +769,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                     .map_err(AppError)?
             }
         },
+        #[cfg(feature = "enterprise")]
         Command::Issued(i) => match i {
             IssuedCmd::List { team, ca } => json!({
                 "ok": true,
@@ -772,6 +780,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 json!({ "ok": true, "serial": serial, "revoked": revoked })
             }
         },
+        #[cfg(feature = "enterprise")]
         Command::Tenant(t) => match t {
             TenantCmd::Create { team, server_image, kubeconfig, context, owner_user } => {
                 let mut out = crate::provision::create_tenant(
@@ -847,6 +856,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             }
         },
         Command::Node(n) => cmd_node(conn, n)?,
+        #[cfg(feature = "enterprise")]
         Command::Cloud(c) => crate::cloud::run(conn, c).map_err(AppError)?,
         Command::Goal(g) => match g {
             GoalCmd::Set { title, body, session, team } => {
@@ -933,6 +943,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             return err("`teamx serve` must be run as its own process")
         }
         // `teamx ui` is a long-running dashboard process (handled in main).
+        #[cfg(feature = "enterprise")]
         Command::Ui(_) => {
             return err("`teamx ui` must be run as its own process")
         }
@@ -1086,6 +1097,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
         // writes to the local DB (resolving member_id from the session key);
         // `activity query` reads from it. Network mode goes through the RPC
         // dispatch in serve.rs instead.
+        #[cfg(feature = "enterprise")]
         Command::Activity(cmd) => match cmd {
             crate::cli::ActivityCmd::Push { data, session } => {
                 let rows: Vec<crate::activity::ActivityRow> = serde_json::from_str(data)
@@ -1152,6 +1164,7 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
             },
         },
         // Model cost pricing (enterprise): set/list per-model token prices.
+        #[cfg(feature = "enterprise")]
         Command::Model(m) => match m {
             crate::cli::ModelCmd::Set {
                 model,
@@ -1507,6 +1520,7 @@ pub fn nudge_idle_teams(
 }
 
 /// The machine hostname (best-effort; fallback "unknown").
+#[cfg(feature = "enterprise")]
 fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
@@ -1514,6 +1528,7 @@ fn hostname() -> String {
 }
 
 /// Split a `<provider>/<model>` reference into its two parts.
+#[cfg(feature = "enterprise")]
 fn split_model_ref(model: &str) -> Result<(String, String)> {
     let (provider_id, model_id) = model
         .split_once('/')

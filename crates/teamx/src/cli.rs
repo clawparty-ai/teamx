@@ -62,33 +62,40 @@ pub enum Command {
     /// Platform plane (design/014 §6/§7): one-time bootstrap token, platform
     /// admins, platform audit (independent of tenant ledgers)
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Platform(PlatformCmd),
 
     /// Multi-tenant platform (design/014): one tenant = one team + one namespace + one independent CA
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Tenant(TenantCmd),
 
     /// Certificate issuance ledger O-2 (design/014 §4): list/revoke issued certs
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Issued(IssuedCmd),
 
     /// Team discovery & joining (design/015): public directory, visibility/policy,
     /// join requests (apply / withdraw / owner decide)
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Discovery(DiscoveryCmd),
 
     /// TCoin (design/017): platform ledger (grant / allocate / settle / reverse),
     /// balances and entries
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Tcoin(TcoinCmd),
 
     /// credit (design/018): derived team credit score (refresh / show)
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Credit(CreditCmd),
 
     /// Teamx Cloud website (design/019): single-page site + platform console, embedded in
     /// this binary. Serves `/` (site), `/assets/*`, and `/console` (console; its /api/* stays
     /// at the root so Login is an in-site relative path).
+#[cfg(feature = "enterprise")]
     Site(SiteCmd),
 
     /// Cloud-host provisioning (design/006): invite-time / on-demand node provisioning
@@ -99,6 +106,7 @@ pub enum Command {
     /// One entry point for everything you do against teamx cloud — login, teams,
     /// tenants, members, join requests, AWS nodes and bootstrap.
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Cloud(CloudCmd),
 
     /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
@@ -257,13 +265,16 @@ pub enum Command {
 
     /// Member activity analytics (enterprise): push/query activity rows
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Activity(ActivityCmd),
 
     /// Model cost pricing (enterprise): set/list per-model token prices (USD/1M)
     #[command(subcommand)]
+#[cfg(feature = "enterprise")]
     Model(ModelCmd),
 
     /// Web dashboard (enterprise): activity analytics UI (HTTPS + token, owner only)
+#[cfg(feature = "enterprise")]
     Ui(UiCmd),
 
     /// Member web console (local, view-only): a workspace-scoped browser
@@ -431,6 +442,7 @@ pub enum Tun0Cmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum ActivityCmd {
     /// Push a batch of activity rows into the local database (V1 mode)
     Push {
@@ -477,6 +489,7 @@ pub enum ActivityQueryCmd {
 
 /// `teamx model` subcommands (enterprise cost pricing).
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum ModelCmd {
     /// Set (or override) a model's token price. `<model>` is `<provider>/<model>`.
     Set {
@@ -513,6 +526,7 @@ pub enum ModelCmd {
 }
 
 #[derive(Args, Debug, Clone)]
+#[cfg(feature = "enterprise")]
 pub struct UiCmd {
     /// bind address
     #[arg(long, default_value = "127.0.0.1")]
@@ -2374,6 +2388,7 @@ pub enum PlatformUserCmd {
 
 /// 平台面（design/014 §6/§7）。
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum PlatformCmd {
     /// Issue a one-time bootstrap token. The plaintext is printed **once**;
     /// the DB stores only its SHA-256 hash. Redeem it to bind the first
@@ -2438,6 +2453,7 @@ pub enum PlatformCmd {
 
 /// Teamx Cloud 官网（design/019）：静态站点内嵌二进制，`teamx site` 启动。
 #[derive(Args, Debug, Clone)]
+#[cfg(feature = "enterprise")]
 pub struct SiteCmd {
     /// bind address；**未提供证书时强制只监听 127.0.0.1**（SD-12）
     #[arg(long, default_value = "127.0.0.1")]
@@ -2472,6 +2488,7 @@ pub struct PlatformConsoleCmd {
 /// + one independent CA. Executor = the platform (kubectl + tenant CA).
 // credit（design/018）。
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum CreditCmd {
     /// Refresh the materialized team-credit snapshot (pulls tenant stats over the service lane)
     Refresh {
@@ -2501,6 +2518,7 @@ pub enum CreditCmd {
 
 // TCoin（design/017）。
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum TcoinCmd {
     /// Grant (issue) TCoin to a tenant account — platform only (v1: no payment)
     Grant {
@@ -2561,6 +2579,7 @@ pub enum TcoinCmd {
 
 // 团队发现与加入（design/015）。
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum DiscoveryCmd {
     /// List public teams (platform DB only; no tenant server calls)
     Directory {
@@ -2640,6 +2659,7 @@ pub enum DiscoveryCmd {
 
 // 签发台账 O-2（design/014 §4）。
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum IssuedCmd {
     /// List issued certificates (optionally filtered by team / CA)
     List {
@@ -2656,6 +2676,7 @@ pub enum IssuedCmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum TenantCmd {
     /// Create a tenant: generate its own CA, sign the server cert, apply
     /// namespace + CA Secret + server PVC/Deployment (design/014 §2/§3/§4)
@@ -2910,6 +2931,7 @@ pub enum NodeCmd {
 // ===========================================================================
 
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "enterprise")]
 pub enum CloudCmd {
     /// Log in to teamx cloud (stores a session token under ~/.teamx/cloud.json)
     Login {

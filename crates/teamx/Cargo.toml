@@ -55,7 +55,8 @@ rfd = { version = "0.17", optional = true, default-features = false }
 lark-channel = { version = "0.6.0", default-features = false, features = ["websocket"] }
 
 [features]
-default = []
+default = ["enterprise"]
+enterprise = []
 gui = ["dep:tray-icon", "dep:tao", "dep:image", "dep:eframe", "dep:egui", "dep:rfd"]
 
 [[bin]]
