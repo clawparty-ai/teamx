@@ -349,16 +349,20 @@ pub fn joined_teams(conn: &Connection, user_id: &str) -> Result<Vec<Value>, Stri
     // 取每个团队**最新**的一条（离开后状态变 left，就不再出现）。
     let mut stmt = conn
         .prepare(
-            "SELECT r.team_id, COALESCE(t.name,''), COALESCE(r.member_id,''), COALESCE(r.letter,''),
-                    COALESCE(r.pod_state,''), r.created_at, r.decided_at
-             FROM team_join_requests r
-             LEFT JOIN teams t ON t.id = r.team_id
-             WHERE r.user_id = ?1 AND r.status = 'approved'
-               AND r.created_at = (
-                 SELECT MAX(r2.created_at) FROM team_join_requests r2
-                 WHERE r2.team_id = r.team_id AND r2.user_id = r.user_id
-               )
-             ORDER BY r.decided_at DESC, r.created_at DESC",
+            "SELECT team_id, team_name, member_id, letter, pod_state, requested_at, joined_at FROM (
+               SELECT r.team_id AS team_id, COALESCE(t.name,'') AS team_name,
+                      COALESCE(r.member_id,'') AS member_id, COALESCE(r.letter,'') AS letter,
+                      COALESCE(r.pod_state,'') AS pod_state,
+                      r.created_at AS requested_at, r.decided_at AS joined_at, r.status AS status,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY r.team_id
+                        ORDER BY r.created_at DESC, r.decided_at DESC, r.id DESC
+                      ) AS rn
+               FROM team_join_requests r
+               LEFT JOIN teams t ON t.id = r.team_id
+               WHERE r.user_id = ?1
+             ) WHERE rn = 1 AND status = 'approved'
+             ORDER BY joined_at DESC, requested_at DESC",
         )
         .map_err(|e| format!("db: {e}"))?;
     let rows = stmt
@@ -563,6 +567,31 @@ mod tests {
     fn seed_user(c: &mut Connection, id: &str, name: &str) {
         crate::platform::create_user(c, name, "password-1").unwrap();
         c.execute("UPDATE platform_users SET id = ?1 WHERE display_name = ?2", params![id, name]).unwrap();
+    }
+
+    #[test]
+    fn joined_teams_dedupes_one_row_per_team_even_with_equal_timestamps() {
+        // 真机形状：迁移批量写入多条 approved 且 created_at 完全相同
+        // （旧实现用 `created_at = MAX(created_at)` 会因并列全部命中 → 列表重复）。
+        let c = db();
+        seed_team(&c, "t1", "private", "invite_only");
+        seed_team(&c, "t2", "private", "invite_only");
+        for (id, mid) in [("r1", "m1"), ("r2", "m2"), ("r3", "m3")] {
+            c.execute(
+                "INSERT INTO team_join_requests (id, team_id, user_id, status, message, created_at, decided_at, member_id)
+                 VALUES (?1,'t1','u1','approved',NULL,'2026-09-26T00:00:00+00:00','2026-09-26T00:00:00+00:00',?2)",
+                params![id, mid],
+            ).unwrap();
+        }
+        c.execute(
+            "INSERT INTO team_join_requests (id, team_id, user_id, status, message, created_at, decided_at, member_id)
+             VALUES ('r4','t2','u1','approved',NULL,'2026-09-26T00:00:00+00:00','2026-09-26T00:00:00+00:00','m4')",
+            [],
+        ).unwrap();
+        let j = joined_teams(&c, "u1").unwrap();
+        assert_eq!(j.len(), 2, "每个团队只出现一次：{j:?}");
+        let teams: Vec<&str> = j.iter().filter_map(|t| t["team_id"].as_str()).collect();
+        assert!(teams.contains(&"t1") && teams.contains(&"t2"), "{teams:?}");
     }
 
     #[test]

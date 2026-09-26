@@ -95,6 +95,12 @@ pub enum Command {
     #[command(subcommand)]
     Node(NodeCmd),
 
+    /// teamx cloud (design/023): unified operations for platform / tenants / nodes.
+    /// One entry point for everything you do against teamx cloud — login, teams,
+    /// tenants, members, join requests, AWS nodes and bootstrap.
+    #[command(subcommand)]
+    Cloud(CloudCmd),
+
     /// Publish a generic event (progress/decision/update/blocked/resumed/achieved/refine/start/activity)
     Publish {
         /// event type
@@ -2874,5 +2880,436 @@ pub enum NodeCmd {
         /// CA file pushed to nodes
         #[arg(long)]
         ca_file: Option<PathBuf>,
+    },
+}
+
+// ===========================================================================
+// teamx cloud (design/023): unified command tree for platform / tenants / nodes.
+// ===========================================================================
+
+#[derive(Subcommand, Debug)]
+pub enum CloudCmd {
+    /// Log in to teamx cloud (stores a session token under ~/.teamx/cloud.json)
+    Login {
+        /// cloud base URL (default: $TEAMX_CLOUD_URL or https://teamx.beer)
+        #[arg(long)]
+        server: Option<String>,
+        /// platform user name (e.g. caishu)
+        #[arg(long)]
+        name: Option<String>,
+        /// password (omit to read from $TEAMX_CLOUD_PASSWORD or prompt)
+        #[arg(long)]
+        password: Option<String>,
+        /// reuse an existing session token instead of logging in
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Log out: forget the stored token (for one server, or --all)
+    Logout {
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show the logged-in platform user
+    Whoami {
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Show cloud status (login state, tenant/node counts)
+    Status {
+        #[arg(long)]
+        server: Option<String>,
+    },
+
+    /// Platform users (persons)
+    #[command(subcommand)]
+    User(CloudUserCmd),
+
+    /// Platform teams (metadata)
+    #[command(subcommand)]
+    Team(CloudTeamCmd),
+
+    /// Tenants (a team's runtime environment: namespace/PVC/server/CA/members)
+    #[command(subcommand)]
+    Tenant(CloudTenantCmd),
+
+    /// Join requests (incl. migration backfill)
+    #[command(subcommand)]
+    Join(CloudJoinCmd),
+
+    /// AWS cloud hosts (delegates to the existing `node` commands)
+    #[command(subcommand)]
+    Node(NodeCmd),
+
+    /// Platform bootstrap (one-time tokens / admins)
+    #[command(subcommand)]
+    Bootstrap(CloudBootstrapCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudUserCmd {
+    /// List platform users (never prints password hashes)
+    List,
+    /// Create a user (admin sets the initial password)
+    Create {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        password: String,
+        /// tenant quota (0..=100)
+        #[arg(long)]
+        quota: Option<u32>,
+    },
+    /// Set (reset) a user's password (revokes all their sessions)
+    Passwd {
+        #[arg(value_name = "USER")]
+        user: String,
+        #[arg(long)]
+        password: String,
+    },
+    /// Disable a user (rejects login + sessions)
+    Disable {
+        #[arg(value_name = "USER")]
+        user: String,
+    },
+    /// Re-enable a disabled user
+    Enable {
+        #[arg(value_name = "USER")]
+        user: String,
+    },
+    /// Set a user's tenant quota (0..=100)
+    Quota {
+        #[arg(value_name = "USER")]
+        user: String,
+        #[arg(value_name = "N")]
+        n: u32,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudTeamCmd {
+    /// List platform teams
+    List {
+        /// filter by state (active/destroyed/completed/archived/forming)
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// Show one team row (+ its tenant if any)
+    Show {
+        #[arg(value_name = "TEAM")]
+        team: String,
+    },
+    /// Create a platform team row (no tenant yet)
+    Create {
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// owning platform user (name or id)
+        #[arg(long)]
+        owner: Option<String>,
+        /// visibility: private|public
+        #[arg(long)]
+        visibility: Option<String>,
+        /// join policy: invite_only|open_request
+        #[arg(long)]
+        join_policy: Option<String>,
+    },
+    /// Rename a team
+    Rename {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(value_name = "NEW_NAME")]
+        new_name: String,
+    },
+    /// Move a team to a different owning platform user
+    SetOwner {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// platform user name or id
+        #[arg(long)]
+        user: String,
+    },
+    /// Delete a platform team row (does not destroy the tenant)
+    Destroy {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudTenantCmd {
+    /// List tenants
+    List,
+    /// Show one tenant
+    Show {
+        #[arg(value_name = "TEAM")]
+        team: String,
+    },
+    /// Create a tenant: CA + server cert + namespace + PVC + Deployment
+    Create {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// platform user id owning the tenant (quota-checked)
+        #[arg(long)]
+        owner_user: Option<String>,
+        /// server PVC size (default: $TEAMX_TENANT_PVC_SIZE or 20Gi)
+        #[arg(long)]
+        pvc_size: Option<String>,
+        /// server image (default: $TEAMX_SERVER_IMAGE)
+        #[arg(long)]
+        server_image: Option<String>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Start a tenant (scale server to 1; optionally provision members)
+    Start {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// which members to provision: none (default) | owner | all
+        #[arg(long, default_value = "none")]
+        members: String,
+        #[arg(long, default_value_t = 30)]
+        workspace_gib: u32,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Stop a tenant (delete member pods; server optionally scaled to 0)
+    Stop {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// keep the tenant server running (default: keep)
+        #[arg(long, default_value_t = true)]
+        keep_server: bool,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Show a tenant's runtime status (server + member pods)
+    Status {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Destroy a tenant (delete namespace + tenant row; CA Secret = revoke)
+    Destroy {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Set (or clear) the tenant server's reachable endpoint
+    Endpoint {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// endpoint URL (empty clears)
+        #[arg(long, default_value = "")]
+        set: String,
+    },
+    /// CA operations
+    #[command(subcommand)]
+    Ca(CloudCaCmd),
+    /// Tenant members (seats)
+    #[command(subcommand)]
+    Member(CloudMemberCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudCaCmd {
+    /// Show the tenant CA fingerprint (platform row vs live Secret)
+    Show {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Import an external CA into a tenant (re-sign server cert; reuse old letters)
+    Import {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// CA certificate PEM file
+        #[arg(long)]
+        ca_cert: PathBuf,
+        /// CA private key PEM file
+        #[arg(long)]
+        ca_key: PathBuf,
+        /// extra SAN (repeatable); tenant subdomain is added from --domain
+        #[arg(long)]
+        domain: Option<String>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// CA audit (O-2)
+    Audit {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        server_url: Option<String>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudMemberCmd {
+    /// List a tenant's members (seats)
+    List {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Create a seat + issue an invitation letter (service lane)
+    Add {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// display name for the new seat
+        #[arg(long)]
+        name: String,
+        /// role: description (e.g. "reviewer: 评审")
+        #[arg(long)]
+        role: Option<String>,
+        /// bind to a platform user id
+        #[arg(long)]
+        user: Option<String>,
+        /// auto-approve the seat
+        #[arg(long)]
+        auto_approve: bool,
+        /// write the letter to this file (else print)
+        #[arg(long)]
+        save: Option<PathBuf>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Re-issue / print a member's invitation letter (same CA, no new seat)
+    Letter {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        server_url: String,
+        #[arg(long)]
+        save: Option<PathBuf>,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Provision a member seat as a cloud member Pod (PVC + Secret + Pod)
+    Provision {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// existing seat id
+        #[arg(long)]
+        member: Option<String>,
+        /// every seat of the team
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value_t = 30)]
+        workspace_gib: u32,
+        #[arg(long)]
+        kubeconfig: Option<PathBuf>,
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        session: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudJoinCmd {
+    /// List join requests of a team
+    List {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Backfill an approved join request (e.g. for a migrated seat)
+    Import {
+        #[arg(value_name = "TEAM")]
+        team: String,
+        /// platform user id
+        #[arg(long)]
+        user: String,
+        /// seat (member) id in the tenant
+        #[arg(long)]
+        member: String,
+        #[arg(long, default_value = "approved")]
+        status: String,
+        #[arg(long, default_value = "migration")]
+        decided_by: String,
+    },
+    /// Approve a pending join request (owner)
+    Approve {
+        #[arg(value_name = "REQ_ID")]
+        id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Deny a pending join request (owner)
+    Deny {
+        #[arg(value_name = "REQ_ID")]
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CloudBootstrapCmd {
+    /// Issue a one-time bootstrap token
+    Token {
+        /// TTL in seconds (min 60)
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
+    /// Redeem a bootstrap token and bind the first platform admin
+    Redeem {
+        #[arg(value_name = "TOKEN")]
+        token: String,
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List platform admins
+    Admins,
+    /// Revoke a platform admin (cannot revoke the last one)
+    AdminRevoke {
+        #[arg(value_name = "USER")]
+        user: String,
     },
 }

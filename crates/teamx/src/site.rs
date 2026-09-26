@@ -46,6 +46,9 @@ mod tests {
             "/console",             // Login 站内相对路径（SD-11）
             "function setText(",    // 空安全赋值：杜绝对"稍后才由模板创建的元素"直接赋值而抛错
             "renderSlides();",      // 轮播必须渲染（曾因上一行抛错而整块空白）
+            "每条谚语之间都有图",    // 轮播严格交替：谚语 ↔ 插画（SD-25）
+            "更快 · 更强",           // Values 合并为 4 卡（更快+更强 合一）
+            "Faster · Stronger",
         ] {
             assert!(INDEX_HTML.contains(needle), "官网缺少内容: {needle}");
         }

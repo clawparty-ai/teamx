@@ -775,53 +775,8 @@ pub fn execute(cli: &Cli, conn: &mut Connection) -> Result<Value> {
                 }
             }
         },
-        Command::Node(n) => match n {
-            NodeCmd::ProvisionCloud { team, member, all, workspace_gib, kubeconfig, context, session } => {
-                // 平台会话优先（平台库没有 member 行）；与 tcoin/credit 同款解析
-                let _ = tcoin_actor(conn, session)?;
-                let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
-                let cx = context.as_deref();
-                if *all {
-                    let seats = crate::provision::team_seat_ids(conn, team).map_err(AppError)?;
-                    if seats.is_empty() {
-                        return Err(AppError(format!("team {team} 没有可铺的席位")));
-                    }
-                    let mut items = Vec::new();
-                    let (mut ok_n, mut failed) = (0usize, 0usize);
-                    for s in &seats {
-                        match crate::provision::provision_cloud_member(
-                            conn, team, s, kc.as_deref(), cx, *workspace_gib, session,
-                        ) {
-                            Ok(_) => { ok_n += 1; items.push(json!({"member": s, "ok": true})); }
-                            Err(e) => { failed += 1; items.push(json!({"member": s, "ok": false, "error": e})); }
-                        }
-                    }
-                    json!({"ok": failed == 0, "team": team, "count": items.len(),
-                           "provisioned": ok_n, "failed": failed, "items": items})
-                } else {
-                    let m = member.clone().ok_or_else(|| {
-                        AppError("provision-cloud 需要 --member <id> 或 --all".to_string())
-                    })?;
-                    crate::provision::provision_cloud_member(
-                        conn, team, &m, kc.as_deref(), cx, *workspace_gib, session,
-                    )
-                    .map_err(AppError)?
-                }
-            }
-            NodeCmd::Provision { member, provider, region, size, ttl, os_user, session, team } => {
-                cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, os_user.as_deref(), session, team.as_deref())?
-            }
-            NodeCmd::List { session, team } => cmd_node_list(conn, session, team.as_deref())?,
-            NodeCmd::Status { node_id, session, team } => cmd_node_status(conn, node_id, session, team.as_deref())?,
-            NodeCmd::Ssh { node_id, session, team } => cmd_node_ssh(conn, node_id, session, team.as_deref())?,
-            NodeCmd::Stop { node_id, session, team } => cmd_node_set_power(conn, node_id, false, session, team.as_deref())?,
-            NodeCmd::Start { node_id, session, team } => cmd_node_set_power(conn, node_id, true, session, team.as_deref())?,
-            NodeCmd::Destroy { node_id, session, team } => cmd_node_destroy(conn, node_id, session, team.as_deref())?,
-            NodeCmd::AutoStop { idle, yes } => cmd_node_auto_stop(conn, idle.as_deref(), *yes)?,
-            NodeCmd::RunJobs { key_dir, server_url, team_repo_url, ca_file } => {
-                cmd_node_run_jobs(conn, key_dir.as_deref(), server_url.as_deref(), team_repo_url.as_deref(), ca_file.as_deref())?
-            }
-        },
+        Command::Node(n) => cmd_node(conn, n)?,
+        Command::Cloud(c) => crate::cloud::run(conn, c).map_err(AppError)?,
         Command::Goal(g) => match g {
             GoalCmd::Set { title, body, session, team } => {
                 cmd_goal_set(conn, title, body.as_deref(), session, team.as_deref())?
@@ -1649,8 +1604,8 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
             //   --mode broadcast          -> one instance per role member
             //   --mode direct without assignee -> error
             let assign_mode = match (mode.as_deref(), assignee.is_some(), role.is_some()) {
-                (Some("broadcast"), _, true) => "broadcast".to_string(),
-                (Some("bid"), _, true) => "bid".to_string(),
+                (Some("broadcast"), _, _) => "broadcast".to_string(), // role 可空 = 广播全体在册成员
+                (Some("bid"), _, _) => "bid".to_string(),             // role 可空 = 开放池（全队先抢先得）
                 (Some("direct"), true, _) => "direct".to_string(),
                 (Some("direct"), false, _) => {
                     return err("task create --mode direct requires --assignee <member_id>")
@@ -1661,7 +1616,7 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
                 (None, true, _) => "direct".to_string(),
                 (None, false, true) => "bid".to_string(), // --role defaults to bid
                 (None, false, false) => {
-                    return err("task create requires --assignee <member_id> or --role <role>")
+                    return err("task create requires --assignee <member_id>, --role <role>, or --mode bid|broadcast")
                 }
             };
 
@@ -1674,15 +1629,20 @@ fn cmd_task(conn: &mut Connection, cmd: &crate::cli::TaskCmd) -> Result<Value> {
             match assign_mode.as_str() {
                 "broadcast" => {
                     let members = members_for_team(conn, &team.id).map_err(|e| AppError(e.to_string()))?;
-                    let role_members: Vec<String> = members
+                    // role 为空 → 广播给全体在册成员；否则仅该角色成员。
+                    let targets: Vec<String> = members
                         .iter()
-                        .filter(|m| m.state != "left" && m.state != "denied" && m.role.as_deref() == role_key)
+                        .filter(|m| m.state != "left" && m.state != "denied")
+                        .filter(|m| role_key.map(|r| m.role.as_deref() == Some(r)).unwrap_or(true))
                         .map(|m| m.id.clone())
                         .collect();
-                    if role_members.is_empty() {
-                        return err(format!("no active members with role `{role_key:?}` for broadcast"));
+                    if targets.is_empty() {
+                        return err(match role_key {
+                            Some(r) => format!("no active members with role `{r}` for broadcast"),
+                            None => "broadcast: no active members".to_string(),
+                        });
                     }
-                    for mid in role_members {
+                    for mid in targets {
                         create_targets.push((mid.clone(), None));
                     }
                 }
@@ -7101,6 +7061,58 @@ fn cmd_provision_seat(
 }
 
 /// `teamx node provision --member <id>`（owner/lead）。复用优先于新建。
+#[allow(clippy::too_many_arguments)]
+/// `teamx node …` dispatch (shared by `Command::Node` and `teamx cloud node …`).
+pub(crate) fn cmd_node(conn: &mut Connection, n: &NodeCmd) -> Result<Value> {
+    match n {
+        NodeCmd::ProvisionCloud { team, member, all, workspace_gib, kubeconfig, context, session } => {
+            // 平台会话优先（平台库没有 member 行）；与 tcoin/credit 同款解析
+            let _ = tcoin_actor(conn, session)?;
+            let kc = kubeconfig.as_ref().map(|p| p.to_string_lossy().to_string());
+            let cx = context.as_deref();
+            if *all {
+                let seats = crate::provision::team_seat_ids(conn, team).map_err(AppError)?;
+                if seats.is_empty() {
+                    return Err(AppError(format!("team {team} 没有可铺的席位")));
+                }
+                let mut items = Vec::new();
+                let (mut ok_n, mut failed) = (0usize, 0usize);
+                for s in &seats {
+                    match crate::provision::provision_cloud_member(
+                        conn, team, s, kc.as_deref(), cx, *workspace_gib, session,
+                    ) {
+                        Ok(_) => { ok_n += 1; items.push(json!({"member": s, "ok": true})); }
+                        Err(e) => { failed += 1; items.push(json!({"member": s, "ok": false, "error": e})); }
+                    }
+                }
+                Ok(json!({"ok": failed == 0, "team": team, "count": items.len(),
+                       "provisioned": ok_n, "failed": failed, "items": items}))
+            } else {
+                let m = member.clone().ok_or_else(|| {
+                    AppError("provision-cloud 需要 --member <id> 或 --all".to_string())
+                })?;
+                crate::provision::provision_cloud_member(
+                    conn, team, &m, kc.as_deref(), cx, *workspace_gib, session,
+                )
+                .map_err(AppError)
+            }
+        }
+        NodeCmd::Provision { member, provider, region, size, ttl, os_user, session, team } => {
+            cmd_node_provision(conn, member, provider.as_deref(), region.as_deref(), size.as_deref(), *ttl, os_user.as_deref(), session, team.as_deref())
+        }
+        NodeCmd::List { session, team } => cmd_node_list(conn, session, team.as_deref()),
+        NodeCmd::Status { node_id, session, team } => cmd_node_status(conn, node_id, session, team.as_deref()),
+        NodeCmd::Ssh { node_id, session, team } => cmd_node_ssh(conn, node_id, session, team.as_deref()),
+        NodeCmd::Stop { node_id, session, team } => cmd_node_set_power(conn, node_id, false, session, team.as_deref()),
+        NodeCmd::Start { node_id, session, team } => cmd_node_set_power(conn, node_id, true, session, team.as_deref()),
+        NodeCmd::Destroy { node_id, session, team } => cmd_node_destroy(conn, node_id, session, team.as_deref()),
+        NodeCmd::AutoStop { idle, yes } => cmd_node_auto_stop(conn, idle.as_deref(), *yes),
+        NodeCmd::RunJobs { key_dir, server_url, team_repo_url, ca_file } => {
+            cmd_node_run_jobs(conn, key_dir.as_deref(), server_url.as_deref(), team_repo_url.as_deref(), ca_file.as_deref())
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_node_provision(
     conn: &mut Connection,

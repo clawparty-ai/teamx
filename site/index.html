@@ -229,8 +229,7 @@ const I18N = {
       "一个头脑好，两个更好"
     ],
     values:[
-      ["更快","人做判断，AI 做产出 —— 两边同时动，同一个目标并行推进，不必排队。"],
-      ["更强","不论普通模型还是强大模型，多个放在一起，都会更强。"],
+      ["更快 · 更强","人做判断，AI 做产出 —— 两边同时动，同一个目标并行推进，不必排队；不论普通还是强大模型，多个放在一起都会更强。"],
       ["可控","不是事事审批：人在必要环节参与。管得住，也不拖慢。"],
       ["性价比之道","AI 时代新技术层出不穷，最快用上「低成本 + 高能力」的技术与产品，才是真正的性价比。"],
       ["随处可用","桌面：用你自己的机器与模型；云端：一个浏览器就够；手机：在你惯用的 IM（飞书）里「批准 / 拒绝 / 验收」。同一张邀请函，同一本台账 —— 设备换了，团队不变。"]
@@ -263,8 +262,7 @@ const I18N = {
       "One mind is good, two are better"
     ],
     values:[
-      ["Faster","Humans decide, AIs deliver — both move at once, parallel toward one goal."],
-      ["Stronger","Ordinary or frontier, models get stronger when several work together."],
+      ["Faster · Stronger","Humans decide, AIs deliver — both move at once toward one goal; ordinary or frontier, models get stronger when several work together."],
       ["Under control","Not gatekeeping everything: humans step in at the moments that matter."],
       ["Value by design","New tech never stops coming; the real win is being fastest to use what is cheap and capable."],
       ["Anywhere","Desktop for your own machine and models; cloud when a browser is enough; mobile through the IM you already use (Feishu) to approve, reject and verify. One invitation, one ledger — change devices, keep the team."]
@@ -331,20 +329,23 @@ function fallbackCopy(text, done){
   ta.select(); try{ document.execCommand("copy"); done(); }catch(e){} ta.remove();
 }
 
-/* ================= 轮播（乱序：谚语 ↔ 插画交替；首末固定） ================= */
+/* ================= 轮播（乱序：谚语 ↔ 插画，严格交替；首末固定） ================= */
 let slides=[], cur=0, timer=null;
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
 function buildSlides(){
   const p = shuffle(PROVERBS);
-  const illos = shuffle(ILLOS.slice(1));      // 首屏「分享目标」固定，不参与乱序
-  const mid = [];
-  // 交替编排：谚语 → 插画 → 谚语 …（同语言谚语因此永不相邻，满足 SD-25）
-  while(p.length || illos.length){
-    if(p.length)     mid.push({kind:"quote", p:p.shift()});
-    if(illos.length) mid.push({kind:"img",   illo:illos.shift()});
+  // 每条谚语后必接一张图（插画不足则循环复用）—— 保证「每条谚语之间都有图」。
+  const pool = shuffle(ILLOS);
+  let k = 0;
+  const nextIllo = () => pool[(k++) % pool.length];
+  const out = [{kind:"img", illo:ILLOS[0]}];   // 首屏固定：分享目标
+  for(const q of p){
+    out.push({kind:"quote", p:q});
+    out.push({kind:"img", illo:nextIllo()});   // 每条谚语之间都有图
   }
-  return [{kind:"img", illo:ILLOS[0]}, ...mid, {kind:"final"}];
+  out.push({kind:"final"});
+  return out;
 }
 function renderSlides(){
   const box=document.getElementById("slides"), dots=document.getElementById("dots");

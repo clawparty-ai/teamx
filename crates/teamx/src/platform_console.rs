@@ -2797,6 +2797,10 @@ async function openMineDetail(id,kind,el){
         <div class="pc-sum">${esc(det.public_summary||'')}</div>
       </div>
       <div class="panel">
+        <h2>我的工作区 <span class="tag">云 member console</span></h2>
+        <div id="myConsole_${short}" class="muted">加载中…</div>
+      </div>
+      <div class="panel">
         <h2>我的邀请函 <span class="tag">导入本地即成为成员</span></h2>
         ${t.letter_available?`<button class="btn btn-sm" onclick="copyText(${JSON.stringify(t.letter||'')})">复制邀请函</button>`:'<div class="muted">邀请函不可用（可能未生成）</div>'}
       </div>
@@ -2809,6 +2813,7 @@ async function openMineDetail(id,kind,el){
         <button class="btn btn-sm btn-danger" onclick="leaveTeam('${esc(id)}','${esc(t.team_name||'')}')">离开团队</button>
         <div class="muted" style="margin-top:6px">离开会释放座位并回收工作区（PVC 保留 7 天），之后可再次申请</div>
       </div>`;
+    loadMyConsole(id,short,ws);
   }
 }
 
@@ -2949,6 +2954,18 @@ async function openMyConsole(team){
   const r=await jget('/api/my/team-console/'+encodeURIComponent(team));
   if(!r.ok){alert('无法打开：'+errText(r));return}
   window.open(r.url,'_blank','noopener');
+}
+// 「我加入的」详情里渲染**我自己的**云 member console 链接。
+// 成员看不了名册（roster 仅 owner），但 team-console 接口对本席位开放。
+async function loadMyConsole(id,short,ws){
+  const el=document.getElementById('myConsole_'+short); if(!el)return;
+  if(ws==='none'){el.innerHTML='<span class="muted">当前没有云工作区（Pod 未铺或已回收）</span>';return}
+  try{
+    const r=await jget('/api/my/team-console/'+encodeURIComponent(id));
+    if(!r.ok){el.innerHTML='<span class="muted">不可用：'+esc(errText(r))+'</span>';return}
+    el.innerHTML=`<a class="link" href="${esc(r.url)}" target="_blank" rel="noopener">打开 Teamx Console ↗</a>
+      <div class="muted" style="margin-top:6px">席位 <code>${esc((r.member_id||'').slice(0,12))}</code> · 工作区 <b>${esc(ws)}</b></div>`;
+  }catch(e){el.innerHTML='<span class="muted">加载失败</span>'}
 }
 async function loadRoster(id){
   const short=id.slice(0,8); const el=document.getElementById('roster_'+short);
@@ -3265,6 +3282,7 @@ mod tests {
             "list-head", "mineCount", "openCreateForm", "openLetters", "mineDetail", "创建团队", "加入团队",
             "toggleInvite", "invBox_",  // 团队成员卡上的「邀请成员」入口
             "loadOwnerLetter", "ownerLetter_",
+            "loadMyConsole", "myConsole_",  // 「我加入的」详情：本人云 console 链接
             "function esc(", "esc(t.team_name", "esc(t.namespace", "esc(t.server_image"] {
             assert!(INDEX_HTML.contains(needle), "missing {needle}");
         }

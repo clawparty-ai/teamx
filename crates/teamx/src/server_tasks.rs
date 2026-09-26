@@ -159,40 +159,49 @@ fn create(conn: &mut Connection, team_id: &str, member_id: &str, args: &Value) -
     let explicit_id = s(args, "id").map(str::to_string);
 
     let mode = match (mode, assignee.is_some(), role.is_some()) {
-        ("", false, false) => return Err("task.create requires --assignee <member_id> or --role <role>".to_string()),
+        ("", false, false) => return Err("task.create requires --assignee <member_id>, --role <role>, or --mode bid|broadcast".to_string()),
         ("", true, _) => "direct",
         ("", false, true) => "bid",
         ("direct", true, _) => "direct",
         ("direct", false, _) => return Err("task.create --mode direct requires --assignee".to_string()),
-        ("bid", _, true) => "bid",
-        ("broadcast", _, true) => "broadcast",
+        ("bid", _, _) => "bid",              // role 可空 = 开放池（全队先抢先得）
+        ("broadcast", _, _) => "broadcast",  // role 可空 = 广播给全体在册成员
         (other, _, _) => return Err(format!("unknown mode `{other}` (valid: direct, bid, broadcast)")),
     };
 
     // Instances: direct = [assignee]; bid = [one row, unassigned]; broadcast =
-    // one row per active role member.
+    // one row per active role member (or every active member when role is empty).
     let instances: Vec<Option<String>> = match mode {
         "direct" => vec![assignee.clone()],
-        "bid" => {
-            if role.is_none() {
-                return Err("bid requires --role <role>".to_string());
-            }
-            vec![None]
-        }
+        "bid" => vec![None],
         "broadcast" => {
-            let mut stmt = conn
-                .prepare("SELECT id FROM members WHERE team_id=?1 AND role=?2 AND state='active'")
-                .map_err(|e| format!("db: {e}"))?;
-            let ids: Vec<String> = stmt
-                .query_map(params![team_id, role.as_deref()], |r| r.get(0))
-                .map_err(|e| format!("db: {e}"))?
-                .collect::<rusqlite::Result<_>>()
-                .map_err(|e| format!("db: {e}"))?;
+            let mut ids: Vec<String> = Vec::new();
+            if let Some(r) = role.as_deref() {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM members WHERE team_id=?1 AND role=?2 AND state='active'")
+                    .map_err(|e| format!("db: {e}"))?;
+                let rows = stmt
+                    .query_map(params![team_id, r], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("db: {e}"))?;
+                for row in rows {
+                    ids.push(row.map_err(|e| format!("db: {e}"))?);
+                }
+            } else {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM members WHERE team_id=?1 AND state='active'")
+                    .map_err(|e| format!("db: {e}"))?;
+                let rows = stmt
+                    .query_map(params![team_id], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("db: {e}"))?;
+                for row in rows {
+                    ids.push(row.map_err(|e| format!("db: {e}"))?);
+                }
+            }
             if ids.is_empty() {
-                return Err(format!(
-                    "broadcast role `{}` has no active members",
-                    role.as_deref().unwrap_or("")
-                ));
+                return Err(match role.as_deref() {
+                    Some(r) => format!("broadcast role `{r}` has no active members"),
+                    None => "broadcast: no active members".to_string(),
+                });
             }
             ids.into_iter().map(Some).collect()
         }
@@ -279,7 +288,9 @@ fn list(conn: &mut Connection, team_id: &str, member_id: &str, args: &Value) -> 
     sql.push_str(" WHERE team_id = ?1");
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(team_id.to_string())];
     if only_mine {
-        sql.push_str(" AND (assignee_member_id = ?2 OR (assignee_member_id IS NULL AND role_key = ?3))");
+        // 我的任务 = 指派给我的，或（未指派且）开放池/我的角色可认领的。
+        // 开放池：assignee 为空且 role_key 为空 → 对全体成员可见（先抢先得）。
+        sql.push_str(" AND (assignee_member_id = ?2 OR (assignee_member_id IS NULL AND (role_key = ?3 OR role_key IS NULL)))");
         params.push(Box::new(member_id.to_string()));
         params.push(Box::new(my_role.clone().unwrap_or_default()));
     }
@@ -328,8 +339,10 @@ fn transition(
     let is_assignee = assignee.as_deref() == Some(member_id);
     // Role peers may only act while the task is UNCLAIMED (bid); a task that
     // is already assigned to a specific member is theirs alone (+ lead).
+    // Open pool: no assignee and no role → any active member may act (先抢先得).
+    let open_pool = !is_assignee && assignee.is_none() && role.is_none();
     let role_member = !is_assignee && assignee.is_none() && role.is_some() && role == my_role;
-    let can_work = is_assignee || role_member || lead;
+    let can_work = is_assignee || role_member || lead || open_pool;
 
     let next = match action {
         "ack" => {
@@ -342,7 +355,7 @@ fn transition(
             if assignee.is_some() {
                 return Err(format!("task `{id}` is already assigned to a member"));
             }
-            if !role_member && !lead {
+            if !role_member && !lead && !open_pool {
                 return Err("task.claim: only a member of the target role (or lead) may claim".to_string());
             }
             Some("claimed")
@@ -714,6 +727,49 @@ mod tests {
         let extra = call(&mut c, "task.create", "m-w1", json!({"title":"x", "assignee":"m-w1"})).unwrap();
         assert_eq!(extra["tasks"].as_array().unwrap().len(), 1);
         assert!(call(&mut c, "task.create", "m-gone", json!({"title":"x", "assignee":"m-gone"})).is_err());
+    }
+
+    #[test]
+    fn open_bid_without_role_any_member_can_claim() {
+        // 期望①：不限角色的开放池 —— mode=bid 且无 role，全队任何在册成员先抢先得。
+        let mut c = test_conn();
+        let out = call(&mut c, "task.create", "m-owner", json!({"title":"open", "mode":"bid"})).unwrap();
+        let id = out["tasks"][0].as_str().unwrap().to_string();
+        // 非 lead、不同角色也能认领
+        assert_eq!(call(&mut c, "task.claim", "m-w2", json!({"id": id})).unwrap()["task"]["state"], "claimed");
+        // 已被认领 → 第二个人不能再认领
+        assert!(call(&mut c, "task.claim", "m-w1", json!({"id": id})).is_err());
+    }
+
+    #[test]
+    fn broadcast_without_role_targets_every_active_member() {
+        // 期望③：mode=broadcast 且无 role = 广播给全体在册成员（排除 left）。
+        let mut c = test_conn();
+        c.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-left','t1','s9','Gone','worker','left','now')",
+            [],
+        )
+        .unwrap();
+        let out = call(&mut c, "task.create", "m-owner", json!({"title":"all", "mode":"broadcast"})).unwrap();
+        // owner + w1 + w2 = 3（left 不算）
+        assert_eq!(out["tasks"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn role_scoped_bid_still_gated_to_role() {
+        // 回归：带 --role 的 bid 仍只允许该角色成员认领。
+        let mut c = test_conn();
+        let out = call(&mut c, "task.create", "m-owner", json!({"title":"rolebid", "role":"worker"})).unwrap();
+        let id = out["tasks"][0].as_str().unwrap().to_string();
+        c.execute(
+            "INSERT INTO members (id, team_id, session_key, display_name, role, state, joined_at)
+             VALUES ('m-x','t1','sx','X','other','active','now')",
+            [],
+        )
+        .unwrap();
+        assert!(call(&mut c, "task.claim", "m-x", json!({"id": id})).is_err());
+        assert_eq!(call(&mut c, "task.claim", "m-w1", json!({"id": id})).unwrap()["task"]["state"], "claimed");
     }
 
     #[test]

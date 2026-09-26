@@ -1580,6 +1580,15 @@ pub fn my_teams(conn: &mut Connection, user_id: &str, kubeconfig: Option<&str>, 
         .collect();
     // 我加入的（design/016 SD-4）：由已批准的申请识别
     let mut joined = crate::discovery::joined_teams(conn, user_id)?;
+    // 去重/清理：
+    // ① 已拥有的团队不在「我加入的」重复出现（owner 视角在「我创建的团队」里）；
+    // ② 同一团队的多条 approved 席位（迁移/重复申请）只保留一条（joined_teams 已按团队取一条）。
+    joined.retain(|t| {
+        t["team_id"]
+            .as_str()
+            .map(|id| !owned_ids.contains(&id.to_string()))
+            .unwrap_or(false)
+    });
 
     // 工作区状态（SD-14）：以实时 k8s 为准，不可达回落快照并标注
     let mut pod_states: std::collections::HashMap<String, (String, bool)> = std::collections::HashMap::new();

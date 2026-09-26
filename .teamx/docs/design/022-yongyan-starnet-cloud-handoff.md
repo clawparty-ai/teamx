@@ -113,3 +113,69 @@ HK 源机 95.40.221.159 绝不动、不销毁；销毁任何实例前必须有 E
 - 队：yongyan-dev `f2adafd3-b3d7-4a84-838e-d33a53c2640c`；starnet `5e59132f-d5fb-48e5-a90a-33a3ff0c7068`；powernano-v2/yongyan-team `1da9a7f0-da3e-4f8c-90e3-7147f27bc25b`。
 - 平台用户：caishu `4087ae63-8494-4865-99e5-7904d62498f7`；zhongm `1084c011-822b-4bf8-aea1-f6414ce2d177`；zhaoz `1a2f517c-a880-4690-b1bc-1f273889c53e`；caicai `a5f4ce9d-a96f-4df7-aaf3-2e1f63283e7a`；demo `5e17cc70-67a5-4488-b1e8-efb78367a749`。
 - 实例：clawparty-seoul `i-0dd9eabd667d46b52`(ap-northeast-2,stopped) · powernano-zhaoz `i-0fe794ad265be751e`(3.37.16.165) · powernano-zhongm `i-019801448115135cd`(35.77.5.99) · starnet-member-jp `i-0b06aa7a9b2035671`(18.177.87.118) · starnet-member-us `i-0f2eefd2c35e8e813`(44.234.64.4) · powernano-caicai `i-07cc6457d3f165c5e`(us-west-2,184.34.85.90，不在"日/韩"范围) · HK `i-050e785daef10627e`(95.40.221.159，**不动**)。
+
+---
+
+## §9 执行记录（2026-09-26 会话，逐条可复现证据）
+
+### §5 starnet 物理隔离迁云 — 完成
+- **暴露**：NodePort `30444`；nginx stream `starnet.teamx.beer → 127.0.0.1:30444`。证据：`openssl s_client -connect starnet.teamx.beer:443 -servername starnet.teamx.beer` → `CN=teamx-serve-5e59132fd5fb48e5` / `issuer=CN=teamx-ca` / SAN 含 `starnet.teamx.beer`。
+- **登记**：`tenants.owner_member_id=dc37612b-6a4c-4420-8d35-e498b87d0eab`；`owner_letter` 2633B；4 条 `team_join_requests`(approved/migration)。`endpoint` 留空（与 yongyan 一致：平台 host 不解析集群 svc DNS，自动同机 port-forward）。
+- **验证（mTLS）**：owner 信（HK CA，`ca_sha256=2f31b8da…`）导入临时 HOME → `teamx tunnel list --server https://starnet.teamx.beer --session net:dc37612b…` → `{"ok":true,"data":{"tunnels":[]}}`。
+- **摘除**：yongyan-dev 租户库（`tenant-f2adafd3b3d74a84`）删除 starnet(5e59132f)+pnv2(1da9a7f0) 全表行；`pragma quick_check=ok`；备份 `/tmp/tenant-backup/teamx.db.1790401160`。回归：yongyan 4 member `6/6 Running`、`team status` 正常、无重启。
+- **铺成员**：4 Pod `6/6 Running`；平台 `/c/<member16>` 无会话 303 / 有会话 200。
+
+### §5.6 yongyan-team（原 powernano-v2）— 完成
+- 平台 `teams` 行改名 `yongyan-team`；`teamx tenant create --owner-user 4087ae63…`（`TEAMX_TENANT_PVC_SIZE=40Gi`）→ ns `tenant-1da9a7f0da3e4f8c`。
+- **换 HK CA**：Secret `teamx-ca-1da9a7f0da3e4f8c` 四键替换（`ca.crt/ca.key`=HK CA；`server.crt` 以 HK CA 重签，SAN 含 `yongyan-team.teamx.beer`+svc+`18.225.44.71`）；平台 `ca_fingerprint` 同步 `2f31b8da…`。
+- **子集库**：从摘除前备份剪裁（保留 `1da9a7f0`：6 成员 / 9369 事件 / 55371 activity / 2 goals / 6 invitations；83MB）灌入 PVC；11G 仓库同机 `cp -a` 入 PVC。server 日志 `tenant mode (team 1da9a7f0…), identity from /data/ca`。
+- **暴露/登记**：NodePort `30445` + `yongyan-team.teamx.beer`；`owner_member_id=dabfa2ee…`；`owner_letter` 2645B；6 条 join requests。
+- **验证（mTLS）**：owner 信经 `https://yongyan-team.teamx.beer` `tunnel list` → 14 tunnels（HK CA）。
+
+### §6.6 5 个用研 agent — 完成
+- yongyan-team 租户库新增 5 席：`yy-trend`/`yy-patent`/`yy-paper`/`yy-general`/`reviewer`（+平台 join requests）→ 逐席 provision。
+- 5 Pod `6/6 Running`；`opencode` 容器 HTTP 200（每台）；日志 `opencode server listening on http://127.0.0.1:4201`。
+
+### §6.7 新日本主机 b2-server — 完成
+- 实例 `i-0b8d9c9e4b18b8dd7`（ap-northeast-1，t3.medium 2C4G，EIP `18.178.176.241`）。
+- 构建：**cloud host** docker `rust:1.90-slim` 编译 `b2-server` release（不在 2C4G 目标机编译）。
+- 部署：`/opt/b2`（binary + `frontend-v2` + `prototype` + `docs/kb` + `registry/kb_index.sqlite` 8MB 自 zhongm）+ systemd + nginx；`TEAMX_HOME=/opt/b2`（yongyan-team owner 信）；`TEAMX_SERVER_URL=https://yongyan-team.teamx.beer`；`TEAMX_RUNTIME_TEAM=1da9a7f0…`。
+- HTTPS：`b2.teamx.beer` 走通配 → 云机；LE 在云机签发（webroot）并同步到日本机，云机 stream SNI `b2.teamx.beer → 18.178.176.241:443`；续期 deploy hook 同步。
+- **验收 4 项**：
+  1) `curl -I https://b2.teamx.beer/` → 200，title `PowerNano · 用研助手`
+  2) `/api/v1/health` → `{"seed_count":6,"status":"ok","version":"0.2.0"}`
+  3) KB 命中：`/api/v1/kb?q=VC` → 2 hits；`/api/sources/status` local_kb `available=true rows=1283`
+  4) 经租户连通：`/api/v1/trace` → `teamx.note="ok: team=1da9a7f0… events=9392"`
+
+### §6.8 按序销毁 — 完成（5/5）
+每台先 EBS 快照（均 `completed`）+ 依赖核对（DNS 无指向；HK 库仅历史 last_ip/activity/member_connections，无 tunnels/proxy_routes；HK 改为直连，不再依赖 zhongm 跳板）：
+- `clawparty-seoul`(ap-northeast-2) snap-`0aff691c17e578f21`；EIP 3.39.170.71 释放；`clawparty-sg` 删除。
+- `starnet-member-jp` snap-`037e4cad4080e227a`；`starnet-member-us` snap-`087b46dc74298e23e`。
+- `powernano-zhaoz` snap-`0b6998dd9c98bec79`。
+- `powernano-zhongm` snap-`026ab23b150eb7ccc`（前置迁移完成后销毁）：
+  - owner opencode + Feishu IM 网关 → **HK 新用户 `imgateway`**（见下）。
+  - 用研栈 b2 → 新日本机 `/opt/b2`（运行库 `.data.json` 自 zhongm 迁入 `/opt/b2/data/.data.json`；`runtime-mvp` 与 local teamx 归档 `/opt/b2/archive`），5 个 runtime agent 由 yongyan-team 云 agent 取代。
+  - pnv2 fs：11G 仓库在 yongyan-team PVC；`registry/*`（kb_index.sqlite 等）在 b2 主机。
+- HK 源机 95.40.221.159（ap-east-1, `powernano`）**未动**，核对 running。
+
+### §6.9 收尾
+- `/api/repos` size bug：代码已在 HEAD（`c1a60ce`「仓库 size 用目录大小」）修复；线上镜像 commit `eead794`（早于该 commit），需重建镜像换 tag 后生效（未执行，避免中断生产）。
+- HK `/tmp/migrate*`、`/tmp/migrate_key` 已清理。
+- pnv2 registry（`kb_index.sqlite` 等）已迁 b2 主机；11G 仓库在 yongyan-team PVC。
+- 本 §9 即台账/执行记录。
+
+### 偏离与说明
+- 成员 Pod 默认请求 550m/832Mi，节点（8 vCPU / 16Gi）在多租户并存下超卖；新租户成员以 `TEAMX_MEMBER_CPU_REQ=10m` 铺（systemd 已加该 env，未重启以免中断 teamx.beer），并释放卡死的 `sandbox-warm`(500m)/`k8e-mcp`(200m)。
+- yongyan-team 个人席位 Pod 精简：保留 owner(dabfa2ee)+powernano(e0b655b9)+5 agents；zhaoz/zhongm-worker/caicai/yongyan-mac 的 Pod 移除（这些人在 yongyan-dev 已有云 Pod 可工作）——席位与信仍在，后续可按容量补铺。
+- `b2.teamx.beer` TLS 由云机签发/续期后同步到日本机（GoDaddy 无 API、通配 DNS 指向云机）；日本机自行终止 TLS。
+
+### 迁移到 HK 的 imgateway（owner opencode + IM 网关）
+- HK 新建用户 `imgateway`(uid 1001)；`/home/imgateway` ← 原 zhongm `/home/caishu`（370M：opencode 配置、work、gateway 证书/`im.env`）。
+- HK 安装 `opencode 1.18.27`（aarch64，自 zhongm 迁移）；HK 自带 `teamx`（含 `im-gateway run`）。
+- 服务：`opencode-serve-imgateway`（127.0.0.1:42630，HTTP 200）+ `teamx-im-gateway-imgateway`（`https://120.27.222.33:5783` team `5eebe88f…`，active，已 ESTAB 到 Feishu `35.244.241.247:443`）。
+- zhongm 侧同名 caishu 服务已 `disable --now`，避免重复 IM 长连接。
+
+### 剩余（非阻塞，后续）
+- `/api/repos` size bug：线上镜像按 `c1a60ce` 重建换 tag 后生效（代码已修复）。
+- A 上线后清理旧 `c-*` 子域与 4 张证书。
+- us-east-2 遗留未关联 EIP `3.20.210.29` 归属未确认，未动。

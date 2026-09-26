@@ -14,6 +14,7 @@ pub mod local_team;
 pub mod broadcast;
 pub mod buildinfo;
 pub mod cli;
+pub mod cloud;
 pub mod commands;
 pub mod db;
 pub mod direct;

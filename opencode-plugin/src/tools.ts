@@ -645,6 +645,12 @@ export const tools = {
       title: tool.schema.string().describe("task title"),
       assignee: tool.schema.string().optional().describe("assignee member id"),
       role: tool.schema.string().optional().describe("assignee role key (e.g. reviewer)"),
+      mode: tool.schema
+        .enum(["direct", "bid", "broadcast"])
+        .optional()
+        .describe(
+          "delegation mode: direct (needs --assignee) | bid (open pool: anyone in the team competes to claim; omit --role for the whole team, pass it to scope to a role) | broadcast (one instance per role member; omit --role to send one instance to every active member). Default: direct when --assignee is given, else bid.",
+        ),
       executor: tool.schema.enum(["either", "agent", "human"]).optional().describe("executor kind (default either)"),
       priority: tool.schema.enum(["high", "medium", "low"]).optional().describe("priority (default medium)"),
       id: tool.schema.string().optional().describe("task id (default: slug of title)"),
@@ -656,6 +662,7 @@ export const tools = {
         "task", "create", args.title,
         ...opt("--assignee", args.assignee),
         ...opt("--role", args.role),
+        ...opt("--mode", args.mode),
         ...(args.executor ? ["--executor", args.executor] : []),
         ...(args.priority ? ["--priority", args.priority] : []),
         ...opt("--id", args.id),
